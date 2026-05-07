@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ClientHub",
+  "version": "0.1.0",
+  "identifier": "com.bjmdistributions.clienthub",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ClientHub",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "msi", "nsis"],
+    "icon": ["icons/icon.icns", "icons/icon.ico"],
+    "category": "Productivity",
+    "shortDescription": "Client management, AI email, and invoicing",
+    "longDescription": "Local-first desktop app for client tracking, AI-assisted email replies, and PDF invoice generation, with peer-to-peer sync across your devices."
+  }
+}
