@@ -505,6 +505,11 @@ function SyncTab() {
       </button>
 
       <div className="border-t pt-4">
+        <h3 className="font-semibold mb-2">Updates</h3>
+        <UpdateButton />
+      </div>
+
+      <div className="border-t pt-4">
         <h3 className="font-semibold mb-2">Encryption</h3>
         {encrypted === null ? (
           <p className="text-sm text-slate-400">checking...</p>
@@ -959,6 +964,43 @@ function AutomationTab() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function UpdateButton() {
+  const [checking, setChecking] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const checkForUpdates = async () => {
+    setChecking(true);
+    setStatus(null);
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update) {
+        setStatus(`Update available: ${update.version}`);
+        await update.downloadAndInstall();
+      } else {
+        setStatus("Up to date");
+      }
+    } catch (e: any) {
+      setStatus(e.toString());
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div>
+      <button
+        onClick={checkForUpdates}
+        disabled={checking}
+        className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-50"
+      >
+        {checking ? "Checking..." : "Check for Updates"}
+      </button>
+      {status && <p className="text-sm text-slate-600 mt-2">{status}</p>}
     </div>
   );
 }

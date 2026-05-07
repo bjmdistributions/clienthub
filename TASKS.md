@@ -159,7 +159,7 @@ Each task has a stable ID. Reference tasks by ID in commit messages and question
 
 ---
 
-### TASK-007: Wire auto-updater 🟢
+### TASK-007: Wire auto-updater ✅
 **Why:** Once you ship to 3 devices, you'll want updates without re-running installers. Tauri has an auto-updater plugin that pulls from GitHub Releases (free).
 
 **What:**
