@@ -7,6 +7,8 @@ import {
   CsvPreview,
   ImportSummary,
   SignupRule,
+  PaymentMethod,
+  PaymentMethodInput,
 } from "../lib/api";
 import {
   Save,
@@ -19,19 +21,24 @@ import {
   Trash2,
   Sparkles,
   RefreshCw,
+  Image,
+  ChevronUp,
+  ChevronDown,
+  Edit2,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "ai" | "sync" | "import" | "automation"
+    "email" | "company" | "ai" | "sync" | "import" | "automation" | "payments"
   >("email");
 
   return (
     <div>
       <h2 className="text-2xl font-bold mb-4">Settings</h2>
       <div className="flex gap-2 border-b border-slate-200 mb-6">
-        {(["email", "company", "ai", "sync", "import", "automation"] as const).map(
+        {(["email", "company", "ai", "sync", "import", "automation", "payments"] as const).map(
           (t) => (
             <button
               key={t}
@@ -54,6 +61,7 @@ export default function SettingsView() {
       {tab === "sync" && <SyncTab />}
       {tab === "import" && <ImportTab />}
       {tab === "automation" && <AutomationTab />}
+      {tab === "payments" && <PaymentsTab />}
     </div>
   );
 }
@@ -315,11 +323,54 @@ function CompanyTab() {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const pickLogo = async () => {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }],
+    });
+    if (typeof selected === "string") {
+      setInfo({ ...info, logo_path: selected });
+    }
+  };
+
+  const removeLogo = () => setInfo({ ...info, logo_path: null });
+
   return (
     <div className="bg-white rounded-lg shadow p-6 max-w-2xl">
       <p className="text-sm text-slate-600 mb-4">
         This information appears on every PDF invoice.
       </p>
+
+      <Field label="Company Logo">
+        <div className="flex items-center gap-3">
+          {info.logo_path ? (
+            <div className="relative">
+              <img
+                src={info.logo_path ? convertFileSrc(info.logo_path) : undefined}
+                alt="Logo preview"
+                className="h-16 w-auto border rounded object-contain bg-slate-50"
+              />
+              <button
+                onClick={removeLogo}
+                className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5"
+              >
+                <Trash2 size={10} />
+              </button>
+            </div>
+          ) : (
+            <div className="h-16 w-16 border rounded bg-slate-50 flex items-center justify-center text-slate-300">
+              <Image size={24} />
+            </div>
+          )}
+          <button
+            onClick={pickLogo}
+            className="bg-slate-100 px-3 py-1.5 rounded text-sm hover:bg-slate-200"
+          >
+            {info.logo_path ? "Change" : "Choose Logo"}
+          </button>
+        </div>
+      </Field>
+
       <Field label="Company name">
         <input
           className="border p-2 rounded w-full"
@@ -1001,6 +1052,211 @@ function UpdateButton() {
         {checking ? "Checking..." : "Check for Updates"}
       </button>
       {status && <p className="text-sm text-slate-600 mt-2">{status}</p>}
+    </div>
+  );
+}
+
+// ========== Payment Methods Tab ==========
+function PaymentsTab() {
+  const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<PaymentMethod | null>(null);
+  const [form, setForm] = useState<PaymentMethodInput>({
+    kind: "ACH",
+    label: "",
+    details: "",
+  });
+
+  const load = () =>
+    api.listPaymentMethods().then(setMethods).catch(console.error);
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const KINDS = [
+    "ACH", "Wire", "Stripe Link", "PayPal", "Venmo", "Zelle", "Check", "Other",
+  ];
+
+  const save = async () => {
+    if (!form.label.trim()) return;
+    try {
+      if (editing) {
+        await api.updatePaymentMethod(editing.id, {
+          ...form,
+          details: form.details || undefined,
+        });
+      } else {
+        await api.createPaymentMethod({
+          ...form,
+          details: form.details || undefined,
+        });
+      }
+      setShowForm(false);
+      setEditing(null);
+      load();
+    } catch (e: any) {
+      alert(e);
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (!confirm("Delete this payment method?")) return;
+    await api.deletePaymentMethod(id);
+    load();
+  };
+
+  const moveUp = async (i: number) => {
+    if (i === 0) return;
+    const copy = [...methods];
+    [copy[i - 1], copy[i]] = [copy[i], copy[i - 1]];
+    await api.reorderPaymentMethods(copy.map((m) => m.id));
+    load();
+  };
+
+  const moveDown = async (i: number) => {
+    if (i === methods.length - 1) return;
+    const copy = [...methods];
+    [copy[i], copy[i + 1]] = [copy[i + 1], copy[i]];
+    await api.reorderPaymentMethods(copy.map((m) => m.id));
+    load();
+  };
+
+  return (
+    <div className="bg-white rounded-lg shadow p-6 max-w-3xl">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-semibold">Payment Methods</h3>
+        <button
+          onClick={() => {
+            setEditing(null);
+            setForm({ kind: "ACH", label: "", details: "" });
+            setShowForm(true);
+          }}
+          className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm flex items-center gap-1"
+        >
+          <Plus size={14} /> Add
+        </button>
+      </div>
+      <p className="text-sm text-slate-600 mb-4">
+        Active methods appear on every invoice. Drag to reorder.
+      </p>
+
+      {showForm && (
+        <div className="border rounded p-4 mb-4 bg-slate-50 space-y-3">
+          <Field label="Type">
+            <select
+              className="border p-2 rounded w-full text-sm"
+              value={form.kind}
+              onChange={(e) => setForm({ ...form, kind: e.target.value })}
+            >
+              {KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Label">
+            <input
+              className="border p-2 rounded w-full text-sm"
+              placeholder="e.g. Bank transfer"
+              value={form.label}
+              onChange={(e) => setForm({ ...form, label: e.target.value })}
+            />
+          </Field>
+          <Field label="Details">
+            <textarea
+              rows={3}
+              className="border p-2 rounded w-full text-sm font-mono"
+              placeholder="Account #: 123456789&#10;Routing: 021000021&#10;Bank: Chase"
+              value={form.details ?? ""}
+              onChange={(e) => setForm({ ...form, details: e.target.value })}
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => {
+                setShowForm(false);
+                setEditing(null);
+              }}
+              className="text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={!form.label.trim()}
+              className="bg-slate-900 text-white px-4 py-1.5 rounded text-sm disabled:opacity-50"
+            >
+              {editing ? "Update" : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {methods.map((m, i) => (
+          <div
+            key={m.id}
+            className={`border rounded p-3 flex items-start justify-between ${
+              m.active ? "" : "opacity-50"
+            }`}
+          >
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+                  {m.kind}
+                </span>
+                <span className="font-semibold text-sm">{m.label}</span>
+              </div>
+              {m.details && (
+                <pre className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">
+                  {m.details}
+                </pre>
+              )}
+            </div>
+            <div className="flex items-center gap-1 ml-3">
+              <button
+                onClick={() => moveUp(i)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <ChevronUp size={14} />
+              </button>
+              <button
+                onClick={() => moveDown(i)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <ChevronDown size={14} />
+              </button>
+              <button
+                onClick={() => {
+                  setEditing(m);
+                  setForm({
+                    kind: m.kind,
+                    label: m.label,
+                    details: m.details,
+                  });
+                  setShowForm(true);
+                }}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <Edit2 size={14} />
+              </button>
+              <button
+                onClick={() => remove(m.id)}
+                className="text-red-400 hover:text-red-600"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+        {methods.length === 0 && (
+          <div className="text-center text-slate-400 text-sm py-6">
+            No payment methods yet. Add one to display options on your invoices.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

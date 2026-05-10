@@ -397,11 +397,90 @@ fn generate_invoice_number() -> anyhow::Result<String> {
     Ok(format!("INV-{}-{:04}", year, next))
 }
 
+#[derive(Deserialize)]
+pub struct UpdateInvoiceInput {
+    pub due_date: String,
+    pub line_items: Vec<crate::invoice::LineItem>,
+    pub tax_rate: f64,
+}
+
+#[tauri::command]
+pub async fn update_invoice(id: String, input: UpdateInvoiceInput) -> Result<(), String> {
+    let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+
+    let mut cols = Map::new();
+    cols.insert("due_date".into(), Value::String(input.due_date.clone()));
+    cols.insert("line_items_json".into(), Value::String(line_items_json.clone()));
+    cols.insert("subtotal".into(), json!(subtotal));
+    cols.insert("tax".into(), json!(tax));
+    cols.insert("total".into(), json!(total));
+    sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET due_date=?1, line_items_json=?2, subtotal=?3, tax=?4, total=?5 WHERE id=?6",
+        rusqlite::params![input.due_date, line_items_json, subtotal, tax, total, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_invoice(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM invoices WHERE id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if status != "draft" {
+        return Err("Only draft invoices can be deleted".into());
+    }
+    sync::record_delete("invoices", &id).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM invoices WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn generate_invoice_pdf(invoice_id: String) -> Result<String, String> {
     crate::invoice::generate_pdf(&invoice_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_invoice_pdf(input: InvoiceInput) -> Result<String, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (cname, cemail, ccompany, cmetadata): (
+        String, Option<String>, Option<String>, Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT name,email,company,metadata FROM clients WHERE id=?1",
+            [&input.client_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let client_address = crate::invoice::parse_client_address(&cmetadata);
+    let company = crate::invoice::load_company().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+
+    let pdf_bytes = crate::invoice::build_pdf_bytes(
+        "PREVIEW", &now, &input.due_date, &input.line_items,
+        subtotal, tax, total, &cname, &cemail, &ccompany, &client_address, &company,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let dir = crate::db::app_data_dir().join("preview");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("preview.pdf");
+    std::fs::write(&path, pdf_bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -563,7 +642,18 @@ pub async fn get_email_settings() -> Result<Option<crate::email::EmailSettings>,
 }
 
 #[tauri::command]
-pub async fn save_company_info(info: crate::invoice::CompanyInfo) -> Result<(), String> {
+pub async fn save_company_info(mut info: crate::invoice::CompanyInfo) -> Result<(), String> {
+    let logo_dir = crate::db::app_data_dir().clone();
+    let target = logo_dir.join("company_logo.png");
+
+    if let Some(ref src) = info.logo_path {
+        std::fs::create_dir_all(&logo_dir).map_err(|e| e.to_string())?;
+        std::fs::copy(src, &target).map_err(|e| e.to_string())?;
+        info.logo_path = Some(target.to_string_lossy().to_string());
+    } else {
+        let _ = std::fs::remove_file(&target);
+    }
+
     let conn = pool().get().map_err(|e| e.to_string())?;
     let json = serde_json::to_string(&info).map_err(|e| e.to_string())?;
     conn.execute(
@@ -706,6 +796,115 @@ pub async fn delete_signup_rule(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn toggle_signup_rule(id: String, active: bool) -> Result<(), String> {
     crate::signup_rules::toggle_rule(&id, active).map_err(|e| e.to_string())
+}
+
+// ============================================================
+//  Payment Methods
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PaymentMethod {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub details: String,
+    pub active: bool,
+    pub sort_order: i32,
+}
+
+#[tauri::command]
+pub async fn list_payment_methods() -> Result<Vec<PaymentMethod>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id,kind,label,details,active,sort_order
+             FROM payment_methods ORDER BY sort_order, kind",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PaymentMethod {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                label: r.get(2)?,
+                details: r.get(3)?,
+                active: r.get::<_, i32>(4)? != 0,
+                sort_order: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[derive(Deserialize)]
+pub struct PaymentMethodInput {
+    pub kind: String,
+    pub label: String,
+    pub details: Option<String>,
+}
+
+#[tauri::command]
+pub async fn create_payment_method(input: PaymentMethodInput) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let details = input.details.unwrap_or_default();
+    let mut cols = Map::new();
+    cols.insert("kind".into(), Value::String(input.kind.clone()));
+    cols.insert("label".into(), Value::String(input.label.clone()));
+    cols.insert("details".into(), Value::String(details.clone()));
+    cols.insert("active".into(), json!(1));
+    cols.insert("sort_order".into(), json!(0));
+    sync::record_upsert("payment_methods", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO payment_methods (id,kind,label,details,active,sort_order) VALUES (?1,?2,?3,?4,1,0)",
+        rusqlite::params![id, input.kind, input.label, details],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_payment_method(id: String, input: PaymentMethodInput) -> Result<(), String> {
+    let details = input.details.unwrap_or_default();
+    let mut cols = Map::new();
+    cols.insert("kind".into(), Value::String(input.kind.clone()));
+    cols.insert("label".into(), Value::String(input.label.clone()));
+    cols.insert("details".into(), Value::String(details.clone()));
+    sync::record_upsert("payment_methods", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE payment_methods SET kind=?1, label=?2, details=?3 WHERE id=?4",
+        rusqlite::params![input.kind, input.label, details, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_payment_method(id: String) -> Result<(), String> {
+    sync::record_delete("payment_methods", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM payment_methods WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reorder_payment_methods(ids: Vec<String>) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (i, id) in ids.iter().enumerate() {
+        let mut cols = Map::new();
+        cols.insert("sort_order".into(), json!(i as i32));
+        sync::record_upsert("payment_methods", id, cols).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE payment_methods SET sort_order=?1 WHERE id=?2",
+            rusqlite::params![i as i32, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ============================================================

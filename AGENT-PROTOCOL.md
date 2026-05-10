@@ -180,3 +180,15 @@ If the human asks for something that isn't catalogued:
 2. Add the task to TASKS.md with the standard format (ID, dependencies, acceptance criteria).
 3. Get acknowledgment that the task is well-formed before starting Phase 2.
 4. If the human's request is ambiguous, propose 2-3 ways to interpret it and ask which they want.
+
+
+## CRITICAL: Locked code patterns
+
+Before editing `src-tauri/src/invoice.rs` or any PDF/image-related code, read
+`PDF-API-CONTRACT.md` in the project root. It specifies the exact API patterns
+to use and the wrong patterns to avoid. These patterns are calibrated to the
+project's pinned dependency versions. Deviating from them will cause repeated
+compile failures and waste the human's time.
+
+This rule overrides general Rust knowledge. Even if you "know" a different
+function name from your training data, USE THE PATTERNS IN PDF-API-CONTRACT.md.

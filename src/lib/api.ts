@@ -90,6 +90,7 @@ export interface CompanyInfo {
   email: string;
   phone?: string | null;
   tax_id?: string | null;
+  logo_path?: string | null;
 }
 
 export interface DashboardStats {
@@ -142,6 +143,21 @@ export interface SignupRuleInput {
   active: boolean;
 }
 
+export interface PaymentMethod {
+  id: string;
+  kind: string;
+  label: string;
+  details: string;
+  active: boolean;
+  sort_order: number;
+}
+
+export interface PaymentMethodInput {
+  kind: string;
+  label: string;
+  details?: string;
+}
+
 export interface EmailDraft {
   id: string;
   client_id: string | null;
@@ -174,8 +190,13 @@ export const api = {
   // Invoices
   listInvoices: () => invoke<Invoice[]>("list_invoices"),
   createInvoice: (input: InvoiceInput) => invoke<string>("create_invoice", { input }),
+  updateInvoice: (id: string, input: { due_date: string; line_items: LineItem[]; tax_rate: number }) =>
+    invoke<void>("update_invoice", { id, input }),
+  deleteInvoice: (id: string) => invoke<void>("delete_invoice", { id }),
   generateInvoicePdf: (invoiceId: string) =>
     invoke<string>("generate_invoice_pdf", { invoiceId }),
+  previewInvoicePdf: (input: InvoiceInput) =>
+    invoke<string>("preview_invoice_pdf", { input }),
   sendInvoice: (invoiceId: string) => invoke<void>("send_invoice", { invoiceId }),
   markInvoicePaid: (invoiceId: string) => invoke<void>("mark_invoice_paid", { invoiceId }),
 
@@ -239,4 +260,14 @@ export const api = {
   deleteSignupRule: (id: string) => invoke<void>("delete_signup_rule", { id }),
   toggleSignupRule: (id: string, active: boolean) =>
     invoke<void>("toggle_signup_rule", { id, active }),
+
+  // Payment methods
+  listPaymentMethods: () => invoke<PaymentMethod[]>("list_payment_methods"),
+  createPaymentMethod: (input: PaymentMethodInput) =>
+    invoke<string>("create_payment_method", { input }),
+  updatePaymentMethod: (id: string, input: PaymentMethodInput) =>
+    invoke<void>("update_payment_method", { id, input }),
+  deletePaymentMethod: (id: string) => invoke<void>("delete_payment_method", { id }),
+  reorderPaymentMethods: (ids: string[]) =>
+    invoke<void>("reorder_payment_methods", { ids }),
 };

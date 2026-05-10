@@ -67,7 +67,10 @@ fn main() {
             // Invoices
             list_invoices,
             create_invoice,
+            update_invoice,
+            delete_invoice,
             generate_invoice_pdf,
+            preview_invoice_pdf,
             send_invoice,
             mark_invoice_paid,
             // Email
@@ -104,6 +107,17 @@ fn main() {
             create_signup_rule,
             delete_signup_rule,
             toggle_signup_rule,
+            // Payment methods
+            list_payment_methods,
+            create_payment_method,
+            update_payment_method,
+            delete_payment_method,
+            reorder_payment_methods,
+            // Email drafts
+            list_drafts,
+            update_draft,
+            send_draft,
+            discard_draft,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

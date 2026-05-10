@@ -18,7 +18,7 @@ use notify::{Event as NotifyEvent, EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -360,7 +360,7 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
 
 // ---------- Apply remote events ----------
 
-const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings"];
+const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods"];
 
 fn apply_event(event: &SyncEvent) -> Result<()> {
     if already_applied(&event.id)? {

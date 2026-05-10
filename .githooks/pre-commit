@@ -1,0 +1,11 @@
+#!/bin/bash
+# Pre-commit guard against known wrong API patterns
+
+set -e
+CHECK_FILES="src-tauri/src/invoice.rs"
+
+if grep -nE "image::open\(|image::io::Reader|image::ImageReader|Image::from_reader|Image::try_from\(" $CHECK_FILES 2>/dev/null; then
+    echo "ERROR: Found a forbidden API pattern. See PDF-API-CONTRACT.md."
+    echo "These calls will not compile with our pinned dependencies."
+    exit 1
+fi

@@ -6,7 +6,6 @@ use oauth2::{
 };
 use std::net::TcpListener;
 use std::time::Duration;
-use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
 
 fn find_open_port(start: u16, end: u16) -> Result<u16> {

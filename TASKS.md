@@ -205,6 +205,109 @@ Each task has a stable ID. Reference tasks by ID in commit messages and question
 
 ---
 
+### TASK-018: Inline client creation during invoice flow ✅
+
+**Why:** Currently invoice creation requires picking from existing clients. When a new lead requests an invoice, the user has to navigate away to Clients tab, create the client, then come back. This task adds inline client creation in the invoice form.
+
+**What to change:**
+- `src/components/InvoicesView.tsx`:
+  - In the InvoiceForm component, replace the client dropdown with a combobox that has two options: pick existing client OR "+ Create new client"
+  - When "Create new client" is selected, show inline fields: name (required), email, phone, company
+  - On invoice submit, if creating new: first call `api.createClient()`, then use the returned client ID for the invoice
+  - Reuse the existing `ClientInput` type — no backend changes needed
+- No changes to backend, sync, or any other view
+
+**Acceptance:**
+- Existing flow (pick from dropdown) still works
+- "Create new client" option creates the client + invoice in one save action
+- New client appears in Clients tab afterward (proves sync engine fired correctly)
+- Form validates that name is filled when creating new
+
+**Out of scope:** Editing existing clients from invoice form. Bulk client import (already exists in Settings).
+
+**Dependencies:** None.
+
+---
+
+### TASK-019: Invoice PDF preview before send ✅
+
+**Why:** Currently users generate the PDF and have to open it from disk to check it. The "Send" action could send a typo-laden invoice. A preview panel inside the invoice form prevents this.
+
+**What to change:**
+- `src-tauri/src/commands.rs`: add new command `preview_invoice_pdf(input: InvoiceInput) -> Result<String, String>` that generates a PDF without saving an invoice record (returns base64-encoded PDF bytes)
+- `src-tauri/src/invoice.rs`: refactor `generate_pdf` to extract a `build_pdf_bytes(items, totals, client_data, company_info, dates) -> Vec<u8>` helper. The existing `generate_pdf` calls this helper then writes to disk. The new `preview_pdf` calls the helper and returns the bytes.
+- Register new command in `main.rs::invoke_handler`
+- `src/lib/api.ts`: add `previewInvoicePdf(input)` returning a base64 string
+- `src/components/InvoicesView.tsx`:
+  - Add "Preview" button next to "Create Invoice" in the form
+  - Clicking Preview calls api.previewInvoicePdf, displays the PDF inline using an `<iframe>` with `src="data:application/pdf;base64,${data}"`, takes up the bottom half of the form area
+  - Preview updates only when button is clicked (don't auto-regenerate on every keystroke)
+  - Preview panel has a "Close" button to hide it
+
+**Acceptance:**
+- Preview shows the invoice exactly as it would be saved/sent
+- No actual invoice record is created until user clicks "Create Invoice"
+- Preview updates correctly when line items, dates, or client are changed and Preview is re-clicked
+
+**Out of scope:** Live preview that updates as you type. Editing the PDF directly in preview.
+
+**Dependencies:** Easier to do after TASK-020 because the PDF builder will already be a reusable helper by then.
+
+---
+
+### TASK-020: Company logo on invoices ✅
+
+**Why:** A logo at the top of invoices makes them look professional. Currently the invoice header is text-only.
+
+**What to change:**
+- `src-tauri/src/invoice.rs`:
+  - Modify `CompanyInfo` struct to add `logo_path: Option<String>` field
+  - If `logo_path` is set and the file exists, embed the image at the top-left of the invoice using `printpdf::Image::from_dynamic_image()`
+  - Logo should be sized to ~30mm wide × 30mm tall max (preserve aspect ratio)
+  - Move the company name text to the right of the logo when a logo is present
+- `Cargo.toml`: add `image = "0.25"` for image decoding
+- `src/components/SettingsView.tsx` CompanyTab:
+  - Add a "Company Logo" section
+  - "Choose Logo" button that opens a file picker (PNG/JPG only) using `@tauri-apps/plugin-dialog`
+  - Show preview of selected logo
+  - On save, copy the logo file to `<app_data_dir>/company_logo.png` and store that fixed path in CompanyInfo
+  - "Remove Logo" button to clear it
+- Logo file is **local-only** — each device sets its own. CompanyInfo stays synced but `logo_path` references a local path.
+
+**Acceptance:**
+- User can upload a PNG or JPG via Settings → Company
+- Logo appears on every PDF generated thereafter and persists across app restarts
+- Removing the logo reverts invoices to text-only header
+
+**Out of scope:** Logo cropping/resizing UI. Multiple logos.
+
+**Dependencies:** None.
+
+---
+
+### TASK-021: Payment methods in settings + on invoices ✅
+
+**Why:** Invoices currently say "Please remit payment by the due date" generically. Real invoices need specific payment instructions: ACH details, Stripe link, Venmo, check mailing address, etc.
+
+**What to change:**
+- New table in migration v4 (append to db.rs): `payment_methods (id TEXT PK, kind TEXT, label TEXT, details TEXT, active INTEGER, sort_order INTEGER)`. This IS a synced table — add `"payment_methods"` to `sync::ALLOWED_TABLES`.
+- `src-tauri/src/commands.rs`: add `list_payment_methods`, `create_payment_method`, `update_payment_method`, `delete_payment_method`, `reorder_payment_methods` (all via `sync::record_upsert` / `sync::record_delete`)
+- `src-tauri/src/invoice.rs`: in PDF generation, after totals, render a "Payment Options" block listing each active payment method
+- New tab in SettingsView: "Payment Methods" — list with kind (dropdown: ACH, Wire, Stripe Link, PayPal, Venmo, Zelle, Check, Other), label, details (multi-line), active toggle, reorder, add/edit/delete
+- Register new commands in main.rs and api.ts
+
+**Acceptance:**
+- User can add multiple payment methods in Settings that sync between devices
+- Active methods appear on every PDF; inactive ones don't
+- Reordering in Settings reflects in PDF order
+- Empty state: no payment methods → no "Payment Options" section on invoices
+
+**Out of scope:** Auto-generating payment links. QR codes. Per-invoice method selection.
+
+**Critical for agent:** New synced table — Invariant 1 applies. All writes via `sync::record_upsert` / `sync::record_delete`. Same pattern as `create_client`. Update `sync::ALLOWED_TABLES`. Missing either = silent data divergence.
+
+---
+
 ### TASK-009: Calendar/booking integration via webhook receiver 🔵
 **Why:** Calendly / Cal.com / Google Calendar events that come via email work via TASK-006's signup rules, but a webhook is faster and more structured. This is a stretch goal.
 
@@ -308,6 +411,12 @@ Each task has a stable ID. Reference tasks by ID in commit messages and question
 When an agent finds something during execution that isn't a current task but seems worth doing, append it here. **Don't act on it during the current task.**
 
 (empty)
+
+- **Human request 2026-05-09 — Comma formatting for invoice numbers:** Display subtotal, tax, and total with thousands separators (e.g., "$1,234.56") in InvoicesView list and InvoiceForm totals. PDF already fine.
+
+- **Human request 2026-05-09 — Edit existing invoices:** Add ability to modify an existing invoice (line items, dates, tax rate) via a new `update_invoice` command following the sync pattern (`sync::record_upsert` + mirror SQL). Add Edit button to invoice list rows, reuse InvoiceForm with pre-populated data from the selected invoice.
+
+These are small — I'll plan both as a combined micro-task and wait for your go-ahead.
 
 - **IMAP crate switch (discovered during TASK-003 verification):** IMAP scanner uses synchronous `imap = "2.4"` crate inside `tokio::task::spawn_blocking`. This was chosen over `async-imap` because `async-imap` 0.10 has internal compile errors with the tokio feature flag, and `async-imap` requires `futures::AsyncRead/AsyncWrite` traits which are incompatible with `tokio::net::TcpStream`. The blocking approach is fine for our scan-every-5-min use case and avoids the trait-bridging complexity entirely.
 

@@ -160,4 +160,18 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE clients ADD COLUMN metadata TEXT DEFAULT '{}';
         "#,
     ),
+    (
+        4,
+        r#"
+        -- Payment methods shown on invoice footers. Synced across devices.
+        CREATE TABLE IF NOT EXISTS payment_methods (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            label TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        "#,
+    ),
 ];
