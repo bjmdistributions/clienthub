@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, Client, Invoice, LineItem } from "../lib/api";
-import {
-  FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2,
-} from "lucide-react";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate } from "../lib/api";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2 } from "lucide-react";
 
 const fmtAmount = (n: number) =>
   "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -14,6 +12,12 @@ export default function InvoicesView() {
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [payModal, setPayModal] = useState<string | null>(null);
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payMethod, setPayMethod] = useState("");
+  const [payRef, setPayRef] = useState("");
+  const [payMethods, setPayMethods] = useState<PaymentMethod[]>([]);
 
   const load = async () => {
     setInvoices(await api.listInvoices());
@@ -23,7 +27,7 @@ export default function InvoicesView() {
 
   const handlePdf = async (id: string) => {
     setBusy(id);
-    try { const p = await api.generateInvoicePdf(id); alert(`PDF saved:\n${p}`); load(); }
+    try { await api.generateInvoicePdf(id); setToast("PDF saved — check your invoices folder"); setTimeout(() => setToast(null), 3000); load(); }
     catch (e: any) { alert(`Error: ${e}`); }
     finally { setBusy(null); }
   };
@@ -36,9 +40,22 @@ export default function InvoicesView() {
     finally { setBusy(null); }
   };
 
-  const handleMarkPaid = async (id: string) => {
-    setBusy(id);
-    try { await api.markInvoicePaid(id); load(); }
+  const handleMarkPaid = (id: string) => {
+    setPayModal(id);
+    setPayDate(new Date().toISOString().slice(0, 10));
+    setPayMethod("");
+    setPayRef("");
+    api.listPaymentMethods().then((m) => setPayMethods(m.filter((p) => p.active))).catch(() => {});
+  };
+
+  const confirmPay = async () => {
+    if (!payModal) return;
+    setBusy(payModal);
+    try {
+      await api.markInvoicePaid(payModal, payDate, payMethod || undefined, payRef || undefined);
+      setPayModal(null);
+      load();
+    } catch (e: any) { alert(`Error: ${e}`); }
     finally { setBusy(null); }
   };
 
@@ -60,7 +77,16 @@ export default function InvoicesView() {
     if (lo === "paid") return "bg-green-100 text-green-700";
     if (lo === "sent") return "bg-blue-100 text-blue-700";
     if (lo === "overdue") return "bg-red-100 text-red-700";
+    if (lo === "deposit_pending") return "bg-yellow-100 text-yellow-700";
     return "bg-slate-100 text-slate-700";
+  };
+
+  const handleDeposit = async (id: string) => {
+    if (!confirm("Mark as deposit pending?")) return;
+    setBusy(id);
+    try { await api.markInvoiceDepositPending(id); load(); }
+    catch (e: any) { alert(`Error: ${e}`); }
+    finally { setBusy(null); }
   };
 
   return (
@@ -73,9 +99,51 @@ export default function InvoicesView() {
         </button>
       </div>
 
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-2 rounded shadow-lg text-sm z-50">
+          {toast}
+        </div>
+      )}
+
       {showForm && (
         <InvoiceForm clients={clients} initial={editing}
           onClose={() => { setShowForm(false); setEditing(null); load(); }} />
+      )}
+
+      {payModal && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/40" onClick={() => setPayModal(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-[420px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="font-semibold">Mark as Paid</h3>
+              <button onClick={() => setPayModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Date</label>
+                <input type="date" className="border p-2 rounded w-full text-sm" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Method</label>
+                <select className="border p-2 rounded w-full text-sm" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                  <option value="">— select —</option>
+                  {payMethods.map((m) => (<option key={m.id} value={m.label}>{m.label}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Reference (optional)</label>
+                <input className="border p-2 rounded w-full text-sm" placeholder="e.g. check #1234" value={payRef} onChange={(e) => setPayRef(e.target.value)} />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setPayModal(null)} className="px-4 py-2 text-sm">Cancel</button>
+                <button onClick={confirmPay} disabled={busy === payModal}
+                  className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
+                  {busy === payModal ? "Saving..." : "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="bg-white rounded shadow overflow-hidden">
@@ -112,6 +180,10 @@ export default function InvoicesView() {
                         className={confirmDelete === inv.id ? "text-red-700 font-bold" : "text-red-500 hover:text-red-700"}>
                         {confirmDelete === inv.id ? "Delete?" : <Trash2 size={14} />}
                       </button>
+                      <button title="Deposit pending" onClick={() => handleDeposit(inv.id)}
+                        className="text-yellow-600 hover:text-yellow-800 text-xs">
+                        Deposit
+                      </button>
                     </>
                   )}
                   <button title="Generate PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
@@ -130,7 +202,16 @@ export default function InvoicesView() {
               </tr>
             ))}
             {invoices.length === 0 && (
-              <tr><td colSpan={7} className="p-6 text-center text-slate-400">No invoices yet.</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-slate-400">
+                <div className="py-8">
+                  <p className="text-lg mb-2">No invoices yet</p>
+                  <p className="text-sm mb-4">Create your first invoice to send to a client</p>
+                  <button onClick={() => { setEditing(null); setShowForm(true); }}
+                    className="bg-slate-900 text-white px-4 py-2 rounded text-sm">
+                    Create Invoice
+                  </button>
+                </div>
+              </td></tr>
             )}
           </tbody>
         </table>
@@ -150,8 +231,13 @@ function InvoiceForm({
     if (initial) return initial.due_date.slice(0, 10);
     return new Date().toISOString().slice(0, 10);
   });
-  const [taxRate, setTaxRate] = useState(0);
+  const [taxRate, setTaxRate] = useState<number>(
+    initial && initial.subtotal > 0
+      ? Math.round((initial.tax / initial.subtotal) * 10000) / 100
+      : 0
+  );
   const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [recurring, setRecurring] = useState("");
   const [items, setItems] = useState<LineItem[]>(() => {
     if (initial) {
       const parsed: LineItem[] = JSON.parse(initial.line_items_json || "[]");
@@ -161,6 +247,11 @@ function InvoiceForm({
   });
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [templates, setTemplates] = useState<LineItemTemplate[]>([]);
+
+  useEffect(() => {
+    api.listLineItemTemplates().then(setTemplates).catch(() => {});
+  }, []);
 
   const updateItem = (i: number, field: keyof LineItem, val: any) => {
     const copy = [...items];
@@ -204,7 +295,7 @@ function InvoiceForm({
         });
         cid = created.id;
       }
-      const data = { due_date: dueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined };
+      const data = { due_date: dueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined, recurring: recurring || undefined };
       if (initial) {
         await api.updateInvoice(initial.id, data);
       } else {
@@ -319,14 +410,40 @@ function InvoiceForm({
         <button onClick={addRow} className="text-sm text-slate-600 hover:text-slate-900 mt-2 flex items-center gap-1">
           <Plus size={14} /> Add line
         </button>
+        {templates.length > 0 && (
+          <div className="inline-flex ml-3 gap-1">
+            <span className="text-xs text-slate-400">Templates:</span>
+            {templates.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setItems([...items, { description: t.description, qty: t.qty, rate: t.rate, amount: t.qty * t.rate }])}
+                className="text-xs bg-slate-100 px-2 py-0.5 rounded hover:bg-slate-200"
+              >
+                {t.description}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="mb-4">
-        <TextField label="Notes">
-          <textarea rows={3} className="border p-2 rounded w-full text-sm"
-            placeholder="Shipping instructions, payment terms, special notes..."
-            value={notes} onChange={(e) => setNotes(e.target.value)} />
-        </TextField>
+        <div className="flex gap-4 items-end">
+          <div className="flex-1">
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Notes</label>
+            <textarea rows={3} className="border p-2 rounded w-full text-sm"
+              placeholder="Shipping instructions, payment terms, special notes..."
+              value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Recurring</label>
+            <select className="border p-2 rounded text-sm" value={recurring} onChange={(e) => setRecurring(e.target.value)}>
+              <option value="">One-time</option>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="annually">Annually</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <div className="border-t pt-3 flex justify-end">
@@ -334,8 +451,7 @@ function InvoiceForm({
           <Row label="Subtotal" value={subtotal} />
           <Row label={`Tax (${taxRate}%)`} value={tax} />
           <Row label="Total" value={total} bold />
-        </div>
-      </div>
+       </div>
 
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onClose} className="px-4 py-2 text-sm">Cancel</button>
@@ -348,6 +464,7 @@ function InvoiceForm({
           className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
           {submitting ? "Saving..." : initial ? "Save Changes" : "Create Invoice"}
         </button>
+      </div>
       </div>
     </div>
   );
@@ -363,12 +480,6 @@ function Row({ label, value, bold }: { label: string; value: number; bold?: bool
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div><label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>{children}</div>
-  );
-}
-
-function TextField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div><label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>{children}</div>
   );

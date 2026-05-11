@@ -181,4 +181,58 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE invoices ADD COLUMN notes TEXT DEFAULT '';
         "#,
     ),
+    (
+        6,
+        r#"
+        -- Device-local state that must never sync (IMAP cursor, node ID, etc.)
+        CREATE TABLE IF NOT EXISTS device_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        "#,
+    ),
+    (
+        7,
+        r#"
+        -- Client pipeline: prospect, hot_lead, warm, active_customer, inactive
+        ALTER TABLE clients ADD COLUMN lead_status TEXT NOT NULL DEFAULT 'prospect';
+        "#,
+    ),
+    (
+        8,
+        r#"
+        -- Payment details when marking an invoice as paid
+        ALTER TABLE invoices ADD COLUMN payment_method_label TEXT DEFAULT '';
+        ALTER TABLE invoices ADD COLUMN payment_reference TEXT DEFAULT '';
+        "#,
+    ),
+    (
+        9,
+        r#"
+        -- Performance indexes for common query patterns
+        CREATE INDEX IF NOT EXISTS idx_invoices_status_date ON invoices(status, issue_date);
+        CREATE INDEX IF NOT EXISTS idx_interactions_client_date ON interactions(client_id, created_at);
+        "#,
+    ),
+    (
+        10,
+        r#"
+        -- Premade line item templates for quick invoice creation. Local-only.
+        CREATE TABLE IF NOT EXISTS line_item_templates (
+            id TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            rate REAL NOT NULL DEFAULT 0,
+            qty REAL NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        "#,
+    ),
+    (
+        11,
+        r#"
+        -- Recurring invoice support
+        ALTER TABLE invoices ADD COLUMN recurring TEXT DEFAULT '';
+        ALTER TABLE invoices ADD COLUMN next_recurring_date TEXT DEFAULT '';
+        "#,
+    ),
 ];

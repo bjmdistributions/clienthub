@@ -565,10 +565,16 @@ pub async fn send_invoice(invoice_id: &str) -> Result<()> {
 
     crate::email::send(&to, &subject, &body, Some(&pdf)).await?;
 
+    let now = Utc::now().to_rfc3339();
+    let mut cols = serde_json::Map::new();
+    cols.insert("status".into(), serde_json::Value::String("sent".into()));
+    cols.insert("sent_at".into(), serde_json::Value::String(now.clone()));
+    crate::sync::record_upsert("invoices", invoice_id, cols)?;
+
     let conn = pool().get()?;
     conn.execute(
         "UPDATE invoices SET status='sent', sent_at=?1 WHERE id=?2",
-        rusqlite::params![Utc::now().to_rfc3339(), invoice_id],
+        rusqlite::params![now, invoice_id],
     )?;
     Ok(())
 }

@@ -12,6 +12,7 @@ mod sync;
 mod sync_crypto;
 
 use commands::*;
+use tauri_plugin_notification::NotificationExt;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -35,15 +36,52 @@ fn main() {
             let sync_dir = db::app_data_dir().join("sync");
             sync::init(sync_dir)?;
 
-            // Replay any events that arrived while we were offline.
+            // AppHandle is Send + Clone — safe to move into async spawns.
+            // tauri::App is NOT Send and must never be captured in a spawn.
+            let app_handle = app.handle().clone();
+
+            // Replay sync events, mark overdue invoices, fire follow-up notification.
+            // All three run sequentially in one spawn so they share the same task context.
             tauri::async_runtime::spawn(async move {
+                // 1. Replay peer sync events that arrived while offline.
                 match sync::replay_all().await {
                     Ok(n) => tracing::info!("sync replay: applied {} events", n),
                     Err(e) => tracing::warn!("sync replay failed: {}", e),
                 }
+
+                // 2. Mark any sent invoices past their due date as overdue.
+                match mark_overdue_invoices().await {
+                    Ok(n) if n > 0 => tracing::info!("marked {} invoices overdue", n),
+                    Err(e) => tracing::warn!("mark_overdue failed: {}", e),
+                    _ => {}
+                }
+
+                // 2b. Generate recurring invoices that are due.
+                match generate_recurring_invoices().await {
+                    Ok(n) if n > 0 => tracing::info!("generated {} recurring invoices", n),
+                    Err(e) => tracing::warn!("recurring failed: {}", e),
+                    _ => {}
+                }
+
+                // 3. Fire a system notification if follow-ups are due today.
+                match due_followups().await {
+                    Ok(clients) if !clients.is_empty() => {
+                        let _ = app_handle
+                            .notification()
+                            .builder()
+                            .title("Follow-ups Due")
+                            .body(format!(
+                                "You have {} follow-up(s) due today",
+                                clients.len()
+                            ))
+                            .show();
+                    }
+                    Err(e) => tracing::warn!("due_followups failed: {}", e),
+                    _ => {}
+                }
             });
 
-            // File watcher: react to incoming events from peers.
+            // File watcher: react to incoming sync events from peers.
             if let Err(e) = sync::start_watcher() {
                 tracing::warn!("sync watcher failed to start: {}", e);
             }
@@ -59,20 +97,27 @@ fn main() {
             get_client,
             create_client,
             update_client,
+            update_client_status,
             delete_client,
             search_clients,
+            list_stale_clients,
+            due_followups,
             // Interactions
             list_interactions,
             add_interaction,
             // Invoices
             list_invoices,
+            list_invoices_for_client,
             create_invoice,
             update_invoice,
             delete_invoice,
+            mark_overdue_invoices,
+            generate_recurring_invoices,
             generate_invoice_pdf,
             preview_invoice_pdf,
             send_invoice,
             mark_invoice_paid,
+            mark_invoice_deposit_pending,
             // Email
             send_email,
             scan_inbox,
@@ -113,6 +158,11 @@ fn main() {
             update_payment_method,
             delete_payment_method,
             reorder_payment_methods,
+            // Line item templates
+            list_line_item_templates,
+            create_line_item_template,
+            delete_line_item_template,
+            reorder_line_item_templates,
             // Email drafts
             list_drafts,
             update_draft,

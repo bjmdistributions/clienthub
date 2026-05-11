@@ -9,6 +9,7 @@ import {
   SignupRule,
   PaymentMethod,
   PaymentMethodInput,
+  LineItemTemplate,
 } from "../lib/api";
 import {
   Save,
@@ -31,14 +32,14 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "ai" | "sync" | "import" | "automation" | "payments"
+    "email" | "company" | "ai" | "sync" | "import" | "automation" | "payments" | "templates"
   >("email");
 
   return (
     <div>
       <h2 className="text-2xl font-bold mb-4">Settings</h2>
       <div className="flex gap-2 border-b border-slate-200 mb-6">
-        {(["email", "company", "ai", "sync", "import", "automation", "payments"] as const).map(
+        {(["email", "company", "ai", "sync", "import", "automation", "payments", "templates"] as const).map(
           (t) => (
             <button
               key={t}
@@ -62,6 +63,7 @@ export default function SettingsView() {
       {tab === "import" && <ImportTab />}
       {tab === "automation" && <AutomationTab />}
       {tab === "payments" && <PaymentsTab />}
+      {tab === "templates" && <TemplatesTab />}
     </div>
   );
 }
@@ -112,12 +114,9 @@ function EmailTab() {
         await api.saveCredential("smtp_user", settings.user);
         if (smtpPass) {
           await api.saveCredential("smtp_pass", smtpPass);
-          console.log("smtp_pass saved to keychain, length:", smtpPass.length);
         } else {
-          console.warn("smtp_pass was empty — not saved");
         }
         if (imapPass) await api.saveCredential("imap_pass", imapPass);
-        await api.saveCredential("imap_host", settings.imap_host);
       } else {
         if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
         if (oauthClientSecret)
@@ -1255,6 +1254,52 @@ function PaymentsTab() {
           <div className="text-center text-slate-400 text-sm py-6">
             No payment methods yet. Add one to display options on your invoices.
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ========== Line Item Templates Tab ==========
+function TemplatesTab() {
+  const [templates, setTemplates] = useState<LineItemTemplate[]>([]);
+  const [desc, setDesc] = useState("");
+  const [rate, setRate] = useState("0");
+  const [qty, setQty] = useState("1");
+
+  const load = () => api.listLineItemTemplates().then(setTemplates).catch(console.error);
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    if (!desc.trim()) return;
+    await api.createLineItemTemplate(desc.trim(), parseFloat(rate) || 0, parseFloat(qty) || 1);
+    setDesc(""); setRate("0"); setQty("1"); load();
+  };
+
+  const remove = async (id: string) => { await api.deleteLineItemTemplate(id); load(); };
+
+  return (
+    <div className="bg-white rounded-lg shadow p-6 max-w-2xl">
+      <h3 className="font-semibold mb-2">Line Item Templates</h3>
+      <p className="text-sm text-slate-600 mb-4">Saved line items for quick invoice creation.</p>
+
+      <div className="flex gap-2 mb-4">
+        <input className="border p-2 rounded flex-1 text-sm" placeholder="Description" value={desc} onChange={(e) => setDesc(e.target.value)} />
+        <input type="text" inputMode="decimal" className="border p-2 rounded w-20 text-sm" placeholder="Rate" value={rate} onChange={(e) => setRate(e.target.value)} />
+        <input type="text" inputMode="decimal" className="border p-2 rounded w-16 text-sm" placeholder="Qty" value={qty} onChange={(e) => setQty(e.target.value)} />
+        <button onClick={add} disabled={!desc.trim()} className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-50">Add</button>
+      </div>
+
+      <div className="space-y-1">
+        {templates.map((t) => (
+          <div key={t.id} className="flex items-center justify-between border rounded p-2 text-sm">
+            <span>{t.description}</span>
+            <span className="text-slate-500">${t.rate.toFixed(2)} x {t.qty}</span>
+            <button onClick={() => remove(t.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+          </div>
+        ))}
+        {templates.length === 0 && (
+          <div className="text-center text-slate-400 text-sm py-6">No templates yet.</div>
         )}
       </div>
     </div>

@@ -18,6 +18,9 @@ import {
   Target,
   Calendar,
   User,
+  Inbox,
+  ChevronDown,
+  Clock,
 } from "lucide-react";
 
 interface Props {
@@ -32,14 +35,15 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const [showNoteForm, setShowNoteForm] = useState(false);
+  const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
 
   const load = async () => {
     const c = await api.getClient(clientId);
     setClient(c);
     const i = await api.listInteractions(clientId);
     setInteractions(i);
-    const all = await api.listInvoices();
-    setInvoices(all.filter((inv) => inv.client_id === clientId));
+    const all = await api.listInvoicesForClient(clientId);
+    setInvoices(all);
   };
 
   useEffect(() => {
@@ -69,7 +73,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
     );
 
   const outstanding = invoices
-    .filter((i) => i.status === "sent" || i.status === "overdue")
+    .filter((i) => i.status === "sent" || i.status === "overdue" || i.status === "deposit_pending")
     .reduce((s, i) => s + i.total, 0);
   const paid = invoices
     .filter((i) => i.status === "paid")
@@ -94,14 +98,28 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 <Building2 size={14} /> {client.company}
               </div>
             )}
+            <div className="mt-2">
+              <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                client.lead_status === "hot_lead" ? "bg-red-100 text-red-700" :
+                client.lead_status === "warm" ? "bg-orange-100 text-orange-700" :
+                client.lead_status === "active_customer" ? "bg-green-100 text-green-700" :
+                client.lead_status === "inactive" ? "bg-gray-100 text-gray-700" :
+                "bg-blue-100 text-blue-700"
+              }`}>
+                {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+              </span>
+            </div>
             <div className="flex gap-4 mt-3 text-sm">
               {client.email && (
-                <a
-                  href={`mailto:${client.email}`}
-                  className="flex items-center gap-1 text-slate-600 hover:text-slate-900"
-                >
-                  <Mail size={14} /> {client.email}
-                </a>
+                <div className="flex items-center gap-1">
+                  <a
+                    href={`mailto:${client.email}`}
+                    className="flex items-center gap-1 text-slate-600 hover:text-slate-900"
+                  >
+                    <Mail size={14} /> {client.email}
+                  </a>
+                  <CopyEmail email={client.email} />
+                </div>
               )}
               {client.phone && (
                 <span className="flex items-center gap-1 text-slate-600">
@@ -210,12 +228,45 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               <MetaRow label="Last Contact" value={client.metadata.last_contact_date} />
             )}
             {client.metadata.next_follow_up_date && (
-              <MetaRow label="Follow Up" value={client.metadata.next_follow_up_date} />
+              <div>
+                <span className="text-xs text-slate-400 block">Follow Up</span>
+                <input
+                  type="date"
+                  className="border p-1 rounded text-sm w-full"
+                  value={client.metadata.next_follow_up_date}
+                  onChange={async (e) => {
+                    const meta = { ...(client.metadata || {}), next_follow_up_date: e.target.value };
+                    await api.updateClient(client.id, {
+                      name: client.name,
+                      email: client.email,
+                      phone: client.phone,
+                      company: client.company,
+                      notes: client.notes,
+                      metadata: meta,
+                    });
+                    load();
+                  }}
+                />
+              </div>
             )}
           </MetadataCard>
         </div>
       )}
 
+      <div className="flex gap-2 mb-4">
+        {(["overview", "emails", "invoices", "timeline"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setDetailTab(t)}
+            className={`px-4 py-1.5 text-sm rounded capitalize ${detailTab === t ? "bg-slate-900 text-white" : "bg-slate-100"}`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {detailTab === "overview" && (
+      <>
       {/* AI Summary */}
       <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 mb-4">
         <div className="flex items-center justify-between mb-2">
@@ -328,6 +379,89 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
           </div>
         </div>
       </div>
+      </>
+      )}
+
+      {detailTab === "emails" && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="p-4 border-b">
+            <h3 className="font-semibold flex items-center gap-2"><Inbox size={14} /> Email Thread</h3>
+          </div>
+          <div className="max-h-[600px] overflow-auto">
+            {interactions.filter((it) => it.kind === "email_in" || it.kind === "email_out").map((it) => (
+              <div key={it.id} className="p-3 border-b text-sm">
+                <div className={`text-xs px-1.5 py-0.5 rounded inline-block mb-2 ${it.kind === "email_in" ? "bg-blue-100 text-blue-700" : "bg-violet-100 text-violet-700"}`}>
+                  {it.kind === "email_in" ? "Received" : "Sent"}
+                </div>
+                {it.subject && <div className="font-semibold mb-1">{it.subject}</div>}
+                {it.body && <div className="text-slate-600 whitespace-pre-wrap">{it.body}</div>}
+                <div className="text-xs text-slate-400 mt-1">{new Date(it.created_at).toLocaleString()}</div>
+              </div>
+            ))}
+            {interactions.filter((it) => it.kind === "email_in" || it.kind === "email_out").length === 0 && (
+              <div className="p-6 text-center text-slate-400 text-sm">No email interactions yet.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {detailTab === "invoices" && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="p-4 border-b"><h3 className="font-semibold flex items-center gap-2"><FileText size={14} /> Invoices ({invoices.length})</h3></div>
+          <div className="max-h-[600px] overflow-auto">
+            {invoices.map((inv) => (
+              <div key={inv.id} className="p-3 border-b text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="font-mono text-xs">{inv.number}</span>
+                  <span className="font-semibold">${inv.total.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between mt-1 text-xs text-slate-500">
+                  <span>Due {inv.due_date.slice(0, 10)}</span>
+                  <span className={`px-1.5 py-0.5 rounded ${invoiceStatusColor(inv.status)}`}>{inv.status}</span>
+                </div>
+              </div>
+            ))}
+            {invoices.length === 0 && (
+              <div className="p-6 text-center text-slate-400 text-sm">No invoices yet.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {detailTab === "timeline" && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="p-4 border-b"><h3 className="font-semibold flex items-center gap-2"><Clock size={14} /> Timeline</h3></div>
+          <div className="max-h-[600px] overflow-auto">
+            {[
+              ...interactions.map((it) => ({ type: "interaction", data: it, date: it.created_at })),
+              ...invoices.map((inv) => ({ type: "invoice", data: inv, date: inv.issue_date })),
+            ]
+              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+              .map((item, i) => (
+                <div key={i} className="p-3 border-b text-sm">
+                  <div className="text-xs text-slate-400 mb-1">{new Date(item.date).toLocaleString()}</div>
+                  {item.type === "interaction" && (
+                    <>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${kindColor((item.data as Interaction).kind)}`}>{(item.data as Interaction).kind}</span>
+                      {(item.data as Interaction).subject && <span className="font-semibold ml-2">{(item.data as Interaction).subject}</span>}
+                    </>
+                  )}
+                  {item.type === "invoice" && (
+                    <>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100">invoice</span>
+                      <span className="font-mono text-xs ml-2">{(item.data as Invoice).number}</span>
+                      <span className="ml-2 font-semibold">${(item.data as Invoice).total.toFixed(2)}</span>
+                      <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${invoiceStatusColor((item.data as Invoice).status)}`}>{(item.data as Invoice).status}</span>
+                    </>
+                  )}
+                </div>
+              ))}
+            {interactions.length + invoices.length === 0 && (
+              <div className="p-6 text-center text-slate-400 text-sm">No activity yet.</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -446,5 +580,23 @@ function invoiceStatusColor(s: string): string {
   if (s === "paid") return "bg-green-100 text-green-700";
   if (s === "sent") return "bg-blue-100 text-blue-700";
   if (s === "overdue") return "bg-red-100 text-red-700";
+  if (s === "deposit_pending") return "bg-yellow-100 text-yellow-700";
   return "bg-slate-100 text-slate-700";
+}
+
+function CopyEmail({ email }: { email: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        await navigator.clipboard.writeText(email);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="text-xs text-slate-400 hover:text-slate-700"
+      title="Copy email"
+    >
+      {copied ? "Copied!" : "Copy"}
+    </button>
+  );
 }

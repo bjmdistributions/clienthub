@@ -14,16 +14,22 @@ import InvoicesView from "./components/InvoicesView";
 import EmailView from "./components/EmailView";
 import SettingsView from "./components/SettingsView";
 import DashboardView from "./components/DashboardView";
+import QuickLogModal from "./components/QuickLogModal";
 import { useAppStore } from "./lib/store";
 import { api } from "./lib/api";
 
 type Tab = "dashboard" | "clients" | "invoices" | "email" | "settings";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTabState] = useState<Tab>(() =>
+    (localStorage.getItem("clienthub_last_tab") as Tab) || "dashboard"
+  );
+  const setTab = (t: Tab) => { setTabState(t); localStorage.setItem("clienthub_last_tab", t); };
+  const [draftCount, setDraftCount] = useState(0);
   const { aiOnline, checkAi } = useAppStore();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [quickLogOpen, setQuickLogOpen] = useState(false);
 
   useEffect(() => {
     checkAi();
@@ -33,6 +39,31 @@ export default function App() {
 
   useEffect(() => {
     api.syncStatus().then((s) => setLastSync(s.last_applied)).catch(() => {});
+    api.listDrafts("pending").then((d) => setDraftCount(d.length)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName || "").toLowerCase();
+      if (e.key === "L" || e.key === "l") {
+        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        if (e.metaKey || e.ctrlKey) return;
+        setQuickLogOpen((v) => !v);
+      }
+      if (e.key === "Escape") setQuickLogOpen(false);
+      if (e.key === "n" || e.key === "N") {
+        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        if (tab === "clients") {
+          // trigger new client — find the view's internal showForm
+          window.dispatchEvent(new CustomEvent("clients-new-client"));
+        }
+        if (tab === "invoices") {
+          window.dispatchEvent(new CustomEvent("invoices-new-invoice"));
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const handleSync = async () => {
@@ -70,6 +101,9 @@ export default function App() {
                 ${tab === id ? "bg-slate-700" : "hover:bg-slate-800"}`}
             >
               <Icon size={16} /> {label}
+              {id === "email" && draftCount > 0 && (
+                <span className="ml-auto bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5">{draftCount}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -117,6 +151,8 @@ export default function App() {
           {tab === "settings" && <SettingsView />}
         </div>
       </main>
+
+      {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
     </div>
   );
 }

@@ -21,10 +21,13 @@ pub struct Client {
     pub company: Option<String>,
     pub notes: Option<String>,
     pub billing_status: String,
+    pub lead_status: String,
     pub created_at: String,
     pub updated_at: String,
     pub metadata: Option<Value>,
     pub invoice_count: i64,
+    pub last_contact_at: Option<String>,
+    pub total_revenue: f64,
 }
 
 #[tauri::command]
@@ -32,9 +35,16 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,name,email,phone,company,notes,billing_status,created_at,updated_at,metadata,
-                    (SELECT COUNT(*) FROM invoices WHERE client_id=clients.id AND status IN ('sent','paid'))
-             FROM clients ORDER BY name",
+            "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.created_at,c.updated_at,c.metadata,
+                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                    MAX(i.created_at),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0),
+                    c.lead_status,
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+             FROM clients c
+             LEFT JOIN interactions i ON i.client_id = c.id
+             GROUP BY c.id
+             ORDER BY c.name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -51,6 +61,9 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                 updated_at: r.get(8)?,
                 metadata: r.get::<_, Option<String>>(9)?.and_then(|s| serde_json::from_str(&s).ok()),
                 invoice_count: r.get(10)?,
+                last_contact_at: r.get(11)?,
+                lead_status: r.get(12)?,
+                total_revenue: r.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -61,10 +74,15 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
 pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let res: rusqlite::Result<Client> = conn.query_row(
-        "SELECT id,name,email,phone,company,notes,billing_status,created_at,updated_at,metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=clients.id AND status IN ('sent','paid'))
-         FROM clients WHERE id=?1",
-        [id],
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                MAX(i.created_at),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+         FROM clients c
+         LEFT JOIN interactions i ON i.client_id = c.id
+         WHERE c.id=?1
+         GROUP BY c.id",
+        [&id],
         |r| {
             Ok(Client {
                 id: r.get(0)?,
@@ -74,10 +92,13 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 company: r.get(4)?,
                 notes: r.get(5)?,
                 billing_status: r.get(6)?,
-                created_at: r.get(7)?,
-                updated_at: r.get(8)?,
-                metadata: r.get::<_, Option<String>>(9)?.and_then(|s| serde_json::from_str(&s).ok()),
-                invoice_count: r.get(10)?,
+                lead_status: r.get(7)?,
+                created_at: r.get(8)?,
+                updated_at: r.get(9)?,
+                metadata: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
+                invoice_count: r.get(11)?,
+                last_contact_at: r.get(12)?,
+                total_revenue: r.get(13)?,
             })
         },
     );
@@ -96,17 +117,15 @@ pub struct ClientInput {
     pub company: Option<String>,
     pub notes: Option<String>,
     pub metadata: Option<Value>,
+    pub lead_status: Option<String>,
 }
 
 #[tauri::command]
 pub async fn create_client(input: ClientInput) -> Result<Client, String> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let metadata_str = input
-        .metadata
-        .as_ref()
-        .and_then(|v| serde_json::to_string(v).ok())
-        .unwrap_or_else(|| "{}".into());
+    let metadata_str = input.metadata.as_ref().and_then(|v| serde_json::to_string(v).ok()).unwrap_or_else(|| "{}".into());
+    let lead_status_val = input.lead_status.clone().unwrap_or_else(|| "prospect".into());
 
     let mut cols = Map::new();
     cols.insert("name".into(), Value::String(input.name.clone()));
@@ -115,49 +134,33 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
     cols.insert("company".into(), to_value(input.company.clone()));
     cols.insert("notes".into(), to_value(input.notes.clone()));
     cols.insert("billing_status".into(), Value::String("active".into()));
+    cols.insert("lead_status".into(), Value::String(lead_status_val.clone()));
     cols.insert("created_at".into(), Value::String(now.clone()));
     cols.insert("updated_at".into(), Value::String(now.clone()));
     cols.insert("metadata".into(), Value::String(metadata_str.clone()));
-
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
-    write_client_row(&id, &input, &now, &now, "active", &metadata_str).map_err(|e| e.to_string())?;
+    write_client_row(&id, &input, &now, &now, "active", &metadata_str, &lead_status_val).map_err(|e| e.to_string())?;
 
     Ok(Client {
-        id,
-        name: input.name,
-        email: input.email,
-        phone: input.phone,
-        company: input.company,
-        notes: input.notes,
-        billing_status: "active".into(),
-        created_at: now.clone(),
-        updated_at: now,
-        metadata: input.metadata,
-        invoice_count: 0,
+        id, name: input.name, email: input.email, phone: input.phone,
+        company: input.company, notes: input.notes, billing_status: "active".into(),
+        lead_status: lead_status_val, created_at: now.clone(), updated_at: now,
+        metadata: input.metadata, invoice_count: 0, last_contact_at: None,
+        total_revenue: 0.0,
     })
 }
 
-fn write_client_row(
-    id: &str,
-    input: &ClientInput,
-    created_at: &str,
-    updated_at: &str,
-    status: &str,
-    metadata: &str,
-) -> anyhow::Result<()> {
+fn write_client_row(id: &str, input: &ClientInput, created_at: &str, updated_at: &str, status: &str, metadata: &str, lead_status: &str) -> anyhow::Result<()> {
     let conn = pool().get()?;
     conn.execute(
-        "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,created_at,updated_at,metadata)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+        "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,lead_status,created_at,updated_at,metadata)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
          ON CONFLICT(id) DO UPDATE SET
             name=excluded.name, email=excluded.email, phone=excluded.phone,
             company=excluded.company, notes=excluded.notes,
-            billing_status=excluded.billing_status, updated_at=excluded.updated_at,
-            metadata=excluded.metadata",
-        rusqlite::params![
-            id, input.name, input.email, input.phone, input.company,
-            input.notes, status, created_at, updated_at, metadata
-        ],
+            billing_status=excluded.billing_status, lead_status=excluded.lead_status,
+            updated_at=excluded.updated_at, metadata=excluded.metadata",
+        rusqlite::params![id, input.name, input.email, input.phone, input.company, input.notes, status, lead_status, created_at, updated_at, metadata],
     )?;
     Ok(())
 }
@@ -165,28 +168,33 @@ fn write_client_row(
 #[tauri::command]
 pub async fn update_client(id: String, input: ClientInput) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    let metadata_str = input
-        .metadata
-        .as_ref()
-        .and_then(|v| serde_json::to_string(v).ok())
-        .unwrap_or_else(|| "{}".into());
-
+    let metadata_str = input.metadata.as_ref().and_then(|v| serde_json::to_string(v).ok()).unwrap_or_else(|| "{}".into());
+    let lead_status_val = input.lead_status.clone().unwrap_or_else(|| "prospect".into());
     let mut cols = Map::new();
     cols.insert("name".into(), Value::String(input.name.clone()));
     cols.insert("email".into(), to_value(input.email.clone()));
     cols.insert("phone".into(), to_value(input.phone.clone()));
     cols.insert("company".into(), to_value(input.company.clone()));
     cols.insert("notes".into(), to_value(input.notes.clone()));
+    cols.insert("lead_status".into(), Value::String(lead_status_val.clone()));
     cols.insert("updated_at".into(), Value::String(now.clone()));
     cols.insert("metadata".into(), Value::String(metadata_str.clone()));
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
-
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE clients SET name=?1,email=?2,phone=?3,company=?4,notes=?5,updated_at=?6,metadata=?7 WHERE id=?8",
-        rusqlite::params![input.name, input.email, input.phone, input.company, input.notes, now, metadata_str, id],
-    )
-    .map_err(|e| e.to_string())?;
+        "UPDATE clients SET name=?1,email=?2,phone=?3,company=?4,notes=?5,lead_status=?6,updated_at=?7,metadata=?8 WHERE id=?9",
+        rusqlite::params![input.name, input.email, input.phone, input.company, input.notes, lead_status_val, now, metadata_str, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_client_status(id: String, status: String) -> Result<(), String> {
+    let mut cols = Map::new();
+    cols.insert("lead_status".into(), Value::String(status.clone()));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE clients SET lead_status=?1 WHERE id=?2", rusqlite::params![status, id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -194,8 +202,7 @@ pub async fn update_client(id: String, input: ClientInput) -> Result<(), String>
 pub async fn delete_client(id: String) -> Result<(), String> {
     sync::record_delete("clients", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM clients WHERE id=?1", [id])
-        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM clients WHERE id=?1", [id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -203,24 +210,86 @@ pub async fn delete_client(id: String) -> Result<(), String> {
 pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let pattern = format!("%{}%", query.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                MAX(i.created_at),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+         FROM clients c
+         LEFT JOIN interactions i ON i.client_id = c.id
+         WHERE LOWER(c.name) LIKE ?1 OR LOWER(c.email) LIKE ?1 OR LOWER(c.company) LIKE ?1 OR LOWER(c.metadata) LIKE ?1
+         GROUP BY c.id
+         ORDER BY c.name LIMIT 50",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([pattern], |r| {
+        Ok(Client {
+            id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
+            company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
+            lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
+            metadata: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
+            invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
+                total_revenue: r.get(13)?,
+            })
+        }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let cutoff = format!("-{} days", days);
+    let mut stmt = conn.prepare(
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                MAX(i.created_at),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+         FROM clients c
+         LEFT JOIN interactions i ON i.client_id = c.id
+         GROUP BY c.id
+         HAVING MAX(i.created_at),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0) IS NULL OR MAX(i.created_at),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0) < datetime('now', ?1)
+         ORDER BY MAX(i.created_at),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0) ASC NULLS FIRST",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([cutoff], |r| {
+        Ok(Client {
+            id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
+            company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
+            lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
+            metadata: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
+            invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
+                total_revenue: r.get(13)?,
+            })
+        }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn due_followups() -> Result<Vec<Client>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,name,email,phone,company,notes,billing_status,created_at,updated_at,metadata,
-                    (SELECT COUNT(*) FROM invoices WHERE client_id=clients.id AND status IN ('sent','paid'))
-             FROM clients
-             WHERE LOWER(name) LIKE ?1 OR LOWER(email) LIKE ?1 OR LOWER(company) LIKE ?1
-                OR LOWER(metadata) LIKE ?1
-             ORDER BY name LIMIT 50",
+            "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                    NULL,
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+             FROM clients c
+             WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
+             AND json_extract(c.metadata, '$.next_follow_up_date') <= date('now')
+             ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([pattern], |r| {
+        .query_map([], |r| {
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
-                created_at: r.get(7)?, updated_at: r.get(8)?,
-                metadata: r.get::<_, Option<String>>(9)?.and_then(|s| serde_json::from_str(&s).ok()),
-                invoice_count: r.get(10)?,
+                lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
+                metadata: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
+                invoice_count: r.get(11)?,
+                last_contact_at: None,
+                total_revenue: r.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -334,6 +403,24 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[tauri::command]
+pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes
+         FROM invoices WHERE client_id=?1 ORDER BY issue_date DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([client_id], |r| {
+        Ok(Invoice {
+            id: r.get(0)?, client_id: r.get(1)?, number: r.get(2)?,
+            issue_date: r.get(3)?, due_date: r.get(4)?, line_items_json: r.get(5)?,
+            subtotal: r.get(6)?, tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?,
+            pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 #[derive(Deserialize)]
 pub struct InvoiceInput {
     pub client_id: String,
@@ -341,6 +428,7 @@ pub struct InvoiceInput {
     pub line_items: Vec<crate::invoice::LineItem>,
     pub tax_rate: f64,
     pub notes: Option<String>,
+    pub recurring: Option<String>,
 }
 
 #[tauri::command]
@@ -352,6 +440,8 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
     let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
     let notes = input.notes.unwrap_or_default();
+    let recurring = input.recurring.unwrap_or_default();
+    let next_date = if !recurring.is_empty() { issue.clone() } else { String::new() };
 
     let mut cols = Map::new();
     cols.insert("client_id".into(), Value::String(input.client_id.clone()));
@@ -364,18 +454,21 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     cols.insert("total".into(), json!(total));
     cols.insert("status".into(), Value::String("draft".into()));
     cols.insert("notes".into(), Value::String(notes.clone()));
+    cols.insert("recurring".into(), Value::String(recurring.clone()));
+    cols.insert("next_recurring_date".into(), Value::String(next_date.clone()));
     cols.insert("created_at".into(), Value::String(issue.clone()));
     sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,notes,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?4)",
-        rusqlite::params![id, input.client_id, number, issue, input.due_date, line_items_json, subtotal, tax, total, notes],
+        "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,notes,recurring,next_recurring_date,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?11,?12,?4)",
+        rusqlite::params![id, input.client_id, number, issue, input.due_date, line_items_json, subtotal, tax, total, notes, recurring, next_date],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)
 }
+
 fn generate_invoice_number() -> anyhow::Result<String> {
     // Atomic counter per year. Stored in settings table.
     let year = Utc::now().format("%Y").to_string();
@@ -449,6 +542,109 @@ pub async fn delete_invoice(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn mark_overdue_invoices() -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM invoices WHERE status='sent' AND due_date < date('now')")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut count = 0u32;
+    for id in &ids {
+        let mut cols = Map::new();
+        cols.insert("status".into(), Value::String("overdue".into()));
+        if let Err(e) = sync::record_upsert("invoices", id, cols) {
+            tracing::warn!("mark_overdue: sync failed for {}: {}", id, e);
+            continue;
+        }
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE invoices SET status='overdue' WHERE id=?1", [id])
+            .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn generate_recurring_invoices() -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let ids: Vec<(String, String, String, String, String, f64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, client_id, line_items_json, recurring, next_recurring_date, tax FROM invoices
+             WHERE recurring != '' AND next_recurring_date <= date('now')",
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String, String, String, String, f64)> = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        rows
+    };
+
+    let mut count = 0u32;
+    for (source_id, client_id, items_json, freq, _next_date, tax_amt) in &ids {
+        let items: Vec<crate::invoice::LineItem> = serde_json::from_str(items_json).unwrap_or_default();
+        let (subtotal, tax, total) = crate::invoice::compute_totals(&items, *tax_amt as f64 / 100.0);
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let number = generate_invoice_number().map_err(|e| e.to_string())?;
+        let issue = now.to_rfc3339();
+        let due = compute_next_due(freq);
+        let line_items_json = serde_json::to_string(&items).map_err(|e| e.to_string())?;
+
+        let mut cols = Map::new();
+        cols.insert("client_id".into(), Value::String(client_id.clone()));
+        cols.insert("number".into(), Value::String(number.clone()));
+        cols.insert("issue_date".into(), Value::String(issue.clone()));
+        cols.insert("due_date".into(), Value::String(due.clone()));
+        cols.insert("line_items_json".into(), Value::String(line_items_json.clone()));
+        cols.insert("subtotal".into(), json!(subtotal));
+        cols.insert("tax".into(), json!(tax));
+        cols.insert("total".into(), json!(total));
+        cols.insert("status".into(), Value::String("draft".into()));
+        cols.insert("created_at".into(), Value::String(issue.clone()));
+        sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
+
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?4)",
+            rusqlite::params![id, client_id, number, issue, due, line_items_json, subtotal, tax, total],
+        ).map_err(|e| e.to_string())?;
+
+        let next = compute_next_recurring(&now.to_rfc3339(), freq);
+        let _ = conn.execute("UPDATE invoices SET next_recurring_date=?1 WHERE id=?2", rusqlite::params![next, source_id]);
+
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn compute_next_due(freq: &str) -> String {
+    let now = Utc::now();
+    let next = match freq {
+        "monthly" => now + chrono::Duration::days(30),
+        "quarterly" => now + chrono::Duration::days(90),
+        "annually" => now + chrono::Duration::days(365),
+        _ => now + chrono::Duration::days(30),
+    };
+    next.to_rfc3339()
+}
+
+fn compute_next_recurring(current_date: &str, freq: &str) -> String {
+    let dt = chrono::DateTime::parse_from_rfc3339(current_date).unwrap_or_else(|_| Utc::now().fixed_offset());
+    let next = match freq {
+        "monthly" => dt + chrono::Duration::days(30),
+        "quarterly" => dt + chrono::Duration::days(90),
+        "annually" => dt + chrono::Duration::days(365),
+        _ => dt + chrono::Duration::days(30),
+    };
+    next.to_rfc3339()
+}
+
+#[tauri::command]
 pub async fn generate_invoice_pdf(invoice_id: String) -> Result<String, String> {
     crate::invoice::generate_pdf(&invoice_id)
         .await
@@ -501,16 +697,39 @@ pub async fn send_invoice(invoice_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn mark_invoice_paid(invoice_id: String) -> Result<(), String> {
-    let now = Utc::now().to_rfc3339();
+pub async fn mark_invoice_paid(
+    invoice_id: String,
+    paid_date: String,
+    payment_method_label: Option<String>,
+    payment_reference: Option<String>,
+) -> Result<(), String> {
+    let method = payment_method_label.unwrap_or_default();
+    let reference = payment_reference.unwrap_or_default();
     let mut cols = Map::new();
     cols.insert("status".into(), Value::String("paid".into()));
-    cols.insert("paid_at".into(), Value::String(now.clone()));
+    cols.insert("paid_at".into(), Value::String(paid_date.clone()));
+    cols.insert("payment_method_label".into(), Value::String(method.clone()));
+    cols.insert("payment_reference".into(), Value::String(reference.clone()));
     sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE invoices SET status='paid' WHERE id=?1",
+        "UPDATE invoices SET status='paid', paid_at=?1, payment_method_label=?2, payment_reference=?3 WHERE id=?4",
+        rusqlite::params![paid_date, method, reference, invoice_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mark_invoice_deposit_pending(invoice_id: String) -> Result<(), String> {
+    let mut cols = Map::new();
+    cols.insert("status".into(), Value::String("deposit_pending".into()));
+    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET status='deposit_pending' WHERE id=?1",
         [&invoice_id],
     )
     .map_err(|e| e.to_string())?;
@@ -550,8 +769,8 @@ pub async fn oauth_start_consent(
 }
 
 #[tauri::command]
-pub async fn ai_draft_reply(email_body: String, context: Option<String>) -> Result<String, String> {
-    crate::ai::draft_reply(&email_body, context.as_deref())
+pub async fn ai_draft_reply(email_body: String, context: Option<String>, tone: Option<String>) -> Result<String, String> {
+    crate::ai::draft_reply_with_tone(&email_body, context.as_deref(), &tone.unwrap_or_else(|| "neutral".into()))
         .await
         .map_err(|e| e.to_string())
 }
@@ -576,8 +795,9 @@ pub async fn ai_summarize_history(client_id: String) -> Result<String, String> {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT subject || ': ' || body FROM interactions
-                 WHERE client_id=?1 ORDER BY created_at DESC LIMIT 20",
+                "SELECT COALESCE(subject,'') || ': ' || COALESCE(body,'') FROM interactions
+                 WHERE client_id=?1 AND (subject IS NOT NULL OR body IS NOT NULL)
+                 ORDER BY created_at DESC LIMIT 20",
             )
             .map_err(|e| e.to_string())?;
         let collected: Vec<String> = stmt
@@ -743,7 +963,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         .unwrap_or(0);
     let outstanding: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue')",
+            "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue','deposit_pending')",
             [],
             |r| r.get(0),
         )
@@ -757,11 +977,39 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         )
         .unwrap_or(0.0);
 
+    let revenue_this_week: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(total),0) FROM invoices
+             WHERE status='paid' AND paid_at >= date('now', '-7 days')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+
+    let clients_this_week: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM clients WHERE created_at >= date('now', '-7 days')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let interactions_this_week: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM interactions WHERE created_at >= date('now', '-7 days')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
     Ok(json!({
         "clients": total_clients,
         "invoices": total_invoices,
         "outstanding": outstanding,
         "paid_ytd": paid_this_year,
+        "revenue_this_week": revenue_this_week,
+        "clients_this_week": clients_this_week,
+        "interactions_this_week": interactions_this_week,
     }))
 }
 
@@ -1007,6 +1255,59 @@ pub async fn discard_draft(id: String) -> Result<(), String> {
         [&id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
+//  Line Item Templates (local-only — not synced)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LineItemTemplate {
+    pub id: String,
+    pub description: String,
+    pub rate: f64,
+    pub qty: f64,
+    pub sort_order: i32,
+}
+
+#[tauri::command]
+pub async fn list_line_item_templates() -> Result<Vec<LineItemTemplate>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,description,rate,qty,sort_order FROM line_item_templates ORDER BY sort_order, description",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(LineItemTemplate { id: r.get(0)?, description: r.get(1)?, rate: r.get(2)?, qty: r.get(3)?, sort_order: r.get(4)? })
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_line_item_template(description: String, rate: f64, qty: f64) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO line_item_templates (id,description,rate,qty, sort_order) VALUES (?1,?2,?3,?4,0)",
+        rusqlite::params![id, description, rate, qty],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn delete_line_item_template(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM line_item_templates WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reorder_line_item_templates(ids: Vec<String>) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (i, id) in ids.iter().enumerate() {
+        conn.execute("UPDATE line_item_templates SET sort_order=?1 WHERE id=?2", rusqlite::params![i as i32, id])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

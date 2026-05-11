@@ -164,11 +164,12 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
   const [loading, setLoading] = useState<"draft" | "extract" | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [tone, setTone] = useState<string>(() => localStorage.getItem("clienthub_draft_tone") || "neutral");
 
   const handleDraft = async () => {
     setLoading("draft");
     try {
-      const reply = await api.aiDraftReply(email.body_text);
+      const reply = await api.aiDraftReply(email.body_text, undefined, tone);
       setDraft(reply);
     } catch (e: any) {
       alert(e);
@@ -231,6 +232,15 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       </div>
 
       <div className="flex gap-2 mb-3">
+        <select
+          value={tone}
+          onChange={(e) => { setTone(e.target.value); localStorage.setItem("clienthub_draft_tone", e.target.value); }}
+          className="border p-1.5 rounded text-sm"
+        >
+          <option value="neutral">Neutral</option>
+          <option value="formal">Formal</option>
+          <option value="casual">Casual</option>
+        </select>
         <button
           onClick={handleDraft}
           disabled={loading !== null}

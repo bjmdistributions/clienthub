@@ -64,6 +64,7 @@ struct GenOptions {
 struct GenResp {
     response: String,
     #[serde(default)]
+    #[allow(dead_code)]
     done: bool,
 }
 
@@ -177,10 +178,21 @@ async fn chat(messages: &[ChatMessage], json_mode: bool, temperature: f32) -> Re
 // ---------- Public AI operations ----------
 
 pub async fn draft_reply(email_body: &str, context: Option<&str>) -> Result<String> {
-    let system = "You are a professional business email assistant. Draft a concise, polite, \
-                  contextually appropriate reply. Match the formality of the incoming email. \
-                  Do not invent specifics. If you need information you don't have, ask a clear \
-                  follow-up question instead of guessing.";
+    draft_reply_with_tone(email_body, context, "neutral").await
+}
+
+pub async fn draft_reply_with_tone(email_body: &str, context: Option<&str>, tone: &str) -> Result<String> {
+    let tone_instruction = match tone {
+        "formal" => "Write in a formal, professional business tone.",
+        "casual" => "Write in a casual, friendly tone.",
+        _ => "Match the formality of the incoming email.",
+    };
+    let system = format!(
+        "You are a professional business email assistant. Draft a concise, polite, \
+         contextually appropriate reply. {}. Do not invent specifics. If you need \
+         information you don't have, ask a clear follow-up question instead of guessing.",
+        tone_instruction
+    );
 
     let user_prompt = match context {
         Some(ctx) => format!(

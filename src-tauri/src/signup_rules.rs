@@ -234,6 +234,16 @@ fn log_signup_interaction(client_id: &str, email: &crate::email::ParsedEmail) ->
     let conn = pool().get()?;
     let interaction_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
+
+    let mut cols = serde_json::Map::new();
+    cols.insert("client_id".into(), serde_json::Value::String(client_id.to_string()));
+    cols.insert("kind".into(), serde_json::Value::String("signup".into()));
+    cols.insert("subject".into(), serde_json::Value::String(email.subject.clone()));
+    cols.insert("body".into(), serde_json::Value::String(email.body_text.clone()));
+    cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+    crate::sync::record_upsert("interactions", &interaction_id, cols)
+        .context("sync record_upsert signup interaction")?;
+
     conn.execute(
         "INSERT INTO interactions (id,client_id,kind,subject,body,created_at)
          VALUES (?1,?2,'signup',?3,?4,?5)",

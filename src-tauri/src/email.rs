@@ -181,7 +181,7 @@ const SCAN_FOLDER: &str = "INBOX";
 fn last_seen_uid() -> Result<u32> {
     let conn = pool().get()?;
     let res: rusqlite::Result<String> = conn.query_row(
-        "SELECT value FROM settings WHERE key='last_seen_uid'",
+        "SELECT value FROM device_state WHERE key='last_seen_uid'",
         [],
         |r| r.get(0),
     );
@@ -195,7 +195,7 @@ fn last_seen_uid() -> Result<u32> {
 fn save_last_seen_uid(uid: u32) -> Result<()> {
     let conn = pool().get()?;
     conn.execute(
-        "INSERT INTO settings (key, value) VALUES ('last_seen_uid', ?1)
+        "INSERT INTO device_state (key, value) VALUES ('last_seen_uid', ?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         [uid.to_string()],
     )?;
@@ -379,6 +379,17 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
         if let Some(cid) = client_id {
             let conn = pool().get()?;
             let interaction_id = uuid::Uuid::new_v4().to_string();
+            let now = Utc::now().to_rfc3339();
+
+            let mut cols = serde_json::Map::new();
+            cols.insert("client_id".into(), serde_json::Value::String(cid.clone()));
+            cols.insert("kind".into(), serde_json::Value::String("email_in".into()));
+            cols.insert("subject".into(), serde_json::Value::String(email.subject.clone()));
+            cols.insert("body".into(), serde_json::Value::String(email.body_text.clone()));
+            cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+            crate::sync::record_upsert("interactions", &interaction_id, cols)
+                .context("sync record_upsert interaction")?;
+
             conn.execute(
                 "INSERT INTO interactions (id,client_id,kind,subject,body,created_at)
                  VALUES (?1,?2,'email_in',?3,?4,?5)",
@@ -387,7 +398,7 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
                     cid,
                     &email.subject,
                     &email.body_text,
-                    Utc::now().to_rfc3339()
+                    now,
                 ],
             )?;
 

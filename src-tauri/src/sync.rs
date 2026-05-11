@@ -48,11 +48,10 @@ struct HlcState {
 
 fn node_id() -> [u8; 8] {
     *NODE_ID.get_or_init(|| {
-        // Persisted node_id stored in settings table; fallback random.
         let conn = pool().get().expect("db");
         let existing: Option<String> = conn
             .query_row(
-                "SELECT value FROM settings WHERE key='node_id'",
+                "SELECT value FROM device_state WHERE key='node_id'",
                 [],
                 |r| r.get(0),
             )
@@ -73,7 +72,7 @@ fn node_id() -> [u8; 8] {
         arr.copy_from_slice(&bytes);
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, arr);
         let _ = conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('node_id', ?1)",
+            "INSERT INTO device_state (key, value) VALUES ('node_id', ?1)",
             [encoded],
         );
         arr
@@ -527,18 +526,31 @@ async fn read_event_file_async(path: &Path) -> Result<SyncEvent> {
 
 pub async fn replay_all() -> Result<usize> {
     let dir = sync_dir();
+
+    let cursor = {
+        let conn = pool().get()?;
+        conn.query_row(
+            "SELECT value FROM device_state WHERE key='last_replay_cursor'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .unwrap_or_default()
+    };
+
     let mut count = 0;
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map_or(false, |x| x == "json")
-        })
+        .filter(|e| e.path().extension().map_or(false, |x| x == "json"))
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
+    let mut last_name = String::new();
     for entry in entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !cursor.is_empty() && name <= cursor {
+            continue;
+        }
         match read_event_file(&entry.path()) {
             Ok(event) => {
                 if let Err(e) = apply_event(&event) {
@@ -549,7 +561,18 @@ pub async fn replay_all() -> Result<usize> {
             }
             Err(e) => tracing::warn!("read/parse failed {:?}: {}", entry.path(), e),
         }
+        last_name = name;
     }
+
+    if !last_name.is_empty() {
+        let conn = pool().get()?;
+        let _ = conn.execute(
+            "INSERT INTO device_state (key, value) VALUES ('last_replay_cursor', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&last_name],
+        );
+    }
+
     Ok(count)
 }
 

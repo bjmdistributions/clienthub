@@ -9,10 +9,13 @@ export interface Client {
   company: string | null;
   notes: string | null;
   billing_status: string;
+  lead_status: string;
   created_at: string;
   updated_at: string;
   metadata: Record<string, any> | null;
   invoice_count: number;
+  last_contact_at?: string | null;
+  total_revenue: number;
 }
 
 export interface ClientInput {
@@ -22,6 +25,7 @@ export interface ClientInput {
   company?: string | null;
   notes?: string | null;
   metadata?: Record<string, any> | null;
+  lead_status?: string;
 }
 
 export interface Interaction {
@@ -62,6 +66,7 @@ export interface InvoiceInput {
   line_items: LineItem[];
   tax_rate: number;
   notes?: string;
+  recurring?: string;
 }
 
 export interface ParsedEmail {
@@ -100,6 +105,9 @@ export interface DashboardStats {
   invoices: number;
   outstanding: number;
   paid_ytd: number;
+  revenue_this_week: number;
+  clients_this_week: number;
+  interactions_this_week: number;
 }
 
 export interface SyncStatus {
@@ -145,6 +153,14 @@ export interface SignupRuleInput {
   active: boolean;
 }
 
+export interface LineItemTemplate {
+  id: string;
+  description: string;
+  rate: number;
+  qty: number;
+  sort_order: number;
+}
+
 export interface PaymentMethod {
   id: string;
   kind: string;
@@ -182,6 +198,9 @@ export const api = {
     invoke<void>("update_client", { id, input }),
   deleteClient: (id: string) => invoke<void>("delete_client", { id }),
   searchClients: (query: string) => invoke<Client[]>("search_clients", { query }),
+  listStaleClients: (days: number) => invoke<Client[]>("list_stale_clients", { days }),
+  updateClientStatus: (id: string, status: string) =>
+    invoke<void>("update_client_status", { id, status }),
 
   // Interactions
   listInteractions: (clientId: string) =>
@@ -191,8 +210,9 @@ export const api = {
 
   // Invoices
   listInvoices: () => invoke<Invoice[]>("list_invoices"),
+  listInvoicesForClient: (clientId: string) => invoke<Invoice[]>("list_invoices_for_client", { clientId }),
   createInvoice: (input: InvoiceInput) => invoke<string>("create_invoice", { input }),
-  updateInvoice: (id: string, input: { due_date: string; line_items: LineItem[]; tax_rate: number }) =>
+  updateInvoice: (id: string, input: { due_date: string; line_items: LineItem[]; tax_rate: number; notes?: string; recurring?: string }) =>
     invoke<void>("update_invoice", { id, input }),
   deleteInvoice: (id: string) => invoke<void>("delete_invoice", { id }),
   generateInvoicePdf: (invoiceId: string) =>
@@ -200,7 +220,10 @@ export const api = {
   previewInvoicePdf: (input: InvoiceInput) =>
     invoke<string>("preview_invoice_pdf", { input }),
   sendInvoice: (invoiceId: string) => invoke<void>("send_invoice", { invoiceId }),
-  markInvoicePaid: (invoiceId: string) => invoke<void>("mark_invoice_paid", { invoiceId }),
+  markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
+    invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
+  markInvoiceDepositPending: (invoiceId: string) =>
+    invoke<void>("mark_invoice_deposit_pending", { invoiceId }),
 
   // Email
   sendEmail: (to: string, subject: string, body: string, attachmentPath?: string) =>
@@ -217,8 +240,8 @@ export const api = {
   discardDraft: (id: string) => invoke<void>("discard_draft", { id }),
 
   // AI
-  aiDraftReply: (emailBody: string, context?: string) =>
-    invoke<string>("ai_draft_reply", { emailBody, context }),
+  aiDraftReply: (emailBody: string, context?: string, tone?: string) =>
+    invoke<string>("ai_draft_reply", { emailBody, context, tone }),
   aiExtractData: (emailBody: string) => invoke<any>("ai_extract_data", { emailBody }),
   aiSuggestInvoice: (description: string) =>
     invoke<{ items: LineItem[]; suggested_due_days: number }>("ai_suggest_invoice", {
@@ -249,6 +272,7 @@ export const api = {
 
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
+  dueFollowups: () => invoke<Client[]>("due_followups"),
 
   // CSV import
   csvPreview: (path: string) => invoke<CsvPreview>("csv_preview", { path }),
@@ -272,4 +296,12 @@ export const api = {
   deletePaymentMethod: (id: string) => invoke<void>("delete_payment_method", { id }),
   reorderPaymentMethods: (ids: string[]) =>
     invoke<void>("reorder_payment_methods", { ids }),
+
+  // Line item templates
+  listLineItemTemplates: () => invoke<LineItemTemplate[]>("list_line_item_templates"),
+  createLineItemTemplate: (description: string, rate: number, qty: number) =>
+    invoke<string>("create_line_item_template", { description, rate, qty }),
+  deleteLineItemTemplate: (id: string) => invoke<void>("delete_line_item_template", { id }),
+  reorderLineItemTemplates: (ids: string[]) =>
+    invoke<void>("reorder_line_item_templates", { ids }),
 };
