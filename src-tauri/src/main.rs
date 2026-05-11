@@ -107,6 +107,7 @@ fn main() {
             add_interaction,
             // Invoices
             list_invoices,
+            get_invoice,
             list_invoices_for_client,
             create_invoice,
             update_invoice,

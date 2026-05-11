@@ -210,6 +210,7 @@ export const api = {
 
   // Invoices
   listInvoices: () => invoke<Invoice[]>("list_invoices"),
+  getInvoice: (id: string) => invoke<Invoice>("get_invoice", { id }),
   listInvoicesForClient: (clientId: string) => invoke<Invoice[]>("list_invoices_for_client", { clientId }),
   createInvoice: (input: InvoiceInput) => invoke<string>("create_invoice", { input }),
   updateInvoice: (id: string, input: { due_date: string; line_items: LineItem[]; tax_rate: number; notes?: string; recurring?: string }) =>

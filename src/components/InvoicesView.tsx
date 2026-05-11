@@ -18,6 +18,14 @@ export default function InvoicesView() {
   const [payMethod, setPayMethod] = useState("");
   const [payRef, setPayRef] = useState("");
   const [payMethods, setPayMethods] = useState<PaymentMethod[]>([]);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null);
+
+  const openDetail = async (id: string) => {
+    setDetailId(id);
+    try { setDetailInvoice(await api.getInvoice(id)); }
+    catch { setDetailInvoice(null); }
+  };
 
   const load = async () => {
     setInvoices(await api.listInvoices());
@@ -161,7 +169,7 @@ export default function InvoicesView() {
           </thead>
           <tbody>
             {invoices.map((inv) => (
-              <tr key={inv.id} className="border-t hover:bg-slate-50">
+              <tr key={inv.id} className="border-t hover:bg-slate-50 cursor-pointer" onClick={() => openDetail(inv.id)}>
                 <td className="p-3 font-mono text-xs">{inv.number}</td>
                 <td className="p-3">{clientName(inv.client_id)}</td>
                 <td className="p-3">{inv.issue_date.slice(0, 10)}</td>
@@ -216,6 +224,13 @@ export default function InvoicesView() {
           </tbody>
         </table>
       </div>
+
+      {detailId && detailInvoice && (
+        <InvoiceDetailPanel invoice={detailInvoice} onClose={() => { setDetailId(null); setDetailInvoice(null); }}
+          onPdf={() => handlePdf(detailInvoice.id)}
+          onResend={() => { if (confirm("Re-send this invoice?")) handleSend(detailInvoice.id); }}
+          clientName={clientName(detailInvoice.client_id)} />
+      )}
     </div>
   );
 }
@@ -482,5 +497,80 @@ function Row({ label, value, bold }: { label: string; value: number; bold?: bool
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div><label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>{children}</div>
+  );
+}
+
+function InvoiceDetailPanel({
+  invoice,
+  clientName,
+  onClose,
+  onPdf,
+  onResend,
+}: {
+  invoice: Invoice;
+  clientName: string;
+  onClose: () => void;
+  onPdf: () => void;
+  onResend: () => void;
+}) {
+  const items: LineItem[] = JSON.parse(invoice.line_items_json || "[]");
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div className="relative w-[480px] bg-white shadow-xl h-full overflow-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b p-4 flex items-center justify-between z-10">
+          <h3 className="font-semibold text-lg">{invoice.number}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div>
+            <span className={`text-xs px-2 py-0.5 rounded ${invoice.status === "paid" ? "bg-green-100 text-green-700" : invoice.status === "sent" ? "bg-blue-100 text-blue-700" : invoice.status === "overdue" ? "bg-red-100 text-red-700" : invoice.status === "deposit_pending" ? "bg-yellow-100 text-yellow-700" : "bg-slate-100 text-slate-700"}`}>{invoice.status}</span>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">Client</div>
+            <div className="font-semibold">{clientName}</div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><div className="text-xs text-slate-500">Issue Date</div><div>{invoice.issue_date.slice(0, 10)}</div></div>
+            <div><div className="text-xs text-slate-500">Due Date</div><div>{invoice.due_date.slice(0, 10)}</div></div>
+            {invoice.sent_at && <div><div className="text-xs text-slate-500">Sent</div><div>{new Date(invoice.sent_at).toLocaleDateString()}</div></div>}
+            {invoice.status === "paid" && <div><div className="text-xs text-slate-500">Paid At</div><div>—</div></div>}
+          </div>
+          <div>
+            <div className="text-xs text-slate-500 mb-2">Line Items</div>
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="text-left p-2">Description</th>
+                  <th className="text-right p-2">Qty</th>
+                  <th className="text-right p-2">Rate</th>
+                  <th className="text-right p-2">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, i) => (
+                  <tr key={i} className="border-t">
+                    <td className="p-2">{it.description}</td>
+                    <td className="p-2 text-right">{it.qty}</td>
+                    <td className="p-2 text-right">{fmtAmount(it.rate)}</td>
+                    <td className="p-2 text-right">{fmtAmount(it.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="border-t pt-3 space-y-1 text-sm">
+            <div className="flex justify-between"><span>Subtotal</span><span>{fmtAmount(invoice.subtotal)}</span></div>
+            <div className="flex justify-between"><span>Tax</span><span>{fmtAmount(invoice.tax)}</span></div>
+            <div className="flex justify-between font-bold"><span>Total</span><span>{fmtAmount(invoice.total)}</span></div>
+          </div>
+          {invoice.notes && <div className="bg-slate-50 p-3 rounded text-sm">{invoice.notes}</div>}
+        </div>
+        <div className="sticky bottom-0 bg-white border-t p-4 flex gap-2">
+          <button onClick={onPdf} className="bg-slate-900 text-white px-4 py-2 rounded text-sm flex-1">Download PDF</button>
+          <button onClick={onResend} className="bg-slate-100 px-4 py-2 rounded text-sm flex-1">Resend</button>
+        </div>
+      </div>
+    </div>
   );
 }

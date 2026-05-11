@@ -404,6 +404,22 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
 }
 
 #[tauri::command]
+pub async fn get_invoice(id: String) -> Result<Invoice, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes
+         FROM invoices WHERE id=?1",
+        [&id],
+        |r| Ok(Invoice {
+            id: r.get(0)?, client_id: r.get(1)?, number: r.get(2)?,
+            issue_date: r.get(3)?, due_date: r.get(4)?, line_items_json: r.get(5)?,
+            subtotal: r.get(6)?, tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?,
+            pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
+        }),
+    ).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(

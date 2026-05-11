@@ -68,6 +68,41 @@ export default function SettingsView() {
   );
 }
 
+function SecretInput({
+  label,
+  value,
+  onChange,
+  showSecrets,
+  onToggleSecrets,
+}: {
+  label: string;
+  value: string;
+  onChange: (s: string) => void;
+  showSecrets: boolean;
+  onToggleSecrets: () => void;
+}) {
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <input
+          type={showSecrets ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="border p-2 rounded w-full pr-9"
+          placeholder="•••••••• (leave blank to keep current)"
+        />
+        <button
+          type="button"
+          onClick={onToggleSecrets}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"
+        >
+          {showSecrets ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+      </div>
+    </Field>
+  );
+}
+
 // ========== Email Tab ==========
 function EmailTab() {
   const [settings, setSettings] = useState<EmailSettings>({
@@ -129,35 +164,6 @@ function EmailTab() {
       setError(e.toString());
     }
   };
-
-  const SecretInput = ({
-    label,
-    value,
-    onChange,
-  }: {
-    label: string;
-    value: string;
-    onChange: (s: string) => void;
-  }) => (
-    <Field label={label}>
-      <div className="relative">
-        <input
-          type={showSecrets ? "text" : "password"}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="border p-2 rounded w-full pr-9"
-          placeholder="•••••••• (leave blank to keep current)"
-        />
-        <button
-          type="button"
-          onClick={() => setShowSecrets((v) => !v)}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"
-        >
-          {showSecrets ? <EyeOff size={14} /> : <Eye size={14} />}
-        </button>
-      </div>
-    </Field>
-  );
 
   return (
     <div className="bg-white rounded-lg shadow p-6 max-w-2xl">
@@ -234,8 +240,8 @@ function EmailTab() {
 
       {settings.auth_method === "password" ? (
         <>
-          <SecretInput label="SMTP password" value={smtpPass} onChange={setSmtpPass} />
-          <SecretInput label="IMAP password" value={imapPass} onChange={setImapPass} />
+          <SecretInput label="SMTP password" value={smtpPass} onChange={setSmtpPass} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <SecretInput label="IMAP password" value={imapPass} onChange={setImapPass} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
         </>
       ) : (
         <>
@@ -243,11 +249,15 @@ function EmailTab() {
             label="OAuth Client ID"
             value={oauthClientId}
             onChange={setOauthClientId}
+            showSecrets={showSecrets}
+            onToggleSecrets={() => setShowSecrets((v) => !v)}
           />
           <SecretInput
             label="OAuth Client Secret"
             value={oauthClientSecret}
             onChange={setOauthClientSecret}
+            showSecrets={showSecrets}
+            onToggleSecrets={() => setShowSecrets((v) => !v)}
           />
           <div className="mb-3">
             <label className="block text-xs font-semibold text-slate-600 mb-1">
