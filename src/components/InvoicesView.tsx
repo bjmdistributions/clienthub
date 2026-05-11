@@ -1,17 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem } from "../lib/api";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  FileDown,
-  Send,
-  Plus,
-  X,
-  Sparkles,
-  Check,
-  Trash2,
-  RefreshCw,
-  Eye,
-  Edit2,
+  FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2,
 } from "lucide-react";
 
 const fmtAmount = (n: number) =>
@@ -23,6 +13,7 @@ export default function InvoicesView() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const load = async () => {
     setInvoices(await api.listInvoices());
@@ -32,13 +23,13 @@ export default function InvoicesView() {
 
   const handlePdf = async (id: string) => {
     setBusy(id);
-    try { const path = await api.generateInvoicePdf(id); alert(`PDF saved:\n${path}`); load(); }
+    try { const p = await api.generateInvoicePdf(id); alert(`PDF saved:\n${p}`); load(); }
     catch (e: any) { alert(`Error: ${e}`); }
     finally { setBusy(null); }
   };
 
   const handleSend = async (id: string) => {
-    if (!confirm("Send invoice via email to the client?")) return;
+    if (!confirm("Send invoice via email?")) return;
     setBusy(id);
     try { await api.sendInvoice(id); load(); }
     catch (e: any) { alert(`Error: ${e}`); }
@@ -52,7 +43,12 @@ export default function InvoicesView() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this draft invoice?")) return;
+    if (confirmDelete !== id) {
+      setConfirmDelete(id);
+      setTimeout(() => setConfirmDelete(null), 3000);
+      return;
+    }
+    setConfirmDelete(null);
     try { await api.deleteInvoice(id); load(); }
     catch (e: any) { alert(`Error: ${e}`); }
   };
@@ -60,9 +56,10 @@ export default function InvoicesView() {
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
 
   const statusColor = (s: string) => {
-    if (s === "paid") return "bg-green-100 text-green-700";
-    if (s === "sent") return "bg-blue-100 text-blue-700";
-    if (s === "overdue") return "bg-red-100 text-red-700";
+    const lo = s.toLowerCase();
+    if (lo === "paid") return "bg-green-100 text-green-700";
+    if (lo === "sent") return "bg-blue-100 text-blue-700";
+    if (lo === "overdue") return "bg-red-100 text-red-700";
     return "bg-slate-100 text-slate-700";
   };
 
@@ -106,34 +103,27 @@ export default function InvoicesView() {
                   <span className={`px-2 py-0.5 text-xs rounded ${statusColor(inv.status)}`}>{inv.status}</span>
                 </td>
                 <td className="p-3 text-right space-x-2">
-                  {inv.status === "draft" && (
+                  {inv.status.toLowerCase() === "draft" && (
                     <>
                       <button title="Edit"
                         onClick={() => { setEditing(inv); setShowForm(true); }}
-                        className="text-slate-600 hover:text-slate-900">
-                        <Edit2 size={14} />
-                      </button>
+                        className="text-slate-600 hover:text-slate-900"><Edit2 size={14} /></button>
                       <button title="Delete" onClick={() => handleDelete(inv.id)}
-                        className="text-red-500 hover:text-red-700">
-                        <Trash2 size={14} />
+                        className={confirmDelete === inv.id ? "text-red-700 font-bold" : "text-red-500 hover:text-red-700"}>
+                        {confirmDelete === inv.id ? "Delete?" : <Trash2 size={14} />}
                       </button>
                     </>
                   )}
-                  <button title="Generate PDF" onClick={() => handlePdf(inv.id)}
-                    disabled={busy === inv.id}
+                  <button title="Generate PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
                     className="text-slate-600 hover:text-slate-900 disabled:opacity-50">
                     {busy === inv.id ? <RefreshCw size={14} className="animate-spin inline" /> : <FileDown size={14} />}
                   </button>
-                  {inv.status !== "paid" && (
+                  {inv.status.toLowerCase() !== "paid" && (
                     <>
                       <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                        className="text-slate-600 hover:text-slate-900">
-                        <Send size={14} />
-                      </button>
+                        className="text-slate-600 hover:text-slate-900"><Send size={14} /></button>
                       <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                        className="text-green-600 hover:text-green-800">
-                        <Check size={14} />
-                      </button>
+                        className="text-green-600 hover:text-green-800"><Check size={14} /></button>
                     </>
                   )}
                 </td>
@@ -153,14 +143,15 @@ function InvoiceForm({
   clients, initial, onClose,
 }: { clients: Client[]; initial?: Invoice | null; onClose: () => void }) {
   const [clientId, setClientId] = useState(initial?.client_id ?? clients[0]?.id ?? "");
+  const [clientSearch, setClientSearch] = useState("");
   const [createNew, setCreateNew] = useState(false);
   const [newClient, setNewClient] = useState({ name: "", email: "", phone: "", company: "" });
   const [dueDate, setDueDate] = useState(() => {
     if (initial) return initial.due_date.slice(0, 10);
-    const d = new Date(); d.setDate(d.getDate() + 30);
-    return d.toISOString().slice(0, 10);
+    return new Date().toISOString().slice(0, 10);
   });
   const [taxRate, setTaxRate] = useState(0);
+  const [notes, setNotes] = useState(initial?.notes ?? "");
   const [items, setItems] = useState<LineItem[]>(() => {
     if (initial) {
       const parsed: LineItem[] = JSON.parse(initial.line_items_json || "[]");
@@ -168,11 +159,8 @@ function InvoiceForm({
     }
     return [{ description: "", qty: 1, rate: 0, amount: 0 }];
   });
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiBusy, setAiBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
-  const [previewData, setPreviewData] = useState<string | null>(null);
 
   const updateItem = (i: number, field: keyof LineItem, val: any) => {
     const copy = [...items];
@@ -187,30 +175,16 @@ function InvoiceForm({
   const tax = subtotal * (taxRate / 100);
   const total = subtotal + tax;
 
-  const handleAiSuggest = async () => {
-    if (!aiPrompt.trim()) return;
-    setAiBusy(true);
-    try {
-      const result = await api.aiSuggestInvoice(aiPrompt);
-      if (result.items?.length) setItems(result.items);
-      if (result.suggested_due_days) {
-        const d = new Date(); d.setDate(d.getDate() + result.suggested_due_days);
-        setDueDate(d.toISOString().slice(0, 10));
-      }
-    } catch (e: any) { alert(`AI error: ${e}`); }
-    finally { setAiBusy(false); }
-  };
-
   const handlePreview = async () => {
     if (items.length === 0) return;
     const cid = createNew ? undefined : clientId;
     if (!cid && !createNew) return;
     setPreviewing(true);
     try {
-      const path = await api.previewInvoicePdf({
+      await api.previewInvoicePdf({
         client_id: cid || clientId, due_date: dueDate, line_items: items, tax_rate: taxRate / 100,
+        notes: notes || undefined,
       });
-      setPreviewData(convertFileSrc(path));
     } catch (e: any) { alert(`Preview error: ${e}`); }
     finally { setPreviewing(false); }
   };
@@ -221,7 +195,7 @@ function InvoiceForm({
     try {
       let cid = clientId;
       if (createNew) {
-        if (!newClient.name.trim()) { alert("Client name is required."); setSubmitting(false); return; }
+        if (!newClient.name.trim()) { alert("Client name required."); setSubmitting(false); return; }
         const created = await api.createClient({
           name: newClient.name.trim(),
           email: newClient.email.trim() || undefined,
@@ -230,15 +204,20 @@ function InvoiceForm({
         });
         cid = created.id;
       }
+      const data = { due_date: dueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined };
       if (initial) {
-        await api.updateInvoice(initial.id, { due_date: dueDate, line_items: items, tax_rate: taxRate / 100 });
+        await api.updateInvoice(initial.id, data);
       } else {
-        await api.createInvoice({ client_id: cid, due_date: dueDate, line_items: items, tax_rate: taxRate / 100 });
+        await api.createInvoice({ ...data, client_id: cid });
       }
       onClose();
     } catch (e: any) { alert(`Error: ${e}`); }
     finally { setSubmitting(false); }
   };
+
+  const filteredClients = clientSearch
+    ? clients.filter((c) => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
+    : clients;
 
   return (
     <div className="bg-white rounded-lg shadow p-5 mb-4">
@@ -250,10 +229,32 @@ function InvoiceForm({
       {!initial && (
         <div className="grid grid-cols-3 gap-3 mb-4">
           <Field label="Client">
-            <select className="border p-2 rounded w-full"
+            <input className="border p-2 rounded w-full text-sm"
+              placeholder="Type to search..."
+              value={clientSearch}
+              onChange={(e) => {
+                setClientSearch(e.target.value);
+                const match = clients.find((c) =>
+                  c.name.toLowerCase().includes(e.target.value.toLowerCase())
+                );
+                if (match) setClientId(match.id);
+              }}
+            />
+            <select className="border p-2 rounded w-full mt-1 text-sm"
               value={createNew ? "__new__" : clientId}
-              onChange={(e) => { const v = e.target.value; if (v === "__new__") setCreateNew(true); else { setCreateNew(false); setClientId(v); } }}>
-              {clients.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "__new__") { setCreateNew(true); setClientSearch(""); }
+                else {
+                  setCreateNew(false);
+                  setClientId(v);
+                  const found = clients.find((c) => c.id === v);
+                  if (found) setClientSearch(found.name);
+                }
+              }} size={Math.min(6, filteredClients.length + 1)}>
+              {filteredClients.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
               <option value="__new__">+ Create new client</option>
             </select>
           </Field>
@@ -261,7 +262,7 @@ function InvoiceForm({
             <input type="date" className="border p-2 rounded w-full" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
           </Field>
           <Field label="Tax %">
-            <input type="number" step="0.01" className="border p-2 rounded w-full" value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
+            <input type="text" inputMode="decimal" className="border p-2 rounded w-full" value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
           </Field>
         </div>
       )}
@@ -272,7 +273,7 @@ function InvoiceForm({
             <input type="date" className="border p-2 rounded w-full" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
           </Field>
           <Field label="Tax %">
-            <input type="number" step="0.01" className="border p-2 rounded w-full" value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
+            <input type="text" inputMode="decimal" className="border p-2 rounded w-full" value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
           </Field>
         </div>
       )}
@@ -294,20 +295,6 @@ function InvoiceForm({
         </div>
       )}
 
-      <div className="bg-violet-50 border border-violet-200 rounded p-3 mb-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-violet-900 mb-2">
-          <Sparkles size={14} /> AI Assist
-        </div>
-        <div className="flex gap-2">
-          <input className="border border-violet-300 p-2 rounded flex-1 text-sm"
-            placeholder="Describe the work..." value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} />
-          <button onClick={handleAiSuggest} disabled={aiBusy || !aiPrompt}
-            className="bg-violet-600 text-white px-3 rounded text-sm disabled:opacity-50">
-            {aiBusy ? <RefreshCw size={14} className="animate-spin" /> : "Suggest"}
-          </button>
-        </div>
-      </div>
-
       <div className="mb-4">
         <div className="grid grid-cols-12 gap-2 text-xs font-semibold text-slate-600 mb-1 px-1">
           <div className="col-span-6">Description</div>
@@ -320,20 +307,26 @@ function InvoiceForm({
           <div key={i} className="grid grid-cols-12 gap-2 mb-1">
             <input className="col-span-6 border p-2 rounded text-sm" value={it.description}
               onChange={(e) => updateItem(i, "description", e.target.value)} />
-            <input type="number" className="col-span-1 border p-2 rounded text-sm" value={it.qty}
-              onChange={(e) => updateItem(i, "qty", parseFloat(e.target.value) || 0)} />
-            <input type="number" className="col-span-2 border p-2 rounded text-sm" value={it.rate}
-              onChange={(e) => updateItem(i, "rate", parseFloat(e.target.value) || 0)} />
+            <input type="text" inputMode="decimal" className="col-span-1 border p-2 rounded text-sm"
+              value={it.qty || ""} onChange={(e) => updateItem(i, "qty", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)} />
+            <input type="text" inputMode="decimal" className="col-span-2 border p-2 rounded text-sm"
+              value={it.rate || ""} onChange={(e) => updateItem(i, "rate", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)} />
             <input readOnly className="col-span-2 border p-2 rounded text-sm bg-slate-50"
               value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} />
-            <button onClick={() => removeRow(i)} className="col-span-1 text-red-500 hover:text-red-700">
-              <Trash2 size={14} />
-            </button>
+            <button onClick={() => removeRow(i)} className="col-span-1 text-red-500 hover:text-red-700"><Trash2 size={14} /></button>
           </div>
         ))}
         <button onClick={addRow} className="text-sm text-slate-600 hover:text-slate-900 mt-2 flex items-center gap-1">
           <Plus size={14} /> Add line
         </button>
+      </div>
+
+      <div className="mb-4">
+        <TextField label="Notes">
+          <textarea rows={3} className="border p-2 rounded w-full text-sm"
+            placeholder="Shipping instructions, payment terms, special notes..."
+            value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </TextField>
       </div>
 
       <div className="border-t pt-3 flex justify-end">
@@ -348,7 +341,7 @@ function InvoiceForm({
         <button onClick={onClose} className="px-4 py-2 text-sm">Cancel</button>
         <button onClick={handlePreview} disabled={previewing || items.length === 0}
           className="bg-slate-100 text-slate-700 px-4 py-2 rounded text-sm flex items-center gap-1 disabled:opacity-50">
-          <Eye size={14} /> {previewing ? "Generating..." : "Preview"}
+          <Eye size={14} /> {previewing ? "Opening..." : "Preview"}
         </button>
         <button onClick={submit}
           disabled={submitting || (!createNew && !clientId) || items.length === 0}
@@ -356,16 +349,6 @@ function InvoiceForm({
           {submitting ? "Saving..." : initial ? "Save Changes" : "Create Invoice"}
         </button>
       </div>
-
-      {previewData && (
-        <div className="mt-4 border rounded overflow-hidden">
-          <div className="flex justify-between items-center bg-slate-100 px-3 py-2">
-            <span className="text-sm font-semibold">PDF Preview</span>
-            <button onClick={() => setPreviewData(null)} className="text-slate-500 hover:text-slate-700"><X size={14} /></button>
-          </div>
-          <embed src={previewData} type="application/pdf" className="w-full h-[500px] border-0" />
-        </div>
-      )}
     </div>
   );
 }
@@ -381,9 +364,12 @@ function Row({ label, value, bold }: { label: string; value: number; bold?: bool
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>
-      {children}
-    </div>
+    <div><label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>{children}</div>
+  );
+}
+
+function TextField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div><label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>{children}</div>
   );
 }

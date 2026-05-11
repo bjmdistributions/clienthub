@@ -53,6 +53,7 @@ export interface Invoice {
   status: string;
   pdf_path: string | null;
   sent_at: string | null;
+  notes?: string;
 }
 
 export interface InvoiceInput {
@@ -60,6 +61,7 @@ export interface InvoiceInput {
   due_date: string;
   line_items: LineItem[];
   tax_rate: number;
+  notes?: string;
 }
 
 export interface ParsedEmail {

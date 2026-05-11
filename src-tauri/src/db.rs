@@ -174,4 +174,11 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        5,
+        r#"
+        -- Add notes column to invoices for shipping notes, terms, etc.
+        ALTER TABLE invoices ADD COLUMN notes TEXT DEFAULT '';
+        "#,
+    ),
 ];

@@ -115,6 +115,7 @@ pub fn build_pdf_bytes(
     ccompany: &Option<String>,
     client_address: &Option<ClientAddress>,
     company: &CompanyInfo,
+    notes: &str,
 ) -> Result<Vec<u8>> {
     let (doc, page1, layer1) = PdfDocument::new(
         format!("Invoice {}", number),
@@ -337,36 +338,34 @@ pub fn build_pdf_bytes(
 
     // ----- Payment Options block -----
     let pm = load_active_payment_methods()?;
+    let mut next_y = row_y - 10.0;
+
     if !pm.is_empty() {
-        let mut pay_y = row_y - 18.0;
-        layer.use_text(
-            "Payment Options",
-            10.0,
-            Mm(MARGIN_L),
-            Mm(pay_y),
-            &font_bold,
-        );
+        let mut pay_y = next_y;
+        layer.use_text("Payment Options", 10.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
         pay_y -= 6.0;
         for (kind, details) in &pm {
-            if pay_y < 30.0 {
-                break;
-            }
-            layer.use_text(
-                format!("{}:", kind),
-                9.0,
-                Mm(MARGIN_L),
-                Mm(pay_y),
-                &font_bold,
-            );
+            if pay_y < 30.0 { break; }
+            layer.use_text(format!("{}:", kind), 9.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
             pay_y -= 4.5;
             for ln in details.lines() {
-                if pay_y < 25.0 {
-                    break;
-                }
+                if pay_y < 25.0 { break; }
                 layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(pay_y), &font_regular);
                 pay_y -= 3.5;
             }
             pay_y -= 2.0;
+        }
+        next_y = pay_y - 8.0;
+    }
+
+    if !notes.is_empty() {
+        let mut n_y = next_y;
+        layer.use_text("Notes:", 9.0, Mm(MARGIN_L), Mm(n_y), &font_bold);
+        n_y -= 5.0;
+        for ln in notes.lines() {
+            if n_y < 25.0 { break; }
+            layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(n_y), &font_regular);
+            n_y -= 3.5;
         }
     }
 
@@ -485,16 +484,16 @@ fn load_active_payment_methods() -> Result<Vec<(String, String)>> {
 
 pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
     // Collect all DB data first (conn is not Send, can't cross await)
-    let (number, _client_id, issue, due, items_json, subtotal, tax, total, cname, cemail, ccompany, cmetadata) = {
+    let (number, _client_id, issue, due, items_json, subtotal, tax, total, notes, cname, cemail, ccompany, cmetadata) = {
         let conn = pool().get()?;
-        let inv: (String, String, String, String, String, f64, f64, f64) = conn.query_row(
-            "SELECT number,client_id,issue_date,due_date,line_items_json,subtotal,tax,total
+        let inv: (String, String, String, String, String, f64, f64, f64, String) = conn.query_row(
+            "SELECT number,client_id,issue_date,due_date,line_items_json,subtotal,tax,total,notes
              FROM invoices WHERE id=?1",
             [invoice_id],
             |r| {
                 Ok((
                     r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
-                    r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
+                    r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
                 ))
             },
         )?;
@@ -504,7 +503,7 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         (
-            inv.0, inv.1, inv.2, inv.3, inv.4, inv.5, inv.6, inv.7,
+            inv.0, inv.1, inv.2, inv.3, inv.4, inv.5, inv.6, inv.7, inv.8,
             cli.0, cli.1, cli.2, cli.3,
         )
     };
@@ -515,7 +514,7 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
 
     let pdf_bytes = build_pdf_bytes(
         &number, &issue, &due, &items, subtotal, tax, total,
-        &cname, &cemail, &ccompany, &client_address, &company,
+        &cname, &cemail, &ccompany, &client_address, &company, &notes,
     )?;
 
     let dir = pdf_output_dir();

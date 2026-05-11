@@ -309,6 +309,7 @@ pub struct Invoice {
     pub status: String,
     pub pdf_path: Option<String>,
     pub sent_at: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[tauri::command]
@@ -316,7 +317,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at
+            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes
              FROM invoices ORDER BY issue_date DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -326,7 +327,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
                 id: r.get(0)?, client_id: r.get(1)?, number: r.get(2)?,
                 issue_date: r.get(3)?, due_date: r.get(4)?, line_items_json: r.get(5)?,
                 subtotal: r.get(6)?, tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?,
-                pdf_path: r.get(10)?, sent_at: r.get(11)?,
+                pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -339,6 +340,7 @@ pub struct InvoiceInput {
     pub due_date: String,
     pub line_items: Vec<crate::invoice::LineItem>,
     pub tax_rate: f64,
+    pub notes: Option<String>,
 }
 
 #[tauri::command]
@@ -349,6 +351,7 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     let issue = now.to_rfc3339();
     let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
     let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+    let notes = input.notes.unwrap_or_default();
 
     let mut cols = Map::new();
     cols.insert("client_id".into(), Value::String(input.client_id.clone()));
@@ -360,22 +363,19 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     cols.insert("tax".into(), json!(tax));
     cols.insert("total".into(), json!(total));
     cols.insert("status".into(), Value::String("draft".into()));
+    cols.insert("notes".into(), Value::String(notes.clone()));
     cols.insert("created_at".into(), Value::String(issue.clone()));
     sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?4)",
-        rusqlite::params![
-            id, input.client_id, number, issue, input.due_date,
-            line_items_json, subtotal, tax, total
-        ],
+        "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,notes,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?4)",
+        rusqlite::params![id, input.client_id, number, issue, input.due_date, line_items_json, subtotal, tax, total, notes],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)
 }
-
 fn generate_invoice_number() -> anyhow::Result<String> {
     // Atomic counter per year. Stored in settings table.
     let year = Utc::now().format("%Y").to_string();
@@ -402,12 +402,14 @@ pub struct UpdateInvoiceInput {
     pub due_date: String,
     pub line_items: Vec<crate::invoice::LineItem>,
     pub tax_rate: f64,
+    pub notes: Option<String>,
 }
 
 #[tauri::command]
 pub async fn update_invoice(id: String, input: UpdateInvoiceInput) -> Result<(), String> {
     let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
     let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+    let notes = input.notes.unwrap_or_default();
 
     let mut cols = Map::new();
     cols.insert("due_date".into(), Value::String(input.due_date.clone()));
@@ -415,12 +417,13 @@ pub async fn update_invoice(id: String, input: UpdateInvoiceInput) -> Result<(),
     cols.insert("subtotal".into(), json!(subtotal));
     cols.insert("tax".into(), json!(tax));
     cols.insert("total".into(), json!(total));
+    cols.insert("notes".into(), Value::String(notes.clone()));
     sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE invoices SET due_date=?1, line_items_json=?2, subtotal=?3, tax=?4, total=?5 WHERE id=?6",
-        rusqlite::params![input.due_date, line_items_json, subtotal, tax, total, id],
+        "UPDATE invoices SET due_date=?1, line_items_json=?2, subtotal=?3, tax=?4, total=?5, notes=?6 WHERE id=?7",
+        rusqlite::params![input.due_date, line_items_json, subtotal, tax, total, notes, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -453,7 +456,7 @@ pub async fn generate_invoice_pdf(invoice_id: String) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub async fn preview_invoice_pdf(input: InvoiceInput) -> Result<String, String> {
+pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInput) -> Result<String, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let (cname, cemail, ccompany, cmetadata): (
         String, Option<String>, Option<String>, Option<String>,
@@ -469,10 +472,12 @@ pub async fn preview_invoice_pdf(input: InvoiceInput) -> Result<String, String> 
     let company = crate::invoice::load_company().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+    let notes = input.notes.unwrap_or_default();
 
     let pdf_bytes = crate::invoice::build_pdf_bytes(
         "PREVIEW", &now, &input.due_date, &input.line_items,
         subtotal, tax, total, &cname, &cemail, &ccompany, &client_address, &company,
+        &notes,
     )
     .map_err(|e| e.to_string())?;
 
@@ -480,6 +485,11 @@ pub async fn preview_invoice_pdf(input: InvoiceInput) -> Result<String, String> 
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("preview.pdf");
     std::fs::write(&path, pdf_bytes).map_err(|e| e.to_string())?;
+
+    use tauri_plugin_shell::ShellExt;
+    app_handle.shell().open(path.to_string_lossy().to_string(), None)
+        .map_err(|e| e.to_string())?;
+
     Ok(path.to_string_lossy().to_string())
 }
 
