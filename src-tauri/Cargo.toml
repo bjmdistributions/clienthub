@@ -36,7 +36,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # HTTP + AI
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 
 # Email
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder"] }
