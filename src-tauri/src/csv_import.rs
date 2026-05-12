@@ -159,6 +159,18 @@ pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
                 summary.skipped += 1;
                 continue;
             }
+        } else {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM clients WHERE LOWER(TRIM(name))=LOWER(TRIM(?1))",
+                    [&name],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if exists > 0 {
+                summary.skipped += 1;
+                continue;
+            }
         }
 
         let id = uuid::Uuid::new_v4().to_string();

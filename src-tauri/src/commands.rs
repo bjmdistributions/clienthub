@@ -3,7 +3,7 @@
 
 use crate::db::pool;
 use crate::sync;
-use chrono::Utc;
+use chrono::{Utc, Datelike};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -652,6 +652,22 @@ pub struct Invoice {
     pub total_cost: Option<f64>,
     pub profit: Option<f64>,
     pub margin: Option<f64>,
+    pub carrier: Option<String>,
+    pub tracking_number: Option<String>,
+    pub shipping_charged: Option<f64>,
+    pub pickup_date: Option<String>,
+    pub delivery_date: Option<String>,
+    pub is_complete: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ShippingInfo {
+    pub carrier: Option<String>,
+    pub tracking_number: Option<String>,
+    pub shipping_charged: Option<f64>,
+    pub pickup_date: Option<String>,
+    pub delivery_date: Option<String>,
+    pub is_complete: bool,
 }
 
 #[tauri::command]
@@ -659,7 +675,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin
+            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete
              FROM invoices ORDER BY issue_date DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -672,6 +688,9 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
                 pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
                 cost_items_json: r.get(13)?, total_cost: r.get(14)?,
                 profit: r.get(15)?, margin: r.get(16)?,
+                carrier: r.get(17)?, tracking_number: r.get(18)?,
+                shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
+                delivery_date: r.get(21)?, is_complete: r.get(22)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -682,7 +701,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
 pub async fn get_invoice(id: String) -> Result<Invoice, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete
          FROM invoices WHERE id=?1",
         [&id],
         |r| Ok(Invoice {
@@ -692,6 +711,9 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
             pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
             cost_items_json: r.get(13)?, total_cost: r.get(14)?,
             profit: r.get(15)?, margin: r.get(16)?,
+            carrier: r.get(17)?, tracking_number: r.get(18)?,
+            shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
+            delivery_date: r.get(21)?, is_complete: r.get(22)?,
         }),
     ).map_err(|e| e.to_string())
 }
@@ -700,7 +722,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
 pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete
          FROM invoices WHERE client_id=?1 ORDER BY issue_date DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([client_id], |r| {
@@ -711,6 +733,9 @@ pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>,
             pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
             cost_items_json: r.get(13)?, total_cost: r.get(14)?,
             profit: r.get(15)?, margin: r.get(16)?,
+            carrier: r.get(17)?, tracking_number: r.get(18)?,
+            shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
+            delivery_date: r.get(21)?, is_complete: r.get(22)?,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -720,6 +745,7 @@ pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>,
 pub struct InvoiceInput {
     pub client_id: String,
     pub due_date: String,
+    pub issue_date: Option<String>,
     pub line_items: Vec<crate::invoice::LineItem>,
     pub tax_rate: f64,
     pub notes: Option<String>,
@@ -731,7 +757,7 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let number = generate_invoice_number().map_err(|e| e.to_string())?;
-    let issue = now.to_rfc3339();
+    let issue = input.issue_date.clone().unwrap_or_else(|| now.to_rfc3339());
     let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
     let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
     let notes = input.notes.unwrap_or_default();
@@ -1052,6 +1078,493 @@ pub async fn save_invoice_costs(invoice_id: String, cost_items: Vec<CostItem>) -
         rusqlite::params![cost_json, total_cost, profit, margin, invoice_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Result<(), String> {
+    let has_shipping = info.carrier.as_deref().map_or(false, |s| !s.is_empty())
+        && info.tracking_number.as_deref().map_or(false, |s| !s.is_empty())
+        && info.pickup_date.as_deref().map_or(false, |s| !s.is_empty());
+    let is_complete = info.is_complete || has_shipping;
+
+    let mut cols = Map::new();
+    cols.insert("carrier".into(), to_value(info.carrier.clone()));
+    cols.insert("tracking_number".into(), to_value(info.tracking_number.clone()));
+    cols.insert("shipping_charged".into(), json!(info.shipping_charged.unwrap_or(0.0)));
+    cols.insert("pickup_date".into(), to_value(info.pickup_date.clone()));
+    cols.insert("delivery_date".into(), to_value(info.delivery_date.clone()));
+    cols.insert("is_complete".into(), json!(is_complete));
+    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=?6 WHERE id=?7",
+        rusqlite::params![info.carrier, info.tracking_number, info.shipping_charged.unwrap_or(0.0), info.pickup_date, info.delivery_date, is_complete as i64, invoice_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_invoice_sent_date(invoice_id: String, sent_date: String) -> Result<(), String> {
+    let mut cols = Map::new();
+    cols.insert("sent_at".into(), Value::String(sent_date.clone()));
+    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE invoices SET sent_at=?1 WHERE id=?2", rusqlite::params![sent_date, invoice_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
+//  Deals (deal pipeline — synced)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Deal {
+    pub id: String,
+    pub client_id: String,
+    pub title: String,
+    pub stage: String,
+    pub line_items_json: String,
+    pub supplier_costs_json: String,
+    pub shipping_cost: f64,
+    pub other_costs: f64,
+    pub asking_price: f64,
+    pub payment_terms: Option<String>,
+    pub notes: Option<String>,
+    pub expected_close_date: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub won_at: Option<String>,
+    pub lost_at: Option<String>,
+    pub lost_reason: Option<String>,
+    pub converted_invoice_id: Option<String>,
+    pub metadata: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DealInput {
+    pub client_id: String,
+    pub title: String,
+    pub stage: Option<String>,
+    pub line_items: Vec<crate::invoice::LineItem>,
+    pub supplier_costs: Vec<DealCostItem>,
+    pub shipping_cost: Option<f64>,
+    pub other_costs: Option<f64>,
+    pub asking_price: Option<f64>,
+    pub payment_terms: Option<String>,
+    pub notes: Option<String>,
+    pub expected_close_date: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DealCostItem {
+    pub description: String,
+    pub amount: f64,
+    pub supplier_name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SupplierNameSuggestion {
+    pub supplier_name: String,
+    pub count: u32,
+}
+
+fn map_deal_row(r: &rusqlite::Row) -> rusqlite::Result<Deal> {
+    Ok(Deal {
+        id: r.get(0)?, client_id: r.get(1)?, title: r.get(2)?, stage: r.get(3)?,
+        line_items_json: r.get(4)?, supplier_costs_json: r.get(5)?,
+        shipping_cost: r.get(6)?, other_costs: r.get(7)?, asking_price: r.get(8)?,
+        payment_terms: r.get(9)?, notes: r.get(10)?, expected_close_date: r.get(11)?,
+        created_at: r.get(12)?, updated_at: r.get(13)?,
+        won_at: r.get(14)?, lost_at: r.get(15)?, lost_reason: r.get(16)?,
+        converted_invoice_id: r.get(17)?, metadata: r.get(18)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_deals() -> Result<Vec<Deal>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals ORDER BY updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| map_deal_row(r)).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn list_deals_by_stage(stage: String) -> Result<Vec<Deal>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE stage=?1 ORDER BY updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&stage], |r| map_deal_row(r)).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn get_deal(id: String) -> Result<Deal, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE id=?1",
+        [&id], map_deal_row,
+    ).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_deal(input: DealInput) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let stage = input.stage.unwrap_or_else(|| "lead".into());
+    let li_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let sc_json = serde_json::to_string(&input.supplier_costs).map_err(|e| e.to_string())?;
+    let shipping = input.shipping_cost.unwrap_or(0.0);
+    let other = input.other_costs.unwrap_or(0.0);
+    let asking = input.asking_price.unwrap_or(0.0);
+
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(input.client_id.clone()));
+    cols.insert("title".into(), Value::String(input.title.clone()));
+    cols.insert("stage".into(), Value::String(stage.clone()));
+    cols.insert("line_items_json".into(), Value::String(li_json.clone()));
+    cols.insert("supplier_costs_json".into(), Value::String(sc_json.clone()));
+    cols.insert("shipping_cost".into(), json!(shipping));
+    cols.insert("other_costs".into(), json!(other));
+    cols.insert("asking_price".into(), json!(asking));
+    cols.insert("payment_terms".into(), to_value(input.payment_terms.clone()));
+    cols.insert("notes".into(), to_value(input.notes.clone()));
+    cols.insert("expected_close_date".into(), to_value(input.expected_close_date.clone()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deals", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO deals (id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)",
+        rusqlite::params![id, input.client_id, input.title, stage, li_json, sc_json, shipping, other, asking, input.payment_terms, input.notes, input.expected_close_date, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_deal(id: String, input: DealInput) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let stage = input.stage.unwrap_or_else(|| "lead".into());
+    let li_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let sc_json = serde_json::to_string(&input.supplier_costs).map_err(|e| e.to_string())?;
+    let shipping = input.shipping_cost.unwrap_or(0.0);
+    let other = input.other_costs.unwrap_or(0.0);
+    let asking = input.asking_price.unwrap_or(0.0);
+
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(input.client_id.clone()));
+    cols.insert("title".into(), Value::String(input.title.clone()));
+    cols.insert("stage".into(), Value::String(stage.clone()));
+    cols.insert("line_items_json".into(), Value::String(li_json.clone()));
+    cols.insert("supplier_costs_json".into(), Value::String(sc_json.clone()));
+    cols.insert("shipping_cost".into(), json!(shipping));
+    cols.insert("other_costs".into(), json!(other));
+    cols.insert("asking_price".into(), json!(asking));
+    cols.insert("payment_terms".into(), to_value(input.payment_terms.clone()));
+    cols.insert("notes".into(), to_value(input.notes.clone()));
+    cols.insert("expected_close_date".into(), to_value(input.expected_close_date.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deals", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deals SET client_id=?1,title=?2,stage=?3,line_items_json=?4,supplier_costs_json=?5,shipping_cost=?6,other_costs=?7,asking_price=?8,payment_terms=?9,notes=?10,expected_close_date=?11,updated_at=?12 WHERE id=?13",
+        rusqlite::params![input.client_id, input.title, stage, li_json, sc_json, shipping, other, asking, input.payment_terms, input.notes, input.expected_close_date, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_deal_stage(id: String, stage: String, lost_reason: Option<String>) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+
+    let old_stage: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT stage FROM deals WHERE id=?1", [&id], |r| r.get(0)).ok()
+    };
+
+    let mut cols = Map::new();
+    cols.insert("stage".into(), Value::String(stage.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    if stage == "won" {
+        cols.insert("won_at".into(), Value::String(now.clone()));
+    }
+    if stage == "lost" {
+        cols.insert("lost_at".into(), Value::String(now.clone()));
+        cols.insert("lost_reason".into(), to_value(lost_reason.clone()));
+    }
+    sync::record_upsert("deals", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    if stage == "lost" {
+        conn.execute(
+            "UPDATE deals SET stage=?1, updated_at=?2, lost_at=?2, lost_reason=?3 WHERE id=?4",
+            rusqlite::params![stage, now, lost_reason, id],
+        ).map_err(|e| e.to_string())?;
+    } else {
+        let won: Option<String> = if stage == "won" { Some(now.clone()) } else { None };
+        conn.execute(
+            "UPDATE deals SET stage=?1, updated_at=?2, won_at=?3 WHERE id=?4",
+            rusqlite::params![stage, now, won, id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    let history_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO deal_stage_history (id, deal_id, from_stage, to_stage, changed_at) VALUES (?1,?2,?3,?4,?5)",
+        rusqlite::params![history_id, id, old_stage, stage, now],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct PipelineAnalytics {
+    pub funnel_counts: std::collections::HashMap<String, u32>,
+    pub funnel_values: std::collections::HashMap<String, f64>,
+    pub avg_days_per_stage: std::collections::HashMap<String, f64>,
+    pub conversion_rates: std::collections::HashMap<String, f64>,
+    pub win_rate_overall: f64,
+    pub win_rate_last_30d: f64,
+    pub win_rate_last_90d: f64,
+    pub avg_deal_size_won: f64,
+    pub avg_deal_size_lost: f64,
+    pub avg_cycle_time_days: f64,
+    pub stuck_deals: Vec<StuckDeal>,
+    pub top_lost_reasons: Vec<(String, u32)>,
+}
+
+#[tauri::command]
+pub async fn pipeline_analytics(timeframe_days: Option<u32>) -> Result<PipelineAnalytics, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let days = timeframe_days.unwrap_or(0);
+    let date_filter = if days > 0 {
+        format!(" AND d.created_at >= date('now','-{} days')", days)
+    } else { String::new() };
+
+    let mut funnel_counts = std::collections::HashMap::new();
+    let mut funnel_values = std::collections::HashMap::new();
+    for stage in &["lead","quoted","negotiating","won","lost"] {
+        let count: u32 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM deals WHERE stage=?1{}", date_filter),
+            [*stage], |r| r.get::<_,i64>(0)
+        ).unwrap_or(0) as u32;
+        let value: f64 = conn.query_row(
+            &format!("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage=?1{}", date_filter),
+            [*stage], |r| r.get(0)
+        ).unwrap_or(0.0);
+        funnel_counts.insert(stage.to_string(), count);
+        funnel_values.insert(stage.to_string(), value);
+    }
+
+    let mut avg_days_per_stage = std::collections::HashMap::new();
+    for stage in &["lead","quoted","negotiating"] {
+        let next = match *stage { "lead" => "quoted", "quoted" => "negotiating", "negotiating" => "won", _ => "won" };
+        let avg_days: f64 = conn.query_row(
+            "SELECT COALESCE(AVG(julianday(h2.changed_at) - julianday(h1.changed_at)),0)
+             FROM deal_stage_history h1 JOIN deal_stage_history h2 ON h1.deal_id=h2.deal_id
+             WHERE h1.to_stage=?1 AND h2.to_stage=?2 AND h1.deal_id = h2.deal_id",
+            rusqlite::params![*stage, next], |r| r.get(0)
+        ).unwrap_or(0.0);
+        avg_days_per_stage.insert(stage.to_string(), avg_days.max(0.0));
+    }
+
+    let mut conversion_rates = std::collections::HashMap::new();
+    let stages_pairs = [("lead","quoted"),("quoted","negotiating"),("negotiating","won")];
+    let dt_filter_cr = if days > 0 { format!(" AND created_at >= date('now','-{} days')", days) } else { String::new() };
+    for (from, to) in &stages_pairs {
+        let from_cnt: f64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM deals WHERE (stage=?1 OR stage=?2 OR stage='won' OR stage='lost'){}", dt_filter_cr),
+            rusqlite::params![from, to], |r| r.get::<_,i64>(0)
+        ).unwrap_or(0) as f64;
+        let to_cnt: f64 = funnel_counts.get(to.to_owned()).copied().unwrap_or(0) as f64 + funnel_counts.get("won").copied().unwrap_or(0) as f64;
+        let rate = if from_cnt > 0.0 { to_cnt / from_cnt * 100.0 } else { 0.0 };
+        conversion_rates.insert(format!("{}_to_{}", from, to), rate);
+    }
+
+    let total_deals: f64 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE (stage='won' OR stage='lost')", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as f64;
+    let won_deals: f64 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE stage='won'", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as f64;
+    let win_rate_overall = if total_deals > 0.0 { (won_deals / total_deals) * 100.0 } else { 0.0 };
+
+    let won_30d: f64 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE stage='won' AND won_at >= date('now','-30 days')", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as f64;
+    let total_30d: f64 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE (stage='won' OR stage='lost') AND (won_at >= date('now','-30 days') OR lost_at >= date('now','-30 days'))", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as f64;
+    let win_rate_last_30d = if total_30d > 0.0 { (won_30d / total_30d) * 100.0 } else { 0.0 };
+
+    let won_90d: f64 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE stage='won' AND won_at >= date('now','-90 days')", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as f64;
+    let total_90d: f64 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE (stage='won' OR stage='lost') AND (won_at >= date('now','-90 days') OR lost_at >= date('now','-90 days'))", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as f64;
+    let win_rate_last_90d = if total_90d > 0.0 { (won_90d / total_90d) * 100.0 } else { 0.0 };
+
+    let avg_deal_size_won: f64 = conn.query_row(
+        "SELECT COALESCE(AVG(asking_price),0) FROM deals WHERE stage='won'", [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let avg_deal_size_lost: f64 = conn.query_row(
+        "SELECT COALESCE(AVG(asking_price),0) FROM deals WHERE stage='lost'", [], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let avg_cycle_time_days: f64 = conn.query_row(
+        "SELECT COALESCE(AVG(julianday(won_at) - julianday(created_at)),0) FROM deals WHERE stage='won' AND won_at IS NOT NULL",
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let stuck_deals: Vec<StuckDeal> = {
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.title, d.stage, CAST(julianday('now') - julianday(d.updated_at) AS INTEGER) as days
+             FROM deals d WHERE d.stage NOT IN ('won','lost') ORDER BY days DESC LIMIT 10"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(StuckDeal {
+            deal_id: r.get(0)?, title: r.get(1)?, stage: r.get(2)?, days_in_stage: r.get::<_,i64>(3).unwrap_or(0).max(0) as u32,
+        })).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let top_lost_reasons: Vec<(String, u32)> = {
+        let mut stmt = conn.prepare(
+            "SELECT lost_reason, COUNT(*) FROM deals WHERE stage='lost' AND lost_reason IS NOT NULL GROUP BY lost_reason ORDER BY COUNT(*) DESC LIMIT 5"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_,i64>(1)? as u32)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    Ok(PipelineAnalytics {
+        funnel_counts, funnel_values, avg_days_per_stage, conversion_rates,
+        win_rate_overall, win_rate_last_30d, win_rate_last_90d,
+        avg_deal_size_won, avg_deal_size_lost, avg_cycle_time_days,
+        stuck_deals, top_lost_reasons,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_deal(id: String) -> Result<(), String> {
+    sync::record_delete("deals", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM deals WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn convert_deal_to_invoice(deal_id: String) -> Result<String, String> {
+    let deal = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE id=?1",
+            [&deal_id], map_deal_row,
+        ).map_err(|e| e.to_string())?
+    };
+    if deal.stage != "won" {
+        return Err("Deal must be 'won' before converting to invoice".into());
+    }
+    if deal.converted_invoice_id.is_some() {
+        return Err("Deal already has an invoice".into());
+    }
+
+    let line_items: Vec<crate::invoice::LineItem> = serde_json::from_str(&deal.line_items_json).map_err(|e| e.to_string())?;
+    let supplier_costs: Vec<DealCostItem> = serde_json::from_str(&deal.supplier_costs_json).map_err(|e| e.to_string())?;
+
+    let deal_notes = deal.notes.unwrap_or_default();
+    let (subtotal, tax, _total) = crate::invoice::compute_totals(&line_items, 0.0);
+    let total = subtotal + tax;
+
+    let invoice_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let number = generate_invoice_number().map_err(|e| e.to_string())?;
+    let li_json = deal.line_items_json.clone();
+
+    let mut cost_items: Vec<CostItem> = supplier_costs.iter().map(|sc| CostItem {
+        description: format!("{} ({})", sc.description, sc.supplier_name.as_deref().unwrap_or("unknown")),
+        amount: sc.amount,
+    }).collect();
+    if deal.shipping_cost > 0.0 {
+        cost_items.push(CostItem { description: "Shipping".into(), amount: deal.shipping_cost });
+    }
+    if deal.other_costs > 0.0 {
+        cost_items.push(CostItem { description: "Other costs".into(), amount: deal.other_costs });
+    }
+    let cost_json = serde_json::to_string(&cost_items).map_err(|e| e.to_string())?;
+    let total_cost: f64 = cost_items.iter().map(|c| c.amount).sum();
+    let profit = total - total_cost;
+    let margin = if total > 0.0 { (profit / total) * 100.0 } else { 0.0 };
+
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(deal.client_id.clone()));
+    cols.insert("number".into(), Value::String(number.clone()));
+    cols.insert("issue_date".into(), Value::String(now.clone()));
+    cols.insert("due_date".into(), Value::String(now.clone()));
+    cols.insert("line_items_json".into(), Value::String(li_json.clone()));
+    cols.insert("subtotal".into(), json!(subtotal));
+    cols.insert("tax".into(), json!(tax));
+    cols.insert("total".into(), json!(total));
+    cols.insert("status".into(), Value::String("draft".into()));
+    cols.insert("notes".into(), Value::String(deal_notes.clone()));
+    cols.insert("cost_items_json".into(), Value::String(cost_json.clone()));
+    cols.insert("total_cost".into(), json!(total_cost));
+    cols.insert("profit".into(), json!(profit));
+    cols.insert("margin".into(), json!(margin));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,notes,cost_items_json,total_cost,profit,margin,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?11,?12,?13,?14,?15)",
+            rusqlite::params![invoice_id, deal.client_id, number, now, now, li_json, subtotal, tax, total, deal_notes, cost_json, total_cost, profit, margin, now],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    let mut deal_cols = Map::new();
+    deal_cols.insert("converted_invoice_id".into(), Value::String(invoice_id.clone()));
+    deal_cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deals", &deal_id, deal_cols).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deals SET converted_invoice_id=?1, updated_at=?2 WHERE id=?3",
+            rusqlite::params![invoice_id, now, deal_id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(invoice_id)
+}
+
+#[tauri::command]
+pub async fn supplier_name_suggestions() -> Result<Vec<SupplierNameSuggestion>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut suggestions: Vec<SupplierNameSuggestion> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stmt = conn.prepare("SELECT supplier_costs_json FROM deals").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    for row in rows {
+        if let Ok(json_str) = row {
+            if let Ok(items) = serde_json::from_str::<Vec<Value>>(&json_str) {
+                for item in &items {
+                    if let Some(name) = item.get("supplier_name").and_then(|v| v.as_str()) {
+                        let n = name.to_string();
+                        if !n.is_empty() && seen.insert(n.clone()) {
+                            suggestions.push(SupplierNameSuggestion { supplier_name: n, count: 1 });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(suggestions)
 }
 
 // ============================================================
@@ -1377,6 +1890,72 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    let pipeline_value: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')",
+            [], |r| r.get(0),
+        ).unwrap_or(0.0);
+    let pipeline_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost')",
+            [], |r| r.get(0),
+        ).unwrap_or(0);
+
+    let incomplete_shipping: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM invoices WHERE status='paid' AND is_complete=0",
+            [], |r| r.get(0),
+        ).unwrap_or(0);
+
+    let category_breakdown: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(json_extract(metadata,'$.category'),'Uncategorized') as cat,
+                    COUNT(*) as cnt,
+                    COALESCE(SUM(CASE WHEN i.status='paid' THEN i.total ELSE 0 END),0) as paid_rev
+             FROM clients c LEFT JOIN invoices i ON i.client_id=c.id
+             GROUP BY cat ORDER BY paid_rev DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "category": r.get::<_,String>(0)?,
+            "client_count": r.get::<_,i64>(1)?,
+            "revenue": r.get::<_,f64>(2)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let invoice_status_breakdown: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT status, COUNT(*), COALESCE(SUM(total),0) FROM invoices GROUP BY status"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "status": r.get::<_,String>(0)?,
+            "count": r.get::<_,i64>(1)?,
+            "total": r.get::<_,f64>(2)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let top_spenders: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT c.name, c.company, COUNT(i.id) as inv_count,
+                    COALESCE(SUM(i.total),0) as total_spent,
+                    COALESCE(SUM(i.profit),0) as total_profit,
+                    MAX(i.issue_date) as last_invoice
+             FROM clients c JOIN invoices i ON i.client_id=c.id
+             WHERE i.status='paid'
+             GROUP BY i.client_id ORDER BY total_spent DESC LIMIT 10"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "name": r.get::<_,String>(0)?,
+            "company": r.get::<_,Option<String>>(1)?,
+            "invoice_count": r.get::<_,i64>(2)?,
+            "total_spent": r.get::<_,f64>(3)?,
+            "total_profit": r.get::<_,f64>(4)?,
+            "last_invoice": r.get::<_,Option<String>>(5)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     Ok(json!({
         "clients": total_clients,
         "invoices": total_invoices,
@@ -1390,6 +1969,12 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "avg_margin": avg_margin,
         "monthly_profit": monthly_profit,
         "top_clients_by_profit": top_clients_by_profit,
+        "pipeline_value": pipeline_value,
+        "pipeline_count": pipeline_count,
+        "incomplete_shipping": incomplete_shipping,
+        "category_breakdown": category_breakdown,
+        "invoice_status_breakdown": invoice_status_breakdown,
+        "top_spenders": top_spenders,
     }))
 }
 
@@ -1408,8 +1993,546 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
 }
 
 // ============================================================
-//  CSV Import
+//  Client Tiers
 // ============================================================
+
+#[derive(Serialize, Debug, Clone)]
+pub struct BuyerTier {
+    pub client_id: String,
+    pub client_name: String,
+    pub tier: String,
+    pub effective_annual: f64,
+    pub spend_per_frequency: Option<String>,
+    pub actual_paid: f64,
+    pub invoices_sent: u32,
+    pub last_invoice_date: Option<String>,
+    pub purchase_frequency: Option<String>,
+}
+
+fn tier_label(s: &str) -> &str {
+    match s { "S" => "Diamond", "A" => "Gold", "B" => "Silver", "C" => "Bronze", _ => "Prospect" }
+}
+
+#[tauri::command]
+pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    let invoice_data: Vec<(String, f64, u32, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT client_id, COALESCE(SUM(CASE WHEN status='paid' THEN total ELSE 0 END),0),
+                    COUNT(CASE WHEN status IN ('sent','paid') THEN 1 END),
+                    MAX(CASE WHEN status IN ('sent','paid') THEN issue_date END)
+             FROM invoices GROUP BY client_id"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,i64>(2)? as u32, r.get(3)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let invoice_map: std::collections::HashMap<String, (f64, u32, Option<String>)> =
+        invoice_data.into_iter().map(|(id, p, s, d)| (id, (p, s, d))).collect();
+
+    let client_rows: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn.prepare("SELECT id, name, metadata FROM clients ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,Option<String>>(2)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut results = Vec::new();
+    for (client_id, client_name, metadata_str) in &client_rows {
+        let meta: Option<Value> = metadata_str.as_ref().and_then(|s| serde_json::from_str(s).ok());
+        let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
+        let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
+        let annual_spend: f64 = spend_raw.parse().unwrap_or(0.0);
+        let freq_mult = match frequency.unwrap_or("").to_lowercase().as_str() {
+            "weekly" => 52.0, "bi-weekly" => 26.0, "monthly" => 12.0,
+            "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
+        };
+        let effective_annual = freq_mult * annual_spend;
+
+        let (actual_paid, invoices_sent, last_inv) = invoice_map.get(client_id)
+            .map(|(p, s, d)| (*p, *s, d.clone())).unwrap_or((0.0, 0, None));
+
+        let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
+        else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
+        else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
+        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 { "C" }
+        else { "Prospect" };
+
+        results.push(BuyerTier {
+            client_id: client_id.clone(), client_name: client_name.clone(), tier: tier.into(),
+            effective_annual, spend_per_frequency: if spend_raw != "0" && !spend_raw.is_empty() { Some(spend_raw.to_string()) } else { None },
+            actual_paid, invoices_sent, last_invoice_date: last_inv,
+            purchase_frequency: frequency.map(|s| s.to_string()),
+        });
+    }
+    results.sort_by(|a, b| {
+        let tier_order = |t: &str| match t { "S" => 0, "A" => 1, "B" => 2, "C" => 3, _ => 4 };
+        tier_order(&a.tier).cmp(&tier_order(&b.tier))
+            .then_with(|| b.actual_paid.partial_cmp(&a.actual_paid).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.invoices_sent.cmp(&a.invoices_sent))
+    });
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn get_buyer_tier(client_id: String) -> Result<BuyerTier, String> {
+    let tiers = buyer_tiers().await?;
+    tiers.into_iter().find(|t| t.client_id == client_id)
+        .ok_or_else(|| "Client not found".into())
+}
+
+// ============================================================
+//  Weekly Brief
+// ============================================================
+
+#[derive(Serialize, Debug, Clone)]
+pub struct DealHighlight {
+    pub deal_id: String,
+    pub client_name: String,
+    pub title: String,
+    pub asking_price: f64,
+    pub margin_pct: f64,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct InvoiceHighlight {
+    pub invoice_id: String,
+    pub client_name: String,
+    pub number: String,
+    pub total: f64,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct StuckDeal {
+    pub deal_id: String,
+    pub title: String,
+    pub stage: String,
+    pub days_in_stage: u32,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct WeeklyBrief {
+    pub generated_at: String,
+    pub week_start: String,
+    pub week_end: String,
+    pub revenue_this_week: f64,
+    pub revenue_last_week: f64,
+    pub revenue_change_pct: f64,
+    pub profit_this_week: f64,
+    pub profit_last_week: f64,
+    pub profit_change_pct: f64,
+    pub avg_margin_this_week: f64,
+    pub deals_by_stage: Vec<Value>,
+    pub pipeline_value: f64,
+    pub deals_closed_this_week: u32,
+    pub deals_lost_this_week: u32,
+    pub win_rate_this_week: f64,
+    pub at_risk_customers: Vec<BuyerTier>,
+    pub overdue_invoices_count: u32,
+    pub overdue_invoices_value: f64,
+    pub follow_ups_due: u32,
+    pub best_margin_deal: Option<DealHighlight>,
+    pub worst_margin_deal: Option<DealHighlight>,
+    pub biggest_invoice: Option<InvoiceHighlight>,
+    pub stuck_deals: Vec<StuckDeal>,
+    pub new_clients_this_week: u32,
+    pub interactions_this_week: u32,
+}
+
+#[tauri::command]
+pub async fn generate_weekly_brief() -> Result<WeeklyBrief, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = Utc::now();
+
+    let now_date = Utc::now().date_naive();
+    let wd = chrono::Datelike::weekday(&now_date).num_days_from_sunday() as i64;
+
+    let week_start = format!("{}", (now_date - chrono::Duration::days(wd)).format("%Y-%m-%d"));
+    let week_end = format!("{}", (now_date + chrono::Duration::days(6 - wd)).format("%Y-%m-%d"));
+    let last_week_start = format!("{}", (now_date - chrono::Duration::days(wd + 7)).format("%Y-%m-%d"));
+    let last_week_end = format!("{}", (now_date - chrono::Duration::days(wd + 1)).format("%Y-%m-%d"));
+
+    let revenue_this_week: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND issue_date >= ?1", [&week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let revenue_last_week: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND issue_date < ?2", [&last_week_start, &week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let profit_this_week: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE status='paid' AND issue_date >= ?1", [&week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let profit_last_week: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND issue_date < ?2", [&last_week_start, &week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let avg_margin_this_week: f64 = conn.query_row(
+        "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND profit IS NOT NULL", [&week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let pipeline_value: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let deals_by_stage: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT stage, COUNT(*), COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost') GROUP BY stage"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({ "stage": r.get::<_,String>(0)?, "count": r.get::<_,i64>(1)?, "value": r.get::<_,f64>(2)? })))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let deals_closed: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE won_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as u32;
+    let deals_lost: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM deals WHERE lost_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as u32;
+    let win_rate = if deals_closed + deals_lost > 0 { (deals_closed as f64 / (deals_closed + deals_lost) as f64) * 100.0 } else { 0.0 };
+
+    let at_risk_customers: Vec<BuyerTier> = buyer_tiers().await?.into_iter()
+        .filter(|h| h.tier == "C" || h.tier == "Prospect").take(5).collect();
+
+    let overdue_invoices_count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM invoices WHERE status='sent' AND due_date < date('now')", [], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as u32;
+    let overdue_invoices_value: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='sent' AND due_date < date('now')", [], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let follow_ups: Vec<Client> = due_followups().await?;
+    let follow_ups_due = follow_ups.len() as u32;
+
+    let best_margin_deal: Option<DealHighlight> = {
+        let mut stmt = conn.prepare(
+            "SELECT d.id, c.name, d.title, d.asking_price, CASE WHEN d.asking_price>0 THEN (d.asking_price - d.shipping_cost - d.other_costs - (SELECT COALESCE(SUM(json_extract(value,'$.amount')),0) FROM json_each(d.supplier_costs_json)))/d.asking_price*100 ELSE 0 END as margin
+             FROM deals d JOIN clients c ON c.id=d.client_id
+             WHERE d.won_at >= ?1 ORDER BY margin DESC LIMIT 1"
+        ).map_err(|e| e.to_string())?;
+        stmt.query_row([&week_start], |r| Ok(DealHighlight {
+            deal_id: r.get(0)?, client_name: r.get(1)?, title: r.get(2)?,
+            asking_price: r.get(3)?, margin_pct: r.get(4)?,
+        })).ok()
+    };
+
+    let worst_margin_deal: Option<DealHighlight> = {
+        let mut stmt = conn.prepare(
+            "SELECT d.id, c.name, d.title, d.asking_price, CASE WHEN d.asking_price>0 THEN (d.asking_price - d.shipping_cost - d.other_costs - (SELECT COALESCE(SUM(json_extract(value,'$.amount')),0) FROM json_each(d.supplier_costs_json)))/d.asking_price*100 ELSE 0 END as margin
+             FROM deals d JOIN clients c ON c.id=d.client_id
+             WHERE d.won_at >= ?1 AND d.stage='won' ORDER BY margin ASC LIMIT 1"
+        ).map_err(|e| e.to_string())?;
+        stmt.query_row([&week_start], |r| Ok(DealHighlight {
+            deal_id: r.get(0)?, client_name: r.get(1)?, title: r.get(2)?,
+            asking_price: r.get(3)?, margin_pct: r.get(4)?,
+        })).ok()
+    };
+
+    let biggest_invoice: Option<InvoiceHighlight> = {
+        let mut stmt = conn.prepare(
+            "SELECT i.id, c.name, i.number, i.total FROM invoices i JOIN clients c ON c.id=i.client_id
+             WHERE i.status='paid' AND i.issue_date >= ?1 ORDER BY i.total DESC LIMIT 1"
+        ).map_err(|e| e.to_string())?;
+        stmt.query_row([&week_start], |r| Ok(InvoiceHighlight {
+            invoice_id: r.get(0)?, client_name: r.get(1)?, number: r.get(2)?, total: r.get(3)?,
+        })).ok()
+    };
+
+    let stuck_deals: Vec<StuckDeal> = {
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.title, d.stage, CAST(julianday('now') - julianday(d.updated_at) AS INTEGER) as days
+             FROM deals d WHERE d.stage NOT IN ('won','lost') ORDER BY days DESC LIMIT 5"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(StuckDeal {
+            deal_id: r.get(0)?, title: r.get(1)?, stage: r.get(2)?, days_in_stage: r.get::<_,i64>(3).unwrap_or(0).max(0) as u32,
+        })).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let new_clients_this_week: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM clients WHERE created_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as u32;
+
+    let interactions_this_week: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM interactions WHERE created_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as u32;
+
+    Ok(WeeklyBrief {
+        generated_at: now.to_rfc3339(),
+        week_start: week_start.clone(),
+        week_end,
+        revenue_this_week,
+        revenue_last_week,
+        revenue_change_pct: if revenue_last_week > 0.0 { ((revenue_this_week - revenue_last_week) / revenue_last_week) * 100.0 } else { 0.0 },
+        profit_this_week,
+        profit_last_week,
+        profit_change_pct: if profit_last_week > 0.0 { ((profit_this_week - profit_last_week) / profit_last_week) * 100.0 } else { 0.0 },
+        avg_margin_this_week,
+        deals_by_stage,
+        pipeline_value,
+        deals_closed_this_week: deals_closed,
+        deals_lost_this_week: deals_lost,
+        win_rate_this_week: win_rate,
+        at_risk_customers,
+        overdue_invoices_count,
+        overdue_invoices_value,
+        follow_ups_due,
+        best_margin_deal,
+        worst_margin_deal,
+        biggest_invoice,
+        stuck_deals,
+        new_clients_this_week,
+        interactions_this_week,
+    })
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct DuplicateGroup {
+    pub key: String,
+    pub count: u32,
+    pub client_ids: Vec<String>,
+    pub names: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn detect_duplicate_clients() -> Result<Vec<DuplicateGroup>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut groups = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT LOWER(email) as k, COUNT(*), GROUP_CONCAT(id), GROUP_CONCAT(name)
+         FROM clients WHERE email IS NOT NULL AND email != ''
+         GROUP BY LOWER(email) HAVING COUNT(*) > 1"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(DuplicateGroup {
+            key: r.get(0)?, count: r.get::<_,i64>(1)? as u32,
+            client_ids: r.get::<_,String>(2)?.split(',').map(|s| s.to_string()).collect(),
+            names: r.get::<_,String>(3)?.split(',').map(|s| s.to_string()).collect(),
+        })
+    }).map_err(|e| e.to_string())?;
+    for r in rows { if let Ok(g) = r { groups.push(g); } }
+    Ok(groups)
+}
+
+#[derive(Serialize)]
+pub struct CleanupResult {
+    duplicates_merged: u32,
+    ghosts_removed: u32,
+    remaining_clients: u32,
+}
+
+#[derive(Debug)]
+struct ClientRow {
+    id: String,
+    name: String,
+    email: Option<String>,
+    phone: Option<String>,
+    company: Option<String>,
+    has_invoices: bool,
+}
+
+fn normalize_phone(p: &str) -> String {
+    p.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+fn is_date_like(p: &str) -> bool {
+    let s = p.trim();
+    (s.contains('/') && s.chars().filter(|c| *c == '/').count() == 2)
+        || (s.contains('-') && s.len() == 10 && s.chars().filter(|c| *c == '-').count() == 2)
+}
+
+fn name_parts(name: &str) -> Vec<String> {
+    name.to_lowercase()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+}
+
+fn first_name_of(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split_whitespace().collect();
+    if parts.is_empty() { return None; }
+    let first = parts[0].to_lowercase();
+    if first.len() >= 2 { Some(first) } else { None }
+}
+
+fn last_word_of(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split_whitespace().collect();
+    if parts.is_empty() { return None; }
+    let last = parts.last().unwrap().to_lowercase();
+    if last.len() >= 2 { Some(last) } else { None }
+}
+
+fn fuzzy_score(ghost: &ClientRow, real: &ClientRow) -> i32 {
+    let mut score: i32 = 0;
+    let ghost_name = ghost.name.to_lowercase();
+    let real_name = real.name.to_lowercase();
+    let real_company = real.company.as_deref().unwrap_or("").to_lowercase();
+    let ghost_company = ghost.company.as_deref().unwrap_or("").to_lowercase();
+
+    if !real_company.is_empty() && ghost_name.contains(&real_company) {
+        score += 10;
+    }
+
+    if !real_name.is_empty() && ghost_name.contains(&real_name) {
+        score += 8;
+    }
+
+    if let Some(ref rp) = real.phone {
+        let gphone = normalize_phone(ghost.phone.as_deref().unwrap_or(""));
+        let rphone = normalize_phone(rp);
+        if !gphone.is_empty() && !rphone.is_empty() && gphone == rphone {
+            score += 10;
+        }
+    }
+
+    if let Some(gf) = last_word_of(&ghost.name) {
+        if let Some(rf) = first_name_of(&real.name) {
+            if gf == rf { score += 5; }
+        }
+    }
+
+    if ghost_company == "ben" && real_company != "ben" && !real_company.is_empty() {
+        if ghost_name.starts_with(&real_company) || ghost_name.contains(&real_company) {
+            score += 8;
+        }
+    }
+
+    if !real_name.is_empty() && !ghost_name.is_empty() && ghost_name != real_name {
+        let real_words: Vec<&str> = real_name.split_whitespace().collect();
+        let ghost_words: Vec<&str> = ghost_name.split_whitespace().collect();
+        let mut shared = 0;
+        for rw in &real_words {
+            for gw in &ghost_words {
+                if rw == gw && rw.len() >= 3 { shared += 1; }
+            }
+        }
+        if shared > 0 { score += shared as i32 * 3; }
+    }
+
+    score
+}
+
+#[tauri::command]
+pub async fn cleanup_clients() -> Result<CleanupResult, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut duplicates_merged: u32 = 0;
+
+    let mut email_dups: Vec<(String, Vec<String>)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT LOWER(email), GROUP_CONCAT(id) FROM clients WHERE email IS NOT NULL AND email != '' GROUP BY LOWER(email) HAVING COUNT(*) > 1"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))
+        }).map_err(|e| e.to_string())?;
+        for r in rows {
+            if let Ok((key, ids)) = r {
+                let id_list: Vec<String> = ids.split(',').map(|s| s.to_string()).collect();
+                if id_list.len() > 1 { email_dups.push((key, id_list)); }
+            }
+        }
+    }
+
+    for (_key, ids) in &email_dups {
+        let keeper = &ids[0];
+        for dup_id in &ids[1..] {
+            let _ = conn.execute("UPDATE interactions SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
+            let _ = conn.execute("UPDATE invoices SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
+            let _ = conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![dup_id]);
+            duplicates_merged += 1;
+        }
+    }
+
+    let mut exact_name_dups: Vec<(String, Vec<String>)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT LOWER(TRIM(name)), GROUP_CONCAT(id) FROM clients WHERE (email IS NULL OR email = '') GROUP BY LOWER(TRIM(name)) HAVING COUNT(*) > 1"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))
+        }).map_err(|e| e.to_string())?;
+        for r in rows {
+            if let Ok((key, ids)) = r {
+                let id_list: Vec<String> = ids.split(',').map(|s| s.to_string()).collect();
+                if id_list.len() > 1 { exact_name_dups.push((key, id_list)); }
+            }
+        }
+    }
+
+    for (_key, ids) in &exact_name_dups {
+        let keeper = &ids[0];
+        for dup_id in &ids[1..] {
+            let _ = conn.execute("UPDATE interactions SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
+            let _ = conn.execute("UPDATE invoices SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
+            let _ = conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![dup_id]);
+            duplicates_merged += 1;
+        }
+    }
+
+    let mut all_clients: Vec<ClientRow> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.email, c.phone, c.company,
+                    CASE WHEN EXISTS(SELECT 1 FROM invoices WHERE client_id=c.id) THEN 1 ELSE 0 END
+             FROM clients c ORDER BY c.name"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ClientRow {
+                id: r.get(0)?,
+                name: r.get::<_,String>(1)?,
+                email: r.get(2)?,
+                phone: r.get(3)?,
+                company: r.get(4)?,
+                has_invoices: r.get::<_,i64>(5)? != 0,
+            })
+        }).map_err(|e| e.to_string())?;
+        for r in rows { if let Ok(c) = r { all_clients.push(c); } }
+    }
+
+    let mut ghost_ids: Vec<String> = Vec::new();
+
+    for (i, c) in all_clients.iter().enumerate() {
+        let company_lower = c.company.as_deref().unwrap_or("").to_lowercase();
+        let phone_str = c.phone.as_deref().unwrap_or("");
+        let email_str = c.email.as_deref().unwrap_or("");
+        let is_ghost_pattern = (company_lower == "ben" || company_lower.is_empty())
+            && email_str.is_empty()
+            && (phone_str.is_empty() || is_date_like(phone_str));
+
+        if !is_ghost_pattern { continue; }
+
+        let mut best_match: Option<(usize, i32)> = None;
+        for (j, other) in all_clients.iter().enumerate() {
+            if i == j { continue; }
+            if ghost_ids.contains(&other.id) { continue; }
+            let other_email = other.email.as_deref().unwrap_or("");
+            if other_email.is_empty() && !other.has_invoices { continue; }
+
+            let score = fuzzy_score(c, other);
+            if score >= 8 {
+                match best_match {
+                    None => best_match = Some((j, score)),
+                    Some((_, best_s)) if score > best_s => best_match = Some((j, score)),
+                    _ => {}
+                }
+            }
+        }
+
+        if best_match.is_some() {
+            ghost_ids.push(c.id.clone());
+        }
+    }
+
+    for ghost_id in &ghost_ids {
+        let _ = conn.execute("UPDATE interactions SET client_id=NULL WHERE client_id=?1", rusqlite::params![ghost_id]);
+        let _ = conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![ghost_id]);
+    }
+    let ghosts_removed = ghost_ids.len() as u32;
+
+    let remaining_clients: u32 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get::<_,i64>(0)).unwrap_or(0) as u32;
+
+    Ok(CleanupResult { duplicates_merged, ghosts_removed, remaining_clients })
+}
 
 #[tauri::command]
 pub async fn csv_preview(path: String) -> Result<crate::csv_import::CsvPreview, String> {
@@ -2022,13 +3145,13 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
     let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows) = config;
     let (mut first_name_col, mut last_name_col, mut email_col, mut phone_col, mut company_col, mut category_col, mut lead_status_col, mut notes_col) =
         (first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col);
-    if first_name_col.is_empty() { first_name_col = "E".into(); }
-    if last_name_col.is_empty() { last_name_col = "F".into(); }
+    if first_name_col.is_empty() { first_name_col = "F".into(); }
+    if last_name_col.is_empty() { last_name_col = "G".into(); }
     if email_col.is_empty() { email_col = "I".into(); }
-    if phone_col.is_empty() { phone_col = "L".into(); }
-    if company_col.is_empty() { company_col = "D".into(); }
-    if category_col.is_empty() { category_col = "J".into(); }
-    if lead_status_col.is_empty() { lead_status_col = "W".into(); }
+    if phone_col.is_empty() { phone_col = "J".into(); }
+    if company_col.is_empty() { company_col = "E".into(); }
+    if category_col.is_empty() { category_col = "P".into(); }
+    if lead_status_col.is_empty() { lead_status_col = "V".into(); }
     if notes_col.is_empty() { notes_col = "AA".into(); }
     let sheet_url = sheet_url.ok_or("No sheet URL configured")?;
 
@@ -2058,6 +3181,13 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
     let cat_idx = col_index(&category_col);
     let lead_status_idx = col_index(&lead_status_col);
     let notes_idx = col_index(&notes_col);
+    let street_idx = col_index("K");
+    let city_idx = col_index("L");
+    let state_idx = col_index("M");
+    let zip_idx = col_index("N");
+    let other_cat_idx = col_index("Q");
+    let purchase_freq_idx = col_index("R");
+    let buy_spend_idx = col_index("S");
 
     let mut new_clients: u32 = 0;
     let mut skipped: u32 = 0;
@@ -2084,10 +3214,23 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
         let category = record.get(cat_idx).unwrap_or("").trim().to_string();
         let lead_status = record.get(lead_status_idx).unwrap_or("").trim().to_string();
         let notes = record.get(notes_idx).unwrap_or("").trim().to_string();
+        let street = record.get(street_idx).unwrap_or("").trim().to_string();
+        let city = record.get(city_idx).unwrap_or("").trim().to_string();
+        let state = record.get(state_idx).unwrap_or("").trim().to_string();
+        let zip = record.get(zip_idx).unwrap_or("").trim().to_string();
+        let other_cats = record.get(other_cat_idx).unwrap_or("").trim().to_string();
+        let purchase_freq = record.get(purchase_freq_idx).unwrap_or("").trim().to_string();
+        let buy_spend = record.get(buy_spend_idx).unwrap_or("").trim().to_string();
 
         if name.is_empty() && email.is_empty() { continue; }
 
         if !email.is_empty() && !email.contains('@') {
+            skipped += 1;
+            continue;
+        }
+
+        let phone_like_date = !phone.is_empty() && phone.contains('/') && phone.chars().filter(|c| *c == '/').count() == 2;
+        if email.is_empty() && phone_like_date {
             skipped += 1;
             continue;
         }
@@ -2107,7 +3250,23 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
             }
         };
 
-        if existing_id.is_some() {
+        if let Some(ref eid) = existing_id {
+            let update_now = Utc::now().to_rfc3339();
+            let mut meta = serde_json::json!({});
+            if !category.is_empty() { meta["category"] = Value::String(category.clone()); }
+            if !street.is_empty() { meta["street_address"] = Value::String(street.clone()); }
+            if !city.is_empty() { meta["city"] = Value::String(city.clone()); }
+            if !state.is_empty() { meta["state"] = Value::String(state.clone()); }
+            if !zip.is_empty() { meta["zip_code"] = Value::String(zip.clone()); }
+            if !other_cats.is_empty() { meta["other_categories"] = Value::String(other_cats.clone()); }
+            if !purchase_freq.is_empty() { meta["purchase_frequency"] = Value::String(purchase_freq.clone()); }
+            if !buy_spend.is_empty() { meta["estimated_annual_spend"] = Value::String(buy_spend.clone()); }
+            let meta_str = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
+            let conn2 = pool().get().map_err(|e| e.to_string())?;
+            let _ = conn2.execute(
+                "UPDATE clients SET name=COALESCE(NULLIF(?1,''),name), email=COALESCE(NULLIF(?2,''),email), phone=COALESCE(NULLIF(?3,''),phone), company=COALESCE(NULLIF(?4,''),company), notes=COALESCE(NULLIF(?5,''),notes), lead_status=COALESCE(NULLIF(?6,''),lead_status), metadata=CASE WHEN ?7 != '{}' THEN ?7 ELSE metadata END, updated_at=?8 WHERE id=?9",
+                rusqlite::params![name, email, phone, company, notes, lead_status, meta_str, update_now, eid],
+            );
             skipped += 1;
             continue;
         }
@@ -2118,6 +3277,13 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
 
         let mut meta = serde_json::json!({});
         if !category.is_empty() { meta["category"] = Value::String(category.clone()); }
+        if !street.is_empty() { meta["street_address"] = Value::String(street.clone()); }
+        if !city.is_empty() { meta["city"] = Value::String(city.clone()); }
+        if !state.is_empty() { meta["state"] = Value::String(state.clone()); }
+        if !zip.is_empty() { meta["zip_code"] = Value::String(zip.clone()); }
+        if !other_cats.is_empty() { meta["other_categories"] = Value::String(other_cats.clone()); }
+        if !purchase_freq.is_empty() { meta["purchase_frequency"] = Value::String(purchase_freq.clone()); }
+        if !buy_spend.is_empty() { meta["estimated_annual_spend"] = Value::String(buy_spend.clone()); }
         let metadata_str = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
 
         let mut cols = Map::new();
@@ -2128,9 +3294,6 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
         cols.insert("notes".into(), if notes.is_empty() { Value::Null } else { Value::String(notes.clone()) });
         cols.insert("billing_status".into(), Value::String("active".into()));
         cols.insert("lead_status".into(), Value::String(ls.clone()));
-        cols.insert("created_at".into(), Value::String(now.clone()));
-        cols.insert("updated_at".into(), Value::String(now.clone()));
-        cols.insert("metadata".into(), Value::String(metadata_str.clone()));
         cols.insert("created_at".into(), Value::String(now.clone()));
         cols.insert("updated_at".into(), Value::String(now.clone()));
         cols.insert("metadata".into(), Value::String(metadata_str.clone()));

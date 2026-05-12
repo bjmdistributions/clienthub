@@ -157,6 +157,21 @@ export interface Invoice {
   total_cost: number | null;
   profit: number | null;
   margin: number | null;
+  carrier: string | null;
+  tracking_number: string | null;
+  shipping_charged: number | null;
+  pickup_date: string | null;
+  delivery_date: string | null;
+  is_complete: boolean;
+}
+
+export interface ShippingInfo {
+  carrier?: string;
+  tracking_number?: string;
+  shipping_charged?: number;
+  pickup_date?: string;
+  delivery_date?: string;
+  is_complete: boolean;
 }
 
 export interface CostItem {
@@ -164,13 +179,158 @@ export interface CostItem {
   amount: number;
 }
 
+export interface DealCostItem {
+  description: string;
+  amount: number;
+  supplier_name?: string;
+}
+
+export interface SupplierNameSuggestion {
+  supplier_name: string;
+  count: number;
+}
+
+export interface Deal {
+  id: string;
+  client_id: string;
+  title: string;
+  stage: 'lead' | 'quoted' | 'negotiating' | 'won' | 'lost';
+  line_items_json: string;
+  supplier_costs_json: string;
+  shipping_cost: number;
+  other_costs: number;
+  asking_price: number;
+  payment_terms?: string;
+  notes?: string;
+  expected_close_date?: string;
+  created_at: string;
+  updated_at: string;
+  won_at?: string;
+  lost_at?: string;
+  lost_reason?: string;
+  converted_invoice_id?: string;
+  metadata?: string;
+}
+
+export interface DealInput {
+  client_id: string;
+  title: string;
+  stage?: string;
+  line_items: LineItem[];
+  supplier_costs: DealCostItem[];
+  shipping_cost?: number;
+  other_costs?: number;
+  asking_price?: number;
+  payment_terms?: string;
+  notes?: string;
+  expected_close_date?: string;
+}
+
+export interface BuyerTier {
+  client_id: string;
+  client_name: string;
+  tier: string;
+  effective_annual: number;
+  spend_per_frequency: string | null;
+  actual_paid: number;
+  invoices_sent: number;
+  last_invoice_date: string | null;
+  purchase_frequency: string | null;
+}
+
+export interface CustomerHealth {
+  client_id: string;
+  client_name: string;
+  score: number;
+  risk_level: 'healthy' | 'watch' | 'at_risk' | 'critical';
+  trend: 'improving' | 'stable' | 'declining';
+  risk_factors: string[];
+  last_interaction_days?: number;
+  last_invoice_days?: number;
+  avg_days_to_pay?: number;
+  revenue_trend_pct: number;
+}
+
 export interface InvoiceInput {
   client_id: string;
   due_date: string;
+  issue_date?: string;
   line_items: LineItem[];
   tax_rate: number;
   notes?: string;
   recurring?: string;
+}
+
+export interface DealHighlight {
+  deal_id: string;
+  client_name: string;
+  title: string;
+  asking_price: number;
+  margin_pct: number;
+}
+
+export interface InvoiceHighlight {
+  invoice_id: string;
+  client_name: string;
+  number: string;
+  total: number;
+}
+
+export interface StuckDeal {
+  deal_id: string;
+  title: string;
+  stage: string;
+  days_in_stage: number;
+}
+
+export interface WeeklyBrief {
+  generated_at: string;
+  week_start: string;
+  week_end: string;
+  revenue_this_week: number;
+  revenue_last_week: number;
+  revenue_change_pct: number;
+  profit_this_week: number;
+  profit_last_week: number;
+  profit_change_pct: number;
+  avg_margin_this_week: number;
+  deals_by_stage: { stage: string; count: number; value: number }[];
+  pipeline_value: number;
+  deals_closed_this_week: number;
+  deals_lost_this_week: number;
+  win_rate_this_week: number;
+  at_risk_customers: BuyerTier[];
+  overdue_invoices_count: number;
+  overdue_invoices_value: number;
+  follow_ups_due: number;
+  best_margin_deal: DealHighlight | null;
+  worst_margin_deal: DealHighlight | null;
+  biggest_invoice: InvoiceHighlight | null;
+  stuck_deals: StuckDeal[];
+  new_clients_this_week: number;
+  interactions_this_week: number;
+}
+
+export interface PipelineAnalytics {
+  funnel_counts: Record<string, number>;
+  funnel_values: Record<string, number>;
+  avg_days_per_stage: Record<string, number>;
+  conversion_rates: Record<string, number>;
+  win_rate_overall: number;
+  win_rate_last_30d: number;
+  win_rate_last_90d: number;
+  avg_deal_size_won: number;
+  avg_deal_size_lost: number;
+  avg_cycle_time_days: number;
+  stuck_deals: StuckDeal[];
+  top_lost_reasons: [string, number][];
+}
+
+export interface DuplicateGroup {
+  key: string;
+  count: number;
+  client_ids: string[];
+  names: string[];
 }
 
 export interface ParsedEmail {
@@ -217,6 +377,12 @@ export interface DashboardStats {
   avg_margin: number;
   monthly_profit: { month: string; revenue: number; cost: number; profit: number }[];
   top_clients_by_profit: { name: string; total_revenue: number; total_profit: number; margin: number }[];
+  pipeline_value: number;
+  pipeline_count: number;
+  incomplete_shipping: number;
+  category_breakdown: { category: string; client_count: number; revenue: number }[];
+  invoice_status_breakdown: { status: string; count: number; total: number }[];
+  top_spenders: { name: string; company: string | null; invoice_count: number; total_spent: number; total_profit: number; last_invoice: string | null }[];
 }
 
 export interface SyncStatus {
@@ -338,6 +504,32 @@ export const api = {
     invoke<void>("mark_invoice_deposit_pending", { invoiceId }),
   saveInvoiceCosts: (invoiceId: string, costItems: CostItem[]) =>
     invoke<void>("save_invoice_costs", { invoiceId, costItems }),
+  saveInvoiceShipping: (invoiceId: string, info: ShippingInfo) =>
+    invoke<void>("save_invoice_shipping", { invoiceId, info }),
+  setInvoiceSentDate: (invoiceId: string, sentDate: string) =>
+    invoke<void>("set_invoice_sent_date", { invoiceId, sentDate }),
+
+  // Deals
+  listDeals: () => invoke<Deal[]>("list_deals"),
+  listDealsByStage: (stage: string) => invoke<Deal[]>("list_deals_by_stage", { stage }),
+  getDeal: (id: string) => invoke<Deal>("get_deal", { id }),
+  createDeal: (input: DealInput) => invoke<string>("create_deal", { input }),
+  updateDeal: (id: string, input: DealInput) => invoke<void>("update_deal", { id, input }),
+  updateDealStage: (id: string, stage: string, lostReason?: string) =>
+    invoke<void>("update_deal_stage", { id, stage, lostReason }),
+  deleteDeal: (id: string) => invoke<void>("delete_deal", { id }),
+  convertDealToInvoice: (dealId: string) => invoke<string>("convert_deal_to_invoice", { dealId }),
+  supplierNameSuggestions: () => invoke<SupplierNameSuggestion[]>("supplier_name_suggestions"),
+
+  // Customer Health
+  customerHealthScores: () => invoke<CustomerHealth[]>("customer_health_scores"),
+  getCustomerHealth: (clientId: string) => invoke<CustomerHealth>("get_customer_health", { clientId }),
+  buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
+  getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),
+  generateWeeklyBrief: () => invoke<WeeklyBrief>("generate_weekly_brief"),
+  pipelineAnalytics: (timeframeDays?: number) => invoke<PipelineAnalytics>("pipeline_analytics", { timeframeDays }),
+  detectDuplicateClients: () => invoke<DuplicateGroup[]>("detect_duplicate_clients"),
+  cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),
 
   // Email
   sendEmail: (to: string, subject: string, body: string, attachmentPath?: string) =>

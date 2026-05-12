@@ -337,4 +337,61 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE invoices ADD COLUMN margin REAL DEFAULT 0;
         "#,
     ),
+    (
+        17,
+        r#"
+        -- Deal pipeline tracking (synced)
+        CREATE TABLE IF NOT EXISTS deals (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'lead',
+            line_items_json TEXT NOT NULL DEFAULT '[]',
+            supplier_costs_json TEXT NOT NULL DEFAULT '[]',
+            shipping_cost REAL DEFAULT 0,
+            other_costs REAL DEFAULT 0,
+            asking_price REAL DEFAULT 0,
+            payment_terms TEXT,
+            notes TEXT,
+            expected_close_date TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            won_at TEXT,
+            lost_at TEXT,
+            lost_reason TEXT,
+            converted_invoice_id TEXT,
+            metadata TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals(stage);
+        CREATE INDEX IF NOT EXISTS idx_deals_client ON deals(client_id);
+        CREATE INDEX IF NOT EXISTS idx_deals_updated ON deals(updated_at);
+        "#,
+    ),
+    (
+        18,
+        r#"
+        -- Shipping info tracking on invoices (synced)
+        ALTER TABLE invoices ADD COLUMN carrier TEXT;
+        ALTER TABLE invoices ADD COLUMN tracking_number TEXT;
+        ALTER TABLE invoices ADD COLUMN shipping_charged REAL DEFAULT 0;
+        ALTER TABLE invoices ADD COLUMN pickup_date TEXT;
+        ALTER TABLE invoices ADD COLUMN delivery_date TEXT;
+        ALTER TABLE invoices ADD COLUMN is_complete INTEGER DEFAULT 0;
+        "#,
+    ),
+    (
+        19,
+        r#"
+        -- Deal stage history tracking (local-only, not synced)
+        CREATE TABLE IF NOT EXISTS deal_stage_history (
+            id TEXT PRIMARY KEY,
+            deal_id TEXT NOT NULL,
+            from_stage TEXT,
+            to_stage TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            FOREIGN KEY (deal_id) REFERENCES deals(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stage_history_deal ON deal_stage_history(deal_id);
+        "#,
+    ),
 ];

@@ -37,6 +37,9 @@ import {
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+
 export default function SettingsView() {
   const [tab, setTab] = useState<
     "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets"
@@ -46,18 +49,21 @@ export default function SettingsView() {
 
   return (
     <div>
-      <h2 className="text-[18px] font-semibold text-gray-900 mb-4">Settings</h2>
+      <div className="mb-5">
+        <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Settings</h2>
+        <p className="text-[12px] text-gray-400 mt-0.5">Configure your account, integrations, and preferences.</p>
+      </div>
 
-      {/* Underline tabs */}
-      <div className="flex gap-0 border-b border-gray-200 mb-6">
+      {/* Underline tab bar */}
+      <div className="flex gap-0 border-b border-gray-100 mb-7 overflow-x-auto">
         {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px capitalize transition-colors ${
+            className={`px-4 py-2.5 text-[13px] border-b-2 -mb-px capitalize transition-colors whitespace-nowrap ${
               tab === t
-                ? "border-indigo-600 text-indigo-700 font-medium"
-                : "border-transparent text-gray-500 hover:text-gray-800"
+                ? "border-indigo-500 text-indigo-700 font-medium"
+                : "border-transparent text-gray-400 hover:text-gray-700"
             }`}
           >
             {t}
@@ -95,13 +101,13 @@ function SecretInput({
           type={showSecrets ? "text" : "password"}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full pr-10 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+          className={inp}
           placeholder="•••••••• (leave blank to keep current)"
         />
         <button
           type="button"
           onClick={onToggleSecrets}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 transition-colors"
         >
           {showSecrets ? <EyeOff size={14} /> : <Eye size={14} />}
         </button>
@@ -119,15 +125,15 @@ function EmailTab() {
     user: "",
     auth_method: "password",
   });
-  const [smtpPass, setSmtpPass] = useState("");
-  const [imapPass, setImapPass] = useState("");
-  const [oauthClientId, setOauthClientId] = useState("");
-  const [oauthClientSecret, setOauthClientSecret] = useState("");
-  const [oauthConnecting, setOauthConnecting] = useState(false);
-  const [oauthConnected, setOauthConnected] = useState(false);
-  const [showSecrets, setShowSecrets] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [smtpPass,         setSmtpPass]         = useState("");
+  const [imapPass,         setImapPass]         = useState("");
+  const [oauthClientId,    setOauthClientId]    = useState("");
+  const [oauthClientSecret,setOauthClientSecret]= useState("");
+  const [oauthConnecting,  setOauthConnecting]  = useState(false);
+  const [oauthConnected,   setOauthConnected]   = useState(false);
+  const [showSecrets,      setShowSecrets]      = useState(false);
+  const [saved,            setSaved]            = useState(false);
+  const [error,            setError]            = useState<string | null>(null);
 
   useEffect(() => {
     api.getEmailSettings().then((s) => s && setSettings(s)).catch(console.error);
@@ -162,76 +168,51 @@ function EmailTab() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e: any) {
-      console.error("Settings save error:", e);
       setError(e.toString());
     }
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-2xl">
-      <p className="text-[13px] text-gray-500 mb-5">
-        Credentials are stored in your operating system's keychain — never written to plain disk or synced.
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <p className="text-[12px] text-gray-400 mb-5">
+        Credentials are stored in your OS keychain — never written to disk or synced.
       </p>
 
       <Field label="Auth method">
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2 text-[14px] text-gray-700 cursor-pointer">
-            <input
-              type="radio"
-              checked={settings.auth_method === "password"}
-              onChange={() => setSettings({ ...settings, auth_method: "password" })}
-            />
-            Password / App Password
-          </label>
-          <label className="flex items-center gap-2 text-[14px] text-gray-700 cursor-pointer">
-            <input
-              type="radio"
-              checked={settings.auth_method === "oauth2"}
-              onChange={() => setSettings({ ...settings, auth_method: "oauth2" })}
-            />
-            OAuth2 (Gmail/Outlook)
-          </label>
+        <div className="flex gap-5">
+          {[
+            { val: "password", label: "Password / App Password" },
+            { val: "oauth2",   label: "OAuth2 (Gmail / Outlook)" },
+          ].map((opt) => (
+            <label key={opt.val} className="flex items-center gap-2 text-[14px] text-gray-700 cursor-pointer">
+              <input
+                type="radio"
+                checked={settings.auth_method === opt.val}
+                onChange={() => setSettings({ ...settings, auth_method: opt.val as "password" | "oauth2" })}
+                className="accent-indigo-600"
+              />
+              {opt.label}
+            </label>
+          ))}
         </div>
       </Field>
 
       <Field label="Email address">
-        <input
-          className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          value={settings.user}
-          onChange={(e) => setSettings({ ...settings, user: e.target.value })}
-        />
+        <input className={inp} value={settings.user} onChange={(e) => setSettings({ ...settings, user: e.target.value })} />
       </Field>
 
       <div className="grid grid-cols-2 gap-4">
         <Field label="SMTP host">
-          <input
-            className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={settings.smtp_host}
-            onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })}
-          />
+          <input className={inp} value={settings.smtp_host} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} />
         </Field>
         <Field label="SMTP port">
-          <input
-            type="number"
-            className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={settings.smtp_port}
-            onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 587 })}
-          />
+          <input type="number" className={inp} value={settings.smtp_port} onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 587 })} />
         </Field>
         <Field label="IMAP host">
-          <input
-            className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={settings.imap_host}
-            onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })}
-          />
+          <input className={inp} value={settings.imap_host} onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })} />
         </Field>
         <Field label="IMAP port">
-          <input
-            type="number"
-            className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={settings.imap_port}
-            onChange={(e) => setSettings({ ...settings, imap_port: parseInt(e.target.value) || 993 })}
-          />
+          <input type="number" className={inp} value={settings.imap_port} onChange={(e) => setSettings({ ...settings, imap_port: parseInt(e.target.value) || 993 })} />
         </Field>
       </div>
 
@@ -242,45 +223,45 @@ function EmailTab() {
         </>
       ) : (
         <>
-          <SecretInput label="OAuth Client ID" value={oauthClientId} onChange={setOauthClientId} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <SecretInput label="OAuth Client ID"     value={oauthClientId}     onChange={setOauthClientId}     showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
           <SecretInput label="OAuth Client Secret" value={oauthClientSecret} onChange={setOauthClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
           <div className="mb-4">
-            <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Google Authorization</label>
+            <label className="block text-[12px] font-medium text-gray-500 mb-1.5">Google Authorization</label>
             <button
               type="button"
               onClick={authorize}
               disabled={oauthConnecting || !oauthClientId || !oauthClientSecret}
-              className={`px-4 h-9 rounded-md text-[14px] font-medium disabled:opacity-50 flex items-center gap-2 ${
+              className={`px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors ${
                 oauthConnected
                   ? "bg-emerald-600 hover:bg-emerald-700 text-white"
                   : "bg-indigo-600 hover:bg-indigo-700 text-white"
               }`}
             >
               {oauthConnecting ? (
-                <><RefreshCw size={14} className="animate-spin" /> Authorizing...</>
+                <><RefreshCw size={13} className="animate-spin" /> Authorizing...</>
               ) : oauthConnected ? (
-                <><Check size={14} /> Connected</>
+                <><Check size={13} /> Connected</>
               ) : (
                 "Authorize with Google"
               )}
             </button>
           </div>
-          <p className="text-[12px] text-gray-500 mb-3">
-            Enter your Client ID and Client Secret from the Google Cloud Console, click Authorize, and approve access in your browser.
+          <p className="text-[12px] text-gray-400 mb-4">
+            Enter your Client ID and Secret from Google Cloud Console, then click Authorize and approve access in your browser.
           </p>
         </>
       )}
 
       {error && (
-        <div className="text-red-600 text-[13px] flex items-center gap-1.5 mt-2 mb-2">
-          <AlertCircle size={14} /> {error}
+        <div className="text-red-600 text-[13px] flex items-center gap-1.5 mt-2 mb-3">
+          <AlertCircle size={13} /> {error}
         </div>
       )}
       <button
         onClick={save}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 mt-2 transition-colors"
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
       >
-        {saved ? <Check size={14} /> : <Save size={14} />}
+        {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved" : "Save Settings"}
       </button>
     </div>
@@ -288,9 +269,7 @@ function EmailTab() {
 }
 
 function CompanyTab() {
-  const [info, setInfo] = useState<CompanyInfo>({
-    name: "", address: "", email: "", phone: "", tax_id: "",
-  });
+  const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -311,36 +290,34 @@ function CompanyTab() {
     if (typeof selected === "string") setInfo({ ...info, logo_path: selected });
   };
 
-  const removeLogo = () => setInfo({ ...info, logo_path: null });
-
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-2xl">
-      <p className="text-[13px] text-gray-500 mb-5">This information appears on every PDF invoice.</p>
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <p className="text-[12px] text-gray-400 mb-5">This information appears on every PDF invoice.</p>
 
       <Field label="Company Logo">
         <div className="flex items-center gap-3">
           {info.logo_path ? (
             <div className="relative">
               <img
-                src={info.logo_path ? convertFileSrc(info.logo_path) : undefined}
+                src={convertFileSrc(info.logo_path)}
                 alt="Logo preview"
-                className="h-16 w-auto border border-gray-200 rounded-md object-contain bg-gray-50"
+                className="h-16 w-auto border border-gray-100 rounded-lg object-contain bg-gray-50"
               />
               <button
-                onClick={removeLogo}
-                className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5"
+                onClick={() => setInfo({ ...info, logo_path: null })}
+                className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5 hover:bg-red-600 transition-colors"
               >
                 <Trash2 size={10} />
               </button>
             </div>
           ) : (
-            <div className="h-16 w-16 border border-gray-200 rounded-md bg-gray-50 flex items-center justify-center text-gray-300">
-              <Image size={24} />
+            <div className="h-16 w-16 border border-gray-100 rounded-lg bg-gray-50 flex items-center justify-center text-gray-300">
+              <Image size={22} />
             </div>
           )}
           <button
             onClick={pickLogo}
-            className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 h-9 rounded-md text-[14px] transition-colors"
+            className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 h-9 rounded-lg text-[13px] transition-colors"
           >
             {info.logo_path ? "Change" : "Choose Logo"}
           </button>
@@ -348,31 +325,26 @@ function CompanyTab() {
       </Field>
 
       <Field label="Company name">
-        <input className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          value={info.name} onChange={(e) => setInfo({ ...info, name: e.target.value })} />
+        <input className={inp} value={info.name}    onChange={(e) => setInfo({ ...info, name: e.target.value })} />
       </Field>
       <Field label="Address">
-        <input className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          value={info.address} onChange={(e) => setInfo({ ...info, address: e.target.value })} />
+        <input className={inp} value={info.address} onChange={(e) => setInfo({ ...info, address: e.target.value })} />
       </Field>
       <Field label="Email">
-        <input className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          value={info.email} onChange={(e) => setInfo({ ...info, email: e.target.value })} />
+        <input className={inp} value={info.email}   onChange={(e) => setInfo({ ...info, email: e.target.value })} />
       </Field>
       <Field label="Phone">
-        <input className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          value={info.phone ?? ""} onChange={(e) => setInfo({ ...info, phone: e.target.value })} />
+        <input className={inp} value={info.phone ?? ""} onChange={(e) => setInfo({ ...info, phone: e.target.value })} />
       </Field>
       <Field label="Tax ID / EIN">
-        <input className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          value={info.tax_id ?? ""} onChange={(e) => setInfo({ ...info, tax_id: e.target.value })} />
+        <input className={inp} value={info.tax_id ?? ""} onChange={(e) => setInfo({ ...info, tax_id: e.target.value })} />
       </Field>
 
       <button
         onClick={save}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 transition-colors"
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
       >
-        {saved ? <Check size={14} /> : <Save size={14} />}
+        {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved" : "Save"}
       </button>
     </div>
@@ -380,9 +352,9 @@ function CompanyTab() {
 }
 
 function AiTab() {
-  const [models, setModels] = useState<OllamaModel[]>([]);
-  const [selected, setSelected] = useState("");
-  const [online, setOnline] = useState<boolean | null>(null);
+  const [models,  setModels]  = useState<OllamaModel[]>([]);
+  const [selected,setSelected]= useState("");
+  const [online,  setOnline]  = useState<boolean | null>(null);
 
   useEffect(() => {
     api.aiHealthCheck().then(setOnline);
@@ -394,24 +366,25 @@ function AiTab() {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-2xl">
-      <div className="mb-5">
-        <span className="text-[14px] font-medium text-gray-700">Ollama status: </span>
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      {/* Status indicator */}
+      <div className="flex items-center gap-2 mb-5 pb-5 border-b border-gray-50">
+        <span className="text-[13px] font-medium text-gray-600">Ollama status</span>
         {online === null ? (
-          <span className="text-[14px] text-gray-400">checking...</span>
-        ) : online ? (
-          <span className="text-[14px] text-emerald-600 font-medium">online</span>
+          <span className="text-[13px] text-gray-400">checking...</span>
         ) : (
-          <span className="text-[14px] text-red-600">
-            offline — start with{" "}
-            <code className="bg-gray-100 px-1.5 py-0.5 rounded text-[13px]">ollama serve</code>
+          <span className={`flex items-center gap-1.5 text-[13px] font-medium ${online ? "text-emerald-600" : "text-red-500"}`}>
+            <span className={`w-2 h-2 rounded-full ${online ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]" : "bg-red-400"}`} />
+            {online ? "Online" : (
+              <>offline — start with <code className="bg-gray-100 px-1.5 py-0.5 rounded-md text-[12px] ml-1">ollama serve</code></>
+            )}
           </span>
         )}
       </div>
 
       <Field label="Active model">
         <select
-          className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+          className={inp}
           value={selected}
           onChange={(e) => setSelected(e.target.value)}
         >
@@ -424,7 +397,7 @@ function AiTab() {
         </select>
       </Field>
 
-      <p className="text-[12px] text-gray-500 mb-4">
+      <p className="text-[12px] text-gray-400 mb-5">
         Recommended: <code className="bg-gray-100 px-1 rounded">llama3.1:8b</code> for general use,{" "}
         <code className="bg-gray-100 px-1 rounded">qwen2.5:14b</code> for better extraction quality.
         Pull with <code className="bg-gray-100 px-1.5 py-0.5 rounded">ollama pull &lt;model&gt;</code>.
@@ -433,7 +406,7 @@ function AiTab() {
       <button
         onClick={save}
         disabled={!selected}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium disabled:opacity-40 transition-colors"
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
       >
         Set Active Model
       </button>
@@ -442,16 +415,15 @@ function AiTab() {
 }
 
 function SyncTab() {
-  const [status, setStatus] = useState<{ events_applied: number; last_applied: string | null } | null>(null);
-  const [replaying, setReplaying] = useState(false);
-  const [encrypted, setEncrypted] = useState<boolean | null>(null);
-  const [passphrase, setPassphrase] = useState("");
-  const [settingPassphrase, setSettingPassphrase] = useState(false);
-  const [encryptError, setEncryptError] = useState<string | null>(null);
+  const [status,           setStatus]           = useState<{ events_applied: number; last_applied: string | null } | null>(null);
+  const [replaying,        setReplaying]        = useState(false);
+  const [encrypted,        setEncrypted]        = useState<boolean | null>(null);
+  const [passphrase,       setPassphrase]       = useState("");
+  const [settingPassphrase,setSettingPassphrase]= useState(false);
+  const [encryptError,     setEncryptError]     = useState<string | null>(null);
 
-  const refresh = () => api.syncStatus().then(setStatus);
-  const checkEncrypted = () => api.syncIsEncrypted().then(setEncrypted).catch(() => {});
-
+  const refresh       = () => api.syncStatus().then(setStatus);
+  const checkEncrypted= () => api.syncIsEncrypted().then(setEncrypted).catch(() => {});
   useEffect(() => { refresh(); checkEncrypted(); }, []);
 
   const replay = async () => {
@@ -476,47 +448,52 @@ function SyncTab() {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-2xl space-y-6">
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl space-y-6">
+      {/* Status */}
       <div>
-        <h3 className="text-[14px] font-semibold text-gray-900 mb-2">Sync Status</h3>
-        <div className="text-[14px] text-gray-600 space-y-1">
-          <div>
-            Events applied:{" "}
-            <span className="font-mono text-[13px] text-gray-800">{status?.events_applied ?? 0}</span>
+        <SectionLabel>Sync Status</SectionLabel>
+        <div className="bg-gray-50/80 border border-gray-100 rounded-xl px-4 py-3 space-y-1.5 mt-2">
+          <div className="flex justify-between text-[13px]">
+            <span className="text-gray-500">Events applied</span>
+            <span className="font-mono text-gray-800">{status?.events_applied ?? 0}</span>
           </div>
-          <div>
-            Last applied:{" "}
-            <span className="font-mono text-[13px] text-gray-800">
+          <div className="flex justify-between text-[13px]">
+            <span className="text-gray-500">Last applied</span>
+            <span className="font-mono text-gray-800">
               {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "—"}
             </span>
           </div>
         </div>
+        <button
+          onClick={replay}
+          disabled={replaying}
+          className="mt-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-5 h-9 rounded-lg text-[13px] transition-colors disabled:opacity-50"
+        >
+          {replaying ? "Replaying..." : "Replay All Events"}
+        </button>
       </div>
 
-      <button
-        onClick={replay}
-        disabled={replaying}
-        className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-5 h-9 rounded-md text-[14px] transition-colors"
-      >
-        {replaying ? "Replaying..." : "Replay All Events"}
-      </button>
-
+      {/* Updates */}
       <div className="border-t border-gray-100 pt-5">
-        <h3 className="text-[14px] font-semibold text-gray-900 mb-2">Updates</h3>
-        <UpdateButton />
+        <SectionLabel>App Updates</SectionLabel>
+        <div className="mt-2">
+          <UpdateButton />
+        </div>
       </div>
 
+      {/* Encryption */}
       <div className="border-t border-gray-100 pt-5">
-        <h3 className="text-[14px] font-semibold text-gray-900 mb-2">Encryption</h3>
+        <SectionLabel>Encryption</SectionLabel>
         {encrypted === null ? (
-          <p className="text-[14px] text-gray-400">checking...</p>
+          <p className="text-[13px] text-gray-400 mt-2">checking...</p>
         ) : encrypted ? (
-          <p className="text-[14px] text-emerald-600 font-medium">
-            Enabled — sync events are encrypted at rest
-          </p>
+          <div className="flex items-center gap-2 mt-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]" />
+            <p className="text-[13px] text-emerald-600 font-medium">Sync events are encrypted at rest</p>
+          </div>
         ) : (
-          <div>
-            <p className="text-[13px] text-gray-600 mb-3">
+          <div className="mt-2">
+            <p className="text-[12px] text-gray-500 mb-3">
               Protect your sync data with a passphrase. All sync event files will be encrypted with
               ChaCha20-Poly1305. Enter the same passphrase on every device.
             </p>
@@ -526,35 +503,36 @@ function SyncTab() {
                 placeholder="Enter passphrase..."
                 value={passphrase}
                 onChange={(e) => setPassphrase(e.target.value)}
-                className="border border-gray-300 px-3 h-10 rounded-md text-[14px] flex-1 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className={`${inp} flex-1`}
               />
               <button
                 onClick={handleSetPassphrase}
                 disabled={settingPassphrase || !passphrase.trim()}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-10 rounded-md text-[14px] font-medium disabled:opacity-40"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
               >
                 {settingPassphrase ? "Setting..." : "Enable"}
               </button>
             </div>
             {encryptError && (
-              <div className="text-red-600 text-[13px] mt-2 flex items-center gap-1.5">
-                <AlertCircle size={14} /> {encryptError}
+              <div className="text-red-500 text-[13px] mt-2 flex items-center gap-1.5">
+                <AlertCircle size={13} /> {encryptError}
               </div>
             )}
           </div>
         )}
       </div>
 
+      {/* How sync works */}
       <div className="border-t border-gray-100 pt-5">
-        <h3 className="text-[14px] font-semibold text-gray-900 mb-2">How sync works</h3>
-        <p className="text-[13px] text-gray-600 mb-2">
+        <SectionLabel>How Sync Works</SectionLabel>
+        <p className="text-[12px] text-gray-500 mt-2 mb-2">
           ClientHub uses an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
         </p>
-        <code className="block bg-gray-50 border border-gray-200 px-4 py-3 rounded-lg text-[12px] font-mono text-gray-600">
+        <code className="block bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl text-[11px] font-mono text-gray-500">
           ~/Library/Application Support/com.bjmdistributions.clienthub/sync/ (macOS)<br />
           %APPDATA%\com.bjmdistributions.clienthub\sync\ (Windows)
         </code>
-        <p className="text-[13px] text-gray-600 mt-2">
+        <p className="text-[12px] text-gray-500 mt-2">
           Point Syncthing or another file-sync tool at this folder. Conflict-free merging is handled
           automatically per-column with last-write-wins semantics.
         </p>
@@ -564,13 +542,13 @@ function SyncTab() {
 }
 
 function ImportTab() {
-  const [path, setPath] = useState<string | null>(null);
-  const [preview, setPreview] = useState<CsvPreview | null>(null);
-  const [mapping, setMapping] = useState<Record<string, string>>({});
-  const [metaKeys, setMetaKeys] = useState<string[]>([]);
+  const [path,      setPath]      = useState<string | null>(null);
+  const [preview,   setPreview]   = useState<CsvPreview | null>(null);
+  const [mapping,   setMapping]   = useState<Record<string, string>>({});
+  const [metaKeys,  setMetaKeys]  = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
-  const [summary, setSummary] = useState<ImportSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [summary,   setSummary]   = useState<ImportSummary | null>(null);
+  const [error,     setError]     = useState<string | null>(null);
 
   const CORE_FIELDS = [
     { key: "first_name", label: "First Name *" },
@@ -584,10 +562,7 @@ function ImportTab() {
   const pickFile = async () => {
     setError(null);
     setSummary(null);
-    const selected = await openDialog({
-      multiple: false,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
+    const selected = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
     if (typeof selected !== "string") return;
     setPath(selected);
     try {
@@ -619,38 +594,36 @@ function ImportTab() {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-3xl">
-      <h3 className="text-[15px] font-semibold text-gray-900 mb-1">Import from Google Sheets / CSV</h3>
-      <p className="text-[13px] text-gray-500 mb-5">
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-3xl">
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Import from Google Sheets / CSV</h3>
+      <p className="text-[12px] text-gray-400 mb-5">
         Export your sheet as CSV (File → Download → CSV in Google Sheets), then upload it here.
         Existing clients are deduplicated by email.
       </p>
 
       <button
         onClick={pickFile}
-        className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-md text-[14px] flex items-center gap-2 mb-4 transition-colors"
+        className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-lg text-[13px] flex items-center gap-2 mb-4 transition-colors"
       >
-        <Upload size={14} /> {path ? "Change file" : "Choose CSV file"}
+        <Upload size={13} /> {path ? "Change file" : "Choose CSV file"}
       </button>
 
-      {path && (
-        <div className="text-[12px] text-gray-500 mb-4 font-mono">{path}</div>
-      )}
+      {path && <div className="text-[12px] text-gray-400 mb-4 font-mono">{path}</div>}
 
       {preview && (
         <>
-          <div className="bg-gray-50 border border-gray-200 px-4 py-3 rounded-lg mb-5">
-            <div className="text-[14px] font-medium text-gray-800 mb-1">{preview.total_rows} rows detected</div>
-            <div className="text-[12px] text-gray-500">Headers: {preview.headers.join(", ")}</div>
+          <div className="bg-gray-50/80 border border-gray-100 px-4 py-3 rounded-xl mb-5">
+            <div className="text-[13px] font-medium text-gray-800 mb-0.5">{preview.total_rows} rows detected</div>
+            <div className="text-[12px] text-gray-400">Headers: {preview.headers.join(", ")}</div>
           </div>
 
-          <h4 className="text-[13px] font-semibold text-gray-700 mb-3">Map columns</h4>
-          <div className="space-y-2 mb-5">
+          <SectionLabel>Map Columns</SectionLabel>
+          <div className="space-y-2 mt-2 mb-5">
             {CORE_FIELDS.map((f) => (
               <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
-                <label className="text-[14px] text-gray-700">{f.label}</label>
+                <label className="text-[13px] text-gray-700">{f.label}</label>
                 <select
-                  className="col-span-2 border border-gray-300 px-3 h-9 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="col-span-2 border border-gray-200 px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
                   value={mapping[f.key] ?? ""}
                   onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value })}
                 >
@@ -661,10 +634,8 @@ function ImportTab() {
             ))}
           </div>
 
-          <h4 className="text-[13px] font-semibold text-gray-700 mb-2">
-            Extra fields → metadata ({metaKeys.length} selected)
-          </h4>
-          <div className="flex flex-wrap gap-2 mb-5">
+          <SectionLabel>Extra Fields → Metadata ({metaKeys.length} selected)</SectionLabel>
+          <div className="flex flex-wrap gap-2 mt-2 mb-5">
             {preview.headers
               .filter((h) => !Object.values(mapping).includes(h))
               .map((h) => (
@@ -682,13 +653,13 @@ function ImportTab() {
               ))}
           </div>
 
-          <div className="text-[12px] font-semibold text-gray-600 mb-2">Preview (first 5 rows):</div>
-          <div className="overflow-auto max-h-40 mb-5 border border-gray-200 rounded-lg">
+          <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Preview (first 5 rows)</div>
+          <div className="overflow-auto max-h-40 mb-5 border border-gray-100 rounded-xl">
             <table className="text-[12px] w-full">
               <thead className="bg-gray-50">
                 <tr>
                   {preview.headers.map((h) => (
-                    <th key={h} className="text-left px-3 py-2 font-semibold text-gray-600">{h}</th>
+                    <th key={h} className="text-left px-3 py-2 font-semibold text-gray-500">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -696,7 +667,7 @@ function ImportTab() {
                 {preview.rows.map((row, i) => (
                   <tr key={i} className="border-t border-gray-100">
                     {row.map((cell, j) => (
-                      <td key={j} className="px-3 py-1.5 truncate max-w-[120px] text-gray-700">{cell}</td>
+                      <td key={j} className="px-3 py-1.5 truncate max-w-[120px] text-gray-600">{cell}</td>
                     ))}
                   </tr>
                 ))}
@@ -707,7 +678,7 @@ function ImportTab() {
           <button
             onClick={runImport}
             disabled={importing || (!mapping.first_name && !mapping.last_name)}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium disabled:opacity-40 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
           >
             {importing ? "Importing..." : `Import ${preview.total_rows} clients`}
           </button>
@@ -715,19 +686,19 @@ function ImportTab() {
       )}
 
       {summary && (
-        <div className="mt-5 p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
-          <div className="text-[14px] font-medium text-emerald-800">
+        <div className="mt-5 p-4 bg-emerald-50 border border-emerald-100 rounded-xl">
+          <div className="text-[13px] font-medium text-emerald-800">
             ✓ Imported {summary.imported} clients
           </div>
           {summary.skipped > 0 && (
-            <div className="text-[13px] text-gray-600 mt-1">
+            <div className="text-[12px] text-gray-600 mt-1">
               Skipped {summary.skipped} (duplicates or empty names)
             </div>
           )}
           {summary.errors.length > 0 && (
             <details className="mt-2">
-              <summary className="cursor-pointer text-[13px] text-red-600">{summary.errors.length} errors</summary>
-              <ul className="text-[12px] mt-1 space-y-0.5 text-gray-700">
+              <summary className="cursor-pointer text-[12px] text-red-600">{summary.errors.length} errors</summary>
+              <ul className="text-[11px] mt-1 space-y-0.5 text-gray-600">
                 {summary.errors.map((e, i) => (<li key={i}>{e}</li>))}
               </ul>
             </details>
@@ -736,8 +707,8 @@ function ImportTab() {
       )}
 
       {error && (
-        <div className="mt-4 text-red-600 text-[13px] flex items-center gap-1.5">
-          <AlertCircle size={14} /> {error}
+        <div className="mt-4 text-red-500 text-[13px] flex items-center gap-1.5">
+          <AlertCircle size={13} /> {error}
         </div>
       )}
     </div>
@@ -745,9 +716,9 @@ function ImportTab() {
 }
 
 function AutomationTab() {
-  const [rules, setRules] = useState<SignupRule[]>([]);
+  const [rules,    setRules]    = useState<SignupRule[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", sender_pattern: "", subject_pattern: "" });
+  const [form,     setForm]     = useState({ name: "", sender_pattern: "", subject_pattern: "" });
 
   const load = () => api.listSignupRules().then(setRules).catch(console.error);
   useEffect(() => { load(); }, []);
@@ -772,19 +743,19 @@ function AutomationTab() {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-3xl">
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-3xl">
       <div className="flex items-center gap-2 mb-1">
-        <Sparkles size={16} className="text-indigo-600" />
-        <h3 className="text-[15px] font-semibold text-gray-900">Auto-detect Signup Emails</h3>
+        <Sparkles size={15} className="text-indigo-500" />
+        <h3 className="text-[14px] font-semibold text-gray-900">Auto-detect Signup Emails</h3>
       </div>
-      <p className="text-[13px] text-gray-500 mb-5">
-        When an incoming email matches a rule, the AI extracts client info from the body and
+      <p className="text-[12px] text-gray-400 mb-5">
+        When an incoming email matches a rule, AI extracts client info from the body and
         auto-creates a client record. Patterns are{" "}
         <a
           href="https://docs.rs/regex/latest/regex/#syntax"
           target="_blank"
           rel="noreferrer"
-          className="text-indigo-600 underline"
+          className="text-indigo-500 underline"
         >
           regular expressions
         </a>.
@@ -792,45 +763,45 @@ function AutomationTab() {
 
       <button
         onClick={() => setShowForm(true)}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mb-5 transition-colors"
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors"
       >
-        <Plus size={14} /> Add rule
+        <Plus size={13} /> Add rule
       </button>
 
       {showForm && (
-        <div className="border border-gray-200 rounded-lg p-4 mb-5 space-y-3 bg-gray-50">
+        <div className="border border-gray-100 rounded-xl p-4 mb-5 space-y-3 bg-gray-50/80">
           <div>
-            <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Rule name</label>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Rule name</label>
             <input
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              className={inp}
               placeholder="e.g. Typeform new client signups"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
           </div>
           <div>
-            <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Sender pattern (regex)</label>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Sender pattern (regex)</label>
             <input
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              className={`${inp} font-mono`}
               placeholder="e.g. noreply@typeform\.com"
               value={form.sender_pattern}
               onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })}
             />
           </div>
           <div>
-            <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Subject pattern (regex)</label>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Subject pattern (regex)</label>
             <input
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              className={`${inp} font-mono`}
               placeholder="e.g. (?i)new\s+(client|signup|inquiry)"
               value={form.subject_pattern}
               onChange={(e) => setForm({ ...form, subject_pattern: e.target.value })}
             />
           </div>
           <div className="flex justify-end gap-2">
-            <button onClick={() => setShowForm(false)} className="text-[14px] text-gray-500 hover:text-gray-800">Cancel</button>
+            <button onClick={() => setShowForm(false)} className="text-[13px] text-gray-500 hover:text-gray-800 transition-colors">Cancel</button>
             <button
               onClick={save}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
             >
               Save Rule
             </button>
@@ -840,18 +811,19 @@ function AutomationTab() {
 
       <div className="space-y-2">
         {rules.map((r) => (
-          <div key={r.id} className="border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between hover:border-gray-300 transition-colors">
+          <div key={r.id} className="border border-gray-100 rounded-xl px-4 py-3 flex items-center justify-between hover:border-gray-200 transition-colors">
             <div className="flex-1">
-              <div className="text-[14px] font-medium text-gray-900">{r.name}</div>
-              <div className="text-[12px] text-gray-500 font-mono space-y-0.5 mt-1">
+              <div className="text-[13px] font-medium text-gray-900">{r.name}</div>
+              <div className="text-[11px] text-gray-400 font-mono space-y-0.5 mt-0.5">
                 {r.sender_pattern && <div>From: {r.sender_pattern}</div>}
                 {r.subject_pattern && <div>Subject: {r.subject_pattern}</div>}
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <label className="flex items-center gap-1.5 text-[13px] cursor-pointer text-gray-600">
+              <label className="flex items-center gap-1.5 text-[12px] cursor-pointer text-gray-500">
                 <input
                   type="checkbox"
+                  className="accent-indigo-600"
                   checked={r.active}
                   onChange={(e) => api.toggleSignupRule(r.id, e.target.checked).then(load)}
                 />
@@ -859,23 +831,23 @@ function AutomationTab() {
               </label>
               <button
                 onClick={() => confirm("Delete rule?") && api.deleteSignupRule(r.id).then(load)}
-                className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
+                className="text-gray-300 hover:text-red-500 p-1 rounded-lg hover:bg-red-50 transition-colors"
               >
-                <Trash2 size={14} />
+                <Trash2 size={13} />
               </button>
             </div>
           </div>
         ))}
         {rules.length === 0 && (
-          <div className="text-center text-[14px] text-gray-400 py-8">
+          <div className="text-center text-[13px] text-gray-400 py-10">
             No rules yet. Add one to start auto-importing clients from signup emails.
           </div>
         )}
       </div>
 
-      <div className="mt-6 p-4 bg-indigo-50 border border-indigo-200 rounded-lg text-[12px]">
-        <div className="font-semibold text-indigo-900 mb-1.5">Example rules</div>
-        <div className="space-y-1 text-indigo-800">
+      <div className="mt-6 p-4 bg-indigo-50/70 border border-indigo-100 rounded-xl text-[12px]">
+        <div className="font-semibold text-indigo-800 mb-1.5">Example rules</div>
+        <div className="space-y-1 text-indigo-700">
           <div>• Typeform: <code className="bg-indigo-100 px-1 rounded">noreply@typeform\.com</code> + any subject</div>
           <div>• Google Forms: <code className="bg-indigo-100 px-1 rounded">forms-receipts-noreply@google\.com</code></div>
           <div>• Your contact form: <code className="bg-indigo-100 px-1 rounded">contact@yourbusiness\.com</code> + subject <code className="bg-indigo-100 px-1 rounded">(?i)new inquiry</code></div>
@@ -887,7 +859,7 @@ function AutomationTab() {
 
 function UpdateButton() {
   const [checking, setChecking] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status,   setStatus]   = useState<string | null>(null);
 
   const checkForUpdates = async () => {
     setChecking(true);
@@ -910,20 +882,20 @@ function UpdateButton() {
       <button
         onClick={checkForUpdates}
         disabled={checking}
-        className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-5 h-9 rounded-md text-[14px] disabled:opacity-50 transition-colors"
+        className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-5 h-9 rounded-lg text-[13px] disabled:opacity-50 transition-colors"
       >
         {checking ? "Checking..." : "Check for Updates"}
       </button>
-      {status && <p className="text-[13px] text-gray-600 mt-2">{status}</p>}
+      {status && <p className="text-[12px] text-gray-500 mt-2">{status}</p>}
     </div>
   );
 }
 
 function PaymentsTab() {
-  const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  const [methods,  setMethods]  = useState<PaymentMethod[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [editing, setEditing] = useState<PaymentMethod | null>(null);
-  const [form, setForm] = useState<PaymentMethodInput>({ kind: "ACH", label: "", details: "" });
+  const [editing,  setEditing]  = useState<PaymentMethod | null>(null);
+  const [form,     setForm]     = useState<PaymentMethodInput>({ kind: "ACH", label: "", details: "" });
 
   const load = () => api.listPaymentMethods().then(setMethods).catch(console.error);
   useEffect(() => { load(); }, []);
@@ -967,23 +939,23 @@ function PaymentsTab() {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-3xl">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-[15px] font-semibold text-gray-900">Payment Methods</h3>
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-3xl">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-[14px] font-semibold text-gray-900">Payment Methods</h3>
         <button
           onClick={() => { setEditing(null); setForm({ kind: "ACH", label: "", details: "" }); setShowForm(true); }}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 transition-colors"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors"
         >
-          <Plus size={14} /> Add
+          <Plus size={13} /> Add
         </button>
       </div>
-      <p className="text-[13px] text-gray-500 mb-5">Active methods appear on every invoice.</p>
+      <p className="text-[12px] text-gray-400 mb-5">Active methods appear on every invoice.</p>
 
       {showForm && (
-        <div className="border border-gray-200 rounded-lg p-4 mb-5 bg-gray-50 space-y-3">
+        <div className="border border-gray-100 rounded-xl p-4 mb-5 bg-gray-50/80 space-y-3">
           <Field label="Type">
             <select
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className={inp}
               value={form.kind}
               onChange={(e) => setForm({ ...form, kind: e.target.value })}
             >
@@ -992,7 +964,7 @@ function PaymentsTab() {
           </Field>
           <Field label="Label">
             <input
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className={inp}
               placeholder="e.g. Bank transfer"
               value={form.label}
               onChange={(e) => setForm({ ...form, label: e.target.value })}
@@ -1001,7 +973,7 @@ function PaymentsTab() {
           <Field label="Details">
             <textarea
               rows={3}
-              className="border border-gray-300 px-3 py-2 rounded-md text-[14px] w-full font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="border border-gray-200 px-3 py-2 rounded-lg text-[13px] w-full font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
               placeholder={"Account #: 123456789\nRouting: 021000021\nBank: Chase"}
               value={form.details ?? ""}
               onChange={(e) => setForm({ ...form, details: e.target.value })}
@@ -1010,14 +982,14 @@ function PaymentsTab() {
           <div className="flex justify-end gap-2">
             <button
               onClick={() => { setShowForm(false); setEditing(null); }}
-              className="text-[14px] text-gray-500 hover:text-gray-800"
+              className="text-[13px] text-gray-500 hover:text-gray-800 transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={save}
               disabled={!form.label.trim()}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium disabled:opacity-40"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
             >
               {editing ? "Update" : "Save"}
             </button>
@@ -1029,40 +1001,36 @@ function PaymentsTab() {
         {methods.map((m, i) => (
           <div
             key={m.id}
-            className={`border border-gray-200 rounded-lg px-4 py-3 flex items-start justify-between ${m.active ? "" : "opacity-50"}`}
+            className={`border border-gray-100 rounded-xl px-4 py-3 flex items-start justify-between hover:border-gray-200 transition-colors ${m.active ? "" : "opacity-50"}`}
           >
             <div className="flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-[11px] font-medium font-mono bg-gray-100 px-2 py-0.5 rounded text-gray-600">
+                <span className="text-[10px] font-semibold font-mono bg-gray-100 px-2 py-0.5 rounded-md text-gray-500 uppercase tracking-wide">
                   {m.kind}
                 </span>
-                <span className="text-[14px] font-medium text-gray-900">{m.label}</span>
+                <span className="text-[13px] font-medium text-gray-900">{m.label}</span>
               </div>
               {m.details && (
-                <pre className="text-[12px] text-gray-500 mt-1 whitespace-pre-wrap font-mono">{m.details}</pre>
+                <pre className="text-[11px] text-gray-400 mt-1 whitespace-pre-wrap font-mono">{m.details}</pre>
               )}
             </div>
             <div className="flex items-center gap-1 ml-3">
-              <button onClick={() => moveUp(i)} className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100">
-                <ChevronUp size={14} />
-              </button>
-              <button onClick={() => moveDown(i)} className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100">
-                <ChevronDown size={14} />
-              </button>
+              <button onClick={() => moveUp(i)}   className="text-gray-300 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"><ChevronUp   size={13} /></button>
+              <button onClick={() => moveDown(i)} className="text-gray-300 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"><ChevronDown size={13} /></button>
               <button
                 onClick={() => { setEditing(m); setForm({ kind: m.kind, label: m.label, details: m.details }); setShowForm(true); }}
-                className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100"
+                className="text-gray-300 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"
               >
-                <Edit2 size={14} />
+                <Edit2 size={13} />
               </button>
-              <button onClick={() => remove(m.id)} className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50">
-                <Trash2 size={14} />
+              <button onClick={() => remove(m.id)} className="text-gray-300 hover:text-red-500 p-1 rounded-lg hover:bg-red-50 transition-colors">
+                <Trash2 size={13} />
               </button>
             </div>
           </div>
         ))}
         {methods.length === 0 && (
-          <div className="text-center text-[14px] text-gray-400 py-8">
+          <div className="text-center text-[13px] text-gray-400 py-10">
             No payment methods yet. Add one to display options on your invoices.
           </div>
         )}
@@ -1075,7 +1043,7 @@ function TemplatesTab() {
   const [templates, setTemplates] = useState<LineItemTemplate[]>([]);
   const [desc, setDesc] = useState("");
   const [rate, setRate] = useState("0");
-  const [qty, setQty] = useState("1");
+  const [qty,  setQty]  = useState("1");
 
   const load = () => api.listLineItemTemplates().then(setTemplates).catch(console.error);
   useEffect(() => { load(); }, []);
@@ -1090,38 +1058,39 @@ function TemplatesTab() {
   const remove = async (id: string) => { await api.deleteLineItemTemplate(id); load(); };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 max-w-2xl">
-      <h3 className="text-[15px] font-semibold text-gray-900 mb-1">Line Item Templates</h3>
-      <p className="text-[13px] text-gray-500 mb-5">Saved line items for quick invoice creation.</p>
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Line Item Templates</h3>
+      <p className="text-[12px] text-gray-400 mb-5">Saved line items for quick invoice creation.</p>
 
       {/* Add row */}
       <div className="grid grid-cols-12 gap-2 mb-5">
         <div className="col-span-7">
-          <label className="block text-[12px] font-medium text-gray-500 mb-1">Description</label>
+          <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Description</label>
           <input
-            className="border border-gray-300 px-3 h-9 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className={inpSm}
             placeholder="e.g. Standard order processing"
             value={desc}
             onChange={(e) => setDesc(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && add()}
           />
         </div>
         <div className="col-span-2">
-          <label className="block text-[12px] font-medium text-gray-500 mb-1">Rate</label>
+          <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Rate</label>
           <input
             type="text"
             inputMode="decimal"
-            className="border border-gray-300 px-3 h-9 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className={inpSm}
             placeholder="0.00"
             value={rate}
             onChange={(e) => setRate(e.target.value)}
           />
         </div>
         <div className="col-span-1">
-          <label className="block text-[12px] font-medium text-gray-500 mb-1">Qty</label>
+          <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Qty</label>
           <input
             type="text"
             inputMode="decimal"
-            className="border border-gray-300 px-3 h-9 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className={inpSm}
             placeholder="1"
             value={qty}
             onChange={(e) => setQty(e.target.value)}
@@ -1131,7 +1100,7 @@ function TemplatesTab() {
           <button
             onClick={add}
             disabled={!desc.trim()}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white h-9 px-4 rounded-md text-[14px] font-medium w-full disabled:opacity-40 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white h-9 px-4 rounded-lg text-[13px] font-medium w-full disabled:opacity-40 transition-colors"
           >
             Add
           </button>
@@ -1140,18 +1109,18 @@ function TemplatesTab() {
 
       <div className="space-y-1.5">
         {templates.map((t) => (
-          <div key={t.id} className="flex items-center justify-between border border-gray-100 rounded-lg px-4 py-2.5 hover:border-gray-200 transition-colors">
-            <span className="text-[14px] text-gray-800">{t.description}</span>
+          <div key={t.id} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-2.5 hover:border-gray-200 transition-colors">
+            <span className="text-[13px] text-gray-800">{t.description}</span>
             <div className="flex items-center gap-3">
-              <span className="text-[13px] text-gray-500 tabular-nums">{fmtAmount(t.rate)} × {t.qty}</span>
-              <button onClick={() => remove(t.id)} className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50">
-                <Trash2 size={14} />
+              <span className="text-[12px] text-gray-400 tabular-nums">{fmtAmount(t.rate)} × {t.qty}</span>
+              <button onClick={() => remove(t.id)} className="text-gray-300 hover:text-red-500 p-1 rounded-lg hover:bg-red-50 transition-colors">
+                <Trash2 size={13} />
               </button>
             </div>
           </div>
         ))}
         {templates.length === 0 && (
-          <div className="text-center text-[14px] text-gray-400 py-8">No templates yet.</div>
+          <div className="text-center text-[13px] text-gray-400 py-10">No templates yet.</div>
         )}
       </div>
     </div>
@@ -1159,13 +1128,12 @@ function TemplatesTab() {
 }
 
 function CategoriesTab() {
-  const [cats, setCats] = useState<Category[]>([]);
-  const [newLabel, setNewLabel] = useState("");
+  const [cats,      setCats]      = useState<Category[]>([]);
+  const [newLabel,  setNewLabel]  = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
 
   useEffect(() => { api.listCategories().then(setCats); }, []);
-
   const reload = () => api.listCategories().then(setCats);
 
   const create = async () => {
@@ -1201,8 +1169,8 @@ function CategoriesTab() {
   };
 
   return (
-    <div>
-      <p className="text-[13px] text-gray-500 mb-4">
+    <div className="max-w-2xl">
+      <p className="text-[12px] text-gray-400 mb-4">
         Manage client category labels. Categories help organize and filter clients.
       </p>
 
@@ -1212,79 +1180,47 @@ function CategoriesTab() {
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && create()}
-          className="flex-1 border border-gray-300 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+          className={`${inp} flex-1`}
         />
         <button
           onClick={create}
           disabled={!newLabel.trim()}
-          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-10 rounded-md text-[14px] font-medium disabled:opacity-40 transition-colors"
+          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
         >
-          <Plus size={14} /> Add
+          <Plus size={13} /> Add
         </button>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
+      <div className="bg-white border border-gray-100 rounded-xl divide-y divide-gray-50 overflow-hidden">
         {cats.map((c, i) => (
-          <div key={c.id} className="flex items-center gap-2 px-4 py-2.5">
+          <div key={c.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50/50 transition-colors">
             {editingId === c.id ? (
               <>
                 <input
                   value={editLabel}
                   onChange={(e) => setEditLabel(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && update(c.id)}
-                  className="flex-1 border border-gray-300 px-3 h-9 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  className="flex-1 border border-gray-200 px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
                   autoFocus
                 />
-                <button
-                  onClick={() => update(c.id)}
-                  className="text-emerald-600 hover:text-emerald-700 p-1.5 rounded hover:bg-emerald-50"
-                >
-                  <Check size={14} />
-                </button>
-                <button
-                  onClick={() => setEditingId(null)}
-                  className="text-gray-400 hover:text-gray-600 p-1.5 rounded hover:bg-gray-100"
-                >
-                  <X size={14} />
-                </button>
+                <button onClick={() => update(c.id)}    className="text-emerald-500 hover:text-emerald-600 p-1.5 rounded-lg hover:bg-emerald-50 transition-colors"><Check  size={13} /></button>
+                <button onClick={() => setEditingId(null)} className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"><X size={13} /></button>
               </>
             ) : (
               <>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => move(c.id, -1)}
-                    disabled={i === 0}
-                    className="text-gray-300 hover:text-gray-500 disabled:opacity-20"
-                  >
-                    <ChevronUp size={12} />
-                  </button>
-                  <button
-                    onClick={() => move(c.id, 1)}
-                    disabled={i === cats.length - 1}
-                    className="text-gray-300 hover:text-gray-500 disabled:opacity-20"
-                  >
-                    <ChevronDown size={12} />
-                  </button>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => move(c.id, -1)} disabled={i === 0}                className="text-gray-200 hover:text-gray-400 disabled:opacity-20 transition-colors"><ChevronUp   size={12} /></button>
+                  <button onClick={() => move(c.id,  1)} disabled={i === cats.length - 1} className="text-gray-200 hover:text-gray-400 disabled:opacity-20 transition-colors"><ChevronDown size={12} /></button>
                 </div>
-                <span className="flex-1 text-[14px] text-gray-800">{c.label}</span>
-                <button
-                  onClick={() => { setEditingId(c.id); setEditLabel(c.label); }}
-                  className="text-gray-400 hover:text-gray-700 p-1.5 rounded hover:bg-gray-100"
-                >
-                  <Edit2 size={14} />
-                </button>
-                <button
-                  onClick={() => remove(c.id, c.label)}
-                  className="text-gray-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50"
-                >
-                  <Trash2 size={14} />
-                </button>
+                <span className="flex-1 text-[13px] text-gray-800">{c.label}</span>
+                <button onClick={() => { setEditingId(c.id); setEditLabel(c.label); }} className="text-gray-300 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"><Edit2  size={13} /></button>
+                <button onClick={() => remove(c.id, c.label)}                          className="text-gray-300 hover:text-red-500 p-1.5 rounded-lg hover:bg-red-50  transition-colors"><Trash2 size={13} /></button>
               </>
             )}
           </div>
         ))}
         {cats.length === 0 && (
-          <div className="text-center text-[14px] text-gray-400 py-6">No categories defined yet.</div>
+          <div className="text-center text-[13px] text-gray-400 py-8">No categories defined yet.</div>
         )}
       </div>
     </div>
@@ -1292,16 +1228,16 @@ function CategoriesTab() {
 }
 
 function SheetsTab() {
-  const [config, setConfig] = useState<SheetSyncConfig>({
-    id: 1, sheet_url: null, name_col: "", first_name_col: "E", last_name_col: "F",
-    email_col: "I", phone_col: "L", company_col: "D", category_col: "J",
-    lead_status_col: "W", notes_col: "AA", skip_header_rows: 1,
+  const [config,  setConfig]  = useState<SheetSyncConfig>({
+    id: 1, sheet_url: null, name_col: "", first_name_col: "F", last_name_col: "G",
+    email_col: "I", phone_col: "J", company_col: "E", category_col: "P",
+    lead_status_col: "V", notes_col: "AA", skip_header_rows: 1,
     last_synced_at: null, last_synced_count: 0,
   });
-  const [saving, setSaving] = useState(false);
+  const [saving,  setSaving]  = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [result, setResult] = useState<SheetSyncResult | null>(null);
-  const [log, setLog] = useState<SheetSyncLogEntry[]>([]);
+  const [result,  setResult]  = useState<SheetSyncResult | null>(null);
+  const [log,     setLog]     = useState<SheetSyncLogEntry[]>([]);
 
   useEffect(() => {
     api.getSheetSyncConfig().then(setConfig).catch(() => {});
@@ -1339,96 +1275,117 @@ function SheetsTab() {
     return `${Math.floor(hrs / 24)} days ago`;
   };
 
+  const colSelect = "border border-gray-200 h-9 px-2 rounded-lg text-[12px] w-full bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+
   return (
-    <div>
-      <p className="text-[13px] text-gray-500 mb-4">
-        Share your Google Sheet as <strong>'Anyone with link can view'</strong>, paste the URL below. ClientHub will sync new clients from the sheet automatically every 10 minutes.
+    <div className="max-w-4xl space-y-4">
+      <p className="text-[12px] text-gray-400">
+        Share your Google Sheet as <strong className="text-gray-600">'Anyone with link can view'</strong>, paste the URL below. ClientHub syncs new clients automatically every 10 minutes.
       </p>
 
       {/* Setup */}
-      <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-        <div className="text-[13px] font-semibold text-gray-800 mb-3">Sheet Setup</div>
-        <div className="space-y-3">
+      <div className="bg-white border border-gray-100 rounded-xl p-5">
+        <SectionLabel>Sheet Setup</SectionLabel>
+        <div className="space-y-3 mt-3">
           <Field label="Google Sheet URL">
             <input className={inp} placeholder="https://docs.google.com/spreadsheets/d/..." value={config.sheet_url ?? ""} onChange={(e) => setConfig({ ...config, sheet_url: e.target.value })} />
           </Field>
           <div className="grid grid-cols-5 gap-3">
             {[
-              { label: "First Name", key: "first_name_col" as const, val: config.first_name_col, hint: "E" },
-              { label: "Last Name", key: "last_name_col" as const, val: config.last_name_col, hint: "F" },
-              { label: "Email", key: "email_col" as const, val: config.email_col, hint: "I" },
-              { label: "Phone", key: "phone_col" as const, val: config.phone_col, hint: "L" },
-              { label: "Company", key: "company_col" as const, val: config.company_col, hint: "D" },
-              { label: "Category", key: "category_col" as const, val: config.category_col, hint: "J" },
-              { label: "Lead Status", key: "lead_status_col" as const, val: config.lead_status_col, hint: "W" },
-              { label: "Notes", key: "notes_col" as const, val: config.notes_col, hint: "AA" },
-              { label: "Fallback name", key: "name_col" as const, val: config.name_col, hint: "—" },
+              { label: "First Name", key: "first_name_col" as const, val: config.first_name_col, hint: "F" },
+              { label: "Last Name",  key: "last_name_col"  as const, val: config.last_name_col,  hint: "G" },
+              { label: "Email",      key: "email_col"      as const, val: config.email_col,      hint: "I" },
+              { label: "Phone",      key: "phone_col"      as const, val: config.phone_col,      hint: "J" },
+              { label: "Company",    key: "company_col"    as const, val: config.company_col,    hint: "E" },
+              { label: "Category",   key: "category_col"   as const, val: config.category_col,   hint: "P" },
+              { label: "Lead Status",key: "lead_status_col"as const, val: config.lead_status_col,hint: "V" },
+              { label: "Notes",      key: "notes_col"      as const, val: config.notes_col,      hint: "AA" },
+              { label: "Fallback",   key: "name_col"       as const, val: config.name_col,       hint: "—" },
             ].map((f) => (
               <div key={f.key}>
-                <label className="block text-[11px] font-medium text-gray-500 mb-1">{f.label} <span className="text-gray-300">({f.hint})</span></label>
-                <select value={f.val} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })}
-                  className="border border-gray-300 h-9 px-2 rounded-md text-[13px] w-full bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                <label className="block text-[10px] font-medium text-gray-400 mb-1">
+                  {f.label} <span className="text-gray-300">({f.hint})</span>
+                </label>
+                <select
+                  value={f.val}
+                  onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })}
+                  className={colSelect}
+                >
                   {columns.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
             ))}
           </div>
           <div className="w-32">
-            <label className="block text-[11px] font-medium text-gray-500 mb-1">Skip header rows</label>
-            <input type="number" min={0} value={config.skip_header_rows} onChange={(e) => setConfig({ ...config, skip_header_rows: Number(e.target.value) })} className={inp} />
+            <label className="block text-[10px] font-medium text-gray-400 mb-1">Skip header rows</label>
+            <input type="number" min={0} value={config.skip_header_rows} onChange={(e) => setConfig({ ...config, skip_header_rows: Number(e.target.value) })} className={inpSm} />
           </div>
-          <button onClick={save} disabled={saving}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[13px] font-medium disabled:opacity-40 transition-colors">
-            <Save size={14} /> {saving ? "Saving..." : "Save Config"}
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+          >
+            <Save size={13} /> {saving ? "Saving..." : "Save Config"}
           </button>
         </div>
       </div>
 
       {/* Sync */}
-      <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-        <div className="text-[13px] font-semibold text-gray-800 mb-3">Sync</div>
-        <div className="flex items-center gap-3">
-          <button onClick={syncNow} disabled={syncing || !config.sheet_url}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[13px] font-medium disabled:opacity-40 transition-colors">
-            <RefreshCw size={14} className={syncing ? "animate-spin" : ""} /> {syncing ? "Syncing..." : "Sync Now"}
+      <div className="bg-white border border-gray-100 rounded-xl p-5">
+        <SectionLabel>Sync</SectionLabel>
+        <div className="flex items-center gap-3 mt-3">
+          <button
+            onClick={syncNow}
+            disabled={syncing || !config.sheet_url}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+          >
+            <RefreshCw size={13} className={syncing ? "animate-spin" : ""} /> {syncing ? "Syncing..." : "Sync Now"}
           </button>
-          <span className="text-[13px] text-gray-500">
+          <span className="text-[12px] text-gray-400">
             {config.last_synced_at ? `Last sync: ${relTime(config.last_synced_at)}` : "Never synced"}
             {config.last_synced_count > 0 && ` — ${config.last_synced_count} clients added`}
           </span>
         </div>
-        <div className="text-[12px] text-gray-400 mt-2">Auto-syncs every 10 minutes</div>
+        <div className="text-[11px] text-gray-300 mt-1.5">Auto-syncs every 10 minutes</div>
 
         {result && (
-          <div className={`mt-3 text-[13px] px-3 py-2 rounded-md ${result.errors.length > 0 ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200"}`}>
+          <div className={`mt-3 text-[12px] px-3 py-2 rounded-lg ${result.errors.length > 0 ? "bg-amber-50 text-amber-800 border border-amber-100" : "bg-emerald-50 text-emerald-800 border border-emerald-100"}`}>
             {result.new_clients} new clients added, {result.skipped_duplicates} duplicates skipped
-            {result.errors.length > 0 && <button onClick={() => alert(result.errors.join("\n"))} className="ml-2 underline text-[12px]">{result.errors.length} errors</button>}
+            {result.errors.length > 0 && (
+              <button onClick={() => alert(result.errors.join("\n"))} className="ml-2 underline text-[11px]">
+                {result.errors.length} errors
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      {/* Log */}
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-100 text-[13px] font-semibold text-gray-800">Sync History</div>
+      {/* Sync log */}
+      <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-50">
+          <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Sync History</span>
+        </div>
         {log.length === 0 ? (
-          <div className="text-center text-[14px] text-gray-400 py-6">No syncs yet</div>
+          <div className="text-center text-[13px] text-gray-400 py-8">No syncs yet</div>
         ) : (
           <table className="w-full text-sm">
-            <thead className="bg-gray-50">
+            <thead className="bg-gray-50/50">
               <tr>
-                <th className="text-left px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">Date</th>
-                <th className="text-right px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">New</th>
-                <th className="text-right px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">Skipped</th>
-                <th className="text-right px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">Errors</th>
+                <th className="text-left px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Date</th>
+                <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">New</th>
+                <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Skipped</th>
+                <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Errors</th>
               </tr>
             </thead>
             <tbody>
               {log.map((l) => (
-                <tr key={l.id} className="border-t border-gray-100">
-                  <td className="px-4 py-2 text-[13px] text-gray-700">{new Date(l.synced_at).toLocaleString()}</td>
-                  <td className="px-4 py-2 text-[13px] text-emerald-600 text-right tabular-nums">{l.new_clients}</td>
-                  <td className="px-4 py-2 text-[13px] text-gray-500 text-right tabular-nums">{l.skipped_duplicates}</td>
-                  <td className="px-4 py-2 text-[13px] text-right">{l.errors ? <span className="text-amber-600">{JSON.parse(l.errors).length}</span> : <span className="text-gray-300">0</span>}</td>
+                <tr key={l.id} className="border-t border-gray-50 hover:bg-gray-50/40 transition-colors">
+                  <td className="px-5 py-2.5 text-[12px] text-gray-600">{new Date(l.synced_at).toLocaleString()}</td>
+                  <td className="px-5 py-2.5 text-[12px] text-emerald-600 text-right tabular-nums">{l.new_clients}</td>
+                  <td className="px-5 py-2.5 text-[12px] text-gray-400 text-right tabular-nums">{l.skipped_duplicates}</td>
+                  <td className="px-5 py-2.5 text-[12px] text-right">
+                    {l.errors ? <span className="text-amber-500">{JSON.parse(l.errors).length}</span> : <span className="text-gray-200">0</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1439,12 +1396,16 @@ function SheetsTab() {
   );
 }
 
-const inp = "border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent";
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">{children}</div>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
-      <label className="block text-[12px] font-medium text-gray-600 mb-1.5">{label}</label>
+      <label className="block text-[12px] font-medium text-gray-500 mb-1.5">{label}</label>
       {children}
     </div>
   );

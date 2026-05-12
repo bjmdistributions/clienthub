@@ -1,5 +1,5 @@
 import { useEffect, useState, Children } from "react";
-import { api, Client, Interaction, Invoice } from "../lib/api";
+import { api, Client, Interaction, Invoice, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
   ArrowLeft,
@@ -56,14 +56,15 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [summarizing, setSummarizing] = useState(false);
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
+  const [tier, setTier] = useState<BuyerTier | null>(null);
 
   const load = async () => {
     const c = await api.getClient(clientId);
+    if (!c) { onBack(); return; }
     setClient(c);
-    const i = await api.listInteractions(clientId);
-    setInteractions(i);
-    const all = await api.listInvoicesForClient(clientId);
-    setInvoices(all);
+    setInteractions(await api.listInteractions(clientId));
+    setInvoices(await api.listInvoicesForClient(clientId));
+    api.getBuyerTier(clientId).then(setTier).catch(() => {});
   };
 
   useEffect(() => { load(); }, [clientId]);
@@ -114,10 +115,20 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 <Building2 size={14} /> {client.company}
               </div>
             )}
-            <div className="mt-2">
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${leadStatusColor(client.lead_status)}`}>
                 {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
               </span>
+              {tier && (
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-2 ${
+                  tier.tier === "S" ? "bg-indigo-100 text-indigo-700" :
+                  tier.tier === "A" ? "bg-emerald-100 text-emerald-700" :
+                  tier.tier === "B" ? "bg-amber-100 text-amber-700" :
+                  "bg-gray-100 text-gray-500"
+                }`}>
+                  Tier: {tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect"}
+                </span>
+              )}
             </div>
             <div className="flex gap-4 mt-3">
               {client.email && (
@@ -184,7 +195,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
             {client.metadata.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
             {client.metadata.primary_buy_category && <MetaRow label="Buy Category" value={client.metadata.primary_buy_category} />}
             {client.metadata.other_buy_categories && <MetaRow label="Other Categories" value={client.metadata.other_buy_categories} />}
-            {client.metadata.estimated_annual_spend && <MetaRow label="Annual Spend" value={client.metadata.estimated_annual_spend} />}
+            {client.metadata.estimated_annual_spend && <MetaRow label="Spend Per Frequency" value={client.metadata.estimated_annual_spend} />}
             {client.metadata.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
           </MetadataCard>
 

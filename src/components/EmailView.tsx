@@ -492,7 +492,6 @@ function NewsletterTab() {
   const [sending, setSending] = useState(false);
   const [sendProgress, setSendProgress] = useState("");
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
-  const [recipientSearch, setRecipientSearch] = useState("");
   const [templates, setTemplates] = useState<Newsletter[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [previewIdx, setPreviewIdx] = useState(0);
@@ -516,33 +515,18 @@ function NewsletterTab() {
   const categoryLabels = allCategories.map((c) => c.label);
   const validRecipients = selected.filter((c) => c.email);
 
-  const clientsByFilter = recipientCategoryFilter
+  const filteredClients = recipientCategoryFilter
     ? clients.filter((c) => c.category?.toLowerCase().includes(recipientCategoryFilter.toLowerCase()))
     : clients;
 
   const noEmailCount = selected.length - validRecipients.length;
-  const searchResults = recipientSearch.trim()
-    ? clientsByFilter.filter((c) =>
-        c.name.toLowerCase().includes(recipientSearch.toLowerCase()) &&
-        !selected.find((s) => s.id === c.id)
-      ).slice(0, 5)
-    : [];
 
   const addRecipient = (c: Client) => {
     if (!selected.find((s) => s.id === c.id)) setSelected([...selected, c]);
-    setRecipientSearch("");
   };
   const removeRecipient = (id: string) => setSelected(selected.filter((c) => c.id !== id));
-  const addByCategory = (cat: string) => {
-    const lower = cat.toLowerCase();
-    const toAdd = clients.filter((c) =>
-      c.category?.toLowerCase().includes(lower) &&
-      !selected.find((s) => s.id === c.id)
-    );
-    setSelected([...selected, ...toAdd]);
-  };
   const addAllWithEmail = () => {
-    const toAdd = clientsByFilter.filter((c) => c.email && !selected.find((s) => s.id === c.id));
+    const toAdd = filteredClients.filter((c) => c.email && !selected.find((s) => s.id === c.id));
     setSelected([...selected, ...toAdd]);
   };
 
@@ -645,13 +629,13 @@ function NewsletterTab() {
   return (
     <div className="flex gap-4" style={{ minHeight: 500 }}>
       {/* Panel A: Recipients */}
-      <div className="w-[280px] flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
+      <div className="w-[300px] flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-          <span className="text-[14px] font-semibold text-gray-900">Recipients</span>
-          <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{selected.length}</span>
+          <span className="text-[14px] font-semibold text-gray-900">Clients</span>
+          <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{clients.length}</span>
         </div>
 
-        <div className="px-3 py-2 space-y-2 border-b border-gray-100">
+        <div className="px-3 py-2 border-b border-gray-100">
           <select
             value={recipientCategoryFilter ?? ""}
             onChange={(e) => setRecipientCategoryFilter(e.target.value || null)}
@@ -660,39 +644,72 @@ function NewsletterTab() {
             <option value="">All Categories</option>
             {categoryLabels.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
-          {categoryLabels.length > 0 && (
-            <select
-              value=""
-              onChange={(e) => { if (e.target.value) addByCategory(e.target.value); }}
-              className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            >
-              <option value="">+ Add by category...</option>
-              {categoryLabels.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
+        </div>
+
+        <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200 }}>
+          {filteredClients.map((c) => {
+            const isSelected = selected.find((s) => s.id === c.id);
+            return (
+              <button key={c.id}
+                onClick={() => isSelected ? removeRecipient(c.id) : addRecipient(c)}
+                className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-50 ${
+                  isSelected ? "bg-indigo-50" : ""
+                }`}>
+                <div className="min-w-0">
+                  <div className="text-[12px] font-medium text-gray-800 truncate">{c.name}</div>
+                  <div className="flex items-center gap-1 mt-0.5">
+                    {c.category ? (
+                      <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded truncate max-w-[140px]">{c.category}</span>
+                    ) : (
+                      <span className="text-[10px] text-gray-300">—</span>
+                    )}
+                    {!c.email && <span className="text-[9px] text-red-400">no email</span>}
+                  </div>
+                </div>
+                {isSelected && <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0 ml-2" />}
+              </button>
+            );
+          })}
+          {filteredClients.length === 0 && (
+            <div className="text-[12px] text-gray-400 text-center py-6">No clients match this filter</div>
           )}
-          <div className="relative">
-            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              placeholder="Search and add..."
-              value={recipientSearch}
-              onChange={(e) => setRecipientSearch(e.target.value)}
-              className="w-full border border-gray-300 h-8 pl-7 pr-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            />
+        </div>
+
+        <div className="border-t border-gray-200">
+          <div className="px-4 py-2 flex items-center justify-between bg-gray-50 border-b border-gray-100">
+            <span className="text-[12px] font-semibold text-gray-700">Recipients</span>
+            <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{selected.length}</span>
           </div>
-          {searchResults.length > 0 && (
-            <div className="border border-gray-200 rounded-md overflow-hidden">
-              {searchResults.map((c) => (
-                <button key={c.id} onClick={() => addRecipient(c)}
-                  className="w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-indigo-50 flex items-center justify-between">
-                  <span className="text-gray-800">{c.name}</span>
-                  <span className="text-gray-400 text-[11px]">{c.email || "No email"}</span>
+          <div className="overflow-y-auto" style={{ maxHeight: 140 }}>
+            {selected.map((c) => (
+              <div key={c.id} className="flex items-center justify-between py-1.5 px-3 hover:bg-gray-50 border-b border-gray-50">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-gray-800 truncate">{c.name}</div>
+                  {c.email ? (
+                    <div className="text-[10px] text-gray-400 truncate">{c.email}</div>
+                  ) : (
+                    <span className="text-[9px] text-red-500 bg-red-50 px-1.5 py-0.5 rounded">No email</span>
+                  )}
+                </div>
+                <button onClick={() => removeRecipient(c.id)} className="text-gray-400 hover:text-red-500 ml-2 flex-shrink-0 p-0.5">
+                  <X size={14} />
                 </button>
-              ))}
+              </div>
+            ))}
+            {selected.length === 0 && (
+              <div className="text-[11px] text-gray-400 text-center py-4">Click a client above to add</div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-3 py-2 border-t border-gray-100 text-[11px] text-gray-500 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span>{selected.length} selected{noEmailCount > 0 && <span className="text-red-500"> ({noEmailCount} skipped)</span>}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={addAllWithEmail} className="text-indigo-600 hover:text-indigo-800">All w/ email</button>
+              {selected.length > 0 && <button onClick={() => setSelected([])} className="text-gray-400 hover:text-red-500">Clear</button>}
             </div>
-          )}
-          <button onClick={addAllWithEmail} className="w-full text-[11px] text-indigo-600 hover:text-indigo-800 py-1">
-            + Select all with email
-          </button>
+          </div>
           <div className="flex gap-1.5">
             <input
               placeholder="Or type any email..."
@@ -700,57 +717,13 @@ function NewsletterTab() {
               value={manualEmail}
               onChange={(e) => setManualEmail(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addManualEmail()}
-              className="flex-1 border border-gray-300 h-8 px-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="flex-1 border border-gray-300 h-7 px-2 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
             <button onClick={addManualEmail} disabled={!manualEmail.includes("@")}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-8 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
               Add
             </button>
           </div>
-          {recipientCategoryFilter && (
-            <button
-              onClick={() => {
-                const toAdd = clientsByFilter.filter((c) => !selected.find((s) => s.id === c.id));
-                setSelected([...selected, ...toAdd]);
-              }}
-              className="w-full text-[11px] text-indigo-600 hover:text-indigo-800 py-0.5"
-            >
-              + Select all in &quot;{recipientCategoryFilter}&quot;
-            </button>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1" style={{ maxHeight: 280 }}>
-          {selected.map((c) => (
-            <div key={c.id} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-indigo-50 group cursor-pointer"
-              onClick={() => setPreviewIdx(validRecipients.indexOf(c))}>
-              <div className="flex items-center gap-2 min-w-0">
-                <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-[12px] text-gray-800 truncate">{c.name}</div>
-                  {c.email ? (
-                    <div className="text-[11px] text-gray-400 truncate">{c.email}</div>
-                  ) : (
-                    <span className="text-[10px] text-red-500 bg-red-50 px-1.5 py-0.5 rounded">No email</span>
-                  )}
-                </div>
-              </div>
-              <button onClick={(e) => { e.stopPropagation(); removeRecipient(c.id); }}
-                className="text-gray-300 hover:text-red-500 ml-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-          {selected.length === 0 && (
-            <div className="text-[12px] text-gray-400 text-center py-6">No recipients selected</div>
-          )}
-        </div>
-
-        <div className="px-3 py-2 border-t border-gray-100 text-[11px] text-gray-500 flex items-center justify-between">
-          <span>{selected.length} selected{noEmailCount > 0 && <span className="text-red-500"> ({noEmailCount} have no email — skipped)</span>}</span>
-          {selected.length > 0 && (
-            <button onClick={() => setSelected([])} className="text-gray-400 hover:text-red-500 underline">Unselect all</button>
-          )}
         </div>
       </div>
 
@@ -907,7 +880,7 @@ function NewsletterTab() {
             style={{ height: 44 }}
           >
             <Send size={16} />
-            {sending ? sendProgress : `Send to ${validRecipients.length}`}
+            {sending ? sendProgress : `Send ${validRecipients.length} emails`}
           </button>
 
           {sendResult && (
