@@ -7,3 +7,5 @@ src-tauri/target
 .DS_Store
 .env
 clienthub-bundle.md
+
+nul
