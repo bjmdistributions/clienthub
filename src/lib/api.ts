@@ -92,6 +92,37 @@ export interface CategoryInput {
   label: string;
 }
 
+export interface SheetSyncConfig {
+  id: number;
+  sheet_url: string | null;
+  name_col: string;
+  first_name_col: string;
+  last_name_col: string;
+  email_col: string;
+  phone_col: string;
+  company_col: string;
+  category_col: string;
+  lead_status_col: string;
+  notes_col: string;
+  skip_header_rows: number;
+  last_synced_at: string | null;
+  last_synced_count: number;
+}
+
+export interface SheetSyncResult {
+  new_clients: number;
+  skipped_duplicates: number;
+  errors: string[];
+}
+
+export interface SheetSyncLogEntry {
+  id: string;
+  synced_at: string;
+  new_clients: number;
+  skipped_duplicates: number;
+  errors: string | null;
+}
+
 export interface Interaction {
   id: string;
   client_id: string;
@@ -122,6 +153,15 @@ export interface Invoice {
   pdf_path: string | null;
   sent_at: string | null;
   notes?: string;
+  cost_items_json: string | null;
+  total_cost: number | null;
+  profit: number | null;
+  margin: number | null;
+}
+
+export interface CostItem {
+  description: string;
+  amount: number;
 }
 
 export interface InvoiceInput {
@@ -172,6 +212,11 @@ export interface DashboardStats {
   revenue_this_week: number;
   clients_this_week: number;
   interactions_this_week: number;
+  total_cost: number;
+  total_profit: number;
+  avg_margin: number;
+  monthly_profit: { month: string; revenue: number; cost: number; profit: number }[];
+  top_clients_by_profit: { name: string; total_revenue: number; total_profit: number; margin: number }[];
 }
 
 export interface SyncStatus {
@@ -291,6 +336,8 @@ export const api = {
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
   markInvoiceDepositPending: (invoiceId: string) =>
     invoke<void>("mark_invoice_deposit_pending", { invoiceId }),
+  saveInvoiceCosts: (invoiceId: string, costItems: CostItem[]) =>
+    invoke<void>("save_invoice_costs", { invoiceId, costItems }),
 
   // Email
   sendEmail: (to: string, subject: string, body: string, attachmentPath?: string) =>
@@ -339,6 +386,7 @@ export const api = {
 
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
+  getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number }[]>("get_monthly_profit", { month }),
   dueFollowups: () => invoke<Client[]>("due_followups"),
 
   // CSV import
@@ -390,4 +438,10 @@ export const api = {
   updateCategory: (id: string, input: CategoryInput) => invoke<void>("update_category", { id, input }),
   deleteCategory: (id: string) => invoke<void>("delete_category", { id }),
   reorderCategories: (ids: string[]) => invoke<void>("reorder_categories", { ids }),
+
+  // Sheet Sync
+  getSheetSyncConfig: () => invoke<SheetSyncConfig>("get_sheet_sync_config"),
+  saveSheetSyncConfig: (config: SheetSyncConfig) => invoke<void>("save_sheet_sync_config", { config }),
+  syncFromSheet: () => invoke<SheetSyncResult>("sync_from_sheet"),
+  getSheetSyncLog: () => invoke<SheetSyncLogEntry[]>("get_sheet_sync_log"),
 };

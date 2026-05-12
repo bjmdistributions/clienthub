@@ -49,6 +49,7 @@ export default function ClientsView() {
   const [missingInfo, setMissingInfo] = useState<MissingInfoReport | null>(null);
   const [showHealth, setShowHealth] = useState(false);
   const [allCategories, setAllCategories] = useState<Category[]>([]);
+  const [summaryStats, setSummaryStats] = useState({ total: 0, active: 0, hotLeads: 0, revenue: 0 });
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   const loadMissingInfo = () => {
@@ -65,7 +66,15 @@ export default function ClientsView() {
   }, []);
 
   useEffect(() => {
-    api.listClients().then(setClients);
+    api.listClients().then((all) => {
+      setClients(all);
+      setSummaryStats({
+        total:    all.length,
+        active:   all.filter((c) => c.lead_status === "active_customer").length,
+        hotLeads: all.filter((c) => c.lead_status === "hot_lead").length,
+        revenue:  all.reduce((s, c) => s + (c.total_revenue || 0), 0),
+      });
+    });
     api.listCategories().then(setAllCategories);
     loadMissingInfo();
   }, []);
@@ -144,7 +153,7 @@ export default function ClientsView() {
   return (
     <div>
       {/* Header */}
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex justify-between items-center mb-4">
         <h2 className="text-[18px] font-semibold text-gray-900">Clients</h2>
         <button
           onClick={() => { setEditing(null); setShowForm(true); }}
@@ -152,6 +161,21 @@ export default function ClientsView() {
         >
           <Plus size={16} /> New Client
         </button>
+      </div>
+
+      {/* Stats bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        {[
+          { label: "Total Clients",   value: summaryStats.total,                      color: "text-gray-900" },
+          { label: "Active Customers",value: summaryStats.active,                     color: "text-emerald-600" },
+          { label: "Hot Leads",       value: summaryStats.hotLeads,                   color: "text-red-600" },
+          { label: "Total Revenue",   value: fmtAmount(summaryStats.revenue), color: "text-indigo-600" },
+        ].map((s) => (
+          <div key={s.label} className="bg-white border border-gray-200 rounded-xl px-4 py-3.5">
+            <p className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">{s.label}</p>
+            <p className={`text-[22px] font-bold tabular-nums mt-0.5 ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
       {/* Data Health Panel */}
@@ -247,7 +271,7 @@ export default function ClientsView() {
 
       {/* Advanced Filters */}
       {showAdvanced && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-3 grid grid-cols-4 gap-3">
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
             <label className="block text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1">State</label>
             <input
@@ -293,7 +317,7 @@ export default function ClientsView() {
               <option value="category">Missing category</option>
             </select>
           </div>
-          <div className="col-span-4 flex justify-end">
+          <div className="col-span-2 lg:col-span-4 flex justify-end">
             <button onClick={clearAll} className="text-[13px] text-gray-500 hover:text-gray-700 underline">
               Clear all filters
             </button>

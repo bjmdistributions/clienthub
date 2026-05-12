@@ -648,6 +648,10 @@ pub struct Invoice {
     pub pdf_path: Option<String>,
     pub sent_at: Option<String>,
     pub notes: Option<String>,
+    pub cost_items_json: Option<String>,
+    pub total_cost: Option<f64>,
+    pub profit: Option<f64>,
+    pub margin: Option<f64>,
 }
 
 #[tauri::command]
@@ -655,7 +659,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes
+            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin
              FROM invoices ORDER BY issue_date DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -666,6 +670,8 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
                 issue_date: r.get(3)?, due_date: r.get(4)?, line_items_json: r.get(5)?,
                 subtotal: r.get(6)?, tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?,
                 pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
+                cost_items_json: r.get(13)?, total_cost: r.get(14)?,
+                profit: r.get(15)?, margin: r.get(16)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -676,7 +682,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
 pub async fn get_invoice(id: String) -> Result<Invoice, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin
          FROM invoices WHERE id=?1",
         [&id],
         |r| Ok(Invoice {
@@ -684,6 +690,8 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
             issue_date: r.get(3)?, due_date: r.get(4)?, line_items_json: r.get(5)?,
             subtotal: r.get(6)?, tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?,
             pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
+            cost_items_json: r.get(13)?, total_cost: r.get(14)?,
+            profit: r.get(15)?, margin: r.get(16)?,
         }),
     ).map_err(|e| e.to_string())
 }
@@ -692,7 +700,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
 pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin
          FROM invoices WHERE client_id=?1 ORDER BY issue_date DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([client_id], |r| {
@@ -701,6 +709,8 @@ pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>,
             issue_date: r.get(3)?, due_date: r.get(4)?, line_items_json: r.get(5)?,
             subtotal: r.get(6)?, tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?,
             pdf_path: r.get(10)?, sent_at: r.get(11)?, notes: r.get(12)?,
+            cost_items_json: r.get(13)?, total_cost: r.get(14)?,
+            profit: r.get(15)?, margin: r.get(16)?,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -809,18 +819,8 @@ pub async fn update_invoice(id: String, input: UpdateInvoiceInput) -> Result<(),
 
 #[tauri::command]
 pub async fn delete_invoice(id: String) -> Result<(), String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let status: String = conn
-        .query_row(
-            "SELECT status FROM invoices WHERE id=?1",
-            [&id],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if status != "draft" {
-        return Err("Only draft invoices can be deleted".into());
-    }
     sync::record_delete("invoices", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM invoices WHERE id=?1", [&id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1018,6 +1018,39 @@ pub async fn mark_invoice_deposit_pending(invoice_id: String) -> Result<(), Stri
         [&invoice_id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct CostItem {
+    pub description: String,
+    pub amount: f64,
+}
+
+#[tauri::command]
+pub async fn save_invoice_costs(invoice_id: String, cost_items: Vec<CostItem>) -> Result<(), String> {
+    let total_cost: f64 = cost_items.iter().map(|ci| ci.amount).sum();
+    let total: f64 = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT total FROM invoices WHERE id=?1", [&invoice_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+    };
+    let profit = total - total_cost;
+    let margin = if total > 0.0 { (profit / total) * 100.0 } else { 0.0 };
+    let cost_json = serde_json::to_string(&cost_items).map_err(|e| e.to_string())?;
+
+    let mut cols = Map::new();
+    cols.insert("cost_items_json".into(), Value::String(cost_json.clone()));
+    cols.insert("total_cost".into(), json!(total_cost));
+    cols.insert("profit".into(), json!(profit));
+    cols.insert("margin".into(), json!(margin));
+    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET cost_items_json=?1, total_cost=?2, profit=?3, margin=?4 WHERE id=?5",
+        rusqlite::params![cost_json, total_cost, profit, margin, invoice_id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1287,6 +1320,63 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         )
         .unwrap_or(0);
 
+    let total_cost: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE status='paid'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+    let total_profit: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE status='paid'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+    let avg_margin: f64 = conn
+        .query_row(
+            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE status='paid' AND profit IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+
+    let monthly_profit: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT strftime('%Y-%m', issue_date) as m, COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(profit),0)
+             FROM invoices WHERE status='paid' AND issue_date >= date('now','-6 months') GROUP BY m ORDER BY m"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| {
+            Ok(json!({
+                "month": r.get::<_, String>(0)?,
+                "revenue": r.get::<_, f64>(1)?,
+                "cost": r.get::<_, f64>(2)?,
+                "profit": r.get::<_, f64>(3)?,
+            }))
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let top_clients_by_profit: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT c.name, COALESCE(SUM(i.total),0), COALESCE(SUM(i.profit),0),
+                    CASE WHEN COALESCE(SUM(i.total),0)>0 THEN (COALESCE(SUM(i.profit),0)/SUM(i.total))*100 ELSE 0 END
+             FROM invoices i JOIN clients c ON c.id=i.client_id
+             WHERE i.status='paid' AND i.profit IS NOT NULL
+             GROUP BY i.client_id ORDER BY SUM(i.profit) DESC LIMIT 5"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?,
+                "total_revenue": r.get::<_, f64>(1)?,
+                "total_profit": r.get::<_, f64>(2)?,
+                "margin": r.get::<_, f64>(3)?,
+            }))
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     Ok(json!({
         "clients": total_clients,
         "invoices": total_invoices,
@@ -1295,7 +1385,26 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "revenue_this_week": revenue_this_week,
         "clients_this_week": clients_this_week,
         "interactions_this_week": interactions_this_week,
+        "total_cost": total_cost,
+        "total_profit": total_profit,
+        "avg_margin": avg_margin,
+        "monthly_profit": monthly_profit,
+        "top_clients_by_profit": top_clients_by_profit,
     }))
+}
+
+#[tauri::command]
+pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT date(issue_date) as d, COALESCE(SUM(profit),0)
+         FROM invoices WHERE status='paid' AND strftime('%Y-%m', issue_date) = ?1
+         GROUP BY d ORDER BY d"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&month], |r| {
+        Ok(json!({ "day": r.get::<_, String>(0)?, "profit": r.get::<_, f64>(1)? }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 // ============================================================
@@ -1802,6 +1911,293 @@ pub async fn reorder_line_item_templates(ids: Vec<String>) -> Result<(), String>
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+// ============================================================
+//  Sheet Sync (Google Sheets -> ClientHub, local-only)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SheetSyncConfig {
+    pub id: i64,
+    pub sheet_url: Option<String>,
+    pub name_col: String,
+    pub first_name_col: String,
+    pub last_name_col: String,
+    pub email_col: String,
+    pub phone_col: String,
+    pub company_col: String,
+    pub category_col: String,
+    pub lead_status_col: String,
+    pub notes_col: String,
+    pub skip_header_rows: i64,
+    pub last_synced_at: Option<String>,
+    pub last_synced_count: i64,
+}
+
+#[derive(Serialize)]
+pub struct SheetSyncResult {
+    pub new_clients: u32,
+    pub skipped_duplicates: u32,
+    pub errors: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SheetSyncLogEntry {
+    pub id: String,
+    pub synced_at: String,
+    pub new_clients: i64,
+    pub skipped_duplicates: i64,
+    pub errors: Option<String>,
+}
+
+fn col_index(col: &str) -> usize {
+    let mut idx = 0usize;
+    for c in col.chars() {
+        if c < 'A' || c > 'Z' { break; }
+        idx = idx * 26 + (c as usize) - ('A' as usize) + 1;
+    }
+    idx.saturating_sub(1)
+}
+
+#[tauri::command]
+pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO sheet_sync_config (id) VALUES (1)",
+        [],
+    ).map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, last_synced_at, last_synced_count FROM sheet_sync_config WHERE id=1",
+        [],
+        |r| Ok(SheetSyncConfig {
+            id: r.get(0)?, sheet_url: r.get(1)?, name_col: r.get(2)?,
+            first_name_col: r.get(3)?, last_name_col: r.get(4)?,
+            email_col: r.get(5)?, phone_col: r.get(6)?, company_col: r.get(7)?,
+            category_col: r.get(8)?, lead_status_col: r.get(9)?,
+            notes_col: r.get(10)?, skip_header_rows: r.get(11)?,
+            last_synced_at: r.get(12)?, last_synced_count: r.get(13)?,
+        }),
+    ).map_err(|e| e.to_string())
+    .map(|mut c| {
+        if c.first_name_col.is_empty() { c.first_name_col = "E".into(); }
+        if c.last_name_col.is_empty() { c.last_name_col = "F".into(); }
+        if c.lead_status_col.is_empty() { c.lead_status_col = "W".into(); }
+        if c.notes_col.is_empty() { c.notes_col = "AA".into(); }
+        if c.email_col.is_empty() { c.email_col = "I".into(); }
+        if c.phone_col.is_empty() { c.phone_col = "L".into(); }
+        if c.company_col.is_empty() { c.company_col = "D".into(); }
+        if c.category_col.is_empty() { c.category_col = "J".into(); }
+        c
+    })
+}
+
+#[tauri::command]
+pub async fn save_sheet_sync_config(config: SheetSyncConfig) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO sheet_sync_config (id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![config.sheet_url, config.name_col, config.first_name_col, config.last_name_col, config.email_col, config.phone_col, config.company_col, config.category_col, config.lead_status_col, config.notes_col, config.skip_header_rows],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
+    let config = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows FROM sheet_sync_config WHERE id=1",
+            [],
+            |r| Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?, r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?, r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?, r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?, r.get::<_, i64>(10)?,
+            )),
+        ).map_err(|e| e.to_string())?
+    };
+    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows) = config;
+    let (mut first_name_col, mut last_name_col, mut email_col, mut phone_col, mut company_col, mut category_col, mut lead_status_col, mut notes_col) =
+        (first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col);
+    if first_name_col.is_empty() { first_name_col = "E".into(); }
+    if last_name_col.is_empty() { last_name_col = "F".into(); }
+    if email_col.is_empty() { email_col = "I".into(); }
+    if phone_col.is_empty() { phone_col = "L".into(); }
+    if company_col.is_empty() { company_col = "D".into(); }
+    if category_col.is_empty() { category_col = "J".into(); }
+    if lead_status_col.is_empty() { lead_status_col = "W".into(); }
+    if notes_col.is_empty() { notes_col = "AA".into(); }
+    let sheet_url = sheet_url.ok_or("No sheet URL configured")?;
+
+    let csv_url = {
+        let base = sheet_url
+            .split('?').next().unwrap_or(&sheet_url)
+            .split('#').next().unwrap_or(&sheet_url)
+            .trim_end_matches('/');
+        if base.contains("/edit") {
+            base.replace("/edit", "/export?format=csv")
+        } else {
+            format!("{}/export?format=csv", base)
+        }
+    };
+
+    let resp = reqwest::get(&csv_url).await
+        .map_err(|e| format!("Failed to fetch sheet: {}. Is the sheet set to 'Anyone with link can view'?", e))?;
+
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+
+    let name_idx = col_index(&name_col);
+    let first_idx = col_index(&first_name_col);
+    let last_idx = col_index(&last_name_col);
+    let email_idx = col_index(&email_col);
+    let phone_idx = col_index(&phone_col);
+    let company_idx = col_index(&company_col);
+    let cat_idx = col_index(&category_col);
+    let lead_status_idx = col_index(&lead_status_col);
+    let notes_idx = col_index(&notes_col);
+
+    let mut new_clients: u32 = 0;
+    let mut skipped: u32 = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    let mut reader = csv::ReaderBuilder::new().has_headers(false).from_reader(text.as_bytes());
+    for (row_num, row) in reader.records().enumerate() {
+        if (row_num as i64) < skip_header_rows { continue; }
+        let record = match row {
+            Ok(r) => r,
+            Err(e) => { errors.push(format!("Row {}: {}", row_num + 1, e)); continue; }
+        };
+
+        let first = record.get(first_idx).unwrap_or("").trim().to_string();
+        let last = record.get(last_idx).unwrap_or("").trim().to_string();
+        let name = if !first.is_empty() || !last.is_empty() {
+            format!("{} {}", first, last).trim().to_string()
+        } else {
+            record.get(name_idx).unwrap_or("").trim().to_string()
+        };
+        let email = record.get(email_idx).unwrap_or("").trim().to_string();
+        let phone = record.get(phone_idx).unwrap_or("").trim().to_string();
+        let company = record.get(company_idx).unwrap_or("").trim().to_string();
+        let category = record.get(cat_idx).unwrap_or("").trim().to_string();
+        let lead_status = record.get(lead_status_idx).unwrap_or("").trim().to_string();
+        let notes = record.get(notes_idx).unwrap_or("").trim().to_string();
+
+        if name.is_empty() && email.is_empty() { continue; }
+
+        if !email.is_empty() && !email.contains('@') {
+            skipped += 1;
+            continue;
+        }
+
+        let existing_id: Option<String> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            if !email.is_empty() {
+                conn.query_row(
+                    "SELECT id FROM clients WHERE LOWER(email)=LOWER(?1)", [&email],
+                    |r| r.get(0),
+                ).ok()
+            } else {
+                conn.query_row(
+                    "SELECT id FROM clients WHERE LOWER(name)=LOWER(?1)", [&name],
+                    |r| r.get(0),
+                ).ok()
+            }
+        };
+
+        if existing_id.is_some() {
+            skipped += 1;
+            continue;
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let ls = if lead_status.is_empty() { "prospect".to_string() } else { lead_status.clone() };
+
+        let mut meta = serde_json::json!({});
+        if !category.is_empty() { meta["category"] = Value::String(category.clone()); }
+        let metadata_str = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
+
+        let mut cols = Map::new();
+        cols.insert("name".into(), Value::String(name.clone()));
+        cols.insert("email".into(), if email.is_empty() { Value::Null } else { Value::String(email.clone()) });
+        cols.insert("phone".into(), if phone.is_empty() { Value::Null } else { Value::String(phone.clone()) });
+        cols.insert("company".into(), if company.is_empty() { Value::Null } else { Value::String(company.clone()) });
+        cols.insert("notes".into(), if notes.is_empty() { Value::Null } else { Value::String(notes.clone()) });
+        cols.insert("billing_status".into(), Value::String("active".into()));
+        cols.insert("lead_status".into(), Value::String(ls.clone()));
+        cols.insert("created_at".into(), Value::String(now.clone()));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        cols.insert("metadata".into(), Value::String(metadata_str.clone()));
+        cols.insert("created_at".into(), Value::String(now.clone()));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        cols.insert("metadata".into(), Value::String(metadata_str.clone()));
+
+        match sync::record_upsert("clients", &id, cols) {
+            Ok(()) => {},
+            Err(e) => { errors.push(format!("{}: sync error: {}", name, e)); continue; }
+        }
+
+        let insert_res = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,lead_status,created_at,updated_at,metadata) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                rusqlite::params![id, name, if email.is_empty() { None::<String> } else { Some(email) }, if phone.is_empty() { None::<String> } else { Some(phone) }, if company.is_empty() { None::<String> } else { Some(company) }, if notes.is_empty() { None::<String> } else { Some(notes) }, "active", ls, now, now, metadata_str],
+            ).map_err(|e| e.to_string())
+        };
+
+        match insert_res {
+            Ok(_) => new_clients += 1,
+            Err(e) => { errors.push(format!("{}: {}", name, e)); }
+        }
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let log_id = Uuid::new_v4().to_string();
+    let errors_json = if errors.is_empty() { None } else { Some(serde_json::to_string(&errors).unwrap_or_default()) };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO sheet_sync_log (id, synced_at, new_clients, skipped_duplicates, errors) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![log_id, now, new_clients, skipped, errors_json],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE sheet_sync_config SET last_synced_at=?1, last_synced_count=?2 WHERE id=1",
+            rusqlite::params![now, new_clients],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(SheetSyncResult { new_clients, skipped_duplicates: skipped, errors })
+}
+
+#[tauri::command]
+pub async fn get_sheet_sync_log() -> Result<Vec<SheetSyncLogEntry>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, synced_at, new_clients, skipped_duplicates, errors FROM sheet_sync_log ORDER BY synced_at DESC LIMIT 10"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SheetSyncLogEntry {
+            id: r.get(0)?, synced_at: r.get(1)?,
+            new_clients: r.get(2)?, skipped_duplicates: r.get(3)?,
+            errors: r.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn spawn_periodic_sheet_sync(interval_secs: u64) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        loop {
+            interval.tick().await;
+            if let Err(e) = sync_from_sheet().await {
+                tracing::warn!("periodic sheet sync failed: {}", e);
+            }
+        }
+    });
 }
 
 // ============================================================

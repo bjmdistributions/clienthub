@@ -293,4 +293,48 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        14,
+        r#"
+        -- Google Sheets sync config & log (local-only, not synced)
+        CREATE TABLE IF NOT EXISTS sheet_sync_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            sheet_url TEXT,
+            name_col TEXT DEFAULT 'A',
+            email_col TEXT DEFAULT 'B',
+            phone_col TEXT DEFAULT 'C',
+            company_col TEXT DEFAULT 'D',
+            category_col TEXT DEFAULT 'E',
+            skip_header_rows INTEGER DEFAULT 1,
+            last_synced_at TEXT,
+            last_synced_count INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS sheet_sync_log (
+            id TEXT PRIMARY KEY,
+            synced_at TEXT NOT NULL,
+            new_clients INTEGER DEFAULT 0,
+            skipped_duplicates INTEGER DEFAULT 0,
+            errors TEXT
+        );
+        "#,
+    ),
+    (
+        15,
+        r#"
+        ALTER TABLE sheet_sync_config ADD COLUMN first_name_col TEXT DEFAULT '';
+        ALTER TABLE sheet_sync_config ADD COLUMN last_name_col TEXT DEFAULT '';
+        ALTER TABLE sheet_sync_config ADD COLUMN lead_status_col TEXT DEFAULT '';
+        ALTER TABLE sheet_sync_config ADD COLUMN notes_col TEXT DEFAULT '';
+        "#,
+    ),
+    (
+        16,
+        r#"
+        -- Invoice cost & profit tracking (synced)
+        ALTER TABLE invoices ADD COLUMN cost_items_json TEXT;
+        ALTER TABLE invoices ADD COLUMN total_cost REAL DEFAULT 0;
+        ALTER TABLE invoices ADD COLUMN profit REAL DEFAULT 0;
+        ALTER TABLE invoices ADD COLUMN margin REAL DEFAULT 0;
+        "#,
+    ),
 ];

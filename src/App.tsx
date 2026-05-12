@@ -149,14 +149,12 @@ export default function App() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 bg-[#F8F7F6] flex flex-col min-h-0">
+      <main className="flex-1 overflow-auto bg-[#F8F7F6]">
         {tab === "dashboard" ? (
-          <div className="flex-1 min-h-0 p-6 flex flex-col">
-            <DashboardView onNavigate={setTab} />
-          </div>
+          <DashboardView onNavigate={setTab} />
         ) : (
-          <div className="flex-1 overflow-auto p-8">
-            <div className="max-w-[1200px]">
+          <div className="p-8">
+            <div className="max-w-[1200px] mx-auto">
               {tab === "clients"   && <ClientsView />}
               {tab === "invoices"  && <InvoicesView />}
               {tab === "email"     && <EmailView />}

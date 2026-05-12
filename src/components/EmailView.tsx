@@ -517,7 +517,7 @@ function NewsletterTab() {
   const validRecipients = selected.filter((c) => c.email);
 
   const clientsByFilter = recipientCategoryFilter
-    ? clients.filter((c) => c.category === recipientCategoryFilter)
+    ? clients.filter((c) => c.category?.toLowerCase().includes(recipientCategoryFilter.toLowerCase()))
     : clients;
 
   const noEmailCount = selected.length - validRecipients.length;
@@ -534,9 +534,11 @@ function NewsletterTab() {
   };
   const removeRecipient = (id: string) => setSelected(selected.filter((c) => c.id !== id));
   const addByCategory = (cat: string) => {
-    const toAdd = clients
-      .filter((c) => c.category === cat && !selected.find((s) => s.id === c.id))
-      .filter((c) => !recipientCategoryFilter || c.category === recipientCategoryFilter);
+    const lower = cat.toLowerCase();
+    const toAdd = clients.filter((c) =>
+      c.category?.toLowerCase().includes(lower) &&
+      !selected.find((s) => s.id === c.id)
+    );
     setSelected([...selected, ...toAdd]);
   };
   const addAllWithEmail = () => {

@@ -12,6 +12,9 @@ import {
   LineItemTemplate,
   Category,
   CategoryInput,
+  SheetSyncConfig,
+  SheetSyncResult,
+  SheetSyncLogEntry,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -36,10 +39,10 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates"
+    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets"
   >("email");
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates"] as const;
+  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets"] as const;
 
   return (
     <div>
@@ -71,6 +74,7 @@ export default function SettingsView() {
       {tab === "automation" && <AutomationTab />}
       {tab === "payments"   && <PaymentsTab />}
       {tab === "templates"  && <TemplatesTab />}
+      {tab === "sheets"     && <SheetsTab />}
     </div>
   );
 }
@@ -1286,6 +1290,156 @@ function CategoriesTab() {
     </div>
   );
 }
+
+function SheetsTab() {
+  const [config, setConfig] = useState<SheetSyncConfig>({
+    id: 1, sheet_url: null, name_col: "", first_name_col: "E", last_name_col: "F",
+    email_col: "I", phone_col: "L", company_col: "D", category_col: "J",
+    lead_status_col: "W", notes_col: "AA", skip_header_rows: 1,
+    last_synced_at: null, last_synced_count: 0,
+  });
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [result, setResult] = useState<SheetSyncResult | null>(null);
+  const [log, setLog] = useState<SheetSyncLogEntry[]>([]);
+
+  useEffect(() => {
+    api.getSheetSyncConfig().then(setConfig).catch(() => {});
+    api.getSheetSyncLog().then(setLog).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try { await api.saveSheetSyncConfig(config); } catch (e: any) { alert(e); }
+    setSaving(false);
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    setResult(null);
+    try {
+      const r = await api.syncFromSheet();
+      setResult(r);
+      api.getSheetSyncConfig().then(setConfig).catch(() => {});
+      api.getSheetSyncLog().then(setLog).catch(() => {});
+    } catch (e: any) { alert(e); }
+    setSyncing(false);
+  };
+
+  const columns = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map((c) => `A${c}`)];
+
+  const relTime = (d: string | null | undefined): string => {
+    if (!d) return "Never";
+    const ms = Date.now() - new Date(d).getTime();
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} hr ago`;
+    return `${Math.floor(hrs / 24)} days ago`;
+  };
+
+  return (
+    <div>
+      <p className="text-[13px] text-gray-500 mb-4">
+        Share your Google Sheet as <strong>'Anyone with link can view'</strong>, paste the URL below. ClientHub will sync new clients from the sheet automatically every 10 minutes.
+      </p>
+
+      {/* Setup */}
+      <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+        <div className="text-[13px] font-semibold text-gray-800 mb-3">Sheet Setup</div>
+        <div className="space-y-3">
+          <Field label="Google Sheet URL">
+            <input className={inp} placeholder="https://docs.google.com/spreadsheets/d/..." value={config.sheet_url ?? ""} onChange={(e) => setConfig({ ...config, sheet_url: e.target.value })} />
+          </Field>
+          <div className="grid grid-cols-5 gap-3">
+            {[
+              { label: "First Name", key: "first_name_col" as const, val: config.first_name_col, hint: "E" },
+              { label: "Last Name", key: "last_name_col" as const, val: config.last_name_col, hint: "F" },
+              { label: "Email", key: "email_col" as const, val: config.email_col, hint: "I" },
+              { label: "Phone", key: "phone_col" as const, val: config.phone_col, hint: "L" },
+              { label: "Company", key: "company_col" as const, val: config.company_col, hint: "D" },
+              { label: "Category", key: "category_col" as const, val: config.category_col, hint: "J" },
+              { label: "Lead Status", key: "lead_status_col" as const, val: config.lead_status_col, hint: "W" },
+              { label: "Notes", key: "notes_col" as const, val: config.notes_col, hint: "AA" },
+              { label: "Fallback name", key: "name_col" as const, val: config.name_col, hint: "—" },
+            ].map((f) => (
+              <div key={f.key}>
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">{f.label} <span className="text-gray-300">({f.hint})</span></label>
+                <select value={f.val} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })}
+                  className="border border-gray-300 h-9 px-2 rounded-md text-[13px] w-full bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                  {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+          <div className="w-32">
+            <label className="block text-[11px] font-medium text-gray-500 mb-1">Skip header rows</label>
+            <input type="number" min={0} value={config.skip_header_rows} onChange={(e) => setConfig({ ...config, skip_header_rows: Number(e.target.value) })} className={inp} />
+          </div>
+          <button onClick={save} disabled={saving}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[13px] font-medium disabled:opacity-40 transition-colors">
+            <Save size={14} /> {saving ? "Saving..." : "Save Config"}
+          </button>
+        </div>
+      </div>
+
+      {/* Sync */}
+      <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+        <div className="text-[13px] font-semibold text-gray-800 mb-3">Sync</div>
+        <div className="flex items-center gap-3">
+          <button onClick={syncNow} disabled={syncing || !config.sheet_url}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[13px] font-medium disabled:opacity-40 transition-colors">
+            <RefreshCw size={14} className={syncing ? "animate-spin" : ""} /> {syncing ? "Syncing..." : "Sync Now"}
+          </button>
+          <span className="text-[13px] text-gray-500">
+            {config.last_synced_at ? `Last sync: ${relTime(config.last_synced_at)}` : "Never synced"}
+            {config.last_synced_count > 0 && ` — ${config.last_synced_count} clients added`}
+          </span>
+        </div>
+        <div className="text-[12px] text-gray-400 mt-2">Auto-syncs every 10 minutes</div>
+
+        {result && (
+          <div className={`mt-3 text-[13px] px-3 py-2 rounded-md ${result.errors.length > 0 ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200"}`}>
+            {result.new_clients} new clients added, {result.skipped_duplicates} duplicates skipped
+            {result.errors.length > 0 && <button onClick={() => alert(result.errors.join("\n"))} className="ml-2 underline text-[12px]">{result.errors.length} errors</button>}
+          </div>
+        )}
+      </div>
+
+      {/* Log */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100 text-[13px] font-semibold text-gray-800">Sync History</div>
+        {log.length === 0 ? (
+          <div className="text-center text-[14px] text-gray-400 py-6">No syncs yet</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">Date</th>
+                <th className="text-right px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">New</th>
+                <th className="text-right px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">Skipped</th>
+                <th className="text-right px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase">Errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map((l) => (
+                <tr key={l.id} className="border-t border-gray-100">
+                  <td className="px-4 py-2 text-[13px] text-gray-700">{new Date(l.synced_at).toLocaleString()}</td>
+                  <td className="px-4 py-2 text-[13px] text-emerald-600 text-right tabular-nums">{l.new_clients}</td>
+                  <td className="px-4 py-2 text-[13px] text-gray-500 text-right tabular-nums">{l.skipped_duplicates}</td>
+                  <td className="px-4 py-2 text-[13px] text-right">{l.errors ? <span className="text-amber-600">{JSON.parse(l.errors).length}</span> : <span className="text-gray-300">0</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const inp = "border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

@@ -1,6 +1,6 @@
 {
   "name": "clienthub",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,10 +15,11 @@
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-updater": "^2.0.0",
+    "lucide-react": "^0.445.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zustand": "^4.5.5",
-    "lucide-react": "^0.445.0"
+    "recharts": "^3.8.1",
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

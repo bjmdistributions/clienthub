@@ -89,6 +89,9 @@ fn main() {
             // Periodic IMAP scan every 5 minutes.
             email::spawn_periodic_scan(300);
 
+            // Periodic Google Sheets sync every 10 minutes
+            commands::spawn_periodic_sheet_sync(600);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -121,6 +124,7 @@ fn main() {
             send_invoice,
             mark_invoice_paid,
             mark_invoice_deposit_pending,
+            save_invoice_costs,
             // Email
             send_email,
             scan_inbox,
@@ -147,6 +151,7 @@ fn main() {
             sync_is_encrypted,
             // Dashboard
             dashboard_stats,
+            get_monthly_profit,
             // CSV import
             csv_preview,
             csv_import,
@@ -183,6 +188,11 @@ fn main() {
             update_category,
             delete_category,
             reorder_categories,
+            // Sheet Sync
+            get_sheet_sync_config,
+            save_sheet_sync_config,
+            sync_from_sheet,
+            get_sheet_sync_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

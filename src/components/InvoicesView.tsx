@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown } from "lucide-react";
 
 const statusColor = (s: string): string => {
   const lo = s.toLowerCase();
@@ -100,10 +100,14 @@ export default function InvoicesView() {
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
 
+  const outstanding = invoices.filter((i) => i.status !== "paid").reduce((s, i) => s + i.total, 0);
+  const overdueCount = invoices.filter((i) => i.status === "overdue").length;
+  const paidCount    = invoices.filter((i) => i.status === "paid").length;
+
   return (
     <div>
       {/* Header */}
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex justify-between items-center mb-4">
         <h2 className="text-[18px] font-semibold text-gray-900">Invoices</h2>
         <button
           onClick={() => { setEditing(null); setShowForm(true); }}
@@ -111,6 +115,21 @@ export default function InvoicesView() {
         >
           <Plus size={16} /> New Invoice
         </button>
+      </div>
+
+      {/* Stats bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        {[
+          { label: "Total Invoices",  value: invoices.length,          color: "text-gray-900" },
+          { label: "Outstanding",     value: fmtAmount(outstanding),   color: "text-amber-600" },
+          { label: "Overdue",         value: overdueCount,             color: overdueCount > 0 ? "text-red-600" : "text-gray-400" },
+          { label: "Paid",            value: paidCount,                color: "text-emerald-600" },
+        ].map((s) => (
+          <div key={s.label} className="bg-white border border-gray-200 rounded-xl px-4 py-3.5">
+            <p className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">{s.label}</p>
+            <p className={`text-[22px] font-bold tabular-nums mt-0.5 ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
       {/* Toast */}
@@ -197,8 +216,8 @@ export default function InvoicesView() {
       )}
 
       {/* Table */}
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto">
+        <table className="min-w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
               <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Number</th>
@@ -206,6 +225,7 @@ export default function InvoicesView() {
               <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Issue</th>
               <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Due</th>
               <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Total</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Profit</th>
               <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Status</th>
               <th className="px-4 py-3"></th>
             </tr>
@@ -222,6 +242,13 @@ export default function InvoicesView() {
                 <td className="px-4 py-3 text-[14px] text-gray-600 tabular-nums">{inv.issue_date.slice(0, 10)}</td>
                 <td className="px-4 py-3 text-[14px] text-gray-600 tabular-nums">{inv.due_date.slice(0, 10)}</td>
                 <td className="px-4 py-3 text-[14px] font-semibold text-gray-900 tabular-nums">{fmtAmount(inv.total)}</td>
+                <td className={`px-4 py-3 text-[14px] font-semibold tabular-nums ${
+                  (inv.profit ?? (inv.total_cost != null ? inv.total - (inv.total_cost ?? 0) : null)) != null
+                    ? ((inv.profit ?? (inv.total_cost != null ? inv.total - (inv.total_cost ?? 0) : null))! >= 0 ? "text-emerald-600" : "text-red-600")
+                    : "text-gray-400"
+                }`}>
+                  {inv.profit != null ? fmtAmount(inv.profit) : (inv.total_cost != null ? fmtAmount(inv.total - (inv.total_cost ?? 0)) : "—")}
+                </td>
                 <td className="px-4 py-3">
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide ${statusColor(inv.status)}`}>
                     {inv.status}
@@ -230,60 +257,27 @@ export default function InvoicesView() {
                 <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
                   {inv.status.toLowerCase() === "draft" && (
                     <>
-                      <button
-                        title="Edit"
-                        onClick={() => { setEditing(inv); setShowForm(true); }}
-                        className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100"
-                      >
-                        <Edit2 size={14} />
-                      </button>
-                      <button
-                        title="Delete"
-                        onClick={() => handleDelete(inv.id)}
-                        className={
-                          confirmDelete === inv.id
-                            ? "text-red-600 font-medium text-[12px] px-2 py-0.5 rounded bg-red-50 hover:bg-red-100"
-                            : "text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
-                        }
-                      >
-                        {confirmDelete === inv.id ? "Delete?" : <Trash2 size={14} />}
-                      </button>
-                      <button
-                        title="Deposit pending"
-                        onClick={() => handleDeposit(inv.id)}
-                        className="text-amber-600 hover:text-amber-800 text-[12px] font-medium px-2 py-0.5 rounded hover:bg-amber-50"
-                      >
-                        Deposit
-                      </button>
+                      <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
+                        className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100"><Edit2 size={14} /></button>
+                      <button title="Deposit pending" onClick={() => handleDeposit(inv.id)}
+                        className="text-amber-600 hover:text-amber-800 text-[12px] font-medium px-2 py-0.5 rounded hover:bg-amber-50">Deposit</button>
                     </>
                   )}
-                  <button
-                    title="Generate PDF"
-                    onClick={() => handlePdf(inv.id)}
-                    disabled={busy === inv.id}
-                    className="text-gray-400 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 disabled:opacity-40"
-                  >
-                    {busy === inv.id
-                      ? <RefreshCw size={14} className="animate-spin" />
-                      : <FileDown size={14} />
-                    }
+                  <button title="Delete" onClick={() => handleDelete(inv.id)}
+                    className={confirmDelete === inv.id ? "text-red-600 font-medium text-[12px] px-2 py-0.5 rounded bg-red-50 hover:bg-red-100"
+                      : "text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50"}>
+                    {confirmDelete === inv.id ? "Sure?" : <Trash2 size={14} />}
+                  </button>
+                  <button title="Generate PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
+                    className="text-gray-400 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 disabled:opacity-40">
+                    {busy === inv.id ? <RefreshCw size={14} className="animate-spin" /> : <FileDown size={14} />}
                   </button>
                   {inv.status.toLowerCase() !== "paid" && (
                     <>
-                      <button
-                        title="Send invoice"
-                        onClick={() => handleSend(inv.id)}
-                        className="text-gray-400 hover:text-blue-600 p-1 rounded hover:bg-blue-50"
-                      >
-                        <Send size={14} />
-                      </button>
-                      <button
-                        title="Mark as paid"
-                        onClick={() => handleMarkPaid(inv.id)}
-                        className="text-gray-400 hover:text-emerald-600 p-1 rounded hover:bg-emerald-50"
-                      >
-                        <Check size={14} />
-                      </button>
+                      <button title="Send invoice" onClick={() => handleSend(inv.id)}
+                        className="text-gray-400 hover:text-blue-600 p-1 rounded hover:bg-blue-50"><Send size={14} /></button>
+                      <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
+                        className="text-gray-400 hover:text-emerald-600 p-1 rounded hover:bg-emerald-50"><Check size={14} /></button>
                     </>
                   )}
                 </td>
@@ -291,7 +285,7 @@ export default function InvoicesView() {
             ))}
             {invoices.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-16 text-center">
+                <td colSpan={8} className="px-4 py-16 text-center">
                   <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
                     <FileText size={18} className="text-gray-400" />
                   </div>
@@ -317,6 +311,13 @@ export default function InvoicesView() {
           onClose={() => { setDetailId(null); setDetailInvoice(null); }}
           onPdf={() => handlePdf(detailInvoice.id)}
           onResend={() => { if (confirm("Re-send this invoice?")) handleSend(detailInvoice.id); }}
+          onDelete={() => {
+            if (confirm("Delete this invoice? This cannot be undone.")) {
+              handleDelete(detailInvoice.id);
+              setDetailId(null); setDetailInvoice(null);
+            }
+          }}
+          onCostSaved={() => { setDetailInvoice(null); api.getInvoice(detailInvoice.id).then(setDetailInvoice); }}
           clientName={clientName(detailInvoice.client_id)}
         />
       )}
@@ -468,13 +469,16 @@ function InvoiceForm({
             />
           </Field>
           <Field label="Tax %">
-            <input
-              type="text"
-              inputMode="decimal"
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              value={taxRate}
-              onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
-            />
+            <div className="relative">
+              <input
+                type="number"
+                step="0.1"
+                className="border border-gray-300 px-3 pr-8 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                value={taxRate}
+                onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[14px]">%</span>
+            </div>
           </Field>
         </div>
       )}
@@ -490,13 +494,16 @@ function InvoiceForm({
             />
           </Field>
           <Field label="Tax %">
-            <input
-              type="text"
-              inputMode="decimal"
-              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              value={taxRate}
-              onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
-            />
+            <div className="relative">
+              <input
+                type="number"
+                step="0.1"
+                className="border border-gray-300 px-3 pr-8 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                value={taxRate}
+                onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[14px]">%</span>
+            </div>
           </Field>
         </div>
       )}
@@ -551,19 +558,22 @@ function InvoiceForm({
               onChange={(e) => updateItem(i, "description", e.target.value)}
             />
             <input
-              type="text"
-              inputMode="decimal"
+              type="number"
+              step="1"
               className="col-span-1 border border-gray-300 px-2 h-9 rounded-md text-[14px] text-center focus:outline-none focus:ring-1 focus:ring-indigo-500"
               value={it.qty || ""}
               onChange={(e) => updateItem(i, "qty", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
             />
-            <input
-              type="text"
-              inputMode="decimal"
-              className="col-span-2 border border-gray-300 px-3 h-9 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              value={it.rate || ""}
-              onChange={(e) => updateItem(i, "rate", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
-            />
+            <div className="col-span-2 relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[14px]">$</span>
+              <input
+                type="number"
+                step="0.01"
+                className="w-full border border-gray-300 pl-7 pr-3 h-9 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                value={it.rate || ""}
+                onChange={(e) => updateItem(i, "rate", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
+              />
+            </div>
             <input
               readOnly
               className="col-span-2 border border-gray-100 bg-gray-50 px-3 h-9 rounded-md text-[14px] text-right text-gray-600 tabular-nums"
@@ -683,15 +693,23 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function InvoiceDetailPanel({
-  invoice, clientName, onClose, onPdf, onResend,
+  invoice, clientName, onClose, onPdf, onResend, onDelete, onCostSaved,
 }: {
   invoice: Invoice;
   clientName: string;
   onClose: () => void;
   onPdf: () => void;
   onResend: () => void;
+  onDelete: () => void;
+  onCostSaved: () => void;
 }) {
   const items: LineItem[] = JSON.parse(invoice.line_items_json || "[]");
+  const costItems: CostItem[] = JSON.parse(invoice.cost_items_json || "[]");
+  const [editingCosts, setEditingCosts] = useState(false);
+  const [costs, setCosts] = useState<CostItem[]>(() =>
+    costItems.length > 0 ? costItems : [{ description: "", amount: 0 }]
+  );
+  const [savingCosts, setSavingCosts] = useState(false);
   const statusCol = (s: string) => {
     if (s === "paid")            return "bg-emerald-50 text-emerald-700 border border-emerald-200";
     if (s === "sent")            return "bg-blue-50 text-blue-700 border border-blue-200";
@@ -793,6 +811,64 @@ function InvoiceDetailPanel({
               <span>Total</span>
               <span className="tabular-nums">{fmtAmount(invoice.total)}</span>
             </div>
+           </div>
+
+          {/* Cost & Profit */}
+          <div className="border-t border-gray-200 pt-4">
+            <button onClick={() => setEditingCosts(!editingCosts)}
+              className="flex items-center gap-1 text-[13px] font-medium text-gray-600 hover:text-gray-900 w-full">
+              <ChevronDown size={14} className={`transition-transform ${editingCosts ? "rotate-180" : ""}`} />
+              Cost & Profit
+            </button>
+            {editingCosts && (
+              <div className="mt-3 space-y-2">
+                <div className="text-[12px] font-medium text-gray-500 uppercase tracking-wide mb-1">Cost Items</div>
+                {costs.map((ci, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      className="flex-1 border border-gray-300 px-2 h-8 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      placeholder="Description"
+                      value={ci.description}
+                      onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], description: e.target.value }; setCosts(c); }}
+                    />
+                    <div className="relative w-28">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
+                      <input
+                        type="number" step="0.01"
+                        className="w-full border border-gray-300 pl-5 pr-2 h-8 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        value={ci.amount || ""}
+                        onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], amount: parseFloat(e.target.value) || 0 }; setCosts(c); }}
+                      />
+                    </div>
+                    <button onClick={() => setCosts(costs.filter((_, j) => j !== i))}
+                      className="text-gray-400 hover:text-red-500 p-1"><X size={12} /></button>
+                  </div>
+                ))}
+                <button onClick={() => setCosts([...costs, { description: "", amount: 0 }])}
+                  className="text-[12px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+                  <Plus size={12} /> Add cost item
+                </button>
+                <div className="border-t border-gray-100 pt-2 space-y-1 text-[13px]">
+                  <div className="flex justify-between text-gray-600"><span>Revenue</span><span>{fmtAmount(invoice.total)}</span></div>
+                  <div className="flex justify-between text-gray-600"><span>Cost</span><span>{fmtAmount(costs.reduce((s, c) => s + c.amount, 0))}</span></div>
+                  <div className={`flex justify-between font-semibold ${(invoice.total - costs.reduce((s, c) => s + c.amount, 0)) >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+                    <span>Profit</span><span>{fmtAmount(invoice.total - costs.reduce((s, c) => s + c.amount, 0))}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-500 text-[12px]">
+                    <span>Margin</span>
+                    <span>{invoice.total > 0 ? ((invoice.total - costs.reduce((s, c) => s + c.amount, 0)) / invoice.total * 100).toFixed(1) : "0.0"}%</span>
+                  </div>
+                </div>
+                <button onClick={async () => {
+                  setSavingCosts(true);
+                  try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); }
+                  setSavingCosts(false);
+                }}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-9 rounded-md text-[13px] font-medium disabled:opacity-50 transition-colors">
+                  {savingCosts ? "Saving..." : "Save Costs"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Notes */}
@@ -815,7 +891,13 @@ function InvoiceDetailPanel({
             onClick={onResend}
             className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-md text-[14px] flex-1 transition-colors"
           >
-            Resend
+             Resend
+          </button>
+          <button
+            onClick={onDelete}
+            className="bg-white border border-red-200 hover:bg-red-50 text-red-600 px-3 h-9 rounded-md text-[13px] font-medium transition-colors flex items-center gap-1"
+          >
+            <Trash2 size={13} /> Delete
           </button>
         </div>
       </div>
