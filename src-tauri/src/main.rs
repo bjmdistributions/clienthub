@@ -102,6 +102,8 @@ fn main() {
             search_clients,
             list_stale_clients,
             due_followups,
+            list_clients_filtered,
+            clients_missing_info,
             // Interactions
             list_interactions,
             add_interaction,
@@ -169,6 +171,18 @@ fn main() {
             update_draft,
             send_draft,
             discard_draft,
+            // Newsletters
+            list_newsletters,
+            save_newsletter,
+            delete_newsletter,
+            send_newsletter,
+            ai_draft_newsletter,
+            // Categories
+            list_categories,
+            create_category,
+            update_category,
+            delete_category,
+            reorder_categories,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

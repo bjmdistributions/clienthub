@@ -44,6 +44,7 @@ pub fn init(app: &App) -> Result<()> {
     {
         let conn = pool.get()?;
         run_migrations(&conn)?;
+        seed_defaults(&conn)?;
     }
 
     POOL.set(pool).ok();
@@ -76,6 +77,27 @@ fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
                 rusqlite::params![*version as i64, chrono::Utc::now().to_rfc3339()],
             )?;
         }
+    }
+    Ok(())
+}
+
+fn seed_defaults(conn: &rusqlite::Connection) -> Result<()> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM categories", [], |r| r.get(0),
+    ).unwrap_or(0);
+    if count == 0 {
+        let defaults = [
+            "Electronics", "Clothing", "General Merchandise", "Toys",
+            "Shoes", "Candy/Food/Drinks", "Beauty/Cosmetics", "OTHER", "EVERYTHING",
+        ];
+        for (i, label) in defaults.iter().enumerate() {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO categories (id, label, sort_order) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, label, i as i64],
+            )?;
+        }
+        tracing::info!("seeded {} default categories", defaults.len());
     }
     Ok(())
 }
@@ -233,6 +255,42 @@ const MIGRATIONS: &[(u32, &str)] = &[
         -- Recurring invoice support
         ALTER TABLE invoices ADD COLUMN recurring TEXT DEFAULT '';
         ALTER TABLE invoices ADD COLUMN next_recurring_date TEXT DEFAULT '';
+        "#,
+    ),
+    (
+        12,
+        r#"
+        -- Newsletter support (local-only, not synced)
+        CREATE TABLE IF NOT EXISTS newsletters (
+            id TEXT PRIMARY KEY,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            recipient_count INTEGER DEFAULT 0,
+            sent_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            sent_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS newsletter_sends (
+            id TEXT PRIMARY KEY,
+            newsletter_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            sent_at TEXT,
+            error TEXT,
+            FOREIGN KEY (newsletter_id) REFERENCES newsletters(id)
+        );
+        "#,
+    ),
+    (
+        13,
+        r#"
+        -- Manageable category labels for clients (local-only, not synced)
+        CREATE TABLE IF NOT EXISTS categories (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
         "#,
     ),
 ];

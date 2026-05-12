@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate } from "../lib/api";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2 } from "lucide-react";
+import { fmtAmount } from "../lib/format";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText } from "lucide-react";
 
-const fmtAmount = (n: number) =>
-  "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const statusColor = (s: string): string => {
+  const lo = s.toLowerCase();
+  if (lo === "paid")            return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+  if (lo === "sent")            return "bg-blue-50 text-blue-700 border border-blue-200";
+  if (lo === "overdue")         return "bg-red-50 text-red-700 border border-red-200";
+  if (lo === "deposit_pending") return "bg-amber-50 text-amber-700 border border-amber-200";
+  return "bg-gray-100 text-gray-600 border border-gray-200";
+};
 
 export default function InvoicesView() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -28,15 +35,20 @@ export default function InvoicesView() {
   };
 
   const load = async () => {
-    setInvoices(await api.listInvoices());
-    setClients(await api.listClients());
+    const [inv, cli] = await Promise.all([api.listInvoices(), api.listClients()]);
+    setInvoices(inv);
+    setClients(cli);
   };
   useEffect(() => { load(); }, []);
 
   const handlePdf = async (id: string) => {
     setBusy(id);
-    try { await api.generateInvoicePdf(id); setToast("PDF saved — check your invoices folder"); setTimeout(() => setToast(null), 3000); load(); }
-    catch (e: any) { alert(`Error: ${e}`); }
+    try {
+      await api.generateInvoicePdf(id);
+      setToast("PDF saved — check your invoices folder");
+      setTimeout(() => setToast(null), 3000);
+      load();
+    } catch (e: any) { alert(`Error: ${e}`); }
     finally { setBusy(null); }
   };
 
@@ -78,17 +90,6 @@ export default function InvoicesView() {
     catch (e: any) { alert(`Error: ${e}`); }
   };
 
-  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
-
-  const statusColor = (s: string) => {
-    const lo = s.toLowerCase();
-    if (lo === "paid") return "bg-green-100 text-green-700";
-    if (lo === "sent") return "bg-blue-100 text-blue-700";
-    if (lo === "overdue") return "bg-red-100 text-red-700";
-    if (lo === "deposit_pending") return "bg-yellow-100 text-yellow-700";
-    return "bg-slate-100 text-slate-700";
-  };
-
   const handleDeposit = async (id: string) => {
     if (!confirm("Mark as deposit pending?")) return;
     setBusy(id);
@@ -97,55 +98,96 @@ export default function InvoicesView() {
     finally { setBusy(null); }
   };
 
+  const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-2xl font-bold">Invoices</h2>
-        <button onClick={() => { setEditing(null); setShowForm(true); }}
-          className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded text-sm">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-5">
+        <h2 className="text-[18px] font-semibold text-gray-900">Invoices</h2>
+        <button
+          onClick={() => { setEditing(null); setShowForm(true); }}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium transition-colors"
+        >
           <Plus size={16} /> New Invoice
         </button>
       </div>
 
-
+      {/* Toast */}
       {toast && (
-        <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-2 rounded shadow-lg text-sm z-50">
+        <div className="fixed bottom-5 right-5 bg-gray-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-[13px] z-50 flex items-center gap-2">
+          <Check size={13} className="text-emerald-400" />
           {toast}
         </div>
       )}
 
+      {/* Invoice form */}
       {showForm && (
-        <InvoiceForm clients={clients} initial={editing}
-          onClose={() => { setShowForm(false); setEditing(null); load(); }} />
+        <InvoiceForm
+          clients={clients}
+          initial={editing}
+          onClose={() => { setShowForm(false); setEditing(null); load(); }}
+        />
       )}
 
+      {/* Mark paid modal */}
       {payModal && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/40" onClick={() => setPayModal(null)}>
-          <div className="bg-white rounded-lg shadow-xl w-[420px]" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b">
-              <h3 className="font-semibold">Mark as Paid</h3>
-              <button onClick={() => setPayModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/30 backdrop-blur-[2px]"
+          onClick={() => setPayModal(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-[0_20px_60px_rgba(0,0,0,0.14),0_8px_24px_rgba(0,0,0,0.08)] w-[420px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <h3 className="text-[15px] font-semibold text-gray-900">Mark as Paid</h3>
+              <button onClick={() => setPayModal(null)} className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100">
+                <X size={18} />
+              </button>
             </div>
-            <div className="p-4 space-y-3">
+            <div className="px-5 py-4 space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Date</label>
-                <input type="date" className="border p-2 rounded w-full text-sm" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+                <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Date</label>
+                <input
+                  type="date"
+                  className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  value={payDate}
+                  onChange={(e) => setPayDate(e.target.value)}
+                />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Method</label>
-                <select className="border p-2 rounded w-full text-sm" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Method</label>
+                <select
+                  className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  value={payMethod}
+                  onChange={(e) => setPayMethod(e.target.value)}
+                >
                   <option value="">— select —</option>
                   {payMethods.map((m) => (<option key={m.id} value={m.label}>{m.label}</option>))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Reference (optional)</label>
-                <input className="border p-2 rounded w-full text-sm" placeholder="e.g. check #1234" value={payRef} onChange={(e) => setPayRef(e.target.value)} />
+                <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Reference (optional)</label>
+                <input
+                  className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="e.g. check #1234"
+                  value={payRef}
+                  onChange={(e) => setPayRef(e.target.value)}
+                />
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setPayModal(null)} className="px-4 py-2 text-sm">Cancel</button>
-                <button onClick={confirmPay} disabled={busy === payModal}
-                  className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => setPayModal(null)}
+                  className="px-4 h-9 text-[14px] text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmPay}
+                  disabled={busy === payModal}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium disabled:opacity-40"
+                >
                   {busy === payModal ? "Saving..." : "Confirm"}
                 </button>
               </div>
@@ -154,82 +196,129 @@ export default function InvoicesView() {
         </div>
       )}
 
-      <div className="bg-white rounded shadow overflow-hidden">
+      {/* Table */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-100">
+          <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
-              <th className="text-left p-3">Number</th>
-              <th className="text-left p-3">Client</th>
-              <th className="text-left p-3">Issue</th>
-              <th className="text-left p-3">Due</th>
-              <th className="text-left p-3">Total</th>
-              <th className="text-left p-3">Status</th>
-              <th className="p-3"></th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Number</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Client</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Issue</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Due</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Total</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+              <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
             {invoices.map((inv) => (
-              <tr key={inv.id} className="border-t hover:bg-slate-50 cursor-pointer" onClick={() => openDetail(inv.id)}>
-                <td className="p-3 font-mono text-xs">{inv.number}</td>
-                <td className="p-3">{clientName(inv.client_id)}</td>
-                <td className="p-3">{inv.issue_date.slice(0, 10)}</td>
-                <td className="p-3">{inv.due_date.slice(0, 10)}</td>
-                <td className="p-3 font-semibold">{fmtAmount(inv.total)}</td>
-                <td className="p-3">
-                  <span className={`px-2 py-0.5 text-xs rounded ${statusColor(inv.status)}`}>{inv.status}</span>
+              <tr
+                key={inv.id}
+                className="border-b border-gray-100 last:border-0 hover:bg-gray-50 cursor-pointer transition-colors"
+                onClick={() => openDetail(inv.id)}
+              >
+                <td className="px-4 py-3 font-mono text-[13px] text-gray-600">{inv.number}</td>
+                <td className="px-4 py-3 text-[14px] font-medium text-gray-900">{clientName(inv.client_id)}</td>
+                <td className="px-4 py-3 text-[14px] text-gray-600 tabular-nums">{inv.issue_date.slice(0, 10)}</td>
+                <td className="px-4 py-3 text-[14px] text-gray-600 tabular-nums">{inv.due_date.slice(0, 10)}</td>
+                <td className="px-4 py-3 text-[14px] font-semibold text-gray-900 tabular-nums">{fmtAmount(inv.total)}</td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide ${statusColor(inv.status)}`}>
+                    {inv.status}
+                  </span>
                 </td>
-                <td className="p-3 text-right space-x-2">
+                <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
                   {inv.status.toLowerCase() === "draft" && (
                     <>
-                      <button title="Edit"
+                      <button
+                        title="Edit"
                         onClick={() => { setEditing(inv); setShowForm(true); }}
-                        className="text-slate-600 hover:text-slate-900"><Edit2 size={14} /></button>
-                      <button title="Delete" onClick={() => handleDelete(inv.id)}
-                        className={confirmDelete === inv.id ? "text-red-700 font-bold" : "text-red-500 hover:text-red-700"}>
+                        className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100"
+                      >
+                        <Edit2 size={14} />
+                      </button>
+                      <button
+                        title="Delete"
+                        onClick={() => handleDelete(inv.id)}
+                        className={
+                          confirmDelete === inv.id
+                            ? "text-red-600 font-medium text-[12px] px-2 py-0.5 rounded bg-red-50 hover:bg-red-100"
+                            : "text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
+                        }
+                      >
                         {confirmDelete === inv.id ? "Delete?" : <Trash2 size={14} />}
                       </button>
-                      <button title="Deposit pending" onClick={() => handleDeposit(inv.id)}
-                        className="text-yellow-600 hover:text-yellow-800 text-xs">
+                      <button
+                        title="Deposit pending"
+                        onClick={() => handleDeposit(inv.id)}
+                        className="text-amber-600 hover:text-amber-800 text-[12px] font-medium px-2 py-0.5 rounded hover:bg-amber-50"
+                      >
                         Deposit
                       </button>
                     </>
                   )}
-                  <button title="Generate PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
-                    className="text-slate-600 hover:text-slate-900 disabled:opacity-50">
-                    {busy === inv.id ? <RefreshCw size={14} className="animate-spin inline" /> : <FileDown size={14} />}
+                  <button
+                    title="Generate PDF"
+                    onClick={() => handlePdf(inv.id)}
+                    disabled={busy === inv.id}
+                    className="text-gray-400 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 disabled:opacity-40"
+                  >
+                    {busy === inv.id
+                      ? <RefreshCw size={14} className="animate-spin" />
+                      : <FileDown size={14} />
+                    }
                   </button>
                   {inv.status.toLowerCase() !== "paid" && (
                     <>
-                      <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                        className="text-slate-600 hover:text-slate-900"><Send size={14} /></button>
-                      <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                        className="text-green-600 hover:text-green-800"><Check size={14} /></button>
+                      <button
+                        title="Send invoice"
+                        onClick={() => handleSend(inv.id)}
+                        className="text-gray-400 hover:text-blue-600 p-1 rounded hover:bg-blue-50"
+                      >
+                        <Send size={14} />
+                      </button>
+                      <button
+                        title="Mark as paid"
+                        onClick={() => handleMarkPaid(inv.id)}
+                        className="text-gray-400 hover:text-emerald-600 p-1 rounded hover:bg-emerald-50"
+                      >
+                        <Check size={14} />
+                      </button>
                     </>
                   )}
                 </td>
               </tr>
             ))}
             {invoices.length === 0 && (
-              <tr><td colSpan={7} className="p-6 text-center text-slate-400">
-                <div className="py-8">
-                  <p className="text-lg mb-2">No invoices yet</p>
-                  <p className="text-sm mb-4">Create your first invoice to send to a client</p>
-                  <button onClick={() => { setEditing(null); setShowForm(true); }}
-                    className="bg-slate-900 text-white px-4 py-2 rounded text-sm">
-                    Create Invoice
+              <tr>
+                <td colSpan={7} className="px-4 py-16 text-center">
+                  <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
+                    <FileText size={18} className="text-gray-400" />
+                  </div>
+                  <p className="text-[16px] font-semibold text-gray-800 mb-1">No invoices yet</p>
+                  <p className="text-[14px] text-gray-400 mb-4">Create your first invoice to send to a client</p>
+                  <button
+                    onClick={() => { setEditing(null); setShowForm(true); }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium inline-flex items-center gap-2 transition-colors"
+                  >
+                    <Plus size={14} /> Create Invoice
                   </button>
-                </div>
-              </td></tr>
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
       </div>
 
+      {/* Detail panel */}
       {detailId && detailInvoice && (
-        <InvoiceDetailPanel invoice={detailInvoice} onClose={() => { setDetailId(null); setDetailInvoice(null); }}
+        <InvoiceDetailPanel
+          invoice={detailInvoice}
+          onClose={() => { setDetailId(null); setDetailInvoice(null); }}
           onPdf={() => handlePdf(detailInvoice.id)}
           onResend={() => { if (confirm("Re-send this invoice?")) handleSend(detailInvoice.id); }}
-          clientName={clientName(detailInvoice.client_id)} />
+          clientName={clientName(detailInvoice.client_id)}
+        />
       )}
     </div>
   );
@@ -326,16 +415,19 @@ function InvoiceForm({
     : clients;
 
   return (
-    <div className="bg-white rounded-lg shadow p-5 mb-4">
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="font-semibold">{initial ? "Edit Invoice" : "New Invoice"}</h3>
-        <button onClick={onClose}><X size={18} /></button>
+    <div className="bg-white border border-gray-200 rounded-lg p-6 mb-4">
+      <div className="flex justify-between items-center mb-5">
+        <h3 className="text-[15px] font-semibold text-gray-900">{initial ? "Edit Invoice" : "New Invoice"}</h3>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100">
+          <X size={18} />
+        </button>
       </div>
 
       {!initial && (
-        <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="grid grid-cols-3 gap-4 mb-5">
           <Field label="Client">
-            <input className="border p-2 rounded w-full text-sm"
+            <input
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               placeholder="Type to search..."
               value={clientSearch}
               onChange={(e) => {
@@ -346,7 +438,8 @@ function InvoiceForm({
                 if (match) setClientId(match.id);
               }}
             />
-            <select className="border p-2 rounded w-full mt-1 text-sm"
+            <select
+              className="border border-gray-300 px-3 rounded-md text-[14px] w-full mt-1 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               value={createNew ? "__new__" : clientId}
               onChange={(e) => {
                 const v = e.target.value;
@@ -357,7 +450,9 @@ function InvoiceForm({
                   const found = clients.find((c) => c.id === v);
                   if (found) setClientSearch(found.name);
                 }
-              }} size={Math.min(6, filteredClients.length + 1)}>
+              }}
+              size={Math.min(6, filteredClients.length + 1)}
+            >
               {filteredClients.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
@@ -365,44 +460,83 @@ function InvoiceForm({
             </select>
           </Field>
           <Field label="Due date">
-            <input type="date" className="border p-2 rounded w-full" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            <input
+              type="date"
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
           </Field>
           <Field label="Tax %">
-            <input type="text" inputMode="decimal" className="border p-2 rounded w-full" value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
+            <input
+              type="text"
+              inputMode="decimal"
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={taxRate}
+              onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
+            />
           </Field>
         </div>
       )}
 
       {initial && (
-        <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="grid grid-cols-2 gap-4 mb-5">
           <Field label="Due date">
-            <input type="date" className="border p-2 rounded w-full" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            <input
+              type="date"
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
           </Field>
           <Field label="Tax %">
-            <input type="text" inputMode="decimal" className="border p-2 rounded w-full" value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
+            <input
+              type="text"
+              inputMode="decimal"
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={taxRate}
+              onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
+            />
           </Field>
         </div>
       )}
 
       {!initial && createNew && (
-        <div className="grid grid-cols-2 gap-3 mb-4 p-3 bg-blue-50 border border-blue-200 rounded">
+        <div className="grid grid-cols-2 gap-4 mb-5 p-4 bg-indigo-50 border border-indigo-200 rounded-lg">
           <Field label="Name *">
-            <input className="border p-2 rounded w-full" value={newClient.name} onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} />
+            <input
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={newClient.name}
+              onChange={(e) => setNewClient({ ...newClient, name: e.target.value })}
+            />
           </Field>
           <Field label="Email">
-            <input className="border p-2 rounded w-full" value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} />
+            <input
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={newClient.email}
+              onChange={(e) => setNewClient({ ...newClient, email: e.target.value })}
+            />
           </Field>
           <Field label="Phone">
-            <input className="border p-2 rounded w-full" value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} />
+            <input
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={newClient.phone}
+              onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })}
+            />
           </Field>
           <Field label="Company">
-            <input className="border p-2 rounded w-full" value={newClient.company} onChange={(e) => setNewClient({ ...newClient, company: e.target.value })} />
+            <input
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={newClient.company}
+              onChange={(e) => setNewClient({ ...newClient, company: e.target.value })}
+            />
           </Field>
         </div>
       )}
 
-      <div className="mb-4">
-        <div className="grid grid-cols-12 gap-2 text-xs font-semibold text-slate-600 mb-1 px-1">
+      {/* Line items */}
+      <div className="mb-5">
+        <div className="grid grid-cols-12 gap-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5 px-1">
           <div className="col-span-6">Description</div>
           <div className="col-span-1">Qty</div>
           <div className="col-span-2">Rate</div>
@@ -410,48 +544,83 @@ function InvoiceForm({
           <div className="col-span-1"></div>
         </div>
         {items.map((it, i) => (
-          <div key={i} className="grid grid-cols-12 gap-2 mb-1">
-            <input className="col-span-6 border p-2 rounded text-sm" value={it.description}
-              onChange={(e) => updateItem(i, "description", e.target.value)} />
-            <input type="text" inputMode="decimal" className="col-span-1 border p-2 rounded text-sm"
-              value={it.qty || ""} onChange={(e) => updateItem(i, "qty", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)} />
-            <input type="text" inputMode="decimal" className="col-span-2 border p-2 rounded text-sm"
-              value={it.rate || ""} onChange={(e) => updateItem(i, "rate", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)} />
-            <input readOnly className="col-span-2 border p-2 rounded text-sm bg-slate-50"
-              value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} />
-            <button onClick={() => removeRow(i)} className="col-span-1 text-red-500 hover:text-red-700"><Trash2 size={14} /></button>
+          <div key={i} className="grid grid-cols-12 gap-2 mb-1.5">
+            <input
+              className="col-span-6 border border-gray-300 px-3 h-9 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value={it.description}
+              onChange={(e) => updateItem(i, "description", e.target.value)}
+            />
+            <input
+              type="text"
+              inputMode="decimal"
+              className="col-span-1 border border-gray-300 px-2 h-9 rounded-md text-[14px] text-center focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value={it.qty || ""}
+              onChange={(e) => updateItem(i, "qty", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
+            />
+            <input
+              type="text"
+              inputMode="decimal"
+              className="col-span-2 border border-gray-300 px-3 h-9 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value={it.rate || ""}
+              onChange={(e) => updateItem(i, "rate", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
+            />
+            <input
+              readOnly
+              className="col-span-2 border border-gray-100 bg-gray-50 px-3 h-9 rounded-md text-[14px] text-right text-gray-600 tabular-nums"
+              value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+            />
+            <button
+              onClick={() => removeRow(i)}
+              className="col-span-1 text-gray-400 hover:text-red-600 flex items-center justify-center"
+            >
+              <Trash2 size={14} />
+            </button>
           </div>
         ))}
-        <button onClick={addRow} className="text-sm text-slate-600 hover:text-slate-900 mt-2 flex items-center gap-1">
-          <Plus size={14} /> Add line
-        </button>
-        {templates.length > 0 && (
-          <div className="inline-flex ml-3 gap-1">
-            <span className="text-xs text-slate-400">Templates:</span>
-            {templates.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setItems([...items, { description: t.description, qty: t.qty, rate: t.rate, amount: t.qty * t.rate }])}
-                className="text-xs bg-slate-100 px-2 py-0.5 rounded hover:bg-slate-200"
-              >
-                {t.description}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex items-center gap-3 mt-2">
+          <button
+            onClick={addRow}
+            className="text-[13px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+          >
+            <Plus size={14} /> Add line
+          </button>
+          {templates.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[12px] text-gray-400">Templates:</span>
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setItems([...items, { description: t.description, qty: t.qty, rate: t.rate, amount: t.qty * t.rate }])}
+                  className="text-[11px] bg-gray-100 hover:bg-gray-200 px-2.5 py-1 rounded-full text-gray-600 transition-colors"
+                >
+                  {t.description}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="mb-4">
+      {/* Notes + recurring */}
+      <div className="mb-5">
         <div className="flex gap-4 items-end">
           <div className="flex-1">
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Notes</label>
-            <textarea rows={3} className="border p-2 rounded w-full text-sm"
+            <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Notes</label>
+            <textarea
+              rows={3}
+              className="border border-gray-300 px-3 py-2 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               placeholder="Shipping instructions, payment terms, special notes..."
-              value={notes} onChange={(e) => setNotes(e.target.value)} />
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Recurring</label>
-            <select className="border p-2 rounded text-sm" value={recurring} onChange={(e) => setRecurring(e.target.value)}>
+            <label className="block text-[12px] font-medium text-gray-600 mb-1.5">Recurring</label>
+            <select
+              className="border border-gray-300 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              value={recurring}
+              onChange={(e) => setRecurring(e.target.value)}
+            >
               <option value="">One-time</option>
               <option value="monthly">Monthly</option>
               <option value="quarterly">Quarterly</option>
@@ -461,25 +630,35 @@ function InvoiceForm({
         </div>
       </div>
 
-      <div className="border-t pt-3 flex justify-end">
-        <div className="w-64 text-sm space-y-1">
+      {/* Totals + actions */}
+      <div className="border-t border-gray-200 pt-4 flex justify-end">
+        <div className="w-64 text-[14px] space-y-1.5">
           <Row label="Subtotal" value={subtotal} />
           <Row label={`Tax (${taxRate}%)`} value={tax} />
           <Row label="Total" value={total} bold />
-       </div>
-
+        </div>
+      </div>
       <div className="flex justify-end gap-2 mt-4">
-        <button onClick={onClose} className="px-4 py-2 text-sm">Cancel</button>
-        <button onClick={handlePreview} disabled={previewing || items.length === 0}
-          className="bg-slate-100 text-slate-700 px-4 py-2 rounded text-sm flex items-center gap-1 disabled:opacity-50">
+        <button
+          onClick={onClose}
+          className="px-4 h-9 text-[14px] text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handlePreview}
+          disabled={previewing || items.length === 0}
+          className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 h-9 rounded-md text-[14px] flex items-center gap-1.5 disabled:opacity-40"
+        >
           <Eye size={14} /> {previewing ? "Opening..." : "Preview"}
         </button>
-        <button onClick={submit}
+        <button
+          onClick={submit}
           disabled={submitting || (!createNew && !clientId) || items.length === 0}
-          className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-50">
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium disabled:opacity-40"
+        >
           {submitting ? "Saving..." : initial ? "Save Changes" : "Create Invoice"}
         </button>
-      </div>
       </div>
     </div>
   );
@@ -487,7 +666,7 @@ function InvoiceForm({
 
 function Row({ label, value, bold }: { label: string; value: number; bold?: boolean }) {
   return (
-    <div className={`flex justify-between ${bold ? "font-bold text-base" : ""}`}>
+    <div className={`flex justify-between tabular-nums ${bold ? "font-semibold text-[15px] pt-1.5 border-t border-gray-200" : "text-gray-700"}`}>
       <span>{label}</span>
       <span>{fmtAmount(value)}</span>
     </div>
@@ -496,16 +675,15 @@ function Row({ label, value, bold }: { label: string; value: number; bold?: bool
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div><label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>{children}</div>
+    <div>
+      <label className="block text-[12px] font-medium text-gray-600 mb-1.5">{label}</label>
+      {children}
+    </div>
   );
 }
 
 function InvoiceDetailPanel({
-  invoice,
-  clientName,
-  onClose,
-  onPdf,
-  onResend,
+  invoice, clientName, onClose, onPdf, onResend,
 }: {
   invoice: Invoice;
   clientName: string;
@@ -514,63 +692,133 @@ function InvoiceDetailPanel({
   onResend: () => void;
 }) {
   const items: LineItem[] = JSON.parse(invoice.line_items_json || "[]");
+  const statusCol = (s: string) => {
+    if (s === "paid")            return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+    if (s === "sent")            return "bg-blue-50 text-blue-700 border border-blue-200";
+    if (s === "overdue")         return "bg-red-50 text-red-700 border border-red-200";
+    if (s === "deposit_pending") return "bg-amber-50 text-amber-700 border border-amber-200";
+    return "bg-gray-100 text-gray-600 border border-gray-200";
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/40" />
-      <div className="relative w-[480px] bg-white shadow-xl h-full overflow-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="sticky top-0 bg-white border-b p-4 flex items-center justify-between z-10">
-          <h3 className="font-semibold text-lg">{invoice.number}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+    <>
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-[1px] z-40" onClick={onClose} />
+      <div
+        className="fixed inset-y-0 right-0 w-[480px] bg-white shadow-[0_0_40px_rgba(0,0,0,0.12)] h-full overflow-auto z-50"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
+          <h3 className="text-[16px] font-semibold text-gray-900 font-mono">{invoice.number}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100">
+            <X size={18} />
+          </button>
         </div>
-        <div className="p-4 space-y-4">
+
+        {/* Body */}
+        <div className="px-6 py-5 space-y-5">
+          {/* Status */}
           <div>
-            <span className={`text-xs px-2 py-0.5 rounded ${invoice.status === "paid" ? "bg-green-100 text-green-700" : invoice.status === "sent" ? "bg-blue-100 text-blue-700" : invoice.status === "overdue" ? "bg-red-100 text-red-700" : invoice.status === "deposit_pending" ? "bg-yellow-100 text-yellow-700" : "bg-slate-100 text-slate-700"}`}>{invoice.status}</span>
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide ${statusCol(invoice.status)}`}>
+              {invoice.status}
+            </span>
           </div>
+
+          {/* Client */}
           <div>
-            <div className="text-xs text-slate-500">Client</div>
-            <div className="font-semibold">{clientName}</div>
+            <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Client</div>
+            <div className="text-[14px] font-medium text-gray-900 mt-0.5">{clientName}</div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><div className="text-xs text-slate-500">Issue Date</div><div>{invoice.issue_date.slice(0, 10)}</div></div>
-            <div><div className="text-xs text-slate-500">Due Date</div><div>{invoice.due_date.slice(0, 10)}</div></div>
-            {invoice.sent_at && <div><div className="text-xs text-slate-500">Sent</div><div>{new Date(invoice.sent_at).toLocaleDateString()}</div></div>}
-            {invoice.status === "paid" && <div><div className="text-xs text-slate-500">Paid At</div><div>—</div></div>}
+
+          {/* Dates */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Issue Date</div>
+              <div className="text-[14px] text-gray-900 mt-0.5 tabular-nums">{invoice.issue_date.slice(0, 10)}</div>
+            </div>
+            <div>
+              <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Due Date</div>
+              <div className="text-[14px] text-gray-900 mt-0.5 tabular-nums">{invoice.due_date.slice(0, 10)}</div>
+            </div>
+            {invoice.sent_at && (
+              <div>
+                <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Sent</div>
+                <div className="text-[14px] text-gray-900 mt-0.5">{new Date(invoice.sent_at).toLocaleDateString()}</div>
+              </div>
+            )}
+            {invoice.status === "paid" && (
+              <div>
+                <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Paid At</div>
+                <div className="text-[14px] text-gray-900 mt-0.5">—</div>
+              </div>
+            )}
           </div>
+
+          {/* Line items */}
           <div>
-            <div className="text-xs text-slate-500 mb-2">Line Items</div>
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50">
+            <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide mb-2">Line Items</div>
+            <table className="w-full text-[13px]">
+              <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left p-2">Description</th>
-                  <th className="text-right p-2">Qty</th>
-                  <th className="text-right p-2">Rate</th>
-                  <th className="text-right p-2">Amount</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Description</th>
+                  <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Qty</th>
+                  <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Rate</th>
+                  <th className="text-right px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((it, i) => (
-                  <tr key={i} className="border-t">
-                    <td className="p-2">{it.description}</td>
-                    <td className="p-2 text-right">{it.qty}</td>
-                    <td className="p-2 text-right">{fmtAmount(it.rate)}</td>
-                    <td className="p-2 text-right">{fmtAmount(it.amount)}</td>
+                  <tr key={i} className="border-t border-gray-100">
+                    <td className="px-3 py-2.5 text-gray-700">{it.description}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{it.qty}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtAmount(it.rate)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-medium">{fmtAmount(it.amount)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="border-t pt-3 space-y-1 text-sm">
-            <div className="flex justify-between"><span>Subtotal</span><span>{fmtAmount(invoice.subtotal)}</span></div>
-            <div className="flex justify-between"><span>Tax</span><span>{fmtAmount(invoice.tax)}</span></div>
-            <div className="flex justify-between font-bold"><span>Total</span><span>{fmtAmount(invoice.total)}</span></div>
+
+          {/* Totals */}
+          <div className="border-t border-gray-200 pt-4 space-y-1.5 text-[14px]">
+            <div className="flex justify-between text-gray-700">
+              <span>Subtotal</span>
+              <span className="tabular-nums">{fmtAmount(invoice.subtotal)}</span>
+            </div>
+            <div className="flex justify-between text-gray-700">
+              <span>Tax</span>
+              <span className="tabular-nums">{fmtAmount(invoice.tax)}</span>
+            </div>
+            <div className="flex justify-between font-semibold text-[15px] text-gray-900 pt-1.5 border-t border-gray-200">
+              <span>Total</span>
+              <span className="tabular-nums">{fmtAmount(invoice.total)}</span>
+            </div>
           </div>
-          {invoice.notes && <div className="bg-slate-50 p-3 rounded text-sm">{invoice.notes}</div>}
+
+          {/* Notes */}
+          {invoice.notes && (
+            <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-lg text-[13px] text-gray-600">
+              {invoice.notes}
+            </div>
+          )}
         </div>
-        <div className="sticky bottom-0 bg-white border-t p-4 flex gap-2">
-          <button onClick={onPdf} className="bg-slate-900 text-white px-4 py-2 rounded text-sm flex-1">Download PDF</button>
-          <button onClick={onResend} className="bg-slate-100 px-4 py-2 rounded text-sm flex-1">Resend</button>
+
+        {/* Footer */}
+        <div className="sticky bottom-0 bg-white border-t border-gray-100 px-6 py-4 flex gap-3">
+          <button
+            onClick={onPdf}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium flex-1 transition-colors"
+          >
+            Download PDF
+          </button>
+          <button
+            onClick={onResend}
+            className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-md text-[14px] flex-1 transition-colors"
+          >
+            Resend
+          </button>
         </div>
       </div>
-    </div>
+    </>
   );
 }

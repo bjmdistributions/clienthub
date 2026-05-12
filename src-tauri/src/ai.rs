@@ -294,3 +294,24 @@ pub async fn health_check() -> Result<bool> {
         .await;
     Ok(matches!(r, Ok(resp) if resp.status().is_success()))
 }
+
+pub async fn draft_newsletter(prompt: &str, tone: &str) -> Result<String> {
+    let tone_instruction = match tone {
+        "formal" => "formal, professional",
+        "casual" => "casual, friendly",
+        _ => "neutral, professional",
+    };
+    let system = format!(
+        "You are a professional business email writer for a wholesale distribution company. \
+         Write a newsletter email in {} tone. \
+         The email will be personalized — use {{{{first_name}}}} as a placeholder where the recipient's name should appear (usually in the greeting). \
+         Write only the email body, no subject line. Keep it concise (150-250 words). \
+         Do not include any explanation or metadata.",
+        tone_instruction
+    );
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: prompt.into() },
+    ];
+    chat(&messages, false, 0.5).await
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState, Children } from "react";
 import { api, Client, Interaction, Invoice } from "../lib/api";
+import { fmtAmount } from "../lib/format";
 import {
   ArrowLeft,
   Mail,
@@ -11,15 +12,10 @@ import {
   FileText,
   MessageSquare,
   ShoppingCart,
-  MapPin,
-  Globe,
-  Hash,
-  TrendingUp,
   Target,
   Calendar,
   User,
   Inbox,
-  ChevronDown,
   Clock,
 } from "lucide-react";
 
@@ -27,6 +23,30 @@ interface Props {
   clientId: string;
   onBack: () => void;
 }
+
+const kindColor = (kind: string): string => {
+  if (kind === "email_in")  return "bg-blue-50 text-blue-700 border border-blue-200";
+  if (kind === "email_out") return "bg-indigo-50 text-indigo-700 border border-indigo-200";
+  if (kind === "call")      return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+  if (kind === "meeting")   return "bg-amber-50 text-amber-700 border border-amber-200";
+  return "bg-gray-100 text-gray-600 border border-gray-200";
+};
+
+const invoiceStatusColor = (s: string): string => {
+  if (s === "paid")            return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+  if (s === "sent")            return "bg-blue-50 text-blue-700 border border-blue-200";
+  if (s === "overdue")         return "bg-red-50 text-red-700 border border-red-200";
+  if (s === "deposit_pending") return "bg-amber-50 text-amber-700 border border-amber-200";
+  return "bg-gray-100 text-gray-600 border border-gray-200";
+};
+
+const leadStatusColor = (s: string): string => {
+  if (s === "hot_lead")        return "bg-red-50 text-red-700 border border-red-200";
+  if (s === "warm")            return "bg-orange-50 text-orange-700 border border-orange-200";
+  if (s === "active_customer") return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+  if (s === "inactive")        return "bg-gray-100 text-gray-500 border border-gray-200";
+  return "bg-indigo-50 text-indigo-700 border border-indigo-200";
+};
 
 export default function ClientDetailView({ clientId, onBack }: Props) {
   const [client, setClient] = useState<Client | null>(null);
@@ -46,26 +66,21 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
     setInvoices(all);
   };
 
-  useEffect(() => {
-    load();
-  }, [clientId]);
+  useEffect(() => { load(); }, [clientId]);
 
   const handleSummarize = async () => {
     setSummarizing(true);
     try {
       const s = await api.aiSummarizeHistory(clientId);
       setSummary(s);
-    } catch (e: any) {
-      alert(`AI error: ${e}`);
-    } finally {
-      setSummarizing(false);
-    }
+    } catch (e: any) { alert(`AI error: ${e}`); }
+    finally { setSummarizing(false); }
   };
 
   if (!client)
     return (
-      <div className="text-slate-400">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm mb-4">
+      <div className="text-gray-400">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 hover:text-gray-900 mb-5">
           <ArrowLeft size={14} /> Back
         </button>
         Loading...
@@ -81,40 +96,35 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
 
   return (
     <div>
+      {/* Back */}
       <button
         onClick={onBack}
-        className="flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900 mb-4"
+        className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 hover:text-gray-900 mb-5 transition-colors"
       >
         <ArrowLeft size={14} /> Back to Clients
       </button>
 
       {/* Header card */}
-      <div className="bg-white rounded-lg shadow p-6 mb-4">
+      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-4">
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-2xl font-bold">{client.name}</h2>
+            <h2 className="text-[18px] font-semibold text-gray-900">{client.name}</h2>
             {client.company && (
-              <div className="text-slate-500 flex items-center gap-1 mt-1 text-sm">
+              <div className="text-[13px] text-gray-500 flex items-center gap-1.5 mt-1">
                 <Building2 size={14} /> {client.company}
               </div>
             )}
             <div className="mt-2">
-              <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                client.lead_status === "hot_lead" ? "bg-red-100 text-red-700" :
-                client.lead_status === "warm" ? "bg-orange-100 text-orange-700" :
-                client.lead_status === "active_customer" ? "bg-green-100 text-green-700" :
-                client.lead_status === "inactive" ? "bg-gray-100 text-gray-700" :
-                "bg-blue-100 text-blue-700"
-              }`}>
+              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${leadStatusColor(client.lead_status)}`}>
                 {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
               </span>
             </div>
-            <div className="flex gap-4 mt-3 text-sm">
+            <div className="flex gap-4 mt-3">
               {client.email && (
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5">
                   <a
                     href={`mailto:${client.email}`}
-                    className="flex items-center gap-1 text-slate-600 hover:text-slate-900"
+                    className="flex items-center gap-1.5 text-[13px] text-indigo-600 hover:text-indigo-800"
                   >
                     <Mail size={14} /> {client.email}
                   </a>
@@ -122,127 +132,82 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 </div>
               )}
               {client.phone && (
-                <span className="flex items-center gap-1 text-slate-600">
+                <span className="flex items-center gap-1.5 text-[13px] text-gray-600">
                   <Phone size={14} /> {client.phone}
                 </span>
               )}
             </div>
           </div>
-          <div className="text-right text-sm">
-            <div className="text-slate-500">Outstanding</div>
-            <div className="text-xl font-bold text-amber-600">
-              ${outstanding.toFixed(2)}
+
+          {/* Financial summary */}
+          <div className="text-right">
+            <div className="text-[12px] font-medium text-gray-400 uppercase tracking-wide">Outstanding</div>
+            <div className="text-[20px] font-semibold text-amber-600 tabular-nums mt-0.5">
+              {fmtAmount(outstanding)}
             </div>
-            <div className="text-slate-500 mt-2">Paid</div>
-            <div className="text-base font-semibold text-green-600">
-              ${paid.toFixed(2)}
+            <div className="text-[12px] font-medium text-gray-400 uppercase tracking-wide mt-3">Paid</div>
+            <div className="text-[16px] font-semibold text-emerald-600 tabular-nums mt-0.5">
+              {fmtAmount(paid)}
             </div>
           </div>
         </div>
 
         {client.notes && (
-          <div className="mt-4 p-3 bg-slate-50 rounded text-sm">{client.notes}</div>
+          <div className="mt-4 px-4 py-3 bg-gray-50 border border-gray-100 rounded-lg text-[13px] text-gray-600">
+            {client.notes}
+          </div>
         )}
 
-        <div className="mt-4 inline-flex items-center gap-2 bg-slate-900 text-white px-3 py-1.5 rounded-full text-sm">
+        <div className="mt-4 inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-3 py-1.5 rounded-full text-[13px] font-medium">
           <ShoppingCart size={14} />
-          <span className="font-bold">{client.invoice_count}</span> invoices sent
+          <span className="font-semibold">{client.invoice_count}</span> invoices sent
         </div>
       </div>
 
+      {/* Metadata cards */}
       {client.metadata && (
         <div className="grid grid-cols-3 gap-4 mb-4">
           <MetadataCard title="Contact Info" icon={<User size={14} />}>
-            {client.metadata.job_title && (
-              <MetaRow label="Title" value={client.metadata.job_title} />
-            )}
-            {client.metadata.street_address && (
-              <MetaRow label="Address" value={client.metadata.street_address} />
-            )}
+            {client.metadata.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
+            {client.metadata.street_address && <MetaRow label="Address" value={client.metadata.street_address} />}
             {(client.metadata.city || client.metadata.state) && (
               <MetaRow
                 label=""
-                value={[client.metadata.city, client.metadata.state, client.metadata.zip_code]
-                  .filter(Boolean)
-                  .join(" ")}
+                value={[client.metadata.city, client.metadata.state, client.metadata.zip_code].filter(Boolean).join(" ")}
               />
             )}
-            {client.metadata.country && (
-              <MetaRow label="Country" value={client.metadata.country} />
-            )}
+            {client.metadata.country && <MetaRow label="Country" value={client.metadata.country} />}
           </MetadataCard>
 
           <MetadataCard title="Business Info" icon={<Building2 size={14} />}>
-            {client.metadata.website && (
-              <MetaRow label="Website" value={client.metadata.website} />
-            )}
-            {client.metadata.tax_id && (
-              <MetaRow label="Tax ID" value={client.metadata.tax_id} />
-            )}
-            {client.metadata.primary_buy_category && (
-              <MetaRow
-                label="Buy Category"
-                value={client.metadata.primary_buy_category}
-              />
-            )}
-            {client.metadata.other_buy_categories && (
-              <MetaRow
-                label="Other Categories"
-                value={client.metadata.other_buy_categories}
-              />
-            )}
-            {client.metadata.estimated_annual_spend && (
-              <MetaRow
-                label="Annual Spend"
-                value={client.metadata.estimated_annual_spend}
-              />
-            )}
-            {client.metadata.purchase_frequency && (
-              <MetaRow
-                label="Frequency"
-                value={client.metadata.purchase_frequency}
-              />
-            )}
+            {client.metadata.website && <MetaRow label="Website" value={client.metadata.website} />}
+            {client.metadata.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
+            {client.metadata.primary_buy_category && <MetaRow label="Buy Category" value={client.metadata.primary_buy_category} />}
+            {client.metadata.other_buy_categories && <MetaRow label="Other Categories" value={client.metadata.other_buy_categories} />}
+            {client.metadata.estimated_annual_spend && <MetaRow label="Annual Spend" value={client.metadata.estimated_annual_spend} />}
+            {client.metadata.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
           </MetadataCard>
 
           <MetadataCard title="Lead Info" icon={<Target size={14} />}>
-            {client.metadata.lead_source && (
-              <MetaRow label="Source" value={client.metadata.lead_source} />
-            )}
-            {client.metadata.interest_level && (
-              <MetaRow label="Interest" value={client.metadata.interest_level} />
-            )}
-            {client.metadata.buyer_type && (
-              <MetaRow label="Buyer Type" value={client.metadata.buyer_type} />
-            )}
-            {client.metadata.lead_id && (
-              <MetaRow label="Lead ID" value={client.metadata.lead_id} />
-            )}
-            {client.metadata.lead_representative && (
-              <MetaRow label="Rep" value={client.metadata.lead_representative} />
-            )}
-            {client.metadata.date_added && (
-              <MetaRow label="Added" value={client.metadata.date_added} />
-            )}
-            {client.metadata.last_contact_date && (
-              <MetaRow label="Last Contact" value={client.metadata.last_contact_date} />
-            )}
+            {client.metadata.lead_source && <MetaRow label="Source" value={client.metadata.lead_source} />}
+            {client.metadata.interest_level && <MetaRow label="Interest" value={client.metadata.interest_level} />}
+            {client.metadata.buyer_type && <MetaRow label="Buyer Type" value={client.metadata.buyer_type} />}
+            {client.metadata.lead_id && <MetaRow label="Lead ID" value={client.metadata.lead_id} />}
+            {client.metadata.lead_representative && <MetaRow label="Rep" value={client.metadata.lead_representative} />}
+            {client.metadata.date_added && <MetaRow label="Added" value={client.metadata.date_added} />}
+            {client.metadata.last_contact_date && <MetaRow label="Last Contact" value={client.metadata.last_contact_date} />}
             {client.metadata.next_follow_up_date && (
-              <div>
-                <span className="text-xs text-slate-400 block">Follow Up</span>
+              <div className="mt-2 first:mt-0">
+                <span className="block text-[11px] font-medium text-gray-400 uppercase tracking-wide mb-1">Follow Up</span>
                 <input
                   type="date"
-                  className="border p-1 rounded text-sm w-full"
+                  className="border border-gray-300 px-2 h-8 rounded-md text-[13px] w-full focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   value={client.metadata.next_follow_up_date}
                   onChange={async (e) => {
                     const meta = { ...(client.metadata || {}), next_follow_up_date: e.target.value };
                     await api.updateClient(client.id, {
-                      name: client.name,
-                      email: client.email,
-                      phone: client.phone,
-                      company: client.company,
-                      notes: client.notes,
-                      metadata: meta,
+                      name: client.name, email: client.email, phone: client.phone,
+                      company: client.company, notes: client.notes, metadata: meta,
                     });
                     load();
                   }}
@@ -253,184 +218,192 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
         </div>
       )}
 
-      <div className="flex gap-2 mb-4">
+      {/* Detail tabs — underline style */}
+      <div className="flex gap-0 border-b border-gray-200 mb-4">
         {(["overview", "emails", "invoices", "timeline"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setDetailTab(t)}
-            className={`px-4 py-1.5 text-sm rounded capitalize ${detailTab === t ? "bg-slate-900 text-white" : "bg-slate-100"}`}
+            className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px capitalize transition-colors ${
+              detailTab === t
+                ? "border-indigo-600 text-indigo-700 font-medium"
+                : "border-transparent text-gray-500 hover:text-gray-800"
+            }`}
           >
             {t}
           </button>
         ))}
       </div>
 
+      {/* Overview tab */}
       {detailTab === "overview" && (
-      <>
-      {/* AI Summary */}
-      <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 mb-4">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="font-semibold text-violet-900 flex items-center gap-2">
-            <Sparkles size={14} /> AI Summary
-          </h3>
-          <button
-            onClick={handleSummarize}
-            disabled={summarizing || interactions.length === 0}
-            className="text-xs bg-violet-600 text-white px-3 py-1 rounded disabled:opacity-50 flex items-center gap-1"
-          >
-            {summarizing && <RefreshCw size={10} className="animate-spin" />}
-            {summary ? "Re-summarize" : "Summarize History"}
-          </button>
-        </div>
-        {summary ? (
-          <div className="text-sm text-slate-700 whitespace-pre-wrap">{summary}</div>
-        ) : (
-          <p className="text-sm text-violet-700">
-            Click to generate a 3-5 bullet summary of outstanding asks, deliverables,
-            and billing context.
-          </p>
-        )}
-      </div>
-
-      {/* Two-column: interactions + invoices */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-lg shadow">
-          <div className="flex items-center justify-between p-4 border-b">
-            <h3 className="font-semibold flex items-center gap-2">
-              <MessageSquare size={14} /> Interactions ({interactions.length})
-            </h3>
-            <button
-              onClick={() => setShowNoteForm(true)}
-              className="text-xs text-slate-600 hover:text-slate-900 flex items-center gap-1"
-            >
-              <Plus size={12} /> Add Note
-            </button>
+        <>
+          {/* AI Summary */}
+          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[14px] font-semibold text-indigo-900 flex items-center gap-2">
+                <Sparkles size={14} /> AI Summary
+              </h3>
+              <button
+                onClick={handleSummarize}
+                disabled={summarizing || interactions.length === 0}
+                className="text-[12px] font-medium bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-7 rounded-md disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {summarizing && <RefreshCw size={10} className="animate-spin" />}
+                {summary ? "Re-summarize" : "Summarize History"}
+              </button>
+            </div>
+            {summary ? (
+              <div className="text-[13px] text-gray-700 whitespace-pre-wrap leading-relaxed">{summary}</div>
+            ) : (
+              <p className="text-[13px] text-indigo-700">
+                Click to generate a 3–5 bullet summary of outstanding asks, deliverables, and billing context.
+              </p>
+            )}
           </div>
-          {showNoteForm && (
-            <NoteForm
-              clientId={clientId}
-              onClose={() => {
-                setShowNoteForm(false);
-                load();
-              }}
-            />
-          )}
-          <div className="max-h-[500px] overflow-auto">
-            {interactions.map((it) => (
-              <div key={it.id} className="p-3 border-b text-sm">
-                <div className="flex items-center gap-2 mb-1">
-                  <span
-                    className={`text-xs px-1.5 py-0.5 rounded ${kindColor(it.kind)}`}
-                  >
-                    {it.kind}
-                  </span>
-                  <span className="text-xs text-slate-400">
-                    {new Date(it.created_at).toLocaleString()}
-                  </span>
-                </div>
-                {it.subject && (
-                  <div className="font-semibold text-sm">{it.subject}</div>
-                )}
-                {it.body && (
-                  <div className="text-sm text-slate-600 mt-1 whitespace-pre-wrap">
-                    {it.body}
+
+          {/* Two-column: interactions + invoices */}
+          <div className="grid grid-cols-2 gap-4">
+            {/* Interactions */}
+            <div className="bg-white border border-gray-200 rounded-lg">
+              <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-100">
+                <h3 className="text-[14px] font-semibold text-gray-800 flex items-center gap-2">
+                  <MessageSquare size={14} className="text-gray-400" /> Interactions ({interactions.length})
+                </h3>
+                <button
+                  onClick={() => setShowNoteForm(true)}
+                  className="text-[12px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                >
+                  <Plus size={12} /> Add Note
+                </button>
+              </div>
+              {showNoteForm && (
+                <NoteForm
+                  clientId={clientId}
+                  onClose={() => { setShowNoteForm(false); load(); }}
+                />
+              )}
+              <div className="max-h-[500px] overflow-auto">
+                {interactions.map((it) => (
+                  <div key={it.id} className="px-4 py-3 border-b border-gray-100 last:border-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${kindColor(it.kind)}`}>
+                        {it.kind}
+                      </span>
+                      <span className="text-[11px] text-gray-400">
+                        {new Date(it.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    {it.subject && <div className="text-[14px] font-medium text-gray-900">{it.subject}</div>}
+                    {it.body && <div className="text-[13px] text-gray-600 mt-0.5 whitespace-pre-wrap">{it.body}</div>}
                   </div>
+                ))}
+                {interactions.length === 0 && (
+                  <div className="px-4 py-8 text-center text-[14px] text-gray-400">No interactions yet.</div>
                 )}
               </div>
-            ))}
-            {interactions.length === 0 && (
-              <div className="p-6 text-center text-slate-400 text-sm">
-                No interactions yet.
+            </div>
+
+            {/* Invoices */}
+            <div className="bg-white border border-gray-200 rounded-lg">
+              <div className="px-4 py-3.5 border-b border-gray-100">
+                <h3 className="text-[14px] font-semibold text-gray-800 flex items-center gap-2">
+                  <FileText size={14} className="text-gray-400" /> Invoices ({invoices.length})
+                </h3>
               </div>
+              <div className="max-h-[500px] overflow-auto">
+                {invoices.map((inv) => (
+                  <div key={inv.id} className="px-4 py-3 border-b border-gray-100 last:border-0">
+                    <div className="flex justify-between items-center">
+                      <span className="font-mono text-[12px] text-gray-500">{inv.number}</span>
+                      <span className="text-[14px] font-semibold text-gray-900 tabular-nums">{fmtAmount(inv.total)}</span>                    </div>
+                    <div className="flex justify-between items-center mt-1">
+                      <span className="text-[12px] text-gray-500">Due {inv.due_date.slice(0, 10)}</span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${invoiceStatusColor(inv.status)}`}>
+                        {inv.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                {invoices.length === 0 && (
+                  <div className="px-4 py-8 text-center text-[14px] text-gray-400">No invoices yet.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Emails tab */}
+      {detailTab === "emails" && (
+        <div className="bg-white border border-gray-200 rounded-lg">
+          <div className="px-4 py-3.5 border-b border-gray-100">
+            <h3 className="text-[14px] font-semibold text-gray-800 flex items-center gap-2">
+              <Inbox size={14} className="text-gray-400" /> Email Thread
+            </h3>
+          </div>
+          <div className="max-h-[600px] overflow-auto">
+            {interactions
+              .filter((it) => it.kind === "email_in" || it.kind === "email_out")
+              .map((it) => (
+                <div key={it.id} className="px-4 py-3.5 border-b border-gray-100 last:border-0">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border mb-2 ${
+                    it.kind === "email_in"
+                      ? "bg-blue-50 text-blue-700 border-blue-200"
+                      : "bg-indigo-50 text-indigo-700 border-indigo-200"
+                  }`}>
+                    {it.kind === "email_in" ? "Received" : "Sent"}
+                  </span>
+                  {it.subject && <div className="text-[14px] font-medium text-gray-900 mb-1">{it.subject}</div>}
+                  {it.body && <div className="text-[13px] text-gray-600 whitespace-pre-wrap">{it.body}</div>}
+                  <div className="text-[11px] text-gray-400 mt-1.5">{new Date(it.created_at).toLocaleString()}</div>
+                </div>
+              ))}
+            {interactions.filter((it) => it.kind === "email_in" || it.kind === "email_out").length === 0 && (
+              <div className="px-4 py-8 text-center text-[14px] text-gray-400">No email interactions yet.</div>
             )}
           </div>
         </div>
+      )}
 
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b">
-            <h3 className="font-semibold flex items-center gap-2">
-              <FileText size={14} /> Invoices ({invoices.length})
+      {/* Invoices tab */}
+      {detailTab === "invoices" && (
+        <div className="bg-white border border-gray-200 rounded-lg">
+          <div className="px-4 py-3.5 border-b border-gray-100">
+            <h3 className="text-[14px] font-semibold text-gray-800 flex items-center gap-2">
+              <FileText size={14} className="text-gray-400" /> Invoices ({invoices.length})
             </h3>
           </div>
-          <div className="max-h-[500px] overflow-auto">
+          <div className="max-h-[600px] overflow-auto">
             {invoices.map((inv) => (
-              <div key={inv.id} className="p-3 border-b text-sm">
+              <div key={inv.id} className="px-4 py-3 border-b border-gray-100 last:border-0">
                 <div className="flex justify-between items-center">
-                  <span className="font-mono text-xs">{inv.number}</span>
-                  <span className="font-semibold">${inv.total.toFixed(2)}</span>
+                  <span className="font-mono text-[12px] text-gray-500">{inv.number}</span>
+                  <span className="text-[14px] font-semibold text-gray-900 tabular-nums">{fmtAmount(inv.total)}</span>
                 </div>
-                <div className="flex justify-between items-center mt-1 text-xs text-slate-500">
-                  <span>Due {inv.due_date.slice(0, 10)}</span>
-                  <span
-                    className={`px-1.5 py-0.5 rounded ${invoiceStatusColor(
-                      inv.status
-                    )}`}
-                  >
+                <div className="flex justify-between mt-1">
+                  <span className="text-[12px] text-gray-500">Due {inv.due_date.slice(0, 10)}</span>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${invoiceStatusColor(inv.status)}`}>
                     {inv.status}
                   </span>
                 </div>
               </div>
             ))}
             {invoices.length === 0 && (
-              <div className="p-6 text-center text-slate-400 text-sm">
-                No invoices yet.
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-      </>
-      )}
-
-      {detailTab === "emails" && (
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b">
-            <h3 className="font-semibold flex items-center gap-2"><Inbox size={14} /> Email Thread</h3>
-          </div>
-          <div className="max-h-[600px] overflow-auto">
-            {interactions.filter((it) => it.kind === "email_in" || it.kind === "email_out").map((it) => (
-              <div key={it.id} className="p-3 border-b text-sm">
-                <div className={`text-xs px-1.5 py-0.5 rounded inline-block mb-2 ${it.kind === "email_in" ? "bg-blue-100 text-blue-700" : "bg-violet-100 text-violet-700"}`}>
-                  {it.kind === "email_in" ? "Received" : "Sent"}
-                </div>
-                {it.subject && <div className="font-semibold mb-1">{it.subject}</div>}
-                {it.body && <div className="text-slate-600 whitespace-pre-wrap">{it.body}</div>}
-                <div className="text-xs text-slate-400 mt-1">{new Date(it.created_at).toLocaleString()}</div>
-              </div>
-            ))}
-            {interactions.filter((it) => it.kind === "email_in" || it.kind === "email_out").length === 0 && (
-              <div className="p-6 text-center text-slate-400 text-sm">No email interactions yet.</div>
+              <div className="px-4 py-8 text-center text-[14px] text-gray-400">No invoices yet.</div>
             )}
           </div>
         </div>
       )}
 
-      {detailTab === "invoices" && (
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b"><h3 className="font-semibold flex items-center gap-2"><FileText size={14} /> Invoices ({invoices.length})</h3></div>
-          <div className="max-h-[600px] overflow-auto">
-            {invoices.map((inv) => (
-              <div key={inv.id} className="p-3 border-b text-sm">
-                <div className="flex justify-between items-center">
-                  <span className="font-mono text-xs">{inv.number}</span>
-                  <span className="font-semibold">${inv.total.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between mt-1 text-xs text-slate-500">
-                  <span>Due {inv.due_date.slice(0, 10)}</span>
-                  <span className={`px-1.5 py-0.5 rounded ${invoiceStatusColor(inv.status)}`}>{inv.status}</span>
-                </div>
-              </div>
-            ))}
-            {invoices.length === 0 && (
-              <div className="p-6 text-center text-slate-400 text-sm">No invoices yet.</div>
-            )}
-          </div>
-        </div>
-      )}
-
+      {/* Timeline tab */}
       {detailTab === "timeline" && (
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-4 border-b"><h3 className="font-semibold flex items-center gap-2"><Clock size={14} /> Timeline</h3></div>
+        <div className="bg-white border border-gray-200 rounded-lg">
+          <div className="px-4 py-3.5 border-b border-gray-100">
+            <h3 className="text-[14px] font-semibold text-gray-800 flex items-center gap-2">
+              <Clock size={14} className="text-gray-400" /> Timeline
+            </h3>
+          </div>
           <div className="max-h-[600px] overflow-auto">
             {[
               ...interactions.map((it) => ({ type: "interaction", data: it, date: it.created_at })),
@@ -438,26 +411,34 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
             ]
               .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
               .map((item, i) => (
-                <div key={i} className="p-3 border-b text-sm">
-                  <div className="text-xs text-slate-400 mb-1">{new Date(item.date).toLocaleString()}</div>
+                <div key={i} className="px-4 py-3 border-b border-gray-100 last:border-0">
+                  <div className="text-[11px] text-gray-400 mb-1">{new Date(item.date).toLocaleString()}</div>
                   {item.type === "interaction" && (
                     <>
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${kindColor((item.data as Interaction).kind)}`}>{(item.data as Interaction).kind}</span>
-                      {(item.data as Interaction).subject && <span className="font-semibold ml-2">{(item.data as Interaction).subject}</span>}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${kindColor((item.data as Interaction).kind)}`}>
+                        {(item.data as Interaction).kind}
+                      </span>
+                      {(item.data as Interaction).subject && (
+                        <span className="text-[14px] font-medium text-gray-900 ml-2">{(item.data as Interaction).subject}</span>
+                      )}
                     </>
                   )}
                   {item.type === "invoice" && (
                     <>
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100">invoice</span>
-                      <span className="font-mono text-xs ml-2">{(item.data as Invoice).number}</span>
-                      <span className="ml-2 font-semibold">${(item.data as Invoice).total.toFixed(2)}</span>
-                      <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${invoiceStatusColor((item.data as Invoice).status)}`}>{(item.data as Invoice).status}</span>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 border border-gray-200 uppercase tracking-wide">
+                        invoice
+                      </span>
+                      <span className="font-mono text-[12px] text-gray-500 ml-2">{(item.data as Invoice).number}</span>
+                      <span className="text-[14px] font-semibold text-gray-900 ml-2 tabular-nums">{fmtAmount((item.data as Invoice).total)}</span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ml-2 ${invoiceStatusColor((item.data as Invoice).status)}`}>
+                        {(item.data as Invoice).status}
+                      </span>
                     </>
                   )}
                 </div>
               ))}
             {interactions.length + invoices.length === 0 && (
-              <div className="p-6 text-center text-slate-400 text-sm">No activity yet.</div>
+              <div className="px-4 py-8 text-center text-[14px] text-gray-400">No activity yet.</div>
             )}
           </div>
         </div>
@@ -467,9 +448,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
 }
 
 function MetadataCard({
-  title,
-  icon,
-  children,
+  title, icon, children,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -478,8 +457,8 @@ function MetadataCard({
   const hasContent = Children.toArray(children).length > 0;
   if (!hasContent) return null;
   return (
-    <div className="bg-white rounded-lg shadow p-4">
-      <h3 className="font-semibold text-sm text-slate-700 flex items-center gap-2 mb-3 border-b pb-2">
+    <div className="bg-white border border-gray-200 rounded-lg p-4">
+      <h3 className="text-[12px] font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-2 mb-3 pb-2 border-b border-gray-100">
         {icon}
         {title}
       </h3>
@@ -490,20 +469,14 @@ function MetadataCard({
 
 function MetaRow({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      {label && <span className="text-xs text-slate-400 block">{label}</span>}
-      <span className="text-slate-700">{value}</span>
+    <div className="mt-2 first:mt-0">
+      {label && <span className="block text-[11px] font-medium text-gray-400 uppercase tracking-wide">{label}</span>}
+      <span className="text-[13px] text-gray-800">{value}</span>
     </div>
   );
 }
 
-function NoteForm({
-  clientId,
-  onClose,
-}: {
-  clientId: string;
-  onClose: () => void;
-}) {
+function NoteForm({ clientId, onClose }: { clientId: string; onClose: () => void }) {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [kind, setKind] = useState("note");
@@ -520,16 +493,14 @@ function NoteForm({
         body,
       });
       onClose();
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   return (
-    <div className="p-3 bg-slate-50 border-b">
+    <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
       <div className="flex gap-2 mb-2">
         <select
-          className="border p-1 rounded text-sm"
+          className="border border-gray-300 px-2 h-8 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
           value={kind}
           onChange={(e) => setKind(e.target.value)}
         >
@@ -540,7 +511,7 @@ function NoteForm({
         </select>
         <input
           placeholder="Subject (optional)"
-          className="border p-1 rounded text-sm flex-1"
+          className="border border-gray-300 px-3 h-8 rounded-md text-[13px] flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
         />
@@ -548,40 +519,22 @@ function NoteForm({
       <textarea
         placeholder="Notes..."
         rows={3}
-        className="border p-2 rounded text-sm w-full mb-2"
+        className="border border-gray-300 px-3 py-2 rounded-md text-[13px] w-full mb-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
         value={body}
         onChange={(e) => setBody(e.target.value)}
       />
       <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="text-xs">
-          Cancel
-        </button>
+        <button onClick={onClose} className="text-[12px] text-gray-500 hover:text-gray-800">Cancel</button>
         <button
           onClick={save}
           disabled={saving || !body.trim()}
-          className="bg-slate-900 text-white px-3 py-1 rounded text-xs disabled:opacity-50"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-7 rounded-md text-[12px] font-medium disabled:opacity-40"
         >
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
     </div>
   );
-}
-
-function kindColor(kind: string): string {
-  if (kind === "email_in") return "bg-blue-100 text-blue-700";
-  if (kind === "email_out") return "bg-violet-100 text-violet-700";
-  if (kind === "call") return "bg-green-100 text-green-700";
-  if (kind === "meeting") return "bg-amber-100 text-amber-700";
-  return "bg-slate-100 text-slate-700";
-}
-
-function invoiceStatusColor(s: string): string {
-  if (s === "paid") return "bg-green-100 text-green-700";
-  if (s === "sent") return "bg-blue-100 text-blue-700";
-  if (s === "overdue") return "bg-red-100 text-red-700";
-  if (s === "deposit_pending") return "bg-yellow-100 text-yellow-700";
-  return "bg-slate-100 text-slate-700";
 }
 
 function CopyEmail({ email }: { email: string }) {
@@ -593,7 +546,7 @@ function CopyEmail({ email }: { email: string }) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }}
-      className="text-xs text-slate-400 hover:text-slate-700"
+      className="text-[12px] text-gray-400 hover:text-gray-700"
       title="Copy email"
     >
       {copied ? "Copied!" : "Copy"}

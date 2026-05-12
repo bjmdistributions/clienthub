@@ -16,6 +16,14 @@ export interface Client {
   invoice_count: number;
   last_contact_at?: string | null;
   total_revenue: number;
+  category: string | null;
+  tags: string | null;
+  street_address: string | null;
+  city: string | null;
+  state: string | null;
+  zip_code: string | null;
+  next_follow_up_date: string | null;
+  needs_review: boolean;
 }
 
 export interface ClientInput {
@@ -26,6 +34,62 @@ export interface ClientInput {
   notes?: string | null;
   metadata?: Record<string, any> | null;
   lead_status?: string;
+  category?: string | null;
+  tags?: string | null;
+  street_address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip_code?: string | null;
+  next_follow_up_date?: string | null;
+  needs_review?: boolean;
+}
+
+export interface ClientFilter {
+  category?: string;
+  lead_status?: string;
+  tag?: string;
+  state?: string;
+  stale_days?: number;
+  missing?: string;
+  needs_review?: boolean;
+  search?: string;
+}
+
+export interface MissingInfoReport {
+  missing_email: Client[];
+  missing_phone: Client[];
+  missing_address: Client[];
+  missing_category: Client[];
+  never_contacted: Client[];
+  needs_review: Client[];
+  total_incomplete: number;
+}
+
+export interface Newsletter {
+  id: string;
+  subject: string;
+  body: string;
+  status: string;
+  recipient_count: number;
+  sent_count: number;
+  created_at: string;
+  sent_at?: string;
+}
+
+export interface NewsletterSendResult {
+  sent: number;
+  failed: number;
+  errors: string[];
+}
+
+export interface Category {
+  id: string;
+  label: string;
+  sort_order: number;
+}
+
+export interface CategoryInput {
+  label: string;
 }
 
 export interface Interaction {
@@ -199,6 +263,8 @@ export const api = {
   deleteClient: (id: string) => invoke<void>("delete_client", { id }),
   searchClients: (query: string) => invoke<Client[]>("search_clients", { query }),
   listStaleClients: (days: number) => invoke<Client[]>("list_stale_clients", { days }),
+  listClientsFiltered: (filter: ClientFilter) => invoke<Client[]>("list_clients_filtered", { filter }),
+  clientsMissingInfo: () => invoke<MissingInfoReport>("clients_missing_info"),
   updateClientStatus: (id: string, status: string) =>
     invoke<void>("update_client_status", { id, status }),
 
@@ -305,4 +371,23 @@ export const api = {
   deleteLineItemTemplate: (id: string) => invoke<void>("delete_line_item_template", { id }),
   reorderLineItemTemplates: (ids: string[]) =>
     invoke<void>("reorder_line_item_templates", { ids }),
+
+  // Newsletters
+  listNewsletters: () => invoke<Newsletter[]>("list_newsletters"),
+  saveNewsletter: (id: string | null, subject: string, body: string) =>
+    invoke<Newsletter>("save_newsletter", { id, subject, body }),
+  deleteNewsletter: (id: string) => invoke<void>("delete_newsletter", { id }),
+  sendNewsletter: (newsletterId: string, clientIds: string[], subjectTemplate: string, bodyTemplate: string, attachmentPath?: string | null) =>
+    invoke<NewsletterSendResult>("send_newsletter", {
+      newsletterId, clientIds, subjectTemplate, bodyTemplate, attachmentPath,
+    }),
+  aiDraftNewsletter: (prompt: string, tone: string) =>
+    invoke<string>("ai_draft_newsletter", { prompt, tone }),
+
+  // Categories
+  listCategories: () => invoke<Category[]>("list_categories"),
+  createCategory: (input: CategoryInput) => invoke<string>("create_category", { input }),
+  updateCategory: (id: string, input: CategoryInput) => invoke<void>("update_category", { id, input }),
+  deleteCategory: (id: string) => invoke<void>("delete_category", { id }),
+  reorderCategories: (ids: string[]) => invoke<void>("reorder_categories", { ids }),
 };

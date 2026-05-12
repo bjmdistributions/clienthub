@@ -54,7 +54,6 @@ export default function App() {
       if (e.key === "n" || e.key === "N") {
         if (tag === "input" || tag === "textarea" || tag === "select") return;
         if (tab === "clients") {
-          // trigger new client — find the view's internal showForm
           window.dispatchEvent(new CustomEvent("clients-new-client"));
         }
         if (tab === "invoices") {
@@ -80,76 +79,91 @@ export default function App() {
 
   const tabs: { id: Tab; label: string; icon: any }[] = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "clients", label: "Clients", icon: Users },
-    { id: "invoices", label: "Invoices", icon: FileText },
-    { id: "email", label: "AI Email", icon: Mail },
-    { id: "settings", label: "Settings", icon: SettingsIcon },
+    { id: "clients",   label: "Clients",   icon: Users },
+    { id: "invoices",  label: "Invoices",  icon: FileText },
+    { id: "email",     label: "AI Email",  icon: Mail },
+    { id: "settings",  label: "Settings",  icon: SettingsIcon },
   ];
 
   return (
     <div className="flex h-screen">
-      <aside className="w-56 bg-slate-900 text-slate-100 flex flex-col">
-        <div className="p-4">
-          <h1 className="text-xl font-bold">ClientHub</h1>
+      {/* Sidebar */}
+      <aside className="w-[220px] bg-slate-900 flex flex-col flex-shrink-0">
+        {/* Brand */}
+        <div className="h-14 px-5 flex items-center border-b border-slate-700/60">
+          <h1 className="text-[15px] font-semibold text-white tracking-tight">ClientHub</h1>
         </div>
-        <nav className="flex-1 px-3 space-y-1">
+
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded text-sm
-                ${tab === id ? "bg-slate-700" : "hover:bg-slate-800"}`}
+              className={`w-full flex items-center gap-3 px-3 h-10 rounded-md text-sm transition-colors ${
+                tab === id
+                  ? "bg-indigo-600 text-white font-medium"
+                  : "text-slate-300 hover:bg-slate-800 hover:text-white"
+              }`}
             >
-              <Icon size={16} /> {label}
+              <Icon size={18} />
+              {label}
               {id === "email" && draftCount > 0 && (
-                <span className="ml-auto bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5">{draftCount}</span>
+                <span className="ml-auto bg-amber-400 text-amber-900 text-[11px] font-bold rounded-full px-1.5 py-0.5 leading-none">
+                  {draftCount}
+                </span>
               )}
             </button>
           ))}
         </nav>
 
         {/* Status footer */}
-        <div className="border-t border-slate-700 p-3 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
+        <div className="border-t border-slate-700/60 px-4 py-3 space-y-1">
+          <div className="flex items-center justify-between text-[12px] text-slate-400">
             <span className="flex items-center gap-1.5">
               {aiOnline ? (
-                <Wifi size={12} className="text-green-400" />
+                <Wifi size={12} className="text-emerald-400" />
               ) : (
                 <WifiOff size={12} className="text-red-400" />
               )}
               Ollama
             </span>
-            <span className="text-slate-400">
+            <span className={aiOnline ? "text-emerald-400 font-medium" : "text-red-400"}>
               {aiOnline ? "online" : "offline"}
             </span>
           </div>
           <button
             onClick={handleSync}
             disabled={syncing}
-            className="w-full flex items-center justify-between hover:bg-slate-800 px-2 py-1 rounded"
+            className="w-full flex items-center justify-between text-[12px] text-slate-400 hover:text-white hover:bg-slate-800 px-2 py-1.5 rounded-md transition-colors"
           >
             <span className="flex items-center gap-1.5">
-              <RefreshCw
-                size={12}
-                className={syncing ? "animate-spin" : ""}
-              />
+              <RefreshCw size={12} className={syncing ? "animate-spin" : ""} />
               Sync
             </span>
-            <span className="text-slate-400">
+            <span className="text-slate-500 tabular-nums">
               {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
             </span>
           </button>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto">
-        <div className="p-6">
-          {tab === "dashboard" && <DashboardView onNavigate={setTab} />}
-          {tab === "clients" && <ClientsView />}
-          {tab === "invoices" && <InvoicesView />}
-          {tab === "email" && <EmailView />}
-          {tab === "settings" && <SettingsView />}
-        </div>
+      {/* Main */}
+      <main className="flex-1 bg-[#F8F7F6] flex flex-col min-h-0">
+        {tab === "dashboard" ? (
+          <div className="flex-1 min-h-0 p-6 flex flex-col">
+            <DashboardView onNavigate={setTab} />
+          </div>
+        ) : (
+          <div className="flex-1 overflow-auto p-8">
+            <div className="max-w-[1200px]">
+              {tab === "clients"   && <ClientsView />}
+              {tab === "invoices"  && <InvoicesView />}
+              {tab === "email"     && <EmailView />}
+              {tab === "settings"  && <SettingsView />}
+            </div>
+          </div>
+        )}
       </main>
 
       {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
