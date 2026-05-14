@@ -394,4 +394,95 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_stage_history_deal ON deal_stage_history(deal_id);
         "#,
     ),
+    (
+        20,
+        r#"
+        -- Deal flow lifecycle tracking (synced)
+        CREATE TABLE IF NOT EXISTS deal_flows (
+            id TEXT PRIMARY KEY,
+            invoice_id TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'invoiced',
+            payment_received_amount REAL DEFAULT 0,
+            payment_received_method TEXT,
+            payment_received_at TEXT,
+            supplier_payments_json TEXT NOT NULL DEFAULT '[]',
+            total_supplier_cost REAL DEFAULT 0,
+            completed_at TEXT,
+            gross_revenue REAL DEFAULT 0,
+            total_cost REAL DEFAULT 0,
+            net_profit REAL DEFAULT 0,
+            profit_jack REAL DEFAULT 0,
+            profit_ben REAL DEFAULT 0,
+            profit_business REAL DEFAULT 0,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_deal_flows_invoice ON deal_flows(invoice_id);
+        CREATE INDEX IF NOT EXISTS idx_deal_flows_stage ON deal_flows(stage);
+        CREATE INDEX IF NOT EXISTS idx_deal_flows_completed ON deal_flows(completed_at);
+
+        ALTER TABLE invoices ADD COLUMN deal_flow_id TEXT;
+        ALTER TABLE invoices ADD COLUMN deal_flow_stage TEXT DEFAULT 'none';
+        "#,
+    ),
+    (
+        21,
+        r#"
+        -- Default profit split percentages and partner names
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_business', '40');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_jack', '30');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_ben', '30');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_jack_name', 'Jack');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_ben_name', 'Ben');
+        "#,
+    ),
+    (
+        22,
+        r#"
+        -- Supplier contacts (synced)
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            contact_name TEXT,
+            email TEXT,
+            phone TEXT,
+            address TEXT,
+            payment_method TEXT,
+            payment_details TEXT,
+            payment_terms TEXT,
+            typical_lead_time TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived INTEGER DEFAULT 0,
+            metadata TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
+
+        -- Supplier price history (local-only, not synced)
+        CREATE TABLE IF NOT EXISTS supplier_price_history (
+            id TEXT PRIMARY KEY,
+            supplier_id TEXT NOT NULL,
+            item_description TEXT NOT NULL,
+            price REAL NOT NULL,
+            quantity INTEGER,
+            recorded_at TEXT NOT NULL,
+            deal_flow_id TEXT,
+            notes TEXT,
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_price_history_supplier ON supplier_price_history(supplier_id);
+        CREATE INDEX IF NOT EXISTS idx_price_history_date ON supplier_price_history(recorded_at);
+
+        ALTER TABLE deal_flows ADD COLUMN metadata TEXT;
+        "#,
+    ),
+    (
+        23,
+        r#"
+        -- Optional display name for deal flows
+        ALTER TABLE deal_flows ADD COLUMN name TEXT DEFAULT '';
+        "#,
+    ),
 ];

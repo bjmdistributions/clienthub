@@ -369,12 +369,12 @@ function DealDetailPanel({
                 <div key={i} className="grid grid-cols-12 gap-2">
                   <input className="col-span-6 border border-gray-300 px-2 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     placeholder="Description" value={it.description} onChange={(e) => updateLineItem(i, "description", e.target.value)} />
-                  <input type="number" step="1" className="col-span-1 border border-gray-300 px-1 h-9 rounded-md text-[13px] text-center focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    value={it.qty || ""} onChange={(e) => updateLineItem(i, "qty", parseFloat(e.target.value) || 0)} />
+                  <input type="number" inputMode="decimal" step="1" className="col-span-1 border border-gray-300 px-1 h-9 rounded-md text-[13px] text-center focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    value={it.qty || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateLineItem(i, "qty", isNaN(v) ? 0 : v); }} />
                   <div className="col-span-2 relative">
                     <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                    <input type="number" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      value={it.rate || ""} onChange={(e) => updateLineItem(i, "rate", parseFloat(e.target.value) || 0)} />
+                    <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      value={it.rate || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateLineItem(i, "rate", isNaN(v) ? 0 : v); }} />
                   </div>
                   <input readOnly className="col-span-2 border border-gray-100 bg-gray-50 px-2 h-9 rounded-md text-[13px] text-right text-gray-600 tabular-nums"
                     value={it.amount ? fmtAmount(it.amount).replace("$", "") : ""} />
@@ -399,8 +399,8 @@ function DealDetailPanel({
                     placeholder="Description" value={sc.description} onChange={(e) => updateCostItem(i, "description", e.target.value)} />
                   <div className="col-span-2 relative">
                     <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                    <input type="number" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      value={sc.amount || ""} onChange={(e) => updateCostItem(i, "amount", parseFloat(e.target.value) || 0)} />
+                    <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      value={sc.amount || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateCostItem(i, "amount", isNaN(v) ? 0 : v); }} />
                   </div>
                   <div className="col-span-3 relative">
                     <input className="w-full border border-gray-300 px-2 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
@@ -431,24 +431,24 @@ function DealDetailPanel({
               <label className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Shipping</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                <input type="number" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  value={input.shipping_cost || ""} onChange={(e) => onChange({ ...input, shipping_cost: parseFloat(e.target.value) || 0 })} />
+                <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  value={input.shipping_cost || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); onChange({ ...input, shipping_cost: isNaN(v) ? 0 : v }); }} />
               </div>
             </div>
             <div>
               <label className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Other Costs</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                <input type="number" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  value={input.other_costs || ""} onChange={(e) => onChange({ ...input, other_costs: parseFloat(e.target.value) || 0 })} />
+                <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  value={input.other_costs || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); onChange({ ...input, other_costs: isNaN(v) ? 0 : v }); }} />
               </div>
             </div>
             <div>
               <label className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Asking Price</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                <input type="number" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  value={input.asking_price || ""} onChange={(e) => onChange({ ...input, asking_price: parseFloat(e.target.value) || 0 })} />
+                <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-300 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  value={input.asking_price || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); onChange({ ...input, asking_price: isNaN(v) ? 0 : v }); }} />
               </div>
             </div>
           </div>

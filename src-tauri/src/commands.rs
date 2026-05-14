@@ -1029,21 +1029,30 @@ pub async fn mark_invoice_paid(
         rusqlite::params![paid_date, method, reference, invoice_id],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
-#[tauri::command]
-pub async fn mark_invoice_deposit_pending(invoice_id: String) -> Result<(), String> {
-    let mut cols = Map::new();
-    cols.insert("status".into(), Value::String("deposit_pending".into()));
-    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
-
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE invoices SET status='deposit_pending' WHERE id=?1",
-        [&invoice_id],
-    )
-    .map_err(|e| e.to_string())?;
+    let (flow_id, amount, current_stage): (String, f64, String) = {
+        let flow_id = get_or_create_deal_flow_for_invoice(&invoice_id)?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let amount: f64 = conn.query_row("SELECT total FROM invoices WHERE id=?1", [&invoice_id], |r| r.get(0)).unwrap_or(0.0);
+        let current_stage: String = conn.query_row("SELECT stage FROM deal_flows WHERE id=?1", [&flow_id], |r| r.get(0)).unwrap_or_else(|_| "invoiced".into());
+        (flow_id, amount, current_stage)
+    };
+    if current_stage == "invoiced" {
+        let now = Utc::now().to_rfc3339();
+        let mut df_cols = Map::new();
+        df_cols.insert("stage".into(), Value::String("payment_received".into()));
+        df_cols.insert("payment_received_amount".into(), json!(amount));
+        df_cols.insert("payment_received_method".into(), Value::String(method.clone()));
+        df_cols.insert("payment_received_at".into(), Value::String(paid_date.clone()));
+        df_cols.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("deal_flows", &flow_id, df_cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET stage='payment_received', payment_received_amount=?1, payment_received_method=?2, payment_received_at=?3, updated_at=?4 WHERE id=?5",
+            rusqlite::params![amount, method, paid_date, now, flow_id],
+        ).map_err(|e| e.to_string())?;
+        sync_invoice_stage(&invoice_id, "payment_received")?;
+    }
     Ok(())
 }
 
@@ -1101,6 +1110,18 @@ pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Re
         "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=?6 WHERE id=?7",
         rusqlite::params![info.carrier, info.tracking_number, info.shipping_charged.unwrap_or(0.0), info.pickup_date, info.delivery_date, is_complete as i64, invoice_id],
     ).map_err(|e| e.to_string())?;
+    if is_complete {
+        let flow_id: Option<String> = conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1", [&invoice_id], |r| r.get(0)).ok();
+        if let Some(flow_id) = flow_id {
+            let now = Utc::now().to_rfc3339();
+            let meta_json = serde_json::to_string(&json!({"shipping_status": "shipped"})).map_err(|e| e.to_string())?;
+            let mut df_cols = Map::new();
+            df_cols.insert("metadata".into(), Value::String(meta_json.clone()));
+            df_cols.insert("updated_at".into(), Value::String(now.clone()));
+            sync::record_upsert("deal_flows", &flow_id, df_cols).map_err(|e| e.to_string())?;
+            conn.execute("UPDATE deal_flows SET metadata=?1, updated_at=?2 WHERE id=?3", rusqlite::params![meta_json, now, flow_id]).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
 }
 
@@ -1568,6 +1589,1064 @@ pub async fn supplier_name_suggestions() -> Result<Vec<SupplierNameSuggestion>, 
 }
 
 // ============================================================
+//  Deal Flows (deal lifecycle tracking — synced)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SupplierPayment {
+    pub id: String,
+    pub supplier_name: String,
+    pub supplier_id: Option<String>,
+    pub amount: f64,
+    pub original_amount: Option<f64>,
+    pub price_changed: bool,
+    pub quantity: Option<f64>,
+    pub unit_price: Option<f64>,
+    pub method: Option<String>,
+    pub notes: Option<String>,
+    pub paid: bool,
+    pub paid_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SupplierPaymentInput {
+    pub supplier_name: String,
+    pub supplier_id: Option<String>,
+    pub amount: f64,
+    pub quantity: Option<f64>,
+    pub unit_price: Option<f64>,
+    pub method: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DealFlow {
+    pub id: String,
+    pub name: Option<String>,
+    pub invoice_id: String,
+    pub stage: String,
+    pub payment_received_amount: f64,
+    pub payment_received_method: Option<String>,
+    pub payment_received_at: Option<String>,
+    pub supplier_payments_json: String,
+    pub supplier_payments: Vec<SupplierPayment>,
+    pub total_supplier_cost: f64,
+    pub completed_at: Option<String>,
+    pub gross_revenue: f64,
+    pub total_cost: f64,
+    pub net_profit: f64,
+    pub profit_jack: f64,
+    pub profit_ben: f64,
+    pub profit_business: f64,
+    pub notes: Option<String>,
+    pub metadata: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub invoice_number: Option<String>,
+    pub client_id: Option<String>,
+    pub client_name: Option<String>,
+    pub invoice_total: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PaymentReceivedInput {
+    pub amount: f64,
+    pub method: Option<String>,
+    pub notes: Option<String>,
+    pub received_at: Option<String>,
+}
+
+fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
+    let sp_json: String = r.get("supplier_payments_json")?;
+    let supplier_payments: Vec<SupplierPayment> = serde_json::from_str(&sp_json).unwrap_or_default();
+    Ok(DealFlow {
+        id: r.get("id")?,
+        name: r.get("name").ok(),
+        invoice_id: r.get("invoice_id")?,
+        stage: r.get("stage")?,
+        payment_received_amount: r.get("payment_received_amount")?,
+        payment_received_method: r.get("payment_received_method")?,
+        payment_received_at: r.get("payment_received_at")?,
+        supplier_payments_json: sp_json,
+        supplier_payments,
+        total_supplier_cost: r.get("total_supplier_cost")?,
+        completed_at: r.get("completed_at")?,
+        gross_revenue: r.get("gross_revenue")?,
+        total_cost: r.get("total_cost")?,
+        net_profit: r.get("net_profit")?,
+        profit_jack: r.get("profit_jack")?,
+        profit_ben: r.get("profit_ben")?,
+        profit_business: r.get("profit_business")?,
+        notes: r.get("notes")?,
+        metadata: r.get("metadata").ok(),
+        created_at: r.get("created_at")?,
+        updated_at: r.get("updated_at")?,
+        invoice_number: r.get("invoice_number").ok(),
+        client_id: r.get("client_id").ok(),
+        client_name: r.get("client_name").ok(),
+        invoice_total: r.get("invoice_total").unwrap_or(0.0),
+    })
+}
+
+const DF_JOIN: &str = "SELECT df.*, i.number as invoice_number, i.client_id, i.total as invoice_total, c.name as client_name FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id LEFT JOIN clients c ON i.client_id=c.id";
+
+fn sync_invoice_stage(invoice_id: &str, stage: &str) -> Result<(), String> {
+    let mut inv_cols = Map::new();
+    inv_cols.insert("deal_flow_stage".into(), Value::String(stage.into()));
+    sync::record_upsert("invoices", invoice_id, inv_cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET deal_flow_stage=?1 WHERE id=?2",
+        rusqlite::params![stage, invoice_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn read_df(id: &str) -> Result<DealFlow, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = format!("{} WHERE df.id=?1", DF_JOIN);
+    conn.query_row(&sql, [&id], map_deal_flow_row).map_err(|e| e.to_string())
+}
+
+fn get_or_create_deal_flow_for_invoice(invoice_id: &str) -> Result<String, String> {
+    let existing: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1", [invoice_id], |r| r.get(0)).ok()
+    };
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    create_deal_flow_internal(invoice_id.to_string(), None, None)
+}
+
+fn write_sp(deal_flow_id: &str, payments: &[SupplierPayment], invoice_id: &str) -> Result<(), String> {
+    let sp_json = serde_json::to_string(payments).map_err(|e| e.to_string())?;
+    let total: f64 = payments.iter().map(|p| p.amount).sum();
+    let now = Utc::now().to_rfc3339();
+
+    let mut cols = Map::new();
+    cols.insert("supplier_payments_json".into(), Value::String(sp_json.clone()));
+    cols.insert("total_supplier_cost".into(), json!(total));
+    cols.insert("updated_at".into(), Value::String(now));
+    sync::record_upsert("deal_flows", deal_flow_id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deal_flows SET supplier_payments_json=?1, total_supplier_cost=?2, updated_at=?3 WHERE id=?4",
+        rusqlite::params![sp_json, total, Utc::now().to_rfc3339(), deal_flow_id],
+    ).map_err(|e| e.to_string())?;
+    let _ = invoice_id;
+    Ok(())
+}
+
+fn recalc_completed_deal_flow(id: &str, gross: f64, payments: &[SupplierPayment]) -> Result<(), String> {
+    let split = read_profit_split()?;
+    let total_cost: f64 = payments.iter().map(|p| p.amount).sum();
+    let net = gross - total_cost;
+    let is_loss = net < 0.0;
+    let jack = (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0;
+    let ben = (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0;
+    let business = (net * (split.business_pct / 100.0) * 100.0).round() / 100.0;
+    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss})).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+
+    let mut cols = Map::new();
+    cols.insert("total_supplier_cost".into(), json!(total_cost));
+    cols.insert("total_cost".into(), json!(total_cost));
+    cols.insert("net_profit".into(), json!(net));
+    cols.insert("profit_jack".into(), json!(jack));
+    cols.insert("profit_ben".into(), json!(ben));
+    cols.insert("profit_business".into(), json!(business));
+    cols.insert("metadata".into(), Value::String(meta_json.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deal_flows SET total_supplier_cost=?1, total_cost=?1, net_profit=?2, profit_jack=?3, profit_ben=?4, profit_business=?5, metadata=?6, updated_at=?7 WHERE id=?8",
+        rusqlite::params![total_cost, net, jack, ben, business, meta_json, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn create_deal_flow_internal(invoice_id: String, notes: Option<String>, name: Option<String>) -> Result<String, String> {
+    let exists: bool = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM invoices WHERE id=?1", [&invoice_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        n > 0
+    };
+    if !exists { return Err("Invoice not found".into()); }
+
+    let already: bool = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM deal_flows WHERE invoice_id=?1", [&invoice_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        n > 0
+    };
+    if already { return Err("Deal flow already exists for this invoice".into()); }
+
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let sp_json = "[]".to_string();
+
+    let mut cols = Map::new();
+    cols.insert("invoice_id".into(), Value::String(invoice_id.clone()));
+    cols.insert("name".into(), to_value(name.clone()));
+    cols.insert("stage".into(), Value::String("invoiced".into()));
+    cols.insert("supplier_payments_json".into(), Value::String(sp_json.clone()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    cols.insert("notes".into(), to_value(notes.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO deal_flows (id,name,invoice_id,stage,supplier_payments_json,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+            rusqlite::params![id, name, invoice_id, "invoiced", sp_json, notes, now],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    {
+        let mut inv_cols = Map::new();
+        inv_cols.insert("deal_flow_id".into(), Value::String(id.clone()));
+        inv_cols.insert("deal_flow_stage".into(), Value::String("invoiced".into()));
+        sync::record_upsert("invoices", &invoice_id, inv_cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE invoices SET deal_flow_id=?1, deal_flow_stage='invoiced' WHERE id=?2", rusqlite::params![id, invoice_id]).map_err(|e| e.to_string())?;
+    }
+
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn create_deal_flow(invoice_id: String, notes: Option<String>, name: Option<String>) -> Result<String, String> {
+    create_deal_flow_internal(invoice_id, notes, name)
+}
+
+#[tauri::command]
+pub async fn get_deal_flow_by_invoice(invoice_id: String) -> Result<Option<DealFlow>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = format!("{} WHERE df.invoice_id=?1", DF_JOIN);
+    match conn.query_row(&sql, [&invoice_id], map_deal_flow_row) {
+        Ok(df) => Ok(Some(df)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_deal_flow(id: String) -> Result<DealFlow, String> {
+    read_df(&id)
+}
+
+#[tauri::command]
+pub async fn list_deal_flows() -> Result<Vec<DealFlow>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = format!("{} ORDER BY df.updated_at DESC", DF_JOIN);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], map_deal_flow_row).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn list_deal_flows_by_stage(stage: String) -> Result<Vec<DealFlow>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = format!("{} WHERE df.stage=?1 ORDER BY df.updated_at DESC", DF_JOIN);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&stage], map_deal_flow_row).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage != "invoiced" && df.stage != "payment_received" { return Err("Can only mark payment received from 'invoiced' or 'payment_received' stage".into()); }
+
+    let now = Utc::now().to_rfc3339();
+    let received_at = input.received_at.unwrap_or_else(|| now.clone());
+
+    let mut cols = Map::new();
+    cols.insert("stage".into(), Value::String("payment_received".into()));
+    cols.insert("payment_received_amount".into(), json!(input.amount));
+    cols.insert("payment_received_method".into(), to_value(input.method.clone()));
+    cols.insert("payment_received_at".into(), Value::String(received_at.clone()));
+    if let Some(ref n) = input.notes {
+        cols.insert("notes".into(), Value::String(n.clone()));
+    }
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET stage='payment_received', payment_received_amount=?1, payment_received_method=?2, payment_received_at=?3, notes=COALESCE(?4, notes), updated_at=?5 WHERE id=?6",
+            rusqlite::params![input.amount, input.method, received_at, input.notes, now, id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    sync_invoice_stage(&df.invoice_id, "payment_received")?;
+    let mut inv_cols = Map::new();
+    inv_cols.insert("status".into(), Value::String("paid".into()));
+    inv_cols.insert("paid_at".into(), Value::String(received_at.clone()));
+    if let Some(ref m) = input.method {
+        inv_cols.insert("payment_method_label".into(), Value::String(m.clone()));
+    }
+    sync::record_upsert("invoices", &df.invoice_id, inv_cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET status='paid', paid_at=?1, payment_method_label=COALESCE(?2, payment_method_label) WHERE id=?3",
+        rusqlite::params![received_at, input.method, df.invoice_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unmark_payment_received(id: String) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage != "payment_received" { return Err("Can only unmark from 'payment_received' stage".into()); }
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("stage".into(), Value::String("invoiced".into()));
+    cols.insert("payment_received_amount".into(), json!(0));
+    cols.insert("payment_received_method".into(), Value::Null);
+    cols.insert("payment_received_at".into(), Value::Null);
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET stage='invoiced', payment_received_amount=0, payment_received_method=NULL, payment_received_at=NULL, updated_at=?1 WHERE id=?2",
+            rusqlite::params![now, id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    sync_invoice_stage(&df.invoice_id, "invoiced")?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Result<String, String> {
+    let df = read_df(&id)?;
+    if df.stage == "complete" { return Err("Cannot modify completed deal flow".into()); }
+
+    let payment_id = Uuid::new_v4().to_string();
+    let mut payments = df.supplier_payments.clone();
+    payments.push(SupplierPayment {
+        id: payment_id.clone(),
+        supplier_name: input.supplier_name,
+        supplier_id: input.supplier_id,
+        amount: input.amount,
+        original_amount: Some(input.amount),
+        price_changed: false,
+        quantity: input.quantity,
+        unit_price: input.unit_price,
+        method: input.method,
+        notes: input.notes,
+        paid: false,
+        paid_at: None,
+    });
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+    Ok(payment_id)
+}
+
+#[tauri::command]
+pub async fn update_supplier_payment(id: String, payment_id: String, input: SupplierPaymentInput) -> Result<(), String> {
+    let df = read_df(&id)?;
+
+    let mut payments = df.supplier_payments.clone();
+    let supplier_name_for_price: String;
+    let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+    let old_amount = p.amount;
+
+    let mut new_amount = input.amount;
+    if let (Some(qty), Some(unit)) = (input.quantity, input.unit_price) {
+        new_amount = (qty * unit * 100.0).round() / 100.0;
+    }
+
+    p.supplier_name = input.supplier_name;
+    p.supplier_id = input.supplier_id.clone();
+    p.quantity = input.quantity;
+    p.unit_price = input.unit_price;
+    p.method = input.method;
+    p.notes = input.notes;
+
+    p.amount = new_amount;
+    if (old_amount - new_amount).abs() > 0.001 {
+        if p.original_amount.is_none() {
+            p.original_amount = Some(old_amount);
+        }
+        p.price_changed = true;
+    }
+    supplier_name_for_price = p.supplier_name.clone();
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+    if let Some(supplier_id) = input.supplier_id {
+        let price = input.unit_price.unwrap_or(new_amount);
+        let qty = input.quantity.map(|q| q.round() as i32);
+        record_supplier_price(
+            supplier_id,
+            supplier_name_for_price,
+            price,
+            qty,
+            Some(id.clone()),
+            Some("Auto-recorded from supplier payment update".into()),
+        ).await?;
+    }
+    if df.stage == "complete" {
+        recalc_completed_deal_flow(&id, df.payment_received_amount, &payments)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn revert_supplier_price_change(id: String, payment_id: String) -> Result<(), String> {
+    let df = read_df(&id)?;
+    let mut payments = df.supplier_payments.clone();
+    let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+    let original = p.original_amount.ok_or("No original amount recorded")?;
+    p.amount = original;
+    p.price_changed = false;
+    p.original_amount = None;
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+    if df.stage == "complete" {
+        recalc_completed_deal_flow(&id, df.payment_received_amount, &payments)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_supplier_payment(id: String, payment_id: String) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage == "complete" { return Err("Cannot modify completed deal flow".into()); }
+
+    let mut payments = df.supplier_payments.clone();
+    let before = payments.len();
+    payments.retain(|p| p.id != payment_id);
+    if payments.len() == before { return Err("Payment not found".into()); }
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+
+    if df.stage == "supplier_paid" && payments.iter().any(|p| !p.paid) {
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("stage".into(), Value::String("payment_received".into()));
+        cols.insert("updated_at".into(), Value::String(now));
+        sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='payment_received', updated_at=?1 WHERE id=?2", rusqlite::params![Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+        sync_invoice_stage(&df.invoice_id, "payment_received")?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mark_supplier_payment_paid(id: String, payment_id: String) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage != "payment_received" && df.stage != "supplier_paid" {
+        return Err("Can only mark supplier payments paid from 'payment_received' or 'supplier_paid' stage".into());
+    }
+
+    let mut payments = df.supplier_payments.clone();
+    let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+    if p.paid { return Err("Payment already marked as paid".into()); }
+    p.paid = true;
+    p.paid_at = Some(Utc::now().to_rfc3339());
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+
+    let all_paid = payments.iter().all(|p| p.paid);
+    if all_paid && !payments.is_empty() {
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("stage".into(), Value::String("supplier_paid".into()));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='supplier_paid', updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+        sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage != "supplier_paid" && df.stage != "payment_received" {
+        return Err("Cannot unmark from current stage".into());
+    }
+
+    let mut payments = df.supplier_payments.clone();
+    let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+    p.paid = false;
+    p.paid_at = None;
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+
+    if df.stage == "supplier_paid" {
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("stage".into(), Value::String("payment_received".into()));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='payment_received', updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+        sync_invoice_stage(&df.invoice_id, "payment_received")?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn complete_deal_flow(id: String, shipping_status: Option<String>) -> Result<Value, String> {
+    let df = read_df(&id)?;
+    if df.stage != "supplier_paid" && df.stage != "payment_received" { return Err("Can only complete after payment is received".into()); }
+
+    let split = read_profit_split()?;
+
+    let now = Utc::now().to_rfc3339();
+    let gross = df.payment_received_amount;
+    let total_cost = df.total_supplier_cost;
+    let net = gross - total_cost;
+    let is_loss = net < 0.0;
+    let jack = (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0;
+    let ben = (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0;
+    let business = (net * (split.business_pct / 100.0) * 100.0).round() / 100.0;
+
+    let shipping_status = shipping_status.unwrap_or_else(|| "none".into());
+    let awaiting_shipping = shipping_status == "awaiting";
+    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status})).map_err(|e| e.to_string())?;
+
+    let mut cols = Map::new();
+    cols.insert("stage".into(), Value::String("complete".into()));
+    cols.insert("completed_at".into(), Value::String(now.clone()));
+    cols.insert("gross_revenue".into(), json!(gross));
+    cols.insert("total_cost".into(), json!(total_cost));
+    cols.insert("net_profit".into(), json!(net));
+    cols.insert("profit_jack".into(), json!(jack));
+    cols.insert("profit_ben".into(), json!(ben));
+    cols.insert("profit_business".into(), json!(business));
+    cols.insert("metadata".into(), Value::String(meta_json.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET stage='complete', completed_at=?1, gross_revenue=?2, total_cost=?3, net_profit=?4, profit_jack=?5, profit_ben=?6, profit_business=?7, metadata=?8, updated_at=?1 WHERE id=?9",
+            rusqlite::params![now, gross, total_cost, net, jack, ben, business, meta_json, id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    sync_invoice_stage(&df.invoice_id, "complete")?;
+    let mut inv_cols = Map::new();
+    inv_cols.insert("status".into(), Value::String("paid".into()));
+    inv_cols.insert("is_complete".into(), json!(!awaiting_shipping));
+    sync::record_upsert("invoices", &df.invoice_id, inv_cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE invoices SET status='paid', is_complete=?1 WHERE id=?2", rusqlite::params![(!awaiting_shipping) as i64, df.invoice_id]).map_err(|e| e.to_string())?;
+    let warning = if is_loss { Some(format!("This deal resulted in a loss of ${:.2}", net.abs())) } else { None };
+    Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
+}
+
+#[tauri::command]
+pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage != "complete" { return Err("Can only uncomplete from 'complete' stage".into()); }
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("stage".into(), Value::String("supplier_paid".into()));
+    cols.insert("completed_at".into(), Value::Null);
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='supplier_paid', completed_at=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+    }
+
+    sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_deal_flow_notes(id: String, notes: Option<String>) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("notes".into(), to_value(notes.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deal_flows SET notes=?1, updated_at=?2 WHERE id=?3", rusqlite::params![notes, now, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_deal_flow_name(id: String, name: Option<String>) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("name".into(), to_value(name.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deal_flows SET name=?1, updated_at=?2 WHERE id=?3", rusqlite::params![name, now, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_deal_flow(id: String) -> Result<(), String> {
+    let invoice_id: String = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT invoice_id FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?
+    };
+
+    sync::record_delete("deal_flows", &id).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM deal_flows WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    }
+
+    let mut inv_cols = Map::new();
+    inv_cols.insert("deal_flow_id".into(), Value::Null);
+    inv_cols.insert("deal_flow_stage".into(), Value::String("none".into()));
+    sync::record_upsert("invoices", &invoice_id, inv_cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE invoices SET deal_flow_id=NULL, deal_flow_stage='none' WHERE id=?1", [&invoice_id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
+//  Suppliers (synced table)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Supplier {
+    pub id: String,
+    pub name: String,
+    pub contact_name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub address: Option<String>,
+    pub payment_method: Option<String>,
+    pub payment_details: Option<String>,
+    pub payment_terms: Option<String>,
+    pub typical_lead_time: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived: bool,
+    pub total_paid: f64,
+    pub deal_count: u32,
+    pub last_deal_date: Option<String>,
+    pub avg_deal_amount: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SupplierInput {
+    pub name: String,
+    pub contact_name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub address: Option<String>,
+    pub payment_method: Option<String>,
+    pub payment_details: Option<String>,
+    pub payment_terms: Option<String>,
+    pub typical_lead_time: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SupplierPriceEntry {
+    pub id: String,
+    pub supplier_id: String,
+    pub item_description: String,
+    pub price: f64,
+    pub quantity: Option<i32>,
+    pub recorded_at: String,
+    pub deal_flow_id: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PriceAlert {
+    pub supplier_id: String,
+    pub supplier_name: String,
+    pub item_description: String,
+    pub previous_price: f64,
+    pub current_price: f64,
+    pub change_pct: f64,
+    pub deal_flow_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SupplierNode {
+    pub supplier_payment_id: String,
+    pub supplier_id: Option<String>,
+    pub supplier_name: String,
+    pub amount: f64,
+    pub original_amount: Option<f64>,
+    pub price_changed: bool,
+    pub quantity: Option<f64>,
+    pub unit_price: Option<f64>,
+    pub paid: bool,
+    pub paid_at: Option<String>,
+    pub method: Option<String>,
+    pub notes: Option<String>,
+    pub supplier_contact: Option<String>,
+    pub supplier_email: Option<String>,
+    pub supplier_phone: Option<String>,
+    pub payment_method: Option<String>,
+    pub payment_details: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DealFlowNodeMap {
+    pub deal_flow_id: String,
+    pub invoice_number: String,
+    pub client_name: String,
+    pub client_email: Option<String>,
+    pub invoice_total: f64,
+    pub stage: String,
+    pub payment_received: Option<f64>,
+    pub supplier_nodes: Vec<SupplierNode>,
+    pub net_profit: f64,
+    pub profit_jack: f64,
+    pub profit_ben: f64,
+    pub profit_business: f64,
+    pub is_loss: bool,
+    pub price_alerts: Vec<PriceAlert>,
+}
+
+fn map_supplier_row(r: &rusqlite::Row) -> rusqlite::Result<Supplier> {
+    Ok(Supplier {
+        id: r.get("id")?,
+        name: r.get("name")?,
+        contact_name: r.get("contact_name")?,
+        email: r.get("email")?,
+        phone: r.get("phone")?,
+        address: r.get("address")?,
+        payment_method: r.get("payment_method")?,
+        payment_details: r.get("payment_details")?,
+        payment_terms: r.get("payment_terms")?,
+        typical_lead_time: r.get("typical_lead_time")?,
+        notes: r.get("notes")?,
+        created_at: r.get("created_at")?,
+        updated_at: r.get("updated_at")?,
+        archived: r.get::<_, i64>("archived").unwrap_or(0) != 0,
+        total_paid: r.get("total_paid").unwrap_or(0.0),
+        deal_count: r.get::<_, i64>("deal_count").unwrap_or(0) as u32,
+        last_deal_date: r.get("last_deal_date").ok(),
+        avg_deal_amount: r.get("avg_deal_amount").unwrap_or(0.0),
+    })
+}
+
+#[tauri::command]
+pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount FROM suppliers s ORDER BY s.name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], map_supplier_row).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn get_supplier(id: String) -> Result<Supplier, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount FROM suppliers s WHERE s.id=?1",
+        [&id], map_supplier_row,
+    ).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_supplier(input: SupplierInput) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    let mut cols = Map::new();
+    cols.insert("name".into(), Value::String(input.name.clone()));
+    cols.insert("contact_name".into(), to_value(input.contact_name.clone()));
+    cols.insert("email".into(), to_value(input.email.clone()));
+    cols.insert("phone".into(), to_value(input.phone.clone()));
+    cols.insert("address".into(), to_value(input.address.clone()));
+    cols.insert("payment_method".into(), to_value(input.payment_method.clone()));
+    cols.insert("payment_details".into(), to_value(input.payment_details.clone()));
+    cols.insert("payment_terms".into(), to_value(input.payment_terms.clone()));
+    cols.insert("typical_lead_time".into(), to_value(input.typical_lead_time.clone()));
+    cols.insert("notes".into(), to_value(input.notes.clone()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("suppliers", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO suppliers (id,name,contact_name,email,phone,address,payment_method,payment_details,payment_terms,typical_lead_time,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
+        rusqlite::params![id, input.name, input.contact_name, input.email, input.phone, input.address, input.payment_method, input.payment_details, input.payment_terms, input.typical_lead_time, input.notes, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_supplier(id: String, input: SupplierInput) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("name".into(), Value::String(input.name.clone()));
+    cols.insert("contact_name".into(), to_value(input.contact_name.clone()));
+    cols.insert("email".into(), to_value(input.email.clone()));
+    cols.insert("phone".into(), to_value(input.phone.clone()));
+    cols.insert("address".into(), to_value(input.address.clone()));
+    cols.insert("payment_method".into(), to_value(input.payment_method.clone()));
+    cols.insert("payment_details".into(), to_value(input.payment_details.clone()));
+    cols.insert("payment_terms".into(), to_value(input.payment_terms.clone()));
+    cols.insert("typical_lead_time".into(), to_value(input.typical_lead_time.clone()));
+    cols.insert("notes".into(), to_value(input.notes.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("suppliers", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE suppliers SET name=?1,contact_name=?2,email=?3,phone=?4,address=?5,payment_method=?6,payment_details=?7,payment_terms=?8,typical_lead_time=?9,notes=?10,updated_at=?11 WHERE id=?12",
+        rusqlite::params![input.name, input.contact_name, input.email, input.phone, input.address, input.payment_method, input.payment_details, input.payment_terms, input.typical_lead_time, input.notes, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn archive_supplier(id: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("archived".into(), json!(1));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("suppliers", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE suppliers SET archived=1, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_supplier(id: String) -> Result<(), String> {
+    sync::record_delete("suppliers", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM suppliers WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn search_suppliers(query: String) -> Result<Vec<Supplier>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let pattern = format!("%{}%", query);
+    let mut stmt = conn.prepare(
+        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount FROM suppliers s WHERE s.name LIKE ?1 AND s.archived=0 ORDER BY s.name LIMIT 20"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&pattern], map_supplier_row).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn get_supplier_price_history(supplier_id: String) -> Result<Vec<SupplierPriceEntry>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, supplier_id, item_description, price, quantity, recorded_at, deal_flow_id, notes FROM supplier_price_history WHERE supplier_id=?1 ORDER BY recorded_at DESC LIMIT 50"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&supplier_id], |r| Ok(SupplierPriceEntry {
+        id: r.get(0)?, supplier_id: r.get(1)?, item_description: r.get(2)?, price: r.get(3)?,
+        quantity: r.get(4)?, recorded_at: r.get(5)?, deal_flow_id: r.get(6)?, notes: r.get(7)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn record_supplier_price(
+    supplier_id: String,
+    item_description: String,
+    price: f64,
+    quantity: Option<i32>,
+    deal_flow_id: Option<String>,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO supplier_price_history (id, supplier_id, item_description, price, quantity, recorded_at, deal_flow_id, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![id, supplier_id, item_description, price, quantity, now, deal_flow_id, notes],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn check_price_changes(deal_flow_id: String) -> Result<Vec<PriceAlert>, String> {
+    let df = read_df(&deal_flow_id)?;
+    let mut alerts: Vec<PriceAlert> = Vec::new();
+    for sp in &df.supplier_payments {
+        if sp.supplier_id.is_none() || sp.unit_price.is_none() { continue; }
+        let sid = sp.supplier_id.as_ref().unwrap();
+        let item = format!("{}", sp.supplier_name);
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let last_price: Option<f64> = conn.query_row(
+            "SELECT price FROM supplier_price_history WHERE supplier_id=?1 ORDER BY recorded_at DESC LIMIT 1",
+            [sid], |r| r.get(0),
+        ).ok();
+        if let Some(prev) = last_price {
+            let unit = sp.unit_price.unwrap_or(sp.amount);
+            let pct = ((unit - prev) / prev.abs()) * 100.0;
+            if pct.abs() > 5.0 {
+                alerts.push(PriceAlert {
+                    supplier_id: sid.clone(), supplier_name: sp.supplier_name.clone(),
+                    item_description: item, previous_price: prev, current_price: unit,
+                    change_pct: pct, deal_flow_id: deal_flow_id.clone(),
+                });
+            }
+        }
+    }
+    Ok(alerts)
+}
+
+#[tauri::command]
+pub async fn get_deal_flow_node_map(deal_flow_id: String) -> Result<DealFlowNodeMap, String> {
+    let df = read_df(&deal_flow_id)?;
+    let mut supplier_nodes: Vec<SupplierNode> = Vec::new();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    for sp in &df.supplier_payments {
+        let mut node = SupplierNode {
+            supplier_payment_id: sp.id.clone(),
+            supplier_id: sp.supplier_id.clone(),
+            supplier_name: sp.supplier_name.clone(),
+            amount: sp.amount,
+            original_amount: sp.original_amount,
+            price_changed: sp.price_changed,
+            quantity: sp.quantity,
+            unit_price: sp.unit_price,
+            paid: sp.paid,
+            paid_at: sp.paid_at.clone(),
+            method: sp.method.clone(),
+            notes: sp.notes.clone(),
+            supplier_contact: None,
+            supplier_email: None,
+            supplier_phone: None,
+            payment_method: None,
+            payment_details: None,
+        };
+        if let Some(ref sid) = sp.supplier_id {
+            if let Ok(()) = conn.query_row(
+                "SELECT contact_name, email, phone, payment_method, payment_details FROM suppliers WHERE id=?1",
+                [sid], |r| {
+                    node.supplier_contact = r.get(0)?;
+                    node.supplier_email = r.get(1)?;
+                    node.supplier_phone = r.get(2)?;
+                    node.payment_method = r.get(3)?;
+                    node.payment_details = r.get(4)?;
+                    Ok(())
+                },
+            ) {}
+        }
+        supplier_nodes.push(node);
+    }
+
+    let alerts = check_price_changes(deal_flow_id.clone()).await.unwrap_or_default();
+    let is_loss = df.net_profit < 0.0;
+
+    Ok(DealFlowNodeMap {
+        deal_flow_id: df.id,
+        invoice_number: df.invoice_number.unwrap_or_default(),
+        client_name: df.client_name.unwrap_or_default(),
+        client_email: None,
+        invoice_total: df.invoice_total,
+        stage: df.stage,
+        payment_received: Some(df.payment_received_amount),
+        supplier_nodes,
+        net_profit: df.net_profit,
+        profit_jack: df.profit_jack,
+        profit_ben: df.profit_ben,
+        profit_business: df.profit_business,
+        is_loss,
+        price_alerts: alerts,
+    })
+}
+
+// ============================================================
+//  Profit Split Settings (synced via settings table)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProfitSplit {
+    pub business_pct: f64,
+    pub jack_pct: f64,
+    pub ben_pct: f64,
+    pub jack_name: String,
+    pub ben_name: String,
+}
+
+fn read_profit_split() -> Result<ProfitSplit, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let get = |key: &str, default: &str| -> String {
+        conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_,String>(0)).unwrap_or_else(|_| default.to_string())
+    };
+    Ok(ProfitSplit {
+        business_pct: get("profit_split_business", "40").parse::<f64>().unwrap_or(40.0),
+        jack_pct: get("profit_split_jack", "30").parse::<f64>().unwrap_or(30.0),
+        ben_pct: get("profit_split_ben", "30").parse::<f64>().unwrap_or(30.0),
+        jack_name: get("profit_split_jack_name", "Jack"),
+        ben_name: get("profit_split_ben_name", "Ben"),
+    })
+}
+
+#[tauri::command]
+pub async fn get_profit_split() -> Result<ProfitSplit, String> {
+    read_profit_split()
+}
+
+#[tauri::command]
+pub async fn save_profit_split(
+    business_pct: f64,
+    jack_pct: f64,
+    ben_pct: f64,
+    jack_name: String,
+    ben_name: String,
+) -> Result<(), String> {
+    let total = business_pct + jack_pct + ben_pct;
+    if (total - 100.0).abs() > 0.01 {
+        return Err(format!("Percentages must sum to 100% (currently {:.1}%)", total));
+    }
+    if jack_name.trim().is_empty() || ben_name.trim().is_empty() {
+        return Err("Partner names cannot be empty".into());
+    }
+
+    let pairs: &[(&str, &str)] = &[
+        ("profit_split_business", &format!("{}", business_pct)),
+        ("profit_split_jack", &format!("{}", jack_pct)),
+        ("profit_split_ben", &format!("{}", ben_pct)),
+        ("profit_split_jack_name", &jack_name),
+        ("profit_split_ben_name", &ben_name),
+    ];
+
+    for (key, val) in pairs {
+        let mut cols = Map::new();
+        cols.insert("key".into(), Value::String(key.to_string()));
+        cols.insert("value".into(), Value::String(val.to_string()));
+        sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![key, val],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+// ============================================================
 //  Email + AI
 // ============================================================
 
@@ -1794,7 +2873,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         .unwrap_or(0);
     let outstanding: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue','deposit_pending')",
+            "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue')",
             [],
             |r| r.get(0),
         )
@@ -1956,6 +3035,16 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    let month_start = format!("{}-01", Utc::now().format("%Y-%m"));
+    let loss_deals_this_month: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND net_profit < 0",
+        [&month_start], |r| r.get(0)
+    ).unwrap_or(0);
+    let loss_total_this_month: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND net_profit < 0",
+        [&month_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+
     Ok(json!({
         "clients": total_clients,
         "invoices": total_invoices,
@@ -1975,6 +3064,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "category_breakdown": category_breakdown,
         "invoice_status_breakdown": invoice_status_breakdown,
         "top_spenders": top_spenders,
+        "loss_deals_this_month": loss_deals_this_month,
+        "loss_total_this_month": loss_total_this_month,
     }))
 }
 
@@ -2139,6 +3230,23 @@ pub struct WeeklyBrief {
     pub stuck_deals: Vec<StuckDeal>,
     pub new_clients_this_week: u32,
     pub interactions_this_week: u32,
+    pub completed_deals_this_week: u32,
+    pub completed_deals_last_week: u32,
+    pub net_profit_this_week: f64,
+    pub net_profit_last_week: f64,
+    pub net_profit_change_pct: f64,
+    pub profit_jack_this_week: f64,
+    pub profit_ben_this_week: f64,
+    pub profit_business_this_week: f64,
+    pub profit_jack_all_time: f64,
+    pub profit_ben_all_time: f64,
+    pub profit_business_all_time: f64,
+    pub net_profit_this_month: f64,
+    pub profit_jack_this_month: f64,
+    pub profit_ben_this_month: f64,
+    pub profit_business_this_month: f64,
+    pub loss_deals_this_week: u32,
+    pub loss_total_this_week: f64,
 }
 
 #[tauri::command]
@@ -2168,6 +3276,40 @@ pub async fn generate_weekly_brief() -> Result<WeeklyBrief, String> {
     ).unwrap_or(0.0);
     let avg_margin_this_week: f64 = conn.query_row(
         "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND profit IS NOT NULL", [&week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let month_start = format!("{}-01", now.format("%Y-%m"));
+
+    struct DfProfit { count: u32, net_profit: f64, jack: f64, ben: f64, business: f64, loss_count: u32, loss_total: f64 }
+    let df_this_week: DfProfit = conn.query_row(
+        "SELECT COUNT(*) as count, COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), COUNT(CASE WHEN net_profit < 0 THEN 1 END), COALESCE(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&week_start, &week_end],
+        |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: r.get::<_,i64>(5).unwrap_or(0) as u32, loss_total: r.get(6)? })
+    ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
+
+    let df_last_week_count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&last_week_start, &week_start], |r| r.get::<_,i64>(0)
+    ).unwrap_or(0) as u32;
+    let df_last_week_profit: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&last_week_start, &week_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let df_mtd: DfProfit = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        [&month_start],
+        |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: 0, loss_total: 0.0 })
+    ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
+
+    let df_all_jack: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(profit_jack),0) FROM deal_flows WHERE stage='complete'", [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let df_all_ben: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(profit_ben),0) FROM deal_flows WHERE stage='complete'", [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let df_all_biz: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(profit_business),0) FROM deal_flows WHERE stage='complete'", [], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let pipeline_value: f64 = conn.query_row(
@@ -2283,6 +3425,23 @@ pub async fn generate_weekly_brief() -> Result<WeeklyBrief, String> {
         stuck_deals,
         new_clients_this_week,
         interactions_this_week,
+        completed_deals_this_week: df_this_week.count,
+        completed_deals_last_week: df_last_week_count,
+        net_profit_this_week: df_this_week.net_profit,
+        net_profit_last_week: df_last_week_profit,
+        net_profit_change_pct: if df_last_week_profit != 0.0 { ((df_this_week.net_profit - df_last_week_profit) / df_last_week_profit.abs()) * 100.0 } else { 0.0 },
+        profit_jack_this_week: df_this_week.jack,
+        profit_ben_this_week: df_this_week.ben,
+        profit_business_this_week: df_this_week.business,
+        profit_jack_all_time: df_all_jack,
+        profit_ben_all_time: df_all_ben,
+        profit_business_all_time: df_all_biz,
+        net_profit_this_month: df_mtd.net_profit,
+        profit_jack_this_month: df_mtd.jack,
+        profit_ben_this_month: df_mtd.ben,
+        profit_business_this_month: df_mtd.business,
+        loss_deals_this_week: df_this_week.loss_count,
+        loss_total_this_week: df_this_week.loss_total,
     })
 }
 

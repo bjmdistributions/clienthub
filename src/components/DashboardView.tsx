@@ -14,11 +14,10 @@ interface Props {
 
 const invStatusColor = (s: string) => {
   const lo = s.toLowerCase();
-  if (lo === "paid")            return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70";
-  if (lo === "sent")            return "bg-blue-50 text-blue-700 ring-1 ring-blue-200/70";
-  if (lo === "overdue")         return "bg-red-50 text-red-700 ring-1 ring-red-200/70";
-  if (lo === "deposit_pending") return "bg-amber-50 text-amber-700 ring-1 ring-amber-200/70";
-  return "bg-gray-100 text-gray-500 ring-1 ring-gray-200/70";
+  if (lo === "paid")    return "bg-amber-100 text-amber-800";
+  if (lo === "sent")    return "bg-blue-100 text-blue-800";
+  if (lo === "overdue") return "bg-red-100 text-red-800";
+  return "bg-gray-100 text-gray-700";
 };
 
 export default function DashboardView({ onNavigate }: Props) {
@@ -313,6 +312,17 @@ export default function DashboardView({ onNavigate }: Props) {
                 </div>
                 <button onClick={() => onNavigate("invoices")}
                   className="text-[12px] font-medium text-indigo-600 hover:text-indigo-800 ml-2 flex-shrink-0">View</button>
+              </div>
+            )}
+
+            {/* Loss Deals */}
+            {(stats?.loss_deals_this_month ?? 0) > 0 && (
+              <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-red-500">Loss Deals This Month</div>
+                <div className="mt-1 flex items-end justify-between">
+                  <div className="text-[22px] font-bold text-red-700">{stats?.loss_deals_this_month}</div>
+                  <div className="text-[14px] font-semibold text-red-700">{fmtAmount(stats?.loss_total_this_month ?? 0)}</div>
+                </div>
               </div>
             )}
 

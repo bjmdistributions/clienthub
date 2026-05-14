@@ -30,7 +30,7 @@ export default function CloseoutView() {
   };
   useEffect(() => { load(); }, []);
 
-  const pending = invoices.filter((i) => ["sent", "overdue", "deposit_pending"].includes(i.status.toLowerCase()));
+  const pending = invoices.filter((i) => ["sent", "overdue"].includes(i.status.toLowerCase()));
   const paid = invoices.filter((i) => i.status.toLowerCase() === "paid" && !i.is_complete);
   const completed = invoices.filter((i) => i.is_complete);
 
@@ -214,9 +214,8 @@ function InvoiceCard({ inv, clientName, onEdit, onComplete, onDelete, badge }: {
 
 function StatusChip({ status }: { status: string }) {
   const map: Record<string, string> = {
-    overdue: "bg-red-50 text-red-600 ring-1 ring-red-200/70",
-    deposit_pending: "bg-amber-50 text-amber-600 ring-1 ring-amber-200/70",
-    sent: "bg-blue-50 text-blue-600 ring-1 ring-blue-200/70",
+    overdue: "bg-red-100 text-red-800",
+    sent: "bg-blue-100 text-blue-800",
   };
   const cls = map[status.toLowerCase()] ?? "bg-gray-50 text-gray-500 ring-1 ring-gray-200";
   return <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md capitalize ${cls}`}>{status.replace("_", " ")}</span>;
@@ -319,10 +318,10 @@ function InvoiceDetailPanel({ invoice: initialInvoice, onClose, onSaved }: { inv
                     onChange={(e) => { const cp = [...costs]; cp[i] = { ...cp[i], description: e.target.value }; setCosts(cp); }} />
                   <div className="relative w-28">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                    <input type="number" step="0.01"
+                    <input type="number" inputMode="decimal" step="0.01"
                       className="w-full border border-gray-200 pl-6 pr-2 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
                       value={c.amount || ""}
-                      onChange={(e) => { const cp = [...costs]; cp[i] = { ...cp[i], amount: parseFloat(e.target.value) || 0 }; setCosts(cp); }} />
+                      onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); const cp = [...costs]; cp[i] = { ...cp[i], amount: isNaN(v) ? 0 : v }; setCosts(cp); }} />
                   </div>
                   <button onClick={() => setCosts(costs.filter((_: any, j: number) => j !== i))} className="text-gray-300 hover:text-red-500 transition-colors">✕</button>
                 </div>
@@ -347,9 +346,9 @@ function InvoiceDetailPanel({ invoice: initialInvoice, onClose, onSaved }: { inv
                 <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-1">Shipping Charged</label>
                 <div className="relative">
                   <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
-                  <input type="number" step="0.01"
+                  <input type="number" inputMode="decimal" step="0.01"
                     className="w-full border border-gray-200 pl-6 pr-2 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
-                    value={shipCharged || ""} onChange={(e) => setShipCharged(parseFloat(e.target.value) || 0)} />
+                    value={shipCharged || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setShipCharged(isNaN(v) ? 0 : v); }} />
                 </div>
               </div>
               <div>

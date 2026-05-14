@@ -15,6 +15,7 @@ import {
   SheetSyncConfig,
   SheetSyncResult,
   SheetSyncLogEntry,
+  ProfitSplit,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -42,10 +43,10 @@ const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full foc
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets"
+    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits"
   >("email");
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets"] as const;
+  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits"] as const;
 
   return (
     <div>
@@ -81,6 +82,7 @@ export default function SettingsView() {
       {tab === "payments"   && <PaymentsTab />}
       {tab === "templates"  && <TemplatesTab />}
       {tab === "sheets"     && <SheetsTab />}
+      {tab === "splits"     && <SplitsTab />}
     </div>
   );
 }
@@ -1391,6 +1393,108 @@ function SheetsTab() {
             </tbody>
           </table>
         )}
+      </div>
+    </div>
+  );
+}
+
+function SplitsTab() {
+  const [split, setSplit] = useState<ProfitSplit | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.getProfitSplit().then(setSplit).catch(() => {});
+  }, []);
+
+  if (!split) return <div className="text-sm text-gray-400 py-8 text-center">Loading...</div>;
+
+  const total = split.jack_pct + split.ben_pct + split.business_pct;
+  const valid = Math.abs(total - 100) < 0.01;
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      await api.saveProfitSplit(split.business_pct, split.jack_pct, split.ben_pct, split.jack_name, split.ben_name);
+      setMsg("saved");
+    } catch (e: any) {
+      setMsg(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="max-w-lg">
+      <SectionLabel>Profit Split (must total 100%)</SectionLabel>
+      <div className="mt-4 space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <Field label={`${split.jack_name || "Partner 1"} name`}>
+            <input
+              type="text"
+              value={split.jack_name}
+              onChange={(e) => setSplit({ ...split, jack_name: e.target.value })}
+              className={inpSm}
+            />
+          </Field>
+          <Field label="Share %">
+            <input
+              type="number"
+              step="0.1"
+              value={split.jack_pct}
+              onChange={(e) => setSplit({ ...split, jack_pct: parseFloat(e.target.value) || 0 })}
+              className={inpSm}
+            />
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label={`${split.ben_name || "Partner 2"} name`}>
+            <input
+              type="text"
+              value={split.ben_name}
+              onChange={(e) => setSplit({ ...split, ben_name: e.target.value })}
+              className={inpSm}
+            />
+          </Field>
+          <Field label="Share %">
+            <input
+              type="number"
+              step="0.1"
+              value={split.ben_pct}
+              onChange={(e) => setSplit({ ...split, ben_pct: parseFloat(e.target.value) || 0 })}
+              className={inpSm}
+            />
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="text-[12px] font-medium text-gray-500 mb-1.5">Business share %</div>
+            <div className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] flex items-center bg-gray-50 text-gray-500">
+              {split.business_pct.toFixed(1)}% (auto)
+            </div>
+          </div>
+          <div>
+            <div className="text-[12px] font-medium text-gray-500 mb-1.5">Total</div>
+            <div className={`border px-3 h-9 rounded-lg text-[13px] flex items-center gap-1.5 ${
+              valid ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700"
+            }`}>
+              {valid ? <Check size={13} /> : <AlertCircle size={13} />}
+              {total.toFixed(1)}%
+              {!valid && <span className="text-[11px] ml-1">(must equal 100%)</span>}
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={saving || !valid}
+          className="flex items-center gap-1.5 bg-zinc-900 text-white px-4 h-9 rounded-lg text-[13px] font-medium hover:bg-zinc-800 transition-colors disabled:opacity-50"
+        >
+          <Save size={14} />
+          {saving ? "Saving..." : "Save Profit Split"}
+        </button>
+        {msg === "saved" && <p className="text-[12px] text-emerald-600 font-medium">Saved</p>}
+        {msg && msg !== "saved" && <p className="text-[12px] text-red-600">{msg}</p>}
       </div>
     </div>
   );

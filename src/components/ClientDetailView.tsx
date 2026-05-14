@@ -33,10 +33,9 @@ const kindColor = (kind: string): string => {
 };
 
 const invoiceStatusColor = (s: string): string => {
-  if (s === "paid")            return "bg-emerald-50 text-emerald-700 border border-emerald-200";
-  if (s === "sent")            return "bg-blue-50 text-blue-700 border border-blue-200";
-  if (s === "overdue")         return "bg-red-50 text-red-700 border border-red-200";
-  if (s === "deposit_pending") return "bg-amber-50 text-amber-700 border border-amber-200";
+  if (s === "paid")    return "bg-amber-100 text-amber-800 border border-amber-200";
+  if (s === "sent")    return "bg-blue-100 text-blue-800 border border-blue-200";
+  if (s === "overdue") return "bg-red-100 text-red-800 border border-red-200";
   return "bg-gray-100 text-gray-600 border border-gray-200";
 };
 
@@ -89,7 +88,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
     );
 
   const outstanding = invoices
-    .filter((i) => i.status === "sent" || i.status === "overdue" || i.status === "deposit_pending")
+    .filter((i) => i.status === "sent" || i.status === "overdue")
     .reduce((s, i) => s + i.total, 0);
   const paid = invoices
     .filter((i) => i.status === "paid")

@@ -9,6 +9,8 @@ import {
   Briefcase,
   BarChart3,
   Layers,
+  GitBranch,
+  Package,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -16,6 +18,8 @@ import EmailView from "./components/EmailView";
 import SettingsView from "./components/SettingsView";
 import DashboardView from "./components/DashboardView";
 import DealsView from "./components/DealsView";
+import DealFlowView from "./components/DealFlowView";
+import SuppliersView from "./components/SuppliersView";
 import CloseoutView from "./components/CloseoutView";
 import HealthView from "./components/HealthView";
 import BriefView from "./components/BriefView";
@@ -25,7 +29,7 @@ import QuickLogModal from "./components/QuickLogModal";
 import { useAppStore } from "./lib/store";
 import { api } from "./lib/api";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "invoices" | "email" | "analytics" | "brief" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "invoices" | "email" | "analytics" | "brief" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -50,6 +54,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const onNavigate = (e: Event) => {
+      const detail = (e as CustomEvent<Tab>).detail;
+      if (detail) setTab(detail);
+    };
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
       if (e.key === "L" || e.key === "l") {
@@ -64,8 +72,12 @@ export default function App() {
         if (tab === "invoices") window.dispatchEvent(new CustomEvent("invoices-new-invoice"));
       }
     };
+    window.addEventListener("navigate-tab", onNavigate);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("navigate-tab", onNavigate);
+      window.removeEventListener("keydown", onKey);
+    };
   }, []);
 
   const handleSync = async () => {
@@ -87,6 +99,8 @@ export default function App() {
     { id: "deals",     label: "Closeout",   icon: Briefcase },
     { id: "analytics", label: "Analytics",  icon: BarChart3 },
     { id: "invoices",  label: "Invoices",   icon: FileText },
+    { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
+    { id: "suppliers", label: "Suppliers",  icon: Package },
     { id: "email",     label: "AI Email",   icon: Mail },
     { id: "brief",     label: "Brief",      icon: FileText },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
@@ -170,6 +184,8 @@ export default function App() {
             <div className="max-w-[1280px] mx-auto">
               {tab === "clients"   && <ClientsView />}
               {tab === "invoices"  && <InvoicesView />}
+              {tab === "dealflow"  && <DealFlowView />}
+              {tab === "suppliers" && <SuppliersView />}
               {tab === "deals"     && <CloseoutView />}
               {tab === "analytics" && <AnalyticsView />}
               {tab === "health"    && <TiersView />}

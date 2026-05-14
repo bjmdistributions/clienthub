@@ -163,6 +163,8 @@ export interface Invoice {
   pickup_date: string | null;
   delivery_date: string | null;
   is_complete: boolean;
+  deal_flow_id?: string | null;
+  deal_flow_stage?: string | null;
 }
 
 export interface ShippingInfo {
@@ -224,6 +226,172 @@ export interface DealInput {
   payment_terms?: string;
   notes?: string;
   expected_close_date?: string;
+}
+
+export interface SupplierPayment {
+  id: string;
+  supplier_name: string;
+  supplier_id?: string | null;
+  amount: number;
+  original_amount?: number | null;
+  price_changed?: boolean;
+  quantity?: number | null;
+  unit_price?: number | null;
+  method?: string | null;
+  notes?: string | null;
+  paid: boolean;
+  paid_at?: string | null;
+}
+
+export interface SupplierPaymentInput {
+  supplier_name: string;
+  supplier_id?: string | null;
+  amount: number;
+  quantity?: number | null;
+  unit_price?: number | null;
+  method?: string | null;
+  notes?: string | null;
+}
+
+export interface PaymentReceivedInput {
+  amount: number;
+  method?: string | null;
+  notes?: string | null;
+  received_at?: string | null;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  contact_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  payment_method?: string | null;
+  payment_details?: string | null;
+  payment_terms?: string | null;
+  typical_lead_time?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+  total_paid: number;
+  deal_count: number;
+  last_deal_date?: string | null;
+  avg_deal_amount: number;
+}
+
+export interface SupplierInput {
+  name: string;
+  contact_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  payment_method?: string | null;
+  payment_details?: string | null;
+  payment_terms?: string | null;
+  typical_lead_time?: string | null;
+  notes?: string | null;
+}
+
+export interface SupplierPriceEntry {
+  id: string;
+  supplier_id: string;
+  item_description: string;
+  price: number;
+  quantity?: number | null;
+  recorded_at: string;
+  deal_flow_id?: string | null;
+  notes?: string | null;
+}
+
+export interface PriceAlert {
+  supplier_id: string;
+  supplier_name: string;
+  item_description: string;
+  previous_price: number;
+  current_price: number;
+  change_pct: number;
+  deal_flow_id: string;
+}
+
+export interface SupplierNode {
+  supplier_payment_id: string;
+  supplier_id?: string | null;
+  supplier_name: string;
+  amount: number;
+  original_amount?: number | null;
+  price_changed: boolean;
+  quantity?: number | null;
+  unit_price?: number | null;
+  paid: boolean;
+  paid_at?: string | null;
+  method?: string | null;
+  notes?: string | null;
+  supplier_contact?: string | null;
+  supplier_email?: string | null;
+  supplier_phone?: string | null;
+  payment_method?: string | null;
+  payment_details?: string | null;
+}
+
+export interface DealFlowNodeMap {
+  deal_flow_id: string;
+  invoice_number: string;
+  client_name: string;
+  client_email?: string | null;
+  invoice_total: number;
+  stage: string;
+  payment_received?: number | null;
+  supplier_nodes: SupplierNode[];
+  net_profit: number;
+  profit_jack: number;
+  profit_ben: number;
+  profit_business: number;
+  is_loss: boolean;
+  price_alerts: PriceAlert[];
+}
+
+export interface CompleteDealResult {
+  profit: number;
+  is_loss: boolean;
+  warning?: string | null;
+}
+
+export interface ProfitSplit {
+  business_pct: number;
+  jack_pct: number;
+  ben_pct: number;
+  jack_name: string;
+  ben_name: string;
+}
+
+export interface DealFlow {
+  id: string;
+  name?: string | null;
+  invoice_id: string;
+  stage: 'invoiced' | 'payment_received' | 'supplier_paid' | 'complete';
+  payment_received_amount: number;
+  payment_received_method: string | null;
+  payment_received_at: string | null;
+  supplier_payments_json: string;
+  supplier_payments: SupplierPayment[];
+  total_supplier_cost: number;
+  completed_at: string | null;
+  gross_revenue: number;
+  total_cost: number;
+  net_profit: number;
+  profit_jack: number;
+  profit_ben: number;
+  profit_business: number;
+  notes: string | null;
+  metadata?: string | null;
+  created_at: string;
+  updated_at: string;
+  invoice_number: string | null;
+  client_id: string | null;
+  client_name: string | null;
+  invoice_total: number;
 }
 
 export interface BuyerTier {
@@ -309,6 +477,23 @@ export interface WeeklyBrief {
   stuck_deals: StuckDeal[];
   new_clients_this_week: number;
   interactions_this_week: number;
+  completed_deals_this_week: number;
+  completed_deals_last_week: number;
+  net_profit_this_week: number;
+  net_profit_last_week: number;
+  net_profit_change_pct: number;
+  profit_jack_this_week: number;
+  profit_ben_this_week: number;
+  profit_business_this_week: number;
+  profit_jack_all_time: number;
+  profit_ben_all_time: number;
+  profit_business_all_time: number;
+  net_profit_this_month: number;
+  profit_jack_this_month: number;
+  profit_ben_this_month: number;
+  profit_business_this_month: number;
+  loss_deals_this_week: number;
+  loss_total_this_week: number;
 }
 
 export interface PipelineAnalytics {
@@ -383,6 +568,8 @@ export interface DashboardStats {
   category_breakdown: { category: string; client_count: number; revenue: number }[];
   invoice_status_breakdown: { status: string; count: number; total: number }[];
   top_spenders: { name: string; company: string | null; invoice_count: number; total_spent: number; total_profit: number; last_invoice: string | null }[];
+  loss_deals_this_month: number;
+  loss_total_this_month: number;
 }
 
 export interface SyncStatus {
@@ -500,8 +687,6 @@ export const api = {
   sendInvoice: (invoiceId: string) => invoke<void>("send_invoice", { invoiceId }),
   markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
-  markInvoiceDepositPending: (invoiceId: string) =>
-    invoke<void>("mark_invoice_deposit_pending", { invoiceId }),
   saveInvoiceCosts: (invoiceId: string, costItems: CostItem[]) =>
     invoke<void>("save_invoice_costs", { invoiceId, costItems }),
   saveInvoiceShipping: (invoiceId: string, info: ShippingInfo) =>
@@ -520,6 +705,59 @@ export const api = {
   deleteDeal: (id: string) => invoke<void>("delete_deal", { id }),
   convertDealToInvoice: (dealId: string) => invoke<string>("convert_deal_to_invoice", { dealId }),
   supplierNameSuggestions: () => invoke<SupplierNameSuggestion[]>("supplier_name_suggestions"),
+
+  // Deal Flows
+  createDealFlow: (invoiceId: string, notes?: string | null, name?: string | null) =>
+    invoke<string>("create_deal_flow", { invoiceId, notes, name }),
+  getDealFlowByInvoice: (invoiceId: string) =>
+    invoke<DealFlow | null>("get_deal_flow_by_invoice", { invoiceId }),
+  getDealFlow: (id: string) => invoke<DealFlow>("get_deal_flow", { id }),
+  listDealFlows: () => invoke<DealFlow[]>("list_deal_flows"),
+  listDealFlowsByStage: (stage: string) => invoke<DealFlow[]>("list_deal_flows_by_stage", { stage }),
+  markPaymentReceived: (id: string, input: PaymentReceivedInput) =>
+    invoke<void>("mark_payment_received", { id, input }),
+  unmarkPaymentReceived: (id: string) =>
+    invoke<void>("unmark_payment_received", { id }),
+  addSupplierPayment: (id: string, input: SupplierPaymentInput) =>
+    invoke<string>("add_supplier_payment", { id, input }),
+  updateSupplierPayment: (id: string, paymentId: string, input: SupplierPaymentInput) =>
+    invoke<void>("update_supplier_payment", { id, paymentId, input }),
+  removeSupplierPayment: (id: string, paymentId: string) =>
+    invoke<void>("remove_supplier_payment", { id, paymentId }),
+  markSupplierPaymentPaid: (id: string, paymentId: string) =>
+    invoke<void>("mark_supplier_payment_paid", { id, paymentId }),
+  unmarkSupplierPaymentPaid: (id: string, paymentId: string) =>
+    invoke<void>("unmark_supplier_payment_paid", { id, paymentId }),
+  completeDealFlow: (id: string, shippingStatus?: string | null) =>
+    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus }),
+  uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
+  updateDealFlowNotes: (id: string, notes: string | null) =>
+    invoke<void>("update_deal_flow_notes", { id, notes }),
+  updateDealFlowName: (id: string, name: string | null) =>
+    invoke<void>("update_deal_flow_name", { id, name }),
+  deleteDealFlow: (id: string) => invoke<void>("delete_deal_flow", { id }),
+
+  // Profit Split
+  getProfitSplit: () => invoke<ProfitSplit>("get_profit_split"),
+  saveProfitSplit: (businessPct: number, jackPct: number, benPct: number, jackName: string, benName: string) =>
+    invoke<void>("save_profit_split", { businessPct, jackPct, benPct, jackName, benName }),
+
+  // Suppliers
+  listSuppliers: () => invoke<Supplier[]>("list_suppliers"),
+  getSupplier: (id: string) => invoke<Supplier>("get_supplier", { id }),
+  createSupplier: (input: SupplierInput) => invoke<string>("create_supplier", { input }),
+  updateSupplier: (id: string, input: SupplierInput) => invoke<void>("update_supplier", { id, input }),
+  archiveSupplier: (id: string) => invoke<void>("archive_supplier", { id }),
+  deleteSupplier: (id: string) => invoke<void>("delete_supplier", { id }),
+  searchSuppliers: (query: string) => invoke<Supplier[]>("search_suppliers", { query }),
+  getSupplierPriceHistory: (supplierId: string) =>
+    invoke<SupplierPriceEntry[]>("get_supplier_price_history", { supplierId }),
+  recordSupplierPrice: (supplierId: string, itemDescription: string, price: number, quantity?: number | null, dealFlowId?: string | null, notes?: string | null) =>
+    invoke<void>("record_supplier_price", { supplierId, itemDescription, price, quantity, dealFlowId, notes }),
+  checkPriceChanges: (dealFlowId: string) => invoke<PriceAlert[]>("check_price_changes", { dealFlowId }),
+  revertSupplierPriceChange: (id: string, paymentId: string) =>
+    invoke<void>("revert_supplier_price_change", { id, paymentId }),
+  getDealFlowNodeMap: (dealFlowId: string) => invoke<DealFlowNodeMap>("get_deal_flow_node_map", { dealFlowId }),
 
   // Customer Health
   customerHealthScores: () => invoke<CustomerHealth[]>("customer_health_scores"),

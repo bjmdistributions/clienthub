@@ -1,16 +1,52 @@
 import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch } from "lucide-react";
 
-const statusColor = (s: string): string => {
+const statusColor = (inv: Invoice): string => {
+  const s = inv.status;
   const lo = s.toLowerCase();
-  if (lo === "paid")            return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70";
-  if (lo === "sent")            return "bg-blue-50 text-blue-700 ring-1 ring-blue-200/70";
-  if (lo === "overdue")         return "bg-red-50 text-red-700 ring-1 ring-red-200/70";
-  if (lo === "deposit_pending") return "bg-amber-50 text-amber-700 ring-1 ring-amber-200/70";
-  return "bg-gray-100 text-gray-500 ring-1 ring-gray-200/70";
+  if (lo === "paid" && inv.is_complete) return "bg-green-100 text-green-800";
+  if (lo === "paid")                    return "bg-amber-100 text-amber-800";
+  if (lo === "sent" || lo === "deposit_pending") return "bg-blue-100 text-blue-800";
+  if (lo === "overdue")                 return "bg-red-100 text-red-800";
+  return "bg-gray-100 text-gray-700";
 };
+
+const statusLabel = (inv: Invoice): string => {
+  const lo = inv.status.toLowerCase();
+  if (lo === "paid" && inv.is_complete) return "Completed";
+  if (lo === "paid") return "Paid";
+  if (lo === "deposit_pending") return "Sent";
+  return inv.status.replace(/_/g, " ");
+};
+
+const FLOW_STAGES = ["invoiced", "payment_received", "supplier_paid", "complete"];
+function flowStageSi(stage?: string | null): number {
+  if (!stage) return -1;
+  return FLOW_STAGES.indexOf(stage);
+}
+
+// Small 4-dot progress indicator for deal flow
+function FlowDots({ stage }: { stage?: string | null }) {
+  if (!stage) return null;
+  const cur = flowStageSi(stage);
+  const colors = ["bg-indigo-500", "bg-amber-400", "bg-violet-500", "bg-emerald-500"];
+  return (
+    <div className="flex items-center gap-0.5 ml-2">
+      {FLOW_STAGES.map((_, i) => (
+        <div
+          key={i}
+          className={`rounded-full transition-all ${
+            i <= cur
+              ? `w-2 h-2 ${colors[i]}`
+              : "w-1.5 h-1.5 bg-gray-200"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
 
 const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
 
@@ -90,18 +126,15 @@ export default function InvoicesView() {
     catch (e: any) { alert(`Error: ${e}`); }
   };
 
-  const handleDeposit = async (id: string) => {
-    if (!confirm("Mark as deposit pending?")) return;
-    setBusy(id);
-    try { await api.markInvoiceDepositPending(id); load(); }
-    catch (e: any) { alert(`Error: ${e}`); }
-    finally { setBusy(null); }
-  };
-
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
-  const outstanding  = invoices.filter((i) => i.status !== "paid").reduce((s, i) => s + i.total, 0);
-  const overdueCount = invoices.filter((i) => i.status === "overdue").length;
-  const paidCount    = invoices.filter((i) => i.status === "paid").length;
+  const outstanding   = invoices.filter((i) => i.status !== "paid").reduce((s, i) => s + i.total, 0);
+  const overdueCount  = invoices.filter((i) => i.status === "overdue").length;
+  const paidCount     = invoices.filter((i) => i.status === "paid").length;
+  const completedCount = invoices.filter((i) => i.is_complete).length;
+  const sentCount     = invoices.filter((i) => i.status === "sent").length;
+  const draftCount    = invoices.filter((i) => i.status === "draft").length;
+  // Only count profit once a deal is fully closed (is_complete = true)
+  const totalProfit   = invoices.filter((i) => i.is_complete).reduce((s, i) => s + (i.profit ?? 0), 0);
 
   return (
     <div>
@@ -120,12 +153,14 @@ export default function InvoicesView() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         {[
-          { label: "Total Invoices", value: invoices.length,          color: "text-gray-900" },
-          { label: "Outstanding",    value: fmtAmount(outstanding),   color: "text-amber-600" },
-          { label: "Overdue",        value: overdueCount,             color: overdueCount > 0 ? "text-red-600" : "text-gray-400" },
-          { label: "Paid",           value: paidCount,                color: "text-emerald-600" },
+          { label: "Total",          value: invoices.length,          color: "text-gray-900" },
+          { label: "Completed",      value: completedCount,           color: completedCount > 0 ? "text-green-700" : "text-gray-400" },
+          { label: "Paid",           value: paidCount - completedCount, color: (paidCount - completedCount) > 0 ? "text-amber-700" : "text-gray-400" },
+          { label: "Sent",           value: sentCount,                color: sentCount > 0 ? "text-blue-700" : "text-gray-400" },
+          { label: "Overdue",        value: overdueCount,             color: overdueCount > 0 ? "text-red-700" : "text-gray-400" },
+          { label: "Total Profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-emerald-700" : "text-red-700" },
         ].map((s) => (
           <div key={s.label} className="bg-white border border-gray-100 rounded-xl px-4 py-3.5">
             <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">{s.label}</p>
@@ -213,22 +248,19 @@ export default function InvoicesView() {
                     {profit != null ? fmtAmount(profit) : "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusColor(inv.status)}`}>
-                      {inv.status.replace(/_/g, " ")}
-                    </span>
-                    {inv.status.toLowerCase() === "paid" && !inv.is_complete && (
-                      <Package size={11} className="text-gray-300 ml-1.5 inline" />
-                    )}
+                    <div className="flex items-center gap-0 flex-wrap gap-y-1">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide ${statusColor(inv)}`}>
+                        {statusLabel(inv)}
+                      </span>
+                      {/* Deal flow progress dots */}
+                      <FlowDots stage={inv.deal_flow_stage} />
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
-                    {inv.status.toLowerCase() === "draft" && (
-                      <>
-                        <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
-                          className="text-gray-300 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 transition-colors"><Edit2 size={13} /></button>
-                        <button title="Deposit pending" onClick={() => handleDeposit(inv.id)}
-                          className="text-amber-500 hover:text-amber-700 text-[11px] font-medium px-2 py-0.5 rounded-md hover:bg-amber-50 transition-colors">Deposit</button>
-                      </>
-                    )}
+                    <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
+                      className="text-gray-300 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 transition-colors">
+                      <Edit2 size={13} />
+                    </button>
                     <button title="Delete" onClick={() => handleDelete(inv.id)}
                       className={confirmDelete === inv.id
                         ? "text-red-600 font-semibold text-[11px] px-2 py-0.5 rounded-md bg-red-50"
@@ -361,6 +393,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
         <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-gray-100 transition-colors"><X size={16} /></button>
       </div>
 
+      {/* New invoice: full header including client picker */}
       {!initial && (
         <div className="grid grid-cols-3 gap-4 mb-5">
           <Field label="Client">
@@ -378,20 +411,24 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Issue date"><input type="date" className={inp} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
           <Field label="Tax %">
             <div className="relative">
-              <input type="number" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
+              <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">%</span>
             </div>
           </Field>
         </div>
       )}
 
+      {/* Edit mode: show dates + tax (no client change) */}
       {initial && (
-        <div className="grid grid-cols-2 gap-4 mb-5">
+        <div className="grid grid-cols-3 gap-4 mb-5 p-4 bg-amber-50/50 border border-amber-100 rounded-xl">
+          <div className="col-span-3 text-[11px] text-amber-700 font-medium -mb-1">
+            Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice — amounts and dates can be adjusted.
+          </div>
           <Field label="Due date"><input type="date" className={inp} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
           <Field label="Issue date"><input type="date" className={inp} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
           <Field label="Tax %">
             <div className="relative">
-              <input type="number" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} />
+              <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">%</span>
             </div>
           </Field>
@@ -420,12 +457,12 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <div key={i} className="grid grid-cols-12 gap-2 mb-1.5">
             <input className="col-span-6 border border-gray-200 px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
               value={it.description} onChange={(e) => updateItem(i, "description", e.target.value)} />
-            <input type="number" step="1" className="col-span-1 border border-gray-200 px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
-              value={it.qty || ""} onChange={(e) => updateItem(i, "qty", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)} />
+            <input type="number" inputMode="decimal" step="1" className="col-span-1 border border-gray-200 px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+              value={it.qty || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateItem(i, "qty", e.target.value === "" ? 0 : isNaN(v) ? 0 : v); }} />
             <div className="col-span-2 relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">$</span>
-              <input type="number" step="0.01" className="w-full border border-gray-200 pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
-                value={it.rate || ""} onChange={(e) => updateItem(i, "rate", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)} />
+              <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                value={it.rate || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateItem(i, "rate", e.target.value === "" ? 0 : isNaN(v) ? 0 : v); }} />
             </div>
             <input readOnly className="col-span-2 border border-gray-100 bg-gray-50 px-3 h-9 rounded-lg text-[13px] text-right text-gray-500 tabular-nums"
               value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} />
@@ -498,6 +535,56 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   );
 }
 
+function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; onCancel: () => void; onSaved: () => void }) {
+  const [taxRate, setTaxRate] = useState(invoice.subtotal > 0 ? Math.round((invoice.tax / invoice.subtotal) * 10000) / 100 : 0);
+  const [saving, setSaving] = useState(false);
+
+  const items: any[] = JSON.parse(invoice.line_items_json || "[]");
+  const subtotal = items.reduce((s: number, it: any) => s + it.amount, 0);
+  const tax = subtotal * (taxRate / 100);
+  const total = subtotal + tax;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.updateInvoice(invoice.id, {
+        due_date: invoice.due_date,
+        line_items: items,
+        tax_rate: taxRate,
+        notes: invoice.notes || undefined,
+      });
+      onSaved();
+    } catch (e: any) { alert(e); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-5 mb-4">
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <Field label="Subtotal">
+          <div className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] text-gray-500 bg-gray-50 flex items-center tabular-nums">{fmtAmount(subtotal)}</div>
+        </Field>
+        <Field label="Tax %">
+          <div className="relative">
+            <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">%</span>
+          </div>
+        </Field>
+      </div>
+
+      <div className="flex justify-between items-center py-3 border-t border-gray-100 mt-4">
+        <div className="text-[14px] text-gray-500">Total: <span className="font-semibold text-gray-900">{fmtAmount(total)}</span></div>
+        <div className="flex gap-3">
+          <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
+          <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+            {saving ? "Saving..." : "Update Tax"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Row({ label, value, bold }: { label: string; value: number; bold?: boolean }) {
   return (
     <div className={`flex justify-between tabular-nums ${bold ? "font-semibold text-[14px] pt-1.5 border-t border-gray-100" : "text-gray-600"}`}>
@@ -529,11 +616,10 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   const [savingShipping, setSavingShipping] = useState(false);
 
   const statCol = (s: string) => {
-    if (s === "paid")            return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70";
-    if (s === "sent")            return "bg-blue-50 text-blue-700 ring-1 ring-blue-200/70";
-    if (s === "overdue")         return "bg-red-50 text-red-700 ring-1 ring-red-200/70";
-    if (s === "deposit_pending") return "bg-amber-50 text-amber-700 ring-1 ring-amber-200/70";
-    return "bg-gray-100 text-gray-500 ring-1 ring-gray-200/70";
+    if (s === "paid")    return invoice.is_complete ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800";
+    if (s === "sent")    return "bg-blue-100 text-blue-800";
+    if (s === "overdue") return "bg-red-100 text-red-800";
+    return "bg-gray-100 text-gray-700";
   };
 
   return (
@@ -618,8 +704,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                       value={ci.description} onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], description: e.target.value }; setCosts(c); }} />
                     <div className="relative w-28">
                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]">$</span>
-                      <input type="number" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
-                        value={ci.amount || ""} onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], amount: parseFloat(e.target.value) || 0 }; setCosts(c); }} />
+                      <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                        value={ci.amount || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); const c = [...costs]; c[i] = { ...c[i], amount: isNaN(v) ? 0 : v }; setCosts(c); }} />
                     </div>
                     <button onClick={() => setCosts(costs.filter((_, j) => j !== i))} className="text-gray-300 hover:text-red-500 p-1 transition-colors"><X size={12} /></button>
                   </div>
@@ -673,8 +759,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     <label className="text-[10px] font-medium text-gray-400 uppercase tracking-widest">Shipping Charged</label>
                     <div className="relative mt-0.5">
                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]">$</span>
-                      <input type="number" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
-                        value={shipping.shipping_charged || ""} onChange={(e) => setShipping({ ...shipping, shipping_charged: parseFloat(e.target.value) || 0 })} />
+                      <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                        value={shipping.shipping_charged || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setShipping({ ...shipping, shipping_charged: isNaN(v) ? 0 : v }); }} />
                     </div>
                   </div>
                 </div>

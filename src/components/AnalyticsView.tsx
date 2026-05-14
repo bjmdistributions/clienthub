@@ -24,7 +24,6 @@ const STATUS_CLR: Record<string, string> = {
   sent:            CLR.sky,
   overdue:         CLR.rose,
   draft:           CLR.slate,
-  deposit_pending: CLR.amber,
 };
 
 const TIER_CLR: Record<string, string> = {

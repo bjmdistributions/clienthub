@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
-import { api, WeeklyBrief } from "../lib/api";
+import { api, WeeklyBrief, ProfitSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
   TrendingUp, TrendingDown, Minus, FileText, RefreshCw, Send, Printer,
-  AlertCircle, DollarSign, Briefcase, Users, Target,
+  AlertCircle, DollarSign, Briefcase, Users, Target, GitBranch,
 } from "lucide-react";
 
 export default function BriefView() {
   const [brief, setBrief] = useState<WeeklyBrief | null>(null);
   const [loading, setLoading] = useState(true);
+  const [split, setSplit] = useState<ProfitSplit | null>(null);
 
   const load = async () => {
     setLoading(true);
-    try { setBrief(await api.generateWeeklyBrief()); } catch (e: any) { alert(e); }
+    try {
+      const [b, s] = await Promise.all([api.generateWeeklyBrief(), api.getProfitSplit()]);
+      setBrief(b);
+      setSplit(s);
+    } catch (e: any) { alert(e); }
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
@@ -74,6 +79,76 @@ export default function BriefView() {
               <StatCard label="Deals Closed" value={String(brief.deals_closed_this_week)}
                 sub={`${brief.deals_lost_this_week} lost`} />
               <StatCard label="Win Rate" value={`${brief.win_rate_this_week.toFixed(0)}%`} />
+            </div>
+          </div>
+
+          {/* Section 1.5: Profit from Deal Flows */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-[16px] font-semibold text-gray-900 flex items-center gap-2">
+                <GitBranch size={16} className="text-indigo-500" />
+                Profit from Deal Flows
+              </h2>
+              <span className="text-[11px] font-medium text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+                {brief.completed_deals_this_week} deal{brief.completed_deals_this_week !== 1 ? "s" : ""} completed
+              </span>
+            </div>
+            <div className="bg-white border border-gray-200 rounded-lg p-5 space-y-4">
+              {/* Net profit row */}
+              <div className="flex items-center justify-between">
+                <div className="text-[13px] text-gray-500">Net Profit</div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[26px] font-bold ${brief.net_profit_this_week >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    {fmtAmount(brief.net_profit_this_week)}
+                  </span>
+                  <span className="text-[12px]">{changePct(brief.net_profit_change_pct)}</span>
+                </div>
+              </div>
+
+              {/* Three split boxes */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="border-t-2 border-indigo-400 bg-indigo-50/40 rounded-lg p-3 text-center">
+                  <div className="text-[10px] font-medium text-indigo-500 uppercase tracking-wide">Business {split?.business_pct ?? 40}%</div>
+                  <div className="text-[18px] font-bold text-gray-900 mt-0.5">{fmtAmount(brief.profit_business_this_week)}</div>
+                </div>
+                <div className="border-t-2 border-emerald-400 bg-emerald-50/40 rounded-lg p-3 text-center">
+                  <div className="text-[10px] font-medium text-emerald-500 uppercase tracking-wide">{split?.jack_name ?? "Jack"} {split?.jack_pct ?? 30}%</div>
+                  <div className="text-[18px] font-bold text-gray-900 mt-0.5">{fmtAmount(brief.profit_jack_this_week)}</div>
+                </div>
+                <div className="border-t-2 border-blue-400 bg-blue-50/40 rounded-lg p-3 text-center">
+                  <div className="text-[10px] font-medium text-blue-500 uppercase tracking-wide">{split?.ben_name ?? "Ben"} {split?.ben_pct ?? 30}%</div>
+                  <div className="text-[18px] font-bold text-gray-900 mt-0.5">{fmtAmount(brief.profit_ben_this_week)}</div>
+                </div>
+              </div>
+
+              {/* Month-to-date row */}
+              {brief.net_profit_this_month !== 0 && (
+                <div className="flex items-center justify-between text-[12px] text-gray-500 border-t border-gray-100 pt-3">
+                  <span>
+                    This month: <span className="font-semibold text-gray-700">{fmtAmount(brief.net_profit_this_month)}</span> profit
+                  </span>
+                  <span>
+                    {split?.jack_name ?? "Jack"} MTD: <span className="font-medium text-gray-700">{fmtAmount(brief.profit_jack_this_month)}</span>
+                    <span className="mx-1.5">&middot;</span>
+                    {split?.ben_name ?? "Ben"} MTD: <span className="font-medium text-gray-700">{fmtAmount(brief.profit_ben_this_month)}</span>
+                  </span>
+                </div>
+              )}
+
+              {/* Loss warning */}
+              {brief.loss_deals_this_week > 0 && (
+                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5">
+                  <AlertCircle size={14} className="text-amber-500 flex-shrink-0" />
+                  <span className="text-[12px] text-amber-700">
+                    {brief.loss_deals_this_week} deal{brief.loss_deals_this_week !== 1 ? "s" : ""} lost money this week: <span className="font-semibold">{fmtAmount(brief.loss_total_this_week)}</span>
+                  </span>
+                </div>
+              )}
+
+              {/* Footer note */}
+              <div className="text-[10px] text-gray-400 italic">
+                Profit calculated from completed deal flows only
+              </div>
             </div>
           </div>
 
