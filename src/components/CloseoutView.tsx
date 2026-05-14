@@ -225,6 +225,20 @@ function DealBreakdown({
   const payments = flow.supplier_payments || [];
   const margin   = pct(flow.net_profit, flow.gross_revenue);
 
+  // Editable completion date for backlogs
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const initialDate = flow.completed_at ? flow.completed_at.slice(0, 10) : todayStr;
+  const [editDate, setEditDate] = useState(initialDate);
+  const [dateSaving, setDateSaving] = useState(false);
+
+  const handleSaveDate = async () => {
+    if (!editDate) return;
+    setDateSaving(true);
+    try { await api.updateDealCompletedAt(flow.id, editDate); onReload(); }
+    catch (e: any) { alert(e); }
+    setDateSaving(false);
+  };
+
   const handleReopen = async () => {
     if (!confirm("Reopen this deal? It will move back to the active Deal Flow.")) return;
     setSaving(true);
@@ -323,6 +337,33 @@ function DealBreakdown({
           </div>
         </div>
       )}
+
+      {/* Backlog date editor */}
+      <div className="bg-white border border-gray-100 rounded-xl px-4 py-3">
+        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
+          Completed Date
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={editDate}
+            onChange={(e) => setEditDate(e.target.value)}
+            className="flex-1 border border-gray-200 px-2.5 h-8 rounded-lg text-[12px] bg-white
+                       focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
+          />
+          <button
+            onClick={handleSaveDate}
+            disabled={dateSaving || editDate === initialDate}
+            className="px-3 h-8 bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-medium
+                       rounded-lg disabled:opacity-40 transition-colors whitespace-nowrap"
+          >
+            {dateSaving ? "Saving…" : "Save Date"}
+          </button>
+        </div>
+        <p className="text-[10px] text-gray-400 mt-1.5">
+          Change to backlog a sale into the correct month/week for analytics.
+        </p>
+      </div>
 
       {/* Actions */}
       <div className="flex items-center gap-3 pt-1">

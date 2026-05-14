@@ -35,9 +35,13 @@ export default function DashboardView({ onNavigate }: Props) {
     const daysInMonth = new Date(y, mo, 0).getDate();
     const today = new Date();
     const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === mo;
-    const lastDay = isCurrentMonth ? today.getDate() : daysInMonth;
     const profitMap: Record<string, number> = {};
     raw.forEach((r) => { profitMap[r.day] = r.profit; });
+    // Extend lastDay to cover any data points beyond today (e.g. completed_at in future)
+    const maxDataDay = raw.length > 0
+      ? Math.max(...raw.map((r) => parseInt(r.day.split("-")[2], 10)))
+      : 0;
+    const lastDay = isCurrentMonth ? Math.max(today.getDate(), maxDataDay) : daysInMonth;
     let cumulative = 0;
     const data = [];
     for (let d = 1; d <= lastDay; d++) {
@@ -76,13 +80,14 @@ export default function DashboardView({ onNavigate }: Props) {
     weekday: "long", month: "long", day: "numeric",
   });
 
+  const netProfit = stats?.total_profit ?? 0;
   const kpis = [
-    { label: "Total Clients",   sub: "in account",         value: stats?.clients ?? 0,                icon: Users,       tab: "clients" },
-    { label: "Total Invoices",  sub: "created all-time",   value: stats?.invoices ?? 0,               icon: FileText,    tab: "invoices" },
-    { label: "Outstanding",     sub: "awaiting payment",   value: fmtAmount(stats?.outstanding ?? 0), icon: DollarSign,  tab: "invoices" },
-    { label: "Revenue YTD",     sub: "collected this year",value: fmtAmount(stats?.paid_ytd ?? 0),    icon: TrendingUp,  tab: "invoices" },
-    { label: "Pipeline Value",  sub: "active deals",       value: fmtAmount(stats?.pipeline_value ?? 0), icon: DollarSign, tab: "deals" },
-    { label: "Active Deals",    sub: "in pipeline",        value: stats?.pipeline_count ?? 0,         icon: FileText,    tab: "deals" },
+    { label: "Total Clients",   sub: "in account",          value: stats?.clients ?? 0,                icon: Users,       tab: "clients",   clr: "text-gray-900" },
+    { label: "Total Invoices",  sub: "created all-time",    value: stats?.invoices ?? 0,               icon: FileText,    tab: "invoices",  clr: "text-gray-900" },
+    { label: "Outstanding",     sub: "awaiting payment",    value: fmtAmount(stats?.outstanding ?? 0), icon: DollarSign,  tab: "invoices",  clr: (stats?.outstanding ?? 0) > 0 ? "text-amber-600" : "text-gray-900" },
+    { label: "Revenue YTD",     sub: "collected this year", value: fmtAmount(stats?.paid_ytd ?? 0),    icon: TrendingUp,  tab: "invoices",  clr: "text-gray-900" },
+    { label: "Net Profit",      sub: "from closed deals",   value: fmtAmount(netProfit),               icon: TrendingUp,  tab: "analytics", clr: netProfit >= 0 ? "text-emerald-600" : "text-red-600" },
+    { label: "Active Deals",    sub: "in pipeline",         value: stats?.pipeline_count ?? 0,         icon: FileText,    tab: "dealflow",  clr: "text-gray-900" },
   ];
 
   const weekStats = [
@@ -136,7 +141,7 @@ export default function DashboardView({ onNavigate }: Props) {
               className="bg-white border border-gray-100 rounded-xl p-4 text-left hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.07)] transition-all duration-200 group"
             >
               <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2.5">{k.label}</div>
-              <div className="text-[24px] font-bold text-gray-900 tabular-nums leading-none truncate">{k.value}</div>
+              <div className={`text-[24px] font-bold tabular-nums leading-none truncate ${k.clr}`}>{k.value}</div>
               <div className="flex items-center gap-1 mt-1.5">
                 <span className="text-[11px] text-gray-400">{k.sub}</span>
                 <ArrowRight size={9} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />

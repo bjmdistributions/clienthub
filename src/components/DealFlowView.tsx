@@ -967,6 +967,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const [tracking,     setTracking]     = useState("");
   const [pickupDate,   setPickupDate]   = useState("");
   const [deliveryDate, setDeliveryDate] = useState("");
+  // Backlog date: defaults to today but user can pick any past date
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [completedDate, setCompletedDate] = useState(todayStr);
 
   useEffect(() => { api.getProfitSplit().then(setSplit).catch(() => {}); }, []);
 
@@ -980,7 +983,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const runComplete = async () => {
     setSaving(true);
     try {
-      const result = await api.completeDealFlow(flow.id, "none");
+      const result = await api.completeDealFlow(flow.id, "none", completedDate || null);
       if (result.is_loss && result.warning) alert(result.warning);
       onReload();
     } catch (e: any) { alert(e); }
@@ -1010,7 +1013,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         delivery_date:    deliveryDate || undefined,
         is_complete:      true,
       });
-      await api.completeDealFlow(flow.id, "none");
+      await api.completeDealFlow(flow.id, "none", completedDate || null);
       onReload();
     } catch (e: any) { alert(e); }
     setSaving(false);
@@ -1074,14 +1077,28 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
       {/* ── Complete action area ── */}
       {canComplete && shipHold === "idle" && (
-        <button
-          onClick={handleCompleteClick}
-          disabled={saving}
-          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-10 rounded-lg
-                     text-[14px] font-medium disabled:opacity-40 transition-colors"
-        >
-          Complete Deal
-        </button>
+        <div className="space-y-2">
+          {/* Completion date — defaults to today, can be backdated for backlog */}
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] text-gray-400 whitespace-nowrap">Completed date</label>
+            <input
+              type="date"
+              value={completedDate}
+              max={todayStr}
+              onChange={(e) => setCompletedDate(e.target.value)}
+              className="flex-1 border border-gray-200 px-2.5 h-8 rounded-lg text-[12px] bg-white
+                         focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
+            />
+          </div>
+          <button
+            onClick={handleCompleteClick}
+            disabled={saving}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-10 rounded-lg
+                       text-[14px] font-medium disabled:opacity-40 transition-colors"
+          >
+            Complete Deal
+          </button>
+        </div>
       )}
 
       {/* Step A: shipping question */}

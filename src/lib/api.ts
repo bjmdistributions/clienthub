@@ -728,9 +728,11 @@ export const api = {
     invoke<void>("mark_supplier_payment_paid", { id, paymentId }),
   unmarkSupplierPaymentPaid: (id: string, paymentId: string) =>
     invoke<void>("unmark_supplier_payment_paid", { id, paymentId }),
-  completeDealFlow: (id: string, shippingStatus?: string | null) =>
-    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus }),
+  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null) =>
+    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
+  updateDealCompletedAt: (id: string, date: string) =>
+    invoke<void>("update_deal_completed_at", { id, date }),
   updateDealFlowNotes: (id: string, notes: string | null) =>
     invoke<void>("update_deal_flow_notes", { id, notes }),
   updateDealFlowName: (id: string, name: string | null) =>

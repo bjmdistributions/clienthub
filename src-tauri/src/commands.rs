@@ -1847,6 +1847,22 @@ pub async fn get_deal_flow(id: String) -> Result<DealFlow, String> {
 #[tauri::command]
 pub async fn list_deal_flows() -> Result<Vec<DealFlow>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+
+    // Backfill: any completed deal flow whose invoice still has null profit gets it written now.
+    // This repairs deals completed before the profit write-back fix was applied.
+    conn.execute(
+        "UPDATE invoices SET
+            profit     = (SELECT net_profit   FROM deal_flows WHERE deal_flows.invoice_id = invoices.id AND deal_flows.stage = 'complete'),
+            total_cost = (SELECT total_cost   FROM deal_flows WHERE deal_flows.invoice_id = invoices.id AND deal_flows.stage = 'complete'),
+            margin     = CASE WHEN (SELECT gross_revenue FROM deal_flows WHERE deal_flows.invoice_id = invoices.id AND deal_flows.stage = 'complete') > 0
+                              THEN (SELECT net_profit FROM deal_flows WHERE deal_flows.invoice_id = invoices.id AND deal_flows.stage = 'complete')
+                                 / (SELECT gross_revenue FROM deal_flows WHERE deal_flows.invoice_id = invoices.id AND deal_flows.stage = 'complete') * 100
+                              ELSE 0 END
+         WHERE is_complete = 1 AND (profit IS NULL OR profit = 0)
+           AND EXISTS (SELECT 1 FROM deal_flows WHERE deal_flows.invoice_id = invoices.id AND deal_flows.stage = 'complete')",
+        [],
+    ).ok(); // silently ignore if it fails
+
     let sql = format!("{} ORDER BY df.updated_at DESC", DF_JOIN);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_deal_flow_row).map_err(|e| e.to_string())?;
@@ -2108,13 +2124,17 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
 }
 
 #[tauri::command]
-pub async fn complete_deal_flow(id: String, shipping_status: Option<String>) -> Result<Value, String> {
+pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>) -> Result<Value, String> {
     let df = read_df(&id)?;
     if df.stage != "supplier_paid" && df.stage != "payment_received" { return Err("Can only complete after payment is received".into()); }
 
     let split = read_profit_split()?;
 
-    let now = Utc::now().to_rfc3339();
+    // Use caller-supplied date (YYYY-MM-DD) if provided; otherwise use now.
+    let now = match completed_date.as_deref() {
+        Some(d) if !d.is_empty() => format!("{}T00:00:00Z", d),
+        _ => Utc::now().to_rfc3339(),
+    };
     let gross = df.payment_received_amount;
     let total_cost = df.total_supplier_cost;
     let net = gross - total_cost;
@@ -2149,12 +2169,20 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>) -> 
     }
 
     sync_invoice_stage(&df.invoice_id, "complete")?;
+    let margin_pct = if gross > 0.0 { (net / gross) * 100.0 } else { 0.0 };
     let mut inv_cols = Map::new();
     inv_cols.insert("status".into(), Value::String("paid".into()));
     inv_cols.insert("is_complete".into(), json!(!awaiting_shipping));
+    // Write profit data back to the invoice so dashboard/analytics queries see it
+    inv_cols.insert("profit".into(), json!(net));
+    inv_cols.insert("total_cost".into(), json!(total_cost));
+    inv_cols.insert("margin".into(), json!(margin_pct));
     sync::record_upsert("invoices", &df.invoice_id, inv_cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE invoices SET status='paid', is_complete=?1 WHERE id=?2", rusqlite::params![(!awaiting_shipping) as i64, df.invoice_id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET status='paid', is_complete=?1, profit=?2, total_cost=?3, margin=?4 WHERE id=?5",
+        rusqlite::params![(!awaiting_shipping) as i64, net, total_cost, margin_pct, df.invoice_id],
+    ).map_err(|e| e.to_string())?;
     let warning = if is_loss { Some(format!("This deal resulted in a loss of ${:.2}", net.abs())) } else { None };
     Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
 }
@@ -2177,6 +2205,25 @@ pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     }
 
     sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
+    Ok(())
+}
+
+/// Update the completed_at date on an already-completed deal flow.
+/// `date` is a YYYY-MM-DD string supplied by the user.
+#[tauri::command]
+pub async fn update_deal_completed_at(id: String, date: String) -> Result<(), String> {
+    if date.is_empty() { return Err("Date cannot be empty".into()); }
+    let completed_at = format!("{}T00:00:00Z", date);
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("completed_at".into(), Value::String(completed_at.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deal_flows SET completed_at=?1, updated_at=?2 WHERE id=?3",
+        rusqlite::params![completed_at, now, id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2941,8 +2988,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
-            "SELECT strftime('%Y-%m', issue_date) as m, COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(profit),0)
-             FROM invoices WHERE is_complete=1 AND issue_date >= date('now','-6 months') GROUP BY m ORDER BY m"
+            "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM(df.net_profit),0)
+             FROM deal_flows df WHERE df.stage='complete' AND df.completed_at >= date('now','-6 months') GROUP BY m ORDER BY m"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
@@ -2960,7 +3007,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
             "SELECT c.name, COALESCE(SUM(i.total),0), COALESCE(SUM(i.profit),0),
                     CASE WHEN COALESCE(SUM(i.total),0)>0 THEN (COALESCE(SUM(i.profit),0)/SUM(i.total))*100 ELSE 0 END
              FROM invoices i JOIN clients c ON c.id=i.client_id
-             WHERE i.status='paid' AND i.profit IS NOT NULL
+             WHERE i.is_complete=1 AND i.profit IS NOT NULL
              GROUP BY i.client_id ORDER BY SUM(i.profit) DESC LIMIT 5"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
@@ -3026,7 +3073,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
                     COALESCE(SUM(i.profit),0) as total_profit,
                     MAX(i.issue_date) as last_invoice
              FROM clients c JOIN invoices i ON i.client_id=c.id
-             WHERE i.status='paid'
+             WHERE i.is_complete=1
              GROUP BY i.client_id ORDER BY total_spent DESC LIMIT 10"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok(json!({
@@ -3078,8 +3125,9 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT date(issue_date) as d, COALESCE(SUM(profit),0)
-         FROM invoices WHERE is_complete=1 AND strftime('%Y-%m', issue_date) = ?1
+        "SELECT date(df.completed_at) as d, COALESCE(SUM(df.net_profit),0)
+         FROM deal_flows df
+         WHERE df.stage='complete' AND strftime('%Y-%m', df.completed_at) = ?1
          GROUP BY d ORDER BY d"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&month], |r| {
@@ -3268,19 +3316,24 @@ pub async fn generate_weekly_brief() -> Result<WeeklyBrief, String> {
     let last_week_end = format!("{}", (now_date - chrono::Duration::days(wd + 1)).format("%Y-%m-%d"));
 
     let revenue_this_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND issue_date >= ?1", [&week_start], |r| r.get(0)
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&week_start, &week_end], |r| r.get(0)
     ).unwrap_or(0.0);
     let revenue_last_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND issue_date < ?2", [&last_week_start, &week_start], |r| r.get(0)
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_this_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE status='paid' AND issue_date >= ?1", [&week_start], |r| r.get(0)
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&week_start, &week_end], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_last_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND issue_date < ?2", [&last_week_start, &week_start], |r| r.get(0)
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let avg_margin_this_week: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE status='paid' AND issue_date >= ?1 AND profit IS NOT NULL", [&week_start], |r| r.get(0)
+        "SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        [&week_start, &week_end], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let month_start = format!("{}-01", now.format("%Y-%m"));
