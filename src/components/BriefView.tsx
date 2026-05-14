@@ -4,23 +4,56 @@ import { fmtAmount } from "../lib/format";
 import {
   TrendingUp, TrendingDown, Minus, FileText, RefreshCw, Send, Printer,
   AlertCircle, DollarSign, Briefcase, Users, Target, GitBranch,
+  ChevronLeft, ChevronRight,
 } from "lucide-react";
 
-export default function BriefView() {
-  const [brief, setBrief] = useState<WeeklyBrief | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [split, setSplit] = useState<ProfitSplit | null>(null);
+// Helper: add/subtract weeks from a YYYY-MM-DD date
+function addWeeks(dateStr: string, n: number): string {
+  const d = new Date(dateStr + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n * 7);
+  return d.toISOString().slice(0, 10);
+}
 
-  const load = async () => {
+export default function BriefView() {
+  const [brief,   setBrief]   = useState<WeeklyBrief | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [split,   setSplit]   = useState<ProfitSplit | null>(null);
+  // Anchor date: null = this week, otherwise a specific date within a past week
+  const [anchorDate, setAnchorDate] = useState<string | null>(null);
+
+  const load = async (date?: string | null) => {
     setLoading(true);
     try {
-      const [b, s] = await Promise.all([api.generateWeeklyBrief(), api.getProfitSplit()]);
+      const [b, s] = await Promise.all([
+        api.generateWeeklyBrief(date ?? null),
+        api.getProfitSplit(),
+      ]);
       setBrief(b);
       setSplit(s);
     } catch (e: any) { alert(e); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(null); }, []);
+
+  const goToPrevWeek = () => {
+    const anchor = anchorDate ?? new Date().toISOString().slice(0, 10);
+    const prev = addWeeks(anchor, -1);
+    setAnchorDate(prev);
+    load(prev);
+  };
+  const goToNextWeek = () => {
+    if (!anchorDate) return; // already on current week
+    const next = addWeeks(anchorDate, 1);
+    const today = new Date().toISOString().slice(0, 10);
+    if (next >= today) {
+      setAnchorDate(null);
+      load(null);
+    } else {
+      setAnchorDate(next);
+      load(next);
+    }
+  };
+  const isCurrentWeek = !anchorDate;
 
   const changePct = (pct: number) => {
     if (pct > 0) return <span className="text-emerald-600 flex items-center gap-0.5"><TrendingUp size={12} /> {pct.toFixed(1)}%</span>;
@@ -33,10 +66,25 @@ export default function BriefView() {
   return (
     <div className="print-area max-w-3xl mx-auto">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-6 print:hidden">
-        <h2 className="text-[18px] font-semibold text-gray-900">Weekly Brief</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 print:hidden">
+        <div className="flex items-center gap-3">
+          <h2 className="text-[18px] font-semibold text-gray-900">Weekly Brief</h2>
+          {/* Week navigation */}
+          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+            <button onClick={goToPrevWeek} className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-white text-gray-500 hover:text-gray-700 transition-colors">
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-[12px] font-medium text-gray-600 px-1 whitespace-nowrap">
+              {isCurrentWeek ? "This Week" : brief ? `${brief.week_start} – ${brief.week_end}` : "Past Week"}
+            </span>
+            <button onClick={goToNextWeek} disabled={isCurrentWeek}
+              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-white text-gray-500 hover:text-gray-700 transition-colors disabled:opacity-30">
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
-          <button onClick={load} className="flex items-center gap-1.5 border border-gray-300 h-9 px-3 rounded-md text-[13px] text-gray-600 hover:bg-gray-50">
+          <button onClick={() => load(anchorDate)} className="flex items-center gap-1.5 border border-gray-300 h-9 px-3 rounded-md text-[13px] text-gray-600 hover:bg-gray-50">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
           <button onClick={() => window.print()} className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white h-9 px-4 rounded-md text-[13px] font-medium">

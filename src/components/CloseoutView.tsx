@@ -139,40 +139,33 @@ export default function CloseoutView() {
           </p>
         </div>
       ) : (
-        <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-          {/* Table header */}
-          <div className="grid grid-cols-[1fr_100px_100px_100px_80px_36px] gap-x-4 px-5 py-2.5
-                          border-b border-gray-50 bg-gray-50/60">
-            {["Client / Invoice", "Revenue", "Cost", "Profit", "Margin", ""].map((h) => (
-              <span key={h} className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
-                {h}
-              </span>
-            ))}
-          </div>
-
-          {/* Rows */}
-          <div className="divide-y divide-gray-50">
-            {flows.map((flow) => {
-              const margin = pct(flow.net_profit, flow.gross_revenue);
-              const isExp  = expanded === flow.id;
-              return (
-                <div key={flow.id}>
-                  {/* Summary row */}
-                  <button
-                    onClick={() => setExpanded(isExp ? null : flow.id)}
-                    className="w-full grid grid-cols-[1fr_100px_100px_100px_80px_36px] gap-x-4
-                               px-5 py-4 text-left hover:bg-gray-50/50 transition-colors items-center"
-                  >
-                    {/* Client + invoice */}
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-semibold text-gray-900 truncate">
+        <div className="space-y-3">
+          {flows.map((flow) => {
+            const margin = pct(flow.net_profit, flow.gross_revenue);
+            const isExp  = expanded === flow.id;
+            return (
+              <div
+                key={flow.id}
+                className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow"
+              >
+                {/* Summary row */}
+                <button
+                  onClick={() => setExpanded(isExp ? null : flow.id)}
+                  className="w-full px-5 py-4 text-left hover:bg-gray-50/50 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    {/* Left: client + invoice info */}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[14px] font-semibold text-gray-900 truncate">
                         {flow.client_name || "—"}
                       </div>
-                      <div className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2">
-                        <span className="font-mono">{flow.invoice_number}</span>
+                      <div className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                        <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">
+                          {flow.invoice_number}
+                        </span>
                         {flow.completed_at && (
                           <span>
-                            {new Date(flow.completed_at).toLocaleDateString("en-US", {
+                            Completed {new Date(flow.completed_at).toLocaleDateString("en-US", {
                               month: "short", day: "numeric", year: "numeric",
                             })}
                           </span>
@@ -180,37 +173,46 @@ export default function CloseoutView() {
                       </div>
                     </div>
 
-                    {/* Numbers */}
-                    <span className="text-[13px] font-semibold text-gray-800 tabular-nums">
-                      {fmtAmount(flow.gross_revenue)}
-                    </span>
-                    <span className="text-[13px] text-gray-500 tabular-nums">
-                      {fmtAmount(flow.total_cost)}
-                    </span>
-                    <span className={`text-[13px] font-semibold tabular-nums ${
-                      flow.net_profit >= 0 ? "text-emerald-600" : "text-red-500"
-                    }`}>
-                      {fmtAmount(flow.net_profit)}
-                    </span>
-                    <MarginBadge margin={margin} />
-
-                    {/* Chevron */}
-                    <ChevronDown
-                      size={14}
-                      className={`text-gray-300 transition-transform duration-200 ${isExp ? "rotate-180" : ""}`}
-                    />
-                  </button>
-
-                  {/* Expanded breakdown */}
-                  {isExp && (
-                    <div className="border-t border-gray-50 bg-gray-50/40 px-5 py-5">
-                      <DealBreakdown flow={flow} split={split} onReload={load} />
+                    {/* Right: financial summary */}
+                    <div className="flex items-center gap-6 flex-shrink-0">
+                      <div className="text-right hidden sm:block">
+                        <div className="text-[10px] text-gray-400 uppercase tracking-widest">Revenue</div>
+                        <div className="text-[13px] font-semibold text-gray-800 tabular-nums">
+                          {fmtAmount(flow.gross_revenue)}
+                        </div>
+                      </div>
+                      <div className="text-right hidden sm:block">
+                        <div className="text-[10px] text-gray-400 uppercase tracking-widest">Cost</div>
+                        <div className="text-[13px] text-gray-500 tabular-nums">
+                          {fmtAmount(flow.total_cost)}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] text-gray-400 uppercase tracking-widest">Profit</div>
+                        <div className={`text-[14px] font-bold tabular-nums ${
+                          flow.net_profit >= 0 ? "text-emerald-600" : "text-red-500"
+                        }`}>
+                          {fmtAmount(flow.net_profit)}
+                        </div>
+                      </div>
+                      <MarginBadge margin={margin} />
+                      <ChevronDown
+                        size={14}
+                        className={`text-gray-300 transition-transform duration-200 flex-shrink-0 ${isExp ? "rotate-180" : ""}`}
+                      />
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                  </div>
+                </button>
+
+                {/* Expanded breakdown */}
+                {isExp && (
+                  <div className="border-t border-gray-200 bg-gray-50/50 px-5 py-5">
+                    <DealBreakdown flow={flow} split={split} onReload={load} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw } from "lucide-react";
 
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
@@ -29,9 +29,9 @@ function flowStageSi(stage?: string | null): number {
 
 const FLOW_LABELS = ["Invoiced", "Payment In", "Supplier Paid", "Complete"];
 
-// 4-dot deal flow progress indicator
+// 4-dot deal flow progress indicator — red → amber → lime → green gradient
 function FlowDots({ stage }: { stage?: string | null }) {
-  const colors    = ["bg-indigo-500", "bg-amber-400", "bg-violet-500", "bg-emerald-500"];
+  const colors    = ["bg-red-400", "bg-amber-400", "bg-lime-500", "bg-emerald-500"];
   const cur       = flowStageSi(stage ?? null);
   const label     = cur >= 0 ? FLOW_LABELS[cur] : "No flow";
   return (
@@ -278,6 +278,21 @@ export default function InvoicesView() {
                       className="text-gray-300 hover:text-indigo-500 p-1 rounded-md hover:bg-indigo-50 disabled:opacity-40 transition-colors">
                       {busy === inv.id ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
                     </button>
+                    {inv.is_complete && inv.deal_flow_id && (
+                      <button
+                        title="Reopen deal"
+                        onClick={async () => {
+                          if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
+                          try {
+                            await api.uncompleteDealFlow(inv.deal_flow_id!);
+                            await load();
+                          } catch (e: any) { alert(e); }
+                        }}
+                        className="text-gray-300 hover:text-amber-500 p-1 rounded-md hover:bg-amber-50 transition-colors"
+                      >
+                        <RotateCcw size={13} />
+                      </button>
+                    )}
                     {inv.status.toLowerCase() !== "paid" && (
                       <>
                         <button title="Send invoice" onClick={() => handleSend(inv.id)}
@@ -703,36 +718,79 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               Cost & Profit
             </button>
             {editingCosts && (
-              <div className="mt-3 space-y-2">
-                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Cost Items</div>
-                {costs.map((ci, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <input className="flex-1 border border-gray-200 px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors" placeholder="Description"
-                      value={ci.description} onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], description: e.target.value }; setCosts(c); }} />
-                    <div className="relative w-28">
-                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]">$</span>
-                      <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
-                        value={ci.amount || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); const c = [...costs]; c[i] = { ...c[i], amount: isNaN(v) ? 0 : v }; setCosts(c); }} />
-                    </div>
-                    <button onClick={() => setCosts(costs.filter((_, j) => j !== i))} className="text-gray-300 hover:text-red-500 p-1 transition-colors"><X size={12} /></button>
+              invoice.is_complete ? (
+                /* Read-only for completed invoices — managed via Deal Flow */
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-100 rounded-lg">
+                    <GitBranch size={11} className="text-amber-500 flex-shrink-0" />
+                    <p className="text-[11px] text-amber-700">
+                      Cost &amp; profit are set by the Deal Flow workflow and cannot be edited here.
+                    </p>
                   </div>
-                ))}
-                <button onClick={() => setCosts([...costs, { description: "", amount: 0 }])}
-                  className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors">
-                  <Plus size={11} /> Add cost item
-                </button>
-                <div className="border-t border-gray-100 pt-2 space-y-1 text-[12px]">
-                  <div className="flex justify-between text-gray-500"><span>Revenue</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span></div>
-                  <div className="flex justify-between text-gray-500"><span>Cost</span><span className="tabular-nums">{fmtAmount(costs.reduce((s, c) => s + c.amount, 0))}</span></div>
-                  <div className={`flex justify-between font-semibold ${(invoice.total - costs.reduce((s, c) => s + c.amount, 0)) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                    <span>Profit</span><span className="tabular-nums">{fmtAmount(invoice.total - costs.reduce((s, c) => s + c.amount, 0))}</span>
+                  {costItems.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      {costItems.map((ci, i) => (
+                        <div key={i} className="flex justify-between text-[12px]">
+                          <span className="text-gray-500">{ci.description || "Cost item"}</span>
+                          <span className="tabular-nums text-gray-700 font-medium">{fmtAmount(ci.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="border-t border-gray-100 pt-2 space-y-1 text-[12px]">
+                    <div className="flex justify-between text-gray-500">
+                      <span>Revenue</span>
+                      <span className="tabular-nums">{fmtAmount(invoice.total)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-500">
+                      <span>Total Cost</span>
+                      <span className="tabular-nums">{fmtAmount(invoice.total_cost ?? 0)}</span>
+                    </div>
+                    <div className={`flex justify-between font-semibold ${(invoice.profit ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                      <span>Profit</span>
+                      <span className="tabular-nums">{fmtAmount(invoice.profit ?? 0)}</span>
+                    </div>
+                    {invoice.margin != null && (
+                      <div className="flex justify-between text-gray-400">
+                        <span>Margin</span>
+                        <span className="tabular-nums">{invoice.margin.toFixed(1)}%</span>
+                      </div>
+                    )}
                   </div>
                 </div>
-                <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); } setSavingCosts(false); }}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
-                  {savingCosts ? "Saving..." : "Save Costs"}
-                </button>
-              </div>
+              ) : (
+                /* Editable for non-completed invoices */
+                <div className="mt-3 space-y-2">
+                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Cost Items</div>
+                  {costs.map((ci, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input className="flex-1 border border-gray-200 px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors" placeholder="Description"
+                        value={ci.description} onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], description: e.target.value }; setCosts(c); }} />
+                      <div className="relative w-28">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]">$</span>
+                        <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                          value={ci.amount || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); const c = [...costs]; c[i] = { ...c[i], amount: isNaN(v) ? 0 : v }; setCosts(c); }} />
+                      </div>
+                      <button onClick={() => setCosts(costs.filter((_, j) => j !== i))} className="text-gray-300 hover:text-red-500 p-1 transition-colors"><X size={12} /></button>
+                    </div>
+                  ))}
+                  <button onClick={() => setCosts([...costs, { description: "", amount: 0 }])}
+                    className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors">
+                    <Plus size={11} /> Add cost item
+                  </button>
+                  <div className="border-t border-gray-100 pt-2 space-y-1 text-[12px]">
+                    <div className="flex justify-between text-gray-500"><span>Revenue</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span></div>
+                    <div className="flex justify-between text-gray-500"><span>Cost</span><span className="tabular-nums">{fmtAmount(costs.reduce((s, c) => s + c.amount, 0))}</span></div>
+                    <div className={`flex justify-between font-semibold ${(invoice.total - costs.reduce((s, c) => s + c.amount, 0)) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                      <span>Profit</span><span className="tabular-nums">{fmtAmount(invoice.total - costs.reduce((s, c) => s + c.amount, 0))}</span>
+                    </div>
+                  </div>
+                  <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); } setSavingCosts(false); }}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
+                    {savingCosts ? "Saving..." : "Save Costs"}
+                  </button>
+                </div>
+              )
             )}
           </div>
 

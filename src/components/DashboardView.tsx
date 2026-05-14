@@ -80,14 +80,19 @@ export default function DashboardView({ onNavigate }: Props) {
     weekday: "long", month: "long", day: "numeric",
   });
 
-  const netProfit = stats?.total_profit ?? 0;
+  const profitMtd     = stats?.profit_mtd      ?? 0;
+  const revenueMtd    = stats?.revenue_mtd     ?? 0;
+  const allTimeRev    = stats?.all_time_revenue ?? 0;
+  const allTimeProfit = stats?.all_time_profit  ?? 0;
   const kpis = [
-    { label: "Total Clients",   sub: "in account",          value: stats?.clients ?? 0,                icon: Users,       tab: "clients",   clr: "text-gray-900" },
-    { label: "Total Invoices",  sub: "created all-time",    value: stats?.invoices ?? 0,               icon: FileText,    tab: "invoices",  clr: "text-gray-900" },
-    { label: "Outstanding",     sub: "awaiting payment",    value: fmtAmount(stats?.outstanding ?? 0), icon: DollarSign,  tab: "invoices",  clr: (stats?.outstanding ?? 0) > 0 ? "text-amber-600" : "text-gray-900" },
-    { label: "Revenue YTD",     sub: "collected this year", value: fmtAmount(stats?.paid_ytd ?? 0),    icon: TrendingUp,  tab: "invoices",  clr: "text-gray-900" },
-    { label: "Net Profit",      sub: "from closed deals",   value: fmtAmount(netProfit),               icon: TrendingUp,  tab: "analytics", clr: netProfit >= 0 ? "text-emerald-600" : "text-red-600" },
-    { label: "Active Deals",    sub: "in pipeline",         value: stats?.pipeline_count ?? 0,         icon: FileText,    tab: "dealflow",  clr: "text-gray-900" },
+    { label: "Total Clients",    sub: "in account",          value: stats?.clients ?? 0,                icon: Users,       tab: "clients",   clr: "text-gray-900" },
+    { label: "Outstanding",      sub: "awaiting payment",    value: fmtAmount(stats?.outstanding ?? 0), icon: DollarSign,  tab: "invoices",  clr: (stats?.outstanding ?? 0) > 0 ? "text-amber-600" : "text-gray-900" },
+    { label: "Revenue MTD",      sub: "closed this month",   value: fmtAmount(revenueMtd),              icon: TrendingUp,  tab: "analytics", clr: "text-gray-900" },
+    { label: "Profit MTD",       sub: "closed this month",   value: fmtAmount(profitMtd),               icon: TrendingUp,  tab: "analytics", clr: profitMtd >= 0 ? "text-emerald-600" : "text-red-600" },
+    { label: "All-Time Revenue", sub: "from closed deals",   value: fmtAmount(allTimeRev),              icon: DollarSign,  tab: "analytics", clr: "text-gray-900" },
+    { label: "All-Time Profit",  sub: "from closed deals",   value: fmtAmount(allTimeProfit),           icon: TrendingUp,  tab: "analytics", clr: allTimeProfit >= 0 ? "text-emerald-600" : "text-red-600" },
+    { label: "Deals MTD",        sub: "completed this month", value: stats?.deals_mtd ?? 0,             icon: FileText,    tab: "deals",     clr: "text-gray-900" },
+    { label: "Active Deals",     sub: "in pipeline",         value: stats?.pipeline_count ?? 0,         icon: FileText,    tab: "dealflow",  clr: "text-gray-900" },
   ];
 
   const weekStats = [
@@ -107,17 +112,17 @@ export default function DashboardView({ onNavigate }: Props) {
           <h2 className="text-[17px] font-semibold text-gray-900 tracking-tight">Dashboard</h2>
           <p className="text-[12px] text-gray-400 mt-0.5">{dateStr}</p>
         </div>
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-4 flex-wrap justify-end">
           <div className="text-right">
             <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Outstanding</p>
-            <p className="text-[16px] font-bold text-amber-500 tabular-nums leading-none">
+            <p className="text-[15px] font-bold text-amber-500 tabular-nums leading-none">
               {fmtAmount(stats?.outstanding ?? 0)}
             </p>
           </div>
           <div className="text-right">
-            <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Paid YTD</p>
-            <p className="text-[16px] font-bold text-emerald-500 tabular-nums leading-none">
-              {fmtAmount(stats?.paid_ytd ?? 0)}
+            <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Profit MTD</p>
+            <p className={`text-[15px] font-bold tabular-nums leading-none ${profitMtd >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+              {fmtAmount(profitMtd)}
             </p>
           </div>
           <button
@@ -133,15 +138,15 @@ export default function DashboardView({ onNavigate }: Props) {
       <div className="flex-1 p-6 flex flex-col gap-5">
 
         {/* KPI grid */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
           {kpis.map((k) => (
             <button
               key={k.label}
               onClick={() => onNavigate(k.tab)}
               className="bg-white border border-gray-100 rounded-xl p-4 text-left hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.07)] transition-all duration-200 group"
             >
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2.5">{k.label}</div>
-              <div className={`text-[24px] font-bold tabular-nums leading-none truncate ${k.clr}`}>{k.value}</div>
+              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2.5 truncate">{k.label}</div>
+              <div className={`text-[19px] font-bold tabular-nums leading-none break-all ${k.clr}`}>{k.value}</div>
               <div className="flex items-center gap-1 mt-1.5">
                 <span className="text-[11px] text-gray-400">{k.sub}</span>
                 <ArrowRight size={9} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -190,31 +195,53 @@ export default function DashboardView({ onNavigate }: Props) {
             )}
           </div>
 
-          {/* Top Clients by Profit */}
-          <div className="lg:col-span-2 bg-white border border-gray-100 rounded-xl p-5">
-            <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Top Clients</h3>
-            <p className="text-[11px] text-gray-400 mb-4">Ranked by profit margin</p>
-            {stats?.top_clients_by_profit && stats.top_clients_by_profit.length > 0 ? (
-              <div className="space-y-1">
-                {stats.top_clients_by_profit.slice(0, 6).map((c, i) => (
-                  <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
-                    <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold text-gray-300 flex-shrink-0">
-                      {i + 1}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-gray-900 truncate">{c.name}</div>
-                      <div className="text-[11px] text-gray-400">{fmtAmount(c.total_revenue)} rev</div>
+          {/* Right column: Top Clients + Top Suppliers stacked */}
+          <div className="lg:col-span-2 flex flex-col gap-4">
+
+            {/* Top Clients by Profit */}
+            <div className="bg-white border border-gray-100 rounded-xl p-5 flex-1">
+              <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Top Clients</h3>
+              <p className="text-[11px] text-gray-400 mb-3">Ranked by net profit</p>
+              {stats?.top_clients_by_profit && stats.top_clients_by_profit.length > 0 ? (
+                <div className="space-y-0.5">
+                  {stats.top_clients_by_profit.slice(0, 4).map((c, i) => (
+                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
+                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold text-gray-300 flex-shrink-0">{i + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12px] font-medium text-gray-900 truncate">{c.name}</div>
+                        <div className="text-[10px] text-gray-400">{c.margin.toFixed(1)}% margin</div>
+                      </div>
+                      <div className="text-[12px] font-semibold text-emerald-600 tabular-nums flex-shrink-0">{fmtAmount(c.total_profit)}</div>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-[13px] font-semibold text-emerald-600 tabular-nums">{fmtAmount(c.total_profit)}</div>
-                      <div className="text-[10px] text-gray-400 tabular-nums">{c.margin.toFixed(1)}%</div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[12px] text-gray-400 text-center py-6">No profit data yet</div>
+              )}
+            </div>
+
+            {/* Top Suppliers */}
+            <div className="bg-white border border-gray-100 rounded-xl p-5 flex-1">
+              <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Top Suppliers</h3>
+              <p className="text-[11px] text-gray-400 mb-3">By total spend on closed deals</p>
+              {stats?.top_suppliers && stats.top_suppliers.length > 0 ? (
+                <div className="space-y-0.5">
+                  {stats.top_suppliers.slice(0, 4).map((s, i) => (
+                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
+                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold text-gray-300 flex-shrink-0">{i + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12px] font-medium text-gray-900 truncate">{s.name}</div>
+                        <div className="text-[10px] text-gray-400 truncate">{s.contact_name || `${s.deal_count} deals`}</div>
+                      </div>
+                      <div className="text-[12px] font-semibold text-gray-700 tabular-nums flex-shrink-0">{fmtAmount(s.total_paid)}</div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-[12px] text-gray-400 text-center py-10">No profit data yet</div>
-            )}
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[12px] text-gray-400 text-center py-6">No supplier data yet</div>
+              )}
+            </div>
+
           </div>
         </div>
 

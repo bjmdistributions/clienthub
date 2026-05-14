@@ -2205,6 +2205,21 @@ pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     }
 
     sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
+
+    // Critical: clear is_complete and profit data so the invoice reappears in Deal Flow
+    {
+        let mut inv_cols = Map::new();
+        inv_cols.insert("is_complete".into(), json!(false));
+        inv_cols.insert("profit".into(), Value::Null);
+        inv_cols.insert("total_cost".into(), Value::Null);
+        inv_cols.insert("margin".into(), Value::Null);
+        sync::record_upsert("invoices", &df.invoice_id, inv_cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE invoices SET is_complete=0, profit=NULL, total_cost=NULL, margin=NULL WHERE id=?1",
+            rusqlite::params![df.invoice_id],
+        ).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -2404,7 +2419,25 @@ fn map_supplier_row(r: &rusqlite::Row) -> rusqlite::Result<Supplier> {
 pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount FROM suppliers s ORDER BY s.name"
+        "SELECT s.id, s.name, s.contact_name, s.email, s.phone, s.address,
+                s.payment_method, s.payment_details, s.payment_terms, s.typical_lead_time,
+                s.notes, s.created_at, s.updated_at, COALESCE(s.archived, 0) as archived,
+                COALESCE(stats.total_paid, 0.0) as total_paid,
+                COALESCE(stats.deal_count, 0) as deal_count,
+                stats.last_deal_date,
+                COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount
+         FROM suppliers s
+         LEFT JOIN (
+             SELECT json_extract(sp.value, '$.supplier_id') as sup_id,
+                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) as total_paid,
+                    COUNT(DISTINCT df.id) as deal_count,
+                    MAX(df.completed_at) as last_deal_date,
+                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) / COUNT(DISTINCT df.id) as avg_deal_amount
+             FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+             WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
+             GROUP BY json_extract(sp.value, '$.supplier_id')
+         ) stats ON stats.sup_id = s.id
+         ORDER BY s.name"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_supplier_row).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2414,7 +2447,25 @@ pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
 pub async fn get_supplier(id: String) -> Result<Supplier, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount FROM suppliers s WHERE s.id=?1",
+        "SELECT s.id, s.name, s.contact_name, s.email, s.phone, s.address,
+                s.payment_method, s.payment_details, s.payment_terms, s.typical_lead_time,
+                s.notes, s.created_at, s.updated_at, COALESCE(s.archived, 0) as archived,
+                COALESCE(stats.total_paid, 0.0) as total_paid,
+                COALESCE(stats.deal_count, 0) as deal_count,
+                stats.last_deal_date,
+                COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount
+         FROM suppliers s
+         LEFT JOIN (
+             SELECT json_extract(sp.value, '$.supplier_id') as sup_id,
+                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) as total_paid,
+                    COUNT(DISTINCT df.id) as deal_count,
+                    MAX(df.completed_at) as last_deal_date,
+                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) / COUNT(DISTINCT df.id) as avg_deal_amount
+             FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+             WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
+             GROUP BY json_extract(sp.value, '$.supplier_id')
+         ) stats ON stats.sup_id = s.id
+         WHERE s.id=?1",
         [&id], map_supplier_row,
     ).map_err(|e| e.to_string())
 }
@@ -2989,7 +3040,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
             "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM(df.net_profit),0)
-             FROM deal_flows df WHERE df.stage='complete' AND df.completed_at >= date('now','-6 months') GROUP BY m ORDER BY m"
+             FROM deal_flows df WHERE df.stage='complete' GROUP BY m ORDER BY m"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
@@ -3088,6 +3139,46 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     };
 
     let month_start = format!("{}-01", Utc::now().format("%Y-%m"));
+
+    // MTD revenue and profit (for dashboard month-focus)
+    let revenue_mtd: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        [&month_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let profit_mtd: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        [&month_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let deals_mtd: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        [&month_start], |r| r.get(0)
+    ).unwrap_or(0);
+
+    // Top suppliers by total paid — payments are stored as JSON in deal_flows
+    let top_suppliers: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT json_extract(sp.value, '$.supplier_name') as name,
+                    COALESCE(MAX(s.contact_name), '') as contact_name,
+                    COUNT(DISTINCT df.id) as deal_count,
+                    COALESCE(SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)), 0) as total_paid
+             FROM deal_flows df,
+                  json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+             LEFT JOIN suppliers s ON json_extract(sp.value, '$.supplier_id') = s.id
+             WHERE df.stage = 'complete'
+               AND json_extract(sp.value, '$.supplier_name') IS NOT NULL
+             GROUP BY json_extract(sp.value, '$.supplier_name')
+             ORDER BY total_paid DESC
+             LIMIT 6"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "name":         r.get::<_, String>(0)?,
+            "contact_name": r.get::<_, String>(1)?,
+            "deal_count":   r.get::<_, i64>(2)?,
+            "total_paid":   r.get::<_, f64>(3)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     let loss_deals_this_month: i64 = conn.query_row(
         "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND net_profit < 0",
         [&month_start], |r| r.get(0)
@@ -3095,6 +3186,16 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let loss_total_this_month: f64 = conn.query_row(
         "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND net_profit < 0",
         [&month_start], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    // All-time totals from completed deal flows
+    let all_time_revenue: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete'",
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let all_time_profit: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete'",
+        [], |r| r.get(0)
     ).unwrap_or(0.0);
 
     Ok(json!({
@@ -3118,7 +3219,47 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "top_spenders": top_spenders,
         "loss_deals_this_month": loss_deals_this_month,
         "loss_total_this_month": loss_total_this_month,
+        "revenue_mtd": revenue_mtd,
+        "profit_mtd": profit_mtd,
+        "deals_mtd": deals_mtd,
+        "top_suppliers": top_suppliers,
+        "all_time_revenue": all_time_revenue,
+        "all_time_profit": all_time_profit,
     }))
+}
+
+/// List all deal flows that include a given supplier (matched by supplier_id in JSON).
+#[tauri::command]
+pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT df.id, df.completed_at, df.gross_revenue, df.net_profit, df.stage,
+                i.number as invoice_number, c.name as client_name,
+                (SELECT COALESCE(SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)), 0)
+                 FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+                 WHERE json_extract(sp.value, '$.supplier_id') = ?1) as supplier_amount
+         FROM deal_flows df
+         LEFT JOIN invoices i ON i.id = df.invoice_id
+         LEFT JOIN clients c ON c.id = i.client_id
+         WHERE EXISTS (
+             SELECT 1 FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp2
+             WHERE json_extract(sp2.value, '$.supplier_id') = ?1
+         )
+         ORDER BY df.completed_at DESC, df.created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&supplier_id], |r| {
+        Ok(json!({
+            "id":             r.get::<_,String>(0)?,
+            "completed_at":   r.get::<_,Option<String>>(1)?,
+            "gross_revenue":  r.get::<_,f64>(2)?,
+            "net_profit":     r.get::<_,f64>(3)?,
+            "stage":          r.get::<_,String>(4)?,
+            "invoice_number": r.get::<_,Option<String>>(5)?,
+            "client_name":    r.get::<_,Option<String>>(6)?,
+            "supplier_amount": r.get::<_,f64>(7)?,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
@@ -3136,6 +3277,86 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Return analytics data filtered to [start_date, end_date] (YYYY-MM-DD).
+/// Empty strings mean "no bound" (all-time).
+#[tauri::command]
+pub async fn get_analytics_range(start_date: String, end_date: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let has_start = !start_date.is_empty();
+    let has_end   = !end_date.is_empty();
+
+    // Build WHERE clauses for deal_flows
+    let df_where = match (has_start, has_end) {
+        (true,  true)  => format!("stage='complete' AND date(completed_at)>='{start_date}' AND date(completed_at)<='{end_date}'"),
+        (true,  false) => format!("stage='complete' AND date(completed_at)>='{start_date}'"),
+        (false, true)  => format!("stage='complete' AND date(completed_at)<='{end_date}'"),
+        (false, false) => "stage='complete'".to_string(),
+    };
+
+    let total_revenue: f64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE {df_where}"),
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let total_cost: f64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(total_cost),0) FROM deal_flows WHERE {df_where}"),
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let net_profit: f64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE {df_where}"),
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let avg_margin: f64 = conn.query_row(
+        &format!("SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows WHERE {df_where}"),
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let deal_count: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM deal_flows WHERE {df_where}"),
+        [], |r| r.get(0)
+    ).unwrap_or(0);
+
+    // Monthly buckets for the bar chart
+    let monthly: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            &format!("SELECT strftime('%Y-%m', completed_at) as m, COALESCE(SUM(gross_revenue),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(net_profit),0)
+             FROM deal_flows WHERE {df_where} GROUP BY m ORDER BY m")
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "month": r.get::<_,String>(0)?, "revenue": r.get::<_,f64>(1)?,
+            "cost":  r.get::<_,f64>(2)?,   "profit":  r.get::<_,f64>(3)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // Top clients by profit in range
+    let inv_where = match (has_start, has_end) {
+        (true,  true)  => format!("df2.stage='complete' AND date(df2.completed_at)>='{start_date}' AND date(df2.completed_at)<='{end_date}'"),
+        (true,  false) => format!("df2.stage='complete' AND date(df2.completed_at)>='{start_date}'"),
+        (false, true)  => format!("df2.stage='complete' AND date(df2.completed_at)<='{end_date}'"),
+        (false, false) => "df2.stage='complete'".to_string(),
+    };
+    let top_clients: Vec<Value> = {
+        let mut stmt = conn.prepare(
+            &format!("SELECT c.name, COALESCE(SUM(df2.gross_revenue),0), COALESCE(SUM(df2.net_profit),0),
+                    CASE WHEN COALESCE(SUM(df2.gross_revenue),0)>0 THEN (COALESCE(SUM(df2.net_profit),0)/SUM(df2.gross_revenue))*100 ELSE 0 END
+             FROM deal_flows df2 JOIN invoices i ON i.id=df2.invoice_id JOIN clients c ON c.id=i.client_id
+             WHERE {inv_where}
+             GROUP BY i.client_id, c.name ORDER BY SUM(df2.net_profit) DESC LIMIT 5")
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "name": r.get::<_,String>(0)?, "total_revenue": r.get::<_,f64>(1)?,
+            "total_profit": r.get::<_,f64>(2)?, "margin": r.get::<_,f64>(3)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    Ok(json!({
+        "total_revenue": total_revenue, "total_cost": total_cost,
+        "total_profit": net_profit,     "avg_margin": avg_margin,
+        "deal_count": deal_count,       "monthly_profit": monthly,
+        "top_clients_by_profit": top_clients,
+    }))
+}
+
 // ============================================================
 //  Client Tiers
 // ============================================================
@@ -3151,6 +3372,7 @@ pub struct BuyerTier {
     pub invoices_sent: u32,
     pub last_invoice_date: Option<String>,
     pub purchase_frequency: Option<String>,
+    pub avg_commission_pct: f64,
 }
 
 fn tier_label(s: &str) -> &str {
@@ -3183,6 +3405,21 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Avg commission % (margin) per client from completed deal flows
+    let commission_map: std::collections::HashMap<String, f64> = {
+        let mut stmt = conn.prepare(
+            "SELECT i.client_id,
+                    COALESCE(AVG(CASE WHEN df.gross_revenue > 0 THEN (df.net_profit / df.gross_revenue) * 100 END), 0)
+             FROM deal_flows df
+             JOIN invoices i ON i.id = df.invoice_id
+             WHERE df.stage = 'complete'
+             GROUP BY i.client_id"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     let mut results = Vec::new();
     for (client_id, client_name, metadata_str) in &client_rows {
         let meta: Option<Value> = metadata_str.as_ref().and_then(|s| serde_json::from_str(s).ok());
@@ -3204,11 +3441,13 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 { "C" }
         else { "Prospect" };
 
+        let avg_commission_pct = commission_map.get(client_id).copied().unwrap_or(0.0);
         results.push(BuyerTier {
             client_id: client_id.clone(), client_name: client_name.clone(), tier: tier.into(),
             effective_annual, spend_per_frequency: if spend_raw != "0" && !spend_raw.is_empty() { Some(spend_raw.to_string()) } else { None },
             actual_paid, invoices_sent, last_invoice_date: last_inv,
             purchase_frequency: frequency.map(|s| s.to_string()),
+            avg_commission_pct,
         });
     }
     results.sort_by(|a, b| {
@@ -3303,11 +3542,16 @@ pub struct WeeklyBrief {
 }
 
 #[tauri::command]
-pub async fn generate_weekly_brief() -> Result<WeeklyBrief, String> {
+pub async fn generate_weekly_brief(for_date: Option<String>) -> Result<WeeklyBrief, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now();
 
-    let now_date = Utc::now().date_naive();
+    // Use caller-supplied date or today to anchor the week
+    let anchor: chrono::NaiveDate = match for_date.as_deref() {
+        Some(d) if !d.is_empty() => d.parse().unwrap_or_else(|_| Utc::now().date_naive()),
+        _ => Utc::now().date_naive(),
+    };
+    let now_date = anchor;
     let wd = chrono::Datelike::weekday(&now_date).num_days_from_sunday() as i64;
 
     let week_start = format!("{}", (now_date - chrono::Duration::days(wd)).format("%Y-%m-%d"));

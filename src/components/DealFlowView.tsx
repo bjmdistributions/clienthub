@@ -292,16 +292,23 @@ function DealFlowCard({
   flow, onReload, animDelay,
 }: { flow: DealFlow; onReload: () => void; animDelay: number }) {
   const currentSi = si(flow.stage);
-  const [isOpen,  setIsOpen]  = useState(false); // collapsed by default
-  const [panel,   setPanel]   = useState<Stage>(() => defaultPanel(flow.stage as Stage));
+  const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
+  const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
+  const [invItems,  setInvItems]  = useState<{ description: string; qty: number }[]>([]);
 
   useEffect(() => { setPanel(defaultPanel(flow.stage as Stage)); }, [flow.stage]);
 
-  // Fetch invoice status for the header pill (draft vs sent vs paid etc.)
+  // Fetch invoice status + line items for the header
   useEffect(() => {
     api.getInvoice(flow.invoice_id)
-      .then((inv) => setInvStatus(inv.status))
+      .then((inv) => {
+        setInvStatus(inv.status);
+        try {
+          const li: any[] = JSON.parse(inv.line_items_json || "[]");
+          setInvItems(li.map((it: any) => ({ description: it.description, qty: it.qty })));
+        } catch {}
+      })
       .catch(() => {});
   }, [flow.invoice_id]);
 
@@ -346,14 +353,21 @@ function DealFlowCard({
           ))}
         </div>
 
-        {/* Invoice # + client */}
-        <div className="flex-1 min-w-0 flex items-baseline gap-2">
-          <span className="text-[12px] font-mono text-gray-400 flex-shrink-0">
-            {flow.invoice_number}
-          </span>
-          <span className="text-[14px] font-semibold text-gray-900 truncate">
-            {flow.client_name || "Unknown"}
-          </span>
+        {/* Invoice # + client + item preview */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[12px] font-mono text-gray-400 flex-shrink-0">
+              {flow.invoice_number}
+            </span>
+            <span className="text-[14px] font-semibold text-gray-900 truncate">
+              {flow.client_name || "Unknown"}
+            </span>
+          </div>
+          {invItems.length > 0 && (
+            <div className="text-[11px] text-gray-400 truncate mt-0.5">
+              {invItems.map((it) => it.qty > 1 ? `${it.qty}× ${it.description}` : it.description).join(" · ")}
+            </div>
+          )}
         </div>
 
         {/* Total + invoice status + deal flow stage + chevron */}
@@ -671,27 +685,35 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
                       <button
                         key={s.id}
                         onClick={() => pickSupplier(s)}
-                        className="w-full text-left px-4 py-2.5 text-[13px] text-gray-800
-                                   hover:bg-gray-50 transition-colors first:rounded-t-xl last:rounded-b-xl"
+                        className="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors first:rounded-t-xl last:rounded-b-xl"
                       >
-                        <span className="font-medium">{s.name}</span>
-                        {s.payment_method && (
-                          <span className="text-[12px] text-gray-400 ml-2">· {s.payment_method}</span>
-                        )}
+                        <div className="text-[13px] font-medium text-gray-800">{s.name}</div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {s.contact_name && (
+                            <span className="text-[11px] text-gray-500">{s.contact_name}</span>
+                          )}
+                          {s.payment_method && (
+                            <span className="text-[11px] text-gray-400">· {s.payment_method}</span>
+                          )}
+                        </div>
                       </button>
                     ))}
                   </div>
                 )}
               </div>
 
-              {selSupplier && (selSupplier.payment_method || selSupplier.payment_details) && (
-                <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
-                  {selSupplier.payment_method}
-                  {selSupplier.payment_details ? ` · ${selSupplier.payment_details}` : ""}
+              {selSupplier && (
+                <div className="text-[11px] text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2 space-y-0.5">
+                  {selSupplier.contact_name && (
+                    <div className="font-medium text-indigo-700">{selSupplier.contact_name}</div>
+                  )}
+                  {(selSupplier.payment_method || selSupplier.payment_details) && (
+                    <div>{selSupplier.payment_method}{selSupplier.payment_details ? ` · ${selSupplier.payment_details}` : ""}</div>
+                  )}
                 </div>
               )}
 
-              {/* Invoice items as reference with user's rates */}
+              {/* Invoice items with per-item cost inputs */}
               {items.length > 0 ? (
                 <div className="space-y-2">
                   <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest">Item Costs</div>
@@ -874,13 +896,25 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
   const [saving, setSaving] = useState(false);
   const payments  = flow.supplier_payments || [];
   const isDone    = si(flow.stage) > si("payment_received");
-  const paidCount = payments.filter((p) => p.paid).length;
+  const allPaid   = payments.length > 0 && payments.every((p) => p.paid);
 
-  const toggle = async (p: SupplierPayment) => {
+  // Mark ALL unpaid supplier payments in one shot — one button, one reload
+  const markAllPaid = async () => {
     setSaving(true);
     try {
-      if (p.paid) await api.unmarkSupplierPaymentPaid(flow.id, p.id);
-      else        await api.markSupplierPaymentPaid(flow.id, p.id);
+      const unpaid = payments.filter((p) => !p.paid);
+      await Promise.all(unpaid.map((p) => api.markSupplierPaymentPaid(flow.id, p.id)));
+      onReload();
+    } catch (e: any) { alert(e); }
+    setSaving(false);
+  };
+
+  // Undo: unmark all paid
+  const unmarkAll = async () => {
+    setSaving(true);
+    try {
+      const paid = payments.filter((p) => p.paid);
+      await Promise.all(paid.map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id)));
       onReload();
     } catch (e: any) { alert(e); }
     setSaving(false);
@@ -888,16 +922,7 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <SectionLabel>Supplier Payments</SectionLabel>
-        {payments.length > 0 && (
-          <span className={`text-[11px] font-semibold ${
-            paidCount === payments.length ? "text-emerald-600" : "text-amber-600"
-          }`}>
-            {paidCount} / {payments.length} paid
-          </span>
-        )}
-      </div>
+      <SectionLabel>Supplier Payments</SectionLabel>
 
       {payments.length === 0 ? (
         <p className="text-[12px] text-gray-300">
@@ -905,50 +930,74 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
         </p>
       ) : (
         <div className="space-y-2">
-          {payments.map((p) => (
-            <div
-              key={p.id}
-              className={`flex items-center gap-3 px-3 py-3 rounded-lg border transition-colors ${
-                p.paid
-                  ? "bg-emerald-50/60 border-emerald-100"
-                  : "bg-white border-gray-100"
-              }`}
-            >
-              <button
-                onClick={() => !isDone && toggle(p)}
-                disabled={saving}
-                className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                  p.paid
-                    ? "bg-indigo-600 border-indigo-600 text-white"
-                    : "border-gray-300 hover:border-indigo-400"
-                }`}
-              >
-                {p.paid && <Check size={11} strokeWidth={3} />}
-              </button>
-              <div className="flex-1 min-w-0">
-                <div className={`text-[13px] font-medium truncate ${p.paid ? "line-through text-gray-400" : "text-gray-800"}`}>
-                  {p.supplier_name}
+          {/* Cost breakdown — read-only, shows what was entered per item */}
+          <div className="rounded-lg border border-gray-100 overflow-hidden bg-white">
+            {payments.map((p) => (
+              <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 border-b border-gray-50 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] font-medium text-gray-800 truncate">{p.supplier_name}</div>
+                  {p.quantity != null && p.unit_price != null && (
+                    <div className="text-[11px] text-gray-400 tabular-nums">
+                      {p.quantity} × {fmtAmount(p.unit_price)}
+                    </div>
+                  )}
+                  {p.method && <div className="text-[11px] text-gray-400">{p.method}</div>}
+                  {p.price_changed && p.original_amount != null && (
+                    <div className="flex items-center gap-1 text-[11px] text-amber-600 mt-0.5">
+                      <AlertTriangle size={10} />
+                      Price changed: {fmtAmount(p.original_amount)} → {fmtAmount(p.amount)}
+                    </div>
+                  )}
                 </div>
-                {p.method && <div className="text-[11px] text-gray-400">{p.method}</div>}
-                {p.price_changed && p.original_amount != null && (
-                  <div className="flex items-center gap-1 text-[11px] text-amber-600 mt-0.5">
-                    <AlertTriangle size={10} />
-                    Price changed: {fmtAmount(p.original_amount)} → {fmtAmount(p.amount)}
-                  </div>
-                )}
+                <div className="text-[13px] font-semibold text-gray-900 tabular-nums">
+                  {fmtAmount(p.amount)}
+                </div>
               </div>
-              <div className={`text-[13px] font-semibold tabular-nums ${p.paid ? "text-gray-400" : "text-gray-900"}`}>
-                {fmtAmount(p.amount)}
-              </div>
+            ))}
+            <div className="flex justify-between items-center px-3 py-2 bg-gray-50/60 border-t border-gray-100">
+              <span className="text-[11px] text-gray-400 font-medium">Total supplier cost</span>
+              <span className="text-[13px] font-bold text-gray-900 tabular-nums">
+                {fmtAmount(flow.total_supplier_cost)}
+              </span>
             </div>
-          ))}
-
-          <div className="flex justify-end pt-0.5 text-[12px] text-gray-400">
-            Total:&nbsp;
-            <span className="font-semibold text-gray-700 tabular-nums">
-              {fmtAmount(flow.total_supplier_cost)}
-            </span>
           </div>
+
+          {/* Single action: mark everything paid at once */}
+          {!isDone && (
+            allPaid ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-[13px] text-emerald-600 font-medium">
+                  <CheckCircle2 size={14} />
+                  All supplier payments marked paid
+                </div>
+                <button
+                  onClick={unmarkAll}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-600
+                             px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors"
+                >
+                  <RotateCcw size={11} /> Undo
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={markAllPaid}
+                disabled={saving || payments.length === 0}
+                className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white
+                           px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center"
+              >
+                <Check size={14} strokeWidth={2.5} />
+                Mark Supplier Paid — {fmtAmount(flow.total_supplier_cost)}
+              </button>
+            )
+          )}
+
+          {isDone && (
+            <div className="flex items-center gap-2 text-[13px] text-emerald-600 font-medium">
+              <CheckCircle2 size={14} />
+              Supplier paid — {fmtAmount(flow.total_supplier_cost)}
+            </div>
+          )}
         </div>
       )}
     </div>

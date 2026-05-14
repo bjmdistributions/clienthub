@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Package, Plus, Save, Search, Trash2 } from "lucide-react";
+import { Archive, Package, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronDown, TrendingUp } from "lucide-react";
 import { api, Supplier, SupplierInput, SupplierPriceEntry } from "../lib/api";
+import { fmtAmount } from "../lib/format";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -15,21 +16,21 @@ const emptyInput: SupplierInput = {
   notes: "",
 };
 
-const fmt = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
-
 export default function SuppliersView() {
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [selected, setSelected] = useState<Supplier | null>(null);
-  const [input, setInput] = useState<SupplierInput>(emptyInput);
-  const [history, setHistory] = useState<SupplierPriceEntry[]>([]);
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<"all" | "active" | "archived">("active");
-  const [saving, setSaving] = useState(false);
+  const [suppliers,     setSuppliers]     = useState<Supplier[]>([]);
+  const [selected,      setSelected]      = useState<Supplier | null>(null);
+  const [input,         setInput]         = useState<SupplierInput>(emptyInput);
+  const [history,       setHistory]       = useState<SupplierPriceEntry[]>([]);
+  const [supplierDeals, setSupplierDeals] = useState<any[]>([]);
+  const [dealsOpen,     setDealsOpen]     = useState(false);
+  const [query,         setQuery]         = useState("");
+  const [filter,        setFilter]        = useState<"all" | "active" | "archived">("active");
+  const [saving,        setSaving]        = useState(false);
+  const [showForm,      setShowForm]      = useState(false);
 
   const load = async () => {
     const rows = await api.listSuppliers();
     setSuppliers(rows);
-    if (!selected && rows.length > 0) selectSupplier(rows[0]);
   };
 
   useEffect(() => { load().catch(console.error); }, []);
@@ -37,22 +38,26 @@ export default function SuppliersView() {
   const selectSupplier = async (s: Supplier) => {
     setSelected(s);
     setInput({
-      name: s.name,
-      contact_name: s.contact_name || "",
-      email: s.email || "",
-      phone: s.phone || "",
-      address: s.address || "",
-      payment_method: s.payment_method || "",
-      payment_details: s.payment_details || "",
-      payment_terms: s.payment_terms || "",
+      name:              s.name,
+      contact_name:      s.contact_name      || "",
+      email:             s.email             || "",
+      phone:             s.phone             || "",
+      address:           s.address           || "",
+      payment_method:    s.payment_method    || "",
+      payment_details:   s.payment_details   || "",
+      payment_terms:     s.payment_terms     || "",
       typical_lead_time: s.typical_lead_time || "",
-      notes: s.notes || "",
+      notes:             s.notes             || "",
     });
+    setShowForm(true);
+    setDealsOpen(false);
+    setSupplierDeals([]);
     api.getSupplierPriceHistory(s.id).then(setHistory).catch(() => setHistory([]));
+    api.getDealsForSupplier(s.id).then(setSupplierDeals).catch(() => setSupplierDeals([]));
   };
 
   const filtered = useMemo(() => suppliers.filter((s) => {
-    if (filter === "active" && s.archived) return false;
+    if (filter === "active"   && s.archived)  return false;
     if (filter === "archived" && !s.archived) return false;
     if (!query) return true;
     const q = query.toLowerCase();
@@ -69,6 +74,7 @@ export default function SuppliersView() {
         await api.createSupplier(input);
       }
       await load();
+      setShowForm(false);
     } finally {
       setSaving(false);
     }
@@ -78,100 +84,347 @@ export default function SuppliersView() {
     setSelected(null);
     setInput(emptyInput);
     setHistory([]);
+    setShowForm(true);
   };
 
+  const closeForm = () => { setShowForm(false); setSelected(null); };
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
+    <div className="space-y-5">
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-zinc-900 flex items-center gap-2"><Package size={24} />Suppliers</h1>
-          <p className="text-sm text-zinc-500 mt-1">Contacts, payment details, and pricing history.</p>
+          <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Suppliers</h2>
+          <p className="text-[12px] text-gray-400 mt-0.5">
+            {filtered.length} supplier{filtered.length !== 1 ? "s" : ""}
+          </p>
         </div>
-        <button onClick={createNew} className="flex items-center gap-1.5 px-4 py-2 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-800">
-          <Plus size={15} /> New Supplier
+        <button
+          onClick={createNew}
+          className="flex items-center gap-1.5 px-3 h-9 bg-[#1A1A1E] hover:bg-[#27272B] text-white rounded-lg text-[13px] font-medium transition-colors"
+        >
+          <Plus size={14} /> New Supplier
         </button>
       </div>
 
-      <div className="grid grid-cols-[320px_1fr] gap-5">
-        <aside className="bg-white border border-zinc-200 rounded-xl p-3 h-[calc(100vh-170px)] overflow-hidden flex flex-col">
-          <div className="relative mb-3">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search suppliers..." className="w-full pl-9 pr-3 py-2 text-sm border border-zinc-200 rounded-lg" />
-          </div>
-          <div className="flex gap-1 mb-3">
-            {(["all", "active", "archived"] as const).map((f) => (
-              <button key={f} onClick={() => setFilter(f)} className={`flex-1 px-2 py-1.5 rounded-md text-xs capitalize ${filter === f ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-500"}`}>{f}</button>
-            ))}
-          </div>
-          <div className="overflow-y-auto space-y-2">
-            {filtered.map((s) => (
-              <button key={s.id} onClick={() => selectSupplier(s)} className={`w-full text-left rounded-lg border p-3 ${selected?.id === s.id ? "border-indigo-300 bg-indigo-50" : "border-zinc-100 hover:bg-zinc-50"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-semibold text-sm text-zinc-900 truncate">{s.name}</div>
-                  {s.payment_method && <span className="text-[10px] bg-zinc-100 px-1.5 py-0.5 rounded text-zinc-500">{s.payment_method}</span>}
-                </div>
-                <div className="text-xs text-zinc-400 mt-1 truncate">{s.contact_name || s.phone || "No contact info"}</div>
-                <div className="flex justify-between text-xs text-zinc-500 mt-2"><span>{fmt(s.total_paid)}</span><span>{s.deal_count} deals</span></div>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="bg-white border border-zinc-200 rounded-xl p-5">
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="text-lg font-semibold text-zinc-900">{selected ? selected.name : "New Supplier"}</h2>
-            <button onClick={save} disabled={saving || !input.name.trim()} className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm disabled:opacity-50">
-              <Save size={14} /> {saving ? "Saving..." : "Save"}
+      {/* Search + Filter */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search suppliers or contacts..."
+            className="w-full pl-8 pr-3 h-9 text-[13px] border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+          />
+        </div>
+        <div className="flex gap-1">
+          {(["all", "active", "archived"] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 h-9 rounded-lg text-[12px] font-medium capitalize transition-colors ${
+                filter === f
+                  ? "bg-gray-900 text-white"
+                  : "bg-white border border-gray-200 text-gray-500 hover:border-gray-400"
+              }`}
+            >
+              {f}
             </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Supplier name"><input value={input.name} onChange={(e) => setInput({ ...input, name: e.target.value })} className="input" /></Field>
-            <Field label="Contact name"><input value={input.contact_name || ""} onChange={(e) => setInput({ ...input, contact_name: e.target.value })} className="input" /></Field>
-            <Field label="Email"><input value={input.email || ""} onChange={(e) => setInput({ ...input, email: e.target.value })} className="input" /></Field>
-            <Field label="Phone"><input value={input.phone || ""} onChange={(e) => setInput({ ...input, phone: e.target.value })} className="input" /></Field>
-            <Field label="Payment method"><input value={input.payment_method || ""} onChange={(e) => setInput({ ...input, payment_method: e.target.value })} className="input" /></Field>
-            <Field label="Payment terms"><input value={input.payment_terms || ""} onChange={(e) => setInput({ ...input, payment_terms: e.target.value })} className="input" /></Field>
-            <Field label="Typical lead time"><input value={input.typical_lead_time || ""} onChange={(e) => setInput({ ...input, typical_lead_time: e.target.value })} className="input" /></Field>
-            <Field label="Address"><input value={input.address || ""} onChange={(e) => setInput({ ...input, address: e.target.value })} className="input" /></Field>
-          </div>
-          <Field label="Payment details"><textarea value={input.payment_details || ""} onChange={(e) => setInput({ ...input, payment_details: e.target.value })} rows={3} className="input h-auto py-2" /></Field>
-          <Field label="Notes"><textarea value={input.notes || ""} onChange={(e) => setInput({ ...input, notes: e.target.value })} rows={3} className="input h-auto py-2" /></Field>
-
-          {selected && (
-            <>
-              <div className="grid grid-cols-4 gap-3 my-5">
-                <Stat label="Total paid" value={fmt(selected.total_paid)} />
-                <Stat label="Deals" value={String(selected.deal_count)} />
-                <Stat label="Avg deal" value={fmt(selected.avg_deal_amount)} />
-                <Stat label="Last deal" value={selected.last_deal_date ? new Date(selected.last_deal_date).toLocaleDateString() : "None"} />
-              </div>
-
-              <h3 className="text-sm font-semibold text-zinc-800 mb-2">Price History</h3>
-              <div className="border border-zinc-100 rounded-lg overflow-hidden mb-5">
-                {history.length === 0 ? <div className="p-4 text-sm text-zinc-400">No price history yet.</div> : history.map((h) => (
-                  <div key={h.id} className="grid grid-cols-4 gap-2 px-3 py-2 text-xs border-b last:border-0">
-                    <span>{new Date(h.recorded_at).toLocaleDateString()}</span><span>{h.item_description}</span><span>{h.quantity || "-"}</span><span>{fmt(h.price)}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex gap-2">
-                <button onClick={async () => { await api.archiveSupplier(selected.id); await load(); }} className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border text-zinc-500"><Archive size={13} /> Archive</button>
-                <button onClick={async () => { if (confirm("Delete supplier?")) { await api.deleteSupplier(selected.id); setSelected(null); await load(); } }} className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border text-red-500"><Trash2 size={13} /> Delete</button>
-              </div>
-            </>
-          )}
-        </section>
+          ))}
+        </div>
       </div>
+
+      {/* Grid of supplier cards */}
+      {filtered.length === 0 ? (
+        <div className="text-center py-20">
+          <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
+            <Package size={18} className="text-gray-300" />
+          </div>
+          <p className="text-[14px] font-semibold text-gray-700">No suppliers yet</p>
+          <p className="text-[12px] text-gray-400 mt-1">Add your first supplier to get started</p>
+          <button onClick={createNew} className="mt-3 text-[12px] font-medium text-indigo-600 hover:text-indigo-800">
+            + Add supplier
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {filtered.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => selectSupplier(s)}
+              className={`text-left bg-white border rounded-xl p-4 hover:shadow-[0_4px_14px_rgba(0,0,0,0.07)] transition-all ${
+                selected?.id === s.id && showForm
+                  ? "border-indigo-300 ring-2 ring-indigo-100"
+                  : "border-gray-100 hover:border-gray-200"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-gray-900 truncate">{s.name}</div>
+                  {s.contact_name && (
+                    <div className="text-[11px] text-gray-500 mt-0.5 truncate">{s.contact_name}</div>
+                  )}
+                </div>
+                {s.payment_method && (
+                  <span className="flex-shrink-0 text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-medium">
+                    {s.payment_method}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 text-[10px] text-gray-400 mb-3 flex-wrap">
+                {s.phone && (
+                  <span className="flex items-center gap-1"><Phone size={9} /> {s.phone}</span>
+                )}
+                {s.email && (
+                  <span className="flex items-center gap-1 truncate"><Mail size={9} /> {s.email}</span>
+                )}
+              </div>
+              <div className="flex items-center justify-between border-t border-gray-50 pt-2.5 mt-auto">
+                <div>
+                  <div className="text-[11px] font-bold text-gray-800 tabular-nums">{fmtAmount(s.total_paid)}</div>
+                  <div className="text-[10px] text-gray-400">total paid</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[11px] font-semibold text-gray-700">{s.deal_count}</div>
+                  <div className="text-[10px] text-gray-400">deals</div>
+                </div>
+              </div>
+              {s.archived && (
+                <div className="mt-2 text-[10px] text-amber-600 font-medium">Archived</div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Slide-in detail form */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/20" onClick={closeForm} />
+          <div className="relative bg-white w-full max-w-lg shadow-2xl flex flex-col overflow-y-auto">
+            {/* Form header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10">
+              <div>
+                <h3 className="text-[15px] font-semibold text-gray-900">
+                  {selected ? selected.name : "New Supplier"}
+                </h3>
+                {selected?.contact_name && (
+                  <p className="text-[12px] text-gray-400 mt-0.5">{selected.contact_name}</p>
+                )}
+              </div>
+              <button onClick={closeForm} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex-1 px-6 py-5 space-y-5">
+              {/* Stats row if editing */}
+              {selected && (
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { label: "Total Paid", value: fmtAmount(selected.total_paid) },
+                    { label: "Deals",      value: String(selected.deal_count) },
+                    { label: "Avg Deal",   value: fmtAmount(selected.avg_deal_amount) },
+                    { label: "Last Deal",  value: selected.last_deal_date
+                        ? new Date(selected.last_deal_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                        : "None" },
+                  ].map((st) => (
+                    <div key={st.label} className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                      <div className="text-[9px] uppercase font-semibold text-gray-400 tracking-wider">{st.label}</div>
+                      <div className="text-[13px] font-bold text-gray-800 mt-0.5 tabular-nums">{st.value}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Core info */}
+              <div className="space-y-3">
+                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Supplier Info</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Supplier name *">
+                    <input value={input.name} onChange={(e) => setInput({ ...input, name: e.target.value })} className="field-input" />
+                  </Field>
+                  <Field label="Contact name">
+                    <input value={input.contact_name || ""} onChange={(e) => setInput({ ...input, contact_name: e.target.value })} className="field-input" placeholder="e.g. John Smith" />
+                  </Field>
+                  <Field label="Email">
+                    <input type="email" value={input.email || ""} onChange={(e) => setInput({ ...input, email: e.target.value })} className="field-input" />
+                  </Field>
+                  <Field label="Phone">
+                    <input type="tel" value={input.phone || ""} onChange={(e) => setInput({ ...input, phone: e.target.value })} className="field-input" />
+                  </Field>
+                </div>
+                <Field label="Address">
+                  <input value={input.address || ""} onChange={(e) => setInput({ ...input, address: e.target.value })} className="field-input" placeholder="Street, City, State ZIP" />
+                </Field>
+              </div>
+
+              {/* Payment */}
+              <div className="space-y-3">
+                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Payment</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Payment method">
+                    <input value={input.payment_method || ""} onChange={(e) => setInput({ ...input, payment_method: e.target.value })} className="field-input" placeholder="e.g. Bank Transfer" />
+                  </Field>
+                  <Field label="Payment terms">
+                    <input value={input.payment_terms || ""} onChange={(e) => setInput({ ...input, payment_terms: e.target.value })} className="field-input" placeholder="e.g. Net 30" />
+                  </Field>
+                </div>
+                <Field label="Payment details">
+                  <textarea value={input.payment_details || ""} onChange={(e) => setInput({ ...input, payment_details: e.target.value })} rows={3} className="field-input resize-none" placeholder="Bank account, routing, etc." />
+                </Field>
+              </div>
+
+              {/* Logistics */}
+              <div className="space-y-3">
+                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Logistics</p>
+                <Field label="Typical lead time">
+                  <input value={input.typical_lead_time || ""} onChange={(e) => setInput({ ...input, typical_lead_time: e.target.value })} className="field-input" placeholder="e.g. 3-5 business days" />
+                </Field>
+                <Field label="Notes">
+                  <textarea value={input.notes || ""} onChange={(e) => setInput({ ...input, notes: e.target.value })} rows={3} className="field-input resize-none" />
+                </Field>
+              </div>
+
+              {/* Completed Deals */}
+              {selected && (
+                <div>
+                  <button
+                    onClick={() => setDealsOpen((v) => !v)}
+                    className="w-full flex items-center justify-between text-left"
+                  >
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+                      Completed Deals ({supplierDeals.length})
+                    </p>
+                    <ChevronDown size={13} className={`text-gray-400 transition-transform ${dealsOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {dealsOpen && (
+                    <div className="mt-2 border border-gray-100 rounded-lg overflow-hidden">
+                      {supplierDeals.length === 0 ? (
+                        <div className="px-4 py-6 text-center text-[12px] text-gray-400">
+                          No completed deals with this supplier yet
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-gray-50">
+                          {supplierDeals.map((d: any) => {
+                            const margin = d.gross_revenue > 0
+                              ? ((d.net_profit / d.gross_revenue) * 100).toFixed(1)
+                              : null;
+                            return (
+                              <div key={d.id} className="px-4 py-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="text-[12px] font-medium text-gray-900 truncate">
+                                      {d.client_name || "—"}
+                                    </div>
+                                    <div className="text-[11px] text-gray-400 flex items-center gap-1.5 mt-0.5">
+                                      {d.invoice_number && (
+                                        <span className="font-mono bg-gray-100 px-1 rounded text-gray-600">
+                                          {d.invoice_number}
+                                        </span>
+                                      )}
+                                      {d.completed_at && (
+                                        <span>
+                                          {new Date(d.completed_at).toLocaleDateString("en-US", {
+                                            month: "short", day: "numeric", year: "numeric",
+                                          })}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="text-right flex-shrink-0">
+                                    <div className="text-[12px] font-bold text-gray-800 tabular-nums">
+                                      {fmtAmount(d.supplier_amount)}
+                                    </div>
+                                    {margin !== null && (
+                                      <div className={`text-[10px] tabular-nums font-medium ${
+                                        parseFloat(margin) >= 20 ? "text-emerald-600"
+                                        : parseFloat(margin) >= 0 ? "text-amber-600"
+                                        : "text-red-500"
+                                      }`}>
+                                        {margin}% margin
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Price history */}
+              {selected && history.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Price History</p>
+                  <div className="border border-gray-100 rounded-lg overflow-hidden">
+                    <div className="grid grid-cols-4 px-3 py-2 bg-gray-50 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+                      <span>Date</span><span>Item</span><span>Qty</span><span>Price</span>
+                    </div>
+                    {history.map((h) => (
+                      <div key={h.id} className="grid grid-cols-4 px-3 py-2 text-[12px] border-t border-gray-50">
+                        <span className="text-gray-500">{new Date(h.recorded_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                        <span className="text-gray-700 truncate">{h.item_description}</span>
+                        <span className="text-gray-500">{h.quantity || "—"}</span>
+                        <span className="font-medium text-gray-800 tabular-nums">{fmtAmount(h.price)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer actions */}
+            <div className="sticky bottom-0 bg-white border-t border-gray-100 px-6 py-4 flex items-center gap-2">
+              <button
+                onClick={save}
+                disabled={saving || !input.name.trim()}
+                className="flex-1 flex items-center justify-center gap-1.5 h-10 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              >
+                <Save size={14} /> {saving ? "Saving…" : "Save Supplier"}
+              </button>
+              {selected && (
+                <>
+                  <button
+                    onClick={async () => { await api.archiveSupplier(selected.id); await load(); closeForm(); }}
+                    className="flex items-center gap-1.5 h-10 px-3 border border-gray-200 text-gray-500 hover:bg-gray-50 rounded-lg text-[12px] transition-colors"
+                  >
+                    <Archive size={13} /> Archive
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (confirm("Permanently delete this supplier?")) {
+                        await api.deleteSupplier(selected.id);
+                        await load();
+                        closeForm();
+                      }
+                    }}
+                    className="flex items-center gap-1.5 h-10 px-3 border border-red-100 text-red-500 hover:bg-red-50 rounded-lg text-[12px] transition-colors"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="block mb-4"><span className="block text-xs text-zinc-500 mb-1.5">{label}</span>{children}</label>;
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return <div className="bg-zinc-50 border border-zinc-100 rounded-lg p-3"><div className="text-[10px] uppercase text-zinc-400 font-semibold">{label}</div><div className="text-sm font-bold text-zinc-800 mt-1">{value}</div></div>;
+  return (
+    <label className="block">
+      <span className="block text-[11px] text-gray-500 mb-1">{label}</span>
+      {children}
+    </label>
+  );
 }

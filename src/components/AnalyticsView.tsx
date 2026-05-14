@@ -71,35 +71,73 @@ function useCountUp(target: number, duration = 900) {
   return val;
 }
 
+// ─── Date presets ─────────────────────────────────────────────────
+const today = new Date().toISOString().slice(0, 10);
+const firstDayOfMonth = today.slice(0, 7) + "-01";
+const firstDayOfYear  = today.slice(0, 4) + "-01-01";
+const PRESETS = [
+  { label: "All Time",    start: "", end: "" },
+  { label: "This Year",   start: firstDayOfYear, end: today },
+  { label: "This Month",  start: firstDayOfMonth, end: today },
+] as const;
+
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
-  const [stats,   setStats]   = useState<DashboardStats | null>(null);
-  const [tiers,   setTiers]   = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [bars,    setBars]    = useState(false); // triggers width-transition bars
+  const [stats,     setStats]     = useState<DashboardStats | null>(null);
+  const [rangeData, setRangeData] = useState<any | null>(null);
+  const [tiers,     setTiers]     = useState<any[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [bars,      setBars]      = useState(false);
+  const [preset,    setPreset]    = useState<string>("All Time");
+  const [startDate, setStartDate] = useState("");
+  const [endDate,   setEndDate]   = useState("");
 
   // All hooks unconditionally before early returns
-  const aRevenue     = useCountUp(stats?.paid_ytd         ?? 0);
-  const aProfit      = useCountUp(stats?.total_profit      ?? 0);
-  const aMargin      = useCountUp(
-    stats && stats.paid_ytd > 0 ? (stats.total_profit / stats.paid_ytd) * 100 : 0
-  );
-  const aOutstanding = useCountUp(stats?.outstanding       ?? 0, 750);
-  const aInvoices    = useCountUp(stats?.invoices          ?? 0, 700);
+  const displayStats = rangeData ?? stats;
+  const aRevenue     = useCountUp(displayStats?.total_revenue ?? displayStats?.paid_ytd ?? 0);
+  const aProfit      = useCountUp(displayStats?.total_profit  ?? 0);
+  const aMargin      = useCountUp(displayStats?.avg_margin    ?? 0);
+  const aOutstanding = useCountUp(stats?.outstanding          ?? 0, 750);
+  const aInvoices    = useCountUp(stats?.invoices             ?? 0, 700);
+
+  const loadRange = async (start: string, end: string) => {
+    setBars(false);
+    try {
+      const r = await api.getAnalyticsRange(start, end);
+      setRangeData(r);
+    } catch {}
+    setTimeout(() => setBars(true), 120);
+  };
+
+  const applyPreset = (p: typeof PRESETS[number]) => {
+    setPreset(p.label);
+    setStartDate(p.start);
+    setEndDate(p.end);
+    loadRange(p.start, p.end);
+  };
+
+  const applyCustomRange = () => {
+    setPreset("Custom");
+    loadRange(startDate, endDate);
+  };
 
   const load = async () => {
     setLoading(true);
     setBars(false);
     try {
-      const [s, t] = await Promise.all([api.dashboardStats(), api.buyerTiers()]);
+      const [s, t, r] = await Promise.all([
+        api.dashboardStats(),
+        api.buyerTiers(),
+        api.getAnalyticsRange("", ""), // all-time by default
+      ]);
       setStats(s);
       setTiers(t);
+      setRangeData(r);
     } catch {}
     setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
-  // Trigger bar animations shortly after data renders
   useEffect(() => {
     if (!loading && stats) setTimeout(() => setBars(true), 120);
   }, [loading, stats]);
@@ -114,9 +152,10 @@ export default function AnalyticsView() {
   );
 
   // ── Derived ───────────────────────────────────────────────────
-  const monthly = stats.monthly_profit.map((m) => ({
+  const monthlySource = rangeData?.monthly_profit ?? stats.monthly_profit;
+  const monthly = monthlySource.map((m: any) => ({
     ...m,
-    month: new Date(m.month + "-01").toLocaleDateString("en-US", { month: "short" }),
+    month: new Date(m.month + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
   }));
 
   const tierMap  = tiers.reduce((acc: Record<string, number>, t: any) => {
@@ -133,16 +172,54 @@ export default function AnalyticsView() {
     <div className="space-y-4">
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Analytics</h2>
           <p className="text-[12px] text-gray-400 mt-0.5">Business performance overview</p>
         </div>
-        <button onClick={load}
-          className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-700
-                     px-2.5 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-          <RefreshCw size={13} /> Refresh
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Preset pills */}
+          {PRESETS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => applyPreset(p)}
+              className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
+                preset === p.label
+                  ? "bg-indigo-600 text-white"
+                  : "bg-white border border-gray-200 text-gray-500 hover:border-indigo-400 hover:text-indigo-600"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+          {/* Custom range */}
+          <div className="flex items-center gap-1.5">
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="border border-gray-200 h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            />
+            <span className="text-[11px] text-gray-400">to</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="border border-gray-200 h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            />
+            <button
+              onClick={applyCustomRange}
+              className="px-3 h-8 bg-white border border-gray-200 rounded-lg text-[12px] text-gray-500 hover:border-indigo-400 hover:text-indigo-600 transition-colors"
+            >
+              Apply
+            </button>
+          </div>
+          <button onClick={load}
+            className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-700
+                       px-2.5 h-8 rounded-lg hover:bg-gray-100 transition-colors border border-gray-200">
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── KPI row ──────────────────────────────────────────────
@@ -157,16 +234,16 @@ export default function AnalyticsView() {
                         animate-fade-up [animation-fill-mode:backwards]
                         hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
           <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-3">
-            Revenue YTD
+            Revenue {preset === "All Time" ? "All Time" : preset}
           </div>
           <div className="text-[32px] font-bold text-indigo-600 tabular-nums leading-none tracking-tight">
             {fmtAmount(aRevenue)}
           </div>
-          <div className="text-[11px] text-gray-300 mt-2">Total collected &amp; billed</div>
+          <div className="text-[11px] text-gray-300 mt-2">Total closed deal revenue</div>
         </div>
 
         <StatCard label="Net Profit"   delay={65}
-          color={stats.total_profit >= 0 ? CLR.emerald : CLR.rose}>
+          color={(displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose}>
           {fmtAmount(aProfit)}
         </StatCard>
 
@@ -210,7 +287,7 @@ export default function AnalyticsView() {
                 radius={[4, 4, 0, 0]} maxBarSize={40} />
               <Bar dataKey="profit"  name="Profit"
                 radius={[4, 4, 0, 0]} maxBarSize={40}>
-                {monthly.map((m, i) => (
+                {monthly.map((m: any, i: number) => (
                   <Cell key={i} fill={m.profit >= 0 ? CLR.emerald : CLR.rose} />
                 ))}
               </Bar>
@@ -415,9 +492,9 @@ export default function AnalyticsView() {
           <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Most Profitable</h3>
           <p className="text-[11px] text-gray-400 mb-5">By net profit margin</p>
 
-          {stats.top_clients_by_profit.length > 0 ? (
+          {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).length > 0 ? (
             <div>
-              {stats.top_clients_by_profit.map((c, i) => (
+              {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).map((c: any, i: number) => (
                 <div key={i} className="py-3 border-b border-gray-50 last:border-0">
                   <div className="flex items-start justify-between mb-2">
                     <div className="min-w-0 flex-1">

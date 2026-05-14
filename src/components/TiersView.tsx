@@ -124,6 +124,7 @@ export default function TiersView() {
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Spend / Freq.</th>
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Actually Paid</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Invoices</th>
+              <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Avg Margin</th>
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Frequency</th>
             </tr>
           </thead>
@@ -145,12 +146,25 @@ export default function TiersView() {
                   {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "—"}
                 </td>
                 <td className="px-5 py-3 text-center text-[13px] text-gray-600 tabular-nums">{t.invoices_sent}</td>
+                <td className="px-5 py-3 text-right">
+                  {t.avg_commission_pct > 0 ? (
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tabular-nums ${
+                      t.avg_commission_pct >= 25 ? "bg-emerald-50 text-emerald-700"
+                      : t.avg_commission_pct >= 10 ? "bg-amber-50 text-amber-700"
+                      : "bg-red-50 text-red-600"
+                    }`}>
+                      {t.avg_commission_pct.toFixed(1)}%
+                    </span>
+                  ) : (
+                    <span className="text-[12px] text-gray-300">—</span>
+                  )}
+                </td>
                 <td className="px-5 py-3 text-[12px] text-gray-400 capitalize">{t.purchase_frequency || "—"}</td>
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-5 py-16 text-center">
+                <td colSpan={7} className="px-5 py-16 text-center">
                   <Layers size={24} className="text-gray-200 mx-auto mb-2" />
                   <p className="text-[13px] text-gray-400">No clients in this tier</p>
                 </td>

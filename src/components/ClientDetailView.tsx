@@ -119,14 +119,25 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
               </span>
               {tier && (
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-2 ${
-                  tier.tier === "S" ? "bg-indigo-100 text-indigo-700" :
-                  tier.tier === "A" ? "bg-emerald-100 text-emerald-700" :
-                  tier.tier === "B" ? "bg-amber-100 text-amber-700" :
-                  "bg-gray-100 text-gray-500"
-                }`}>
-                  Tier: {tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect"}
-                </span>
+                <>
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-2 ${
+                    tier.tier === "S" ? "bg-indigo-100 text-indigo-700" :
+                    tier.tier === "A" ? "bg-emerald-100 text-emerald-700" :
+                    tier.tier === "B" ? "bg-amber-100 text-amber-700" :
+                    "bg-gray-100 text-gray-500"
+                  }`}>
+                    Tier: {tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect"}
+                  </span>
+                  {tier.avg_commission_pct > 0 && (
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-1 ${
+                      tier.avg_commission_pct >= 25 ? "bg-emerald-50 text-emerald-700" :
+                      tier.avg_commission_pct >= 10 ? "bg-amber-50 text-amber-700" :
+                      "bg-red-50 text-red-600"
+                    }`}>
+                      {tier.avg_commission_pct.toFixed(1)}% avg margin
+                    </span>
+                  )}
+                </>
               )}
             </div>
             <div className="flex gap-4 mt-3">

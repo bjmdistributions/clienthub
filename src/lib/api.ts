@@ -404,6 +404,7 @@ export interface BuyerTier {
   invoices_sent: number;
   last_invoice_date: string | null;
   purchase_frequency: string | null;
+  avg_commission_pct: number;
 }
 
 export interface CustomerHealth {
@@ -570,6 +571,12 @@ export interface DashboardStats {
   top_spenders: { name: string; company: string | null; invoice_count: number; total_spent: number; total_profit: number; last_invoice: string | null }[];
   loss_deals_this_month: number;
   loss_total_this_month: number;
+  revenue_mtd: number;
+  profit_mtd: number;
+  deals_mtd: number;
+  top_suppliers: { name: string; contact_name: string; deal_count: number; total_paid: number }[];
+  all_time_revenue: number;
+  all_time_profit: number;
 }
 
 export interface SyncStatus {
@@ -766,7 +773,7 @@ export const api = {
   getCustomerHealth: (clientId: string) => invoke<CustomerHealth>("get_customer_health", { clientId }),
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),
-  generateWeeklyBrief: () => invoke<WeeklyBrief>("generate_weekly_brief"),
+  generateWeeklyBrief: (forDate?: string | null) => invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null }),
   pipelineAnalytics: (timeframeDays?: number) => invoke<PipelineAnalytics>("pipeline_analytics", { timeframeDays }),
   detectDuplicateClients: () => invoke<DuplicateGroup[]>("detect_duplicate_clients"),
   cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),
@@ -819,6 +826,8 @@ export const api = {
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
   getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number }[]>("get_monthly_profit", { month }),
+  getAnalyticsRange: (startDate: string, endDate: string) => invoke<any>("get_analytics_range", { startDate, endDate }),
+  getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),
   dueFollowups: () => invoke<Client[]>("due_followups"),
 
   // CSV import
