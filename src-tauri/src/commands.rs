@@ -658,6 +658,8 @@ pub struct Invoice {
     pub pickup_date: Option<String>,
     pub delivery_date: Option<String>,
     pub is_complete: bool,
+    pub deal_flow_id: Option<String>,
+    pub deal_flow_stage: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -675,7 +677,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete
+            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage
              FROM invoices ORDER BY issue_date DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -691,6 +693,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
                 carrier: r.get(17)?, tracking_number: r.get(18)?,
                 shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
                 delivery_date: r.get(21)?, is_complete: r.get(22)?,
+                deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -701,7 +704,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
 pub async fn get_invoice(id: String) -> Result<Invoice, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage
          FROM invoices WHERE id=?1",
         [&id],
         |r| Ok(Invoice {
@@ -714,6 +717,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
             carrier: r.get(17)?, tracking_number: r.get(18)?,
             shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
             delivery_date: r.get(21)?, is_complete: r.get(22)?,
+            deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
         }),
     ).map_err(|e| e.to_string())
 }
@@ -722,7 +726,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
 pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage
          FROM invoices WHERE client_id=?1 ORDER BY issue_date DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([client_id], |r| {
@@ -736,6 +740,7 @@ pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>,
             carrier: r.get(17)?, tracking_number: r.get(18)?,
             shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
             delivery_date: r.get(21)?, is_complete: r.get(22)?,
+            deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2914,21 +2919,21 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let total_cost: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE status='paid'",
+            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE is_complete=1",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let total_profit: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE status='paid'",
+            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE is_complete=1",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let avg_margin: f64 = conn
         .query_row(
-            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE status='paid' AND profit IS NOT NULL",
+            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE is_complete=1 AND profit IS NOT NULL",
             [],
             |r| r.get(0),
         )
@@ -2937,7 +2942,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
             "SELECT strftime('%Y-%m', issue_date) as m, COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(profit),0)
-             FROM invoices WHERE status='paid' AND issue_date >= date('now','-6 months') GROUP BY m ORDER BY m"
+             FROM invoices WHERE is_complete=1 AND issue_date >= date('now','-6 months') GROUP BY m ORDER BY m"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
@@ -3074,7 +3079,7 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT date(issue_date) as d, COALESCE(SUM(profit),0)
-         FROM invoices WHERE status='paid' AND strftime('%Y-%m', issue_date) = ?1
+         FROM invoices WHERE is_complete=1 AND strftime('%Y-%m', issue_date) = ?1
          GROUP BY d ORDER BY d"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&month], |r| {

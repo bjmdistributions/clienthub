@@ -27,20 +27,27 @@ function flowStageSi(stage?: string | null): number {
   return FLOW_STAGES.indexOf(stage);
 }
 
-// Small 4-dot progress indicator for deal flow
+const FLOW_LABELS = ["Invoiced", "Payment In", "Supplier Paid", "Complete"];
+
+// 4-dot deal flow progress indicator
 function FlowDots({ stage }: { stage?: string | null }) {
-  if (!stage) return null;
-  const cur = flowStageSi(stage);
-  const colors = ["bg-indigo-500", "bg-amber-400", "bg-violet-500", "bg-emerald-500"];
+  const colors    = ["bg-indigo-500", "bg-amber-400", "bg-violet-500", "bg-emerald-500"];
+  const cur       = flowStageSi(stage ?? null);
+  const label     = cur >= 0 ? FLOW_LABELS[cur] : "No flow";
   return (
-    <div className="flex items-center gap-0.5 ml-2">
+    <div
+      className="flex items-center gap-0.5 ml-2"
+      title={`Deal flow: ${label}`}
+    >
       {FLOW_STAGES.map((_, i) => (
         <div
           key={i}
           className={`rounded-full transition-all ${
-            i <= cur
-              ? `w-2 h-2 ${colors[i]}`
-              : "w-1.5 h-1.5 bg-gray-200"
+            cur < 0
+              ? "w-1.5 h-1.5 bg-gray-100"           // no flow yet — faint grey
+              : i <= cur
+              ? `w-2 h-2 ${colors[i]}`               // completed step
+              : "w-1.5 h-1.5 bg-gray-200"            // future step
           }`}
         />
       ))}

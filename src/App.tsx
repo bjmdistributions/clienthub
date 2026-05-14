@@ -96,7 +96,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard",  icon: LayoutDashboard },
     { id: "clients",   label: "Clients",    icon: Users },
     { id: "health",    label: "Tiers",      icon: Layers },
-    { id: "deals",     label: "Closeout",   icon: Briefcase },
+    { id: "deals",     label: "Completed",  icon: Briefcase },
     { id: "analytics", label: "Analytics",  icon: BarChart3 },
     { id: "invoices",  label: "Invoices",   icon: FileText },
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
-  DollarSign, CheckCircle2,
+  DollarSign, CheckCircle2, Truck,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, ProfitSplit,
@@ -17,7 +17,7 @@ type Stage = typeof STAGES[number];
 function si(s: string): number { return STAGES.indexOf(s as Stage); }
 
 const NODE_LABELS: Record<Stage, string> = {
-  invoiced:         "Invoice Sent",
+  invoiced:         "Invoiced",
   payment_received: "Payment In",
   supplier_paid:    "Supplier Paid",
   complete:         "Complete",
@@ -46,18 +46,36 @@ export default function DealFlowView() {
     setLoading(true);
     try {
       let [f, inv] = await Promise.all([api.listDealFlows(), api.listInvoices()]);
-      // Auto-create deal flows for any sent (non-draft, non-complete) invoice without one
-      const missing = inv.filter(
-        (i) =>
-          !["draft"].includes(i.status.toLowerCase()) &&
-          !i.is_complete &&
-          !f.some((fl) => fl.invoice_id === i.id)
+
+      // Deduplicate: keep only one flow per invoice_id (the most-progressed one).
+      // This handles stale duplicate records that may exist in the DB.
+      const deduped = Object.values(
+        f.reduce<Record<string, DealFlow>>((acc, fl) => {
+          const prev = acc[fl.invoice_id];
+          if (!prev || si(fl.stage) > si(prev.stage)) acc[fl.invoice_id] = fl;
+          return acc;
+        }, {})
       );
+
+      // Auto-create deal flows for ALL invoices that aren't already complete —
+      // includes drafts so invoices and deal flow stay fully in sync.
+      const coveredIds = new Set(deduped.map((fl) => fl.invoice_id));
+      const missing = inv.filter((i) => !i.is_complete && !coveredIds.has(i.id));
       if (missing.length > 0) {
         await Promise.all(missing.map((i) => api.createDealFlow(i.id, null, i.number)));
-        f = await api.listDealFlows();
+        const fresh = await api.listDealFlows();
+        // Re-deduplicate after creation
+        const freshDeduped = Object.values(
+          fresh.reduce<Record<string, DealFlow>>((acc, fl) => {
+            const prev = acc[fl.invoice_id];
+            if (!prev || si(fl.stage) > si(prev.stage)) acc[fl.invoice_id] = fl;
+            return acc;
+          }, {})
+        );
+        setFlows(freshDeduped);
+      } else {
+        setFlows(deduped);
       }
-      setFlows(f);
       setInvoices(inv);
     } catch (e) {
       console.error(e);
@@ -82,10 +100,11 @@ export default function DealFlowView() {
 
   // An active deal flow must have a corresponding invoice that is still live
   // (not is_complete, not draft). This prevents stale flows from counting.
+  // Active = any invoice not yet marked complete (drafts included — all invoices track through deal flow)
   const isInvoiceActive = (flow: DealFlow) => {
     const inv = invoices.find((i) => i.id === flow.invoice_id);
     if (!inv) return false;
-    return !inv.is_complete && !["draft"].includes(inv.status.toLowerCase());
+    return !inv.is_complete;
   };
 
   const active    = flows.filter(
@@ -259,27 +278,47 @@ function Stat({ label, value, clr = "text-gray-900" }: { label: string; value: s
 }
 
 // ─── Deal flow card ───────────────────────────────────────────────────────
+function invoiceStatusPill(status: string | undefined): { label: string; cls: string } {
+  const s = (status ?? "").toLowerCase();
+  if (s === "draft")           return { label: "Draft",   cls: "bg-gray-100 text-gray-500" };
+  if (s === "sent")            return { label: "Sent",    cls: "bg-blue-50 text-blue-600" };
+  if (s === "deposit_pending") return { label: "Sent",    cls: "bg-blue-50 text-blue-600" };
+  if (s === "paid")            return { label: "Paid",    cls: "bg-emerald-50 text-emerald-700" };
+  if (s === "overdue")         return { label: "Overdue", cls: "bg-red-50 text-red-600" };
+  return { label: status ?? "—", cls: "bg-gray-100 text-gray-500" };
+}
+
 function DealFlowCard({
   flow, onReload, animDelay,
 }: { flow: DealFlow; onReload: () => void; animDelay: number }) {
   const currentSi = si(flow.stage);
   const [isOpen,  setIsOpen]  = useState(false); // collapsed by default
   const [panel,   setPanel]   = useState<Stage>(() => defaultPanel(flow.stage as Stage));
+  const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
 
   useEffect(() => { setPanel(defaultPanel(flow.stage as Stage)); }, [flow.stage]);
+
+  // Fetch invoice status for the header pill (draft vs sent vs paid etc.)
+  useEffect(() => {
+    api.getInvoice(flow.invoice_id)
+      .then((inv) => setInvStatus(inv.status))
+      .catch(() => {});
+  }, [flow.invoice_id]);
 
   const clickNode = (key: Stage) => {
     if (si(key) > currentSi + 1) return;
     setPanel((prev) => (prev === key ? defaultPanel(flow.stage as Stage) : key));
   };
 
-  // Stage pill color
+  // Deal flow stage pill color
   const stagePill: Record<Stage, string> = {
     invoiced:         "bg-blue-50 text-blue-600",
     payment_received: "bg-amber-50 text-amber-600",
     supplier_paid:    "bg-violet-50 text-violet-600",
     complete:         "bg-emerald-50 text-emerald-600",
   };
+
+  const invPill = invoiceStatusPill(invStatus);
 
   return (
     <div
@@ -317,14 +356,21 @@ function DealFlowCard({
           </span>
         </div>
 
-        {/* Total + stage + chevron */}
-        <div className="flex items-center gap-3 flex-shrink-0">
+        {/* Total + invoice status + deal flow stage + chevron */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-[13px] font-semibold text-gray-700 tabular-nums">
             {fmtAmount(flow.invoice_total)}
           </span>
-          <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
-            {NODE_LABELS[flow.stage as Stage]}
+          {/* Invoice status — tells you where the invoice actually is */}
+          <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full ${invPill.cls}`}>
+            {invPill.label}
           </span>
+          {/* Deal flow stage — only show if it goes beyond step 1 */}
+          {flow.stage !== "invoiced" && (
+            <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
+              {NODE_LABELS[flow.stage as Stage]}
+            </span>
+          )}
           <ChevronDown size={14} className={`text-gray-400 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
         </div>
       </button>
@@ -910,30 +956,61 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
 }
 
 // ─── Panel 4: Complete deal ───────────────────────────────────────────────
+type ShippingHold = "idle" | "asking" | "shipping";
+
 function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
-  const [split,  setSplit]  = useState<ProfitSplit | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [split,        setSplit]        = useState<ProfitSplit | null>(null);
+  const [saving,       setSaving]       = useState(false);
+  const [shipHold,     setShipHold]     = useState<ShippingHold>("idle");
+  // Shipping form fields
+  const [carrier,      setCarrier]      = useState("");
+  const [tracking,     setTracking]     = useState("");
+  const [pickupDate,   setPickupDate]   = useState("");
+  const [deliveryDate, setDeliveryDate] = useState("");
 
   useEffect(() => { api.getProfitSplit().then(setSplit).catch(() => {}); }, []);
 
   const canComplete = flow.stage === "payment_received" || flow.stage === "supplier_paid";
   const isComplete  = flow.stage === "complete";
-  const gross  = isComplete ? flow.gross_revenue          : flow.payment_received_amount;
-  const cost   = isComplete ? flow.total_cost             : flow.total_supplier_cost;
+  const gross  = isComplete ? flow.gross_revenue       : flow.payment_received_amount;
+  const cost   = isComplete ? flow.total_cost          : flow.total_supplier_cost;
   const profit = gross - cost;
   const margin = gross > 0 ? (profit / gross) * 100 : 0;
 
-  const handleComplete = async () => {
+  const runComplete = async () => {
+    setSaving(true);
+    try {
+      const result = await api.completeDealFlow(flow.id, "none");
+      if (result.is_loss && result.warning) alert(result.warning);
+      onReload();
+    } catch (e: any) { alert(e); }
+    setSaving(false);
+  };
+
+  const handleCompleteClick = () => {
     if (profit < 0) {
       const ok = confirm(
         `Warning: This deal is at a loss.\n\nRevenue: ${fmtAmount(gross)}\nCosts: ${fmtAmount(cost)}\nLoss: ${fmtAmount(profit)}\n\nMark complete anyway?`
       );
       if (!ok) return;
     }
+    setShipHold("asking");
+  };
+
+  const handleCompleteNow = () => { setShipHold("idle"); runComplete(); };
+
+  const handleShippingComplete = async () => {
     setSaving(true);
     try {
-      const result = await api.completeDealFlow(flow.id, "none");
-      if (result.is_loss && result.warning) alert(result.warning);
+      // Save shipping info first
+      await api.saveInvoiceShipping(flow.invoice_id, {
+        carrier:          carrier   || undefined,
+        tracking_number:  tracking  || undefined,
+        pickup_date:      pickupDate   || undefined,
+        delivery_date:    deliveryDate || undefined,
+        is_complete:      true,
+      });
+      await api.completeDealFlow(flow.id, "none");
       onReload();
     } catch (e: any) { alert(e); }
     setSaving(false);
@@ -952,8 +1029,8 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       {/* P&L grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {[
-          { label: "Revenue", value: fmtAmount(gross),           clr: "text-gray-900"   },
-          { label: "Costs",   value: fmtAmount(cost),            clr: "text-gray-900"   },
+          { label: "Revenue", value: fmtAmount(gross), clr: "text-gray-900" },
+          { label: "Costs",   value: fmtAmount(cost),  clr: "text-gray-900" },
           {
             label: profit >= 0 ? "Profit" : "Loss",
             value: fmtAmount(profit),
@@ -975,12 +1052,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       {/* Profit split preview */}
       {split && isComplete && profit > 0 && (
         <div className="bg-white border border-gray-100 rounded-xl px-4 py-3">
-          <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Profit Split</div>
+          <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">
+            Profit Split
+          </div>
           <div className="flex gap-6">
             {[
-              { name: split.jack_name, val: flow.profit_jack     },
-              { name: split.ben_name,  val: flow.profit_ben      },
-              { name: "Business",      val: flow.profit_business  },
+              { name: split.jack_name, val: flow.profit_jack    },
+              { name: split.ben_name,  val: flow.profit_ben     },
+              { name: "Business",      val: flow.profit_business },
             ].map((item) => (
               <div key={item.name}>
                 <div className="text-[11px] text-gray-400">{item.name}</div>
@@ -993,17 +1072,127 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         </div>
       )}
 
-      {canComplete && (
+      {/* ── Complete action area ── */}
+      {canComplete && shipHold === "idle" && (
         <button
-          onClick={handleComplete}
+          onClick={handleCompleteClick}
           disabled={saving}
           className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-10 rounded-lg
                      text-[14px] font-medium disabled:opacity-40 transition-colors"
         >
-          {saving ? "Completing…" : "Complete Deal"}
+          Complete Deal
         </button>
       )}
 
+      {/* Step A: shipping question */}
+      {canComplete && shipHold === "asking" && (
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2 text-[13px] font-semibold text-amber-800">
+            <Truck size={15} className="text-amber-500" />
+            Does this deal require shipping?
+          </div>
+          <p className="text-[12px] text-amber-700">
+            If items are being shipped, hold here and track the shipment before closing out.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShipHold("shipping")}
+              className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white
+                         px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+            >
+              <Truck size={13} /> Yes, track shipping
+            </button>
+            <button
+              onClick={handleCompleteNow}
+              disabled={saving}
+              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white
+                         px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+            >
+              <Check size={13} /> No, complete now
+            </button>
+            <button
+              onClick={() => setShipHold("idle")}
+              className="text-[13px] text-gray-400 hover:text-gray-600 px-3 h-9
+                         hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step B: shipping form — hold until confirmed */}
+      {canComplete && shipHold === "shipping" && (
+        <div className="bg-white border border-amber-100 rounded-xl p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Truck size={14} className="text-amber-500" />
+            <span className="text-[13px] font-semibold text-gray-800">Shipping Hold</span>
+            <span className="ml-auto text-[11px] text-amber-600 bg-amber-50 border border-amber-100
+                             px-2 py-0.5 rounded-full font-medium">
+              Awaiting delivery
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] text-gray-500 font-medium mb-1">Carrier</label>
+              <input
+                className={inp}
+                placeholder="FedEx, UPS…"
+                value={carrier}
+                onChange={(e) => setCarrier(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500 font-medium mb-1">Tracking #</label>
+              <input
+                className={inp}
+                placeholder="Tracking number"
+                value={tracking}
+                onChange={(e) => setTracking(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500 font-medium mb-1">Pickup Date</label>
+              <input
+                type="date"
+                className={inp}
+                value={pickupDate}
+                onChange={(e) => setPickupDate(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500 font-medium mb-1">Delivery Date</label>
+              <input
+                type="date"
+                className={inp}
+                value={deliveryDate}
+                onChange={(e) => setDeliveryDate(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={handleShippingComplete}
+              disabled={saving}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white
+                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+            >
+              <Check size={13} /> Confirm Delivery & Complete
+            </button>
+            <button
+              onClick={() => setShipHold("idle")}
+              className="text-[13px] text-gray-400 hover:text-gray-600 px-3 h-9
+                         hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Completed state */}
       {isComplete && (
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-[12px] text-emerald-600 font-medium">
@@ -1015,10 +1204,10 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <button
             onClick={handleUndo}
             disabled={saving}
-            className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-600
-                       px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors"
+            className="flex items-center gap-1.5 text-[12px] text-amber-600 hover:text-amber-800
+                       px-2.5 py-1 rounded-lg hover:bg-amber-50 border border-amber-200 transition-colors"
           >
-            <RotateCcw size={11} /> Undo
+            <RotateCcw size={11} /> Undo Complete
           </button>
         </div>
       )}
