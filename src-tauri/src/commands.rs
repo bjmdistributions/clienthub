@@ -1921,12 +1921,67 @@ pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> R
     Ok(())
 }
 
+/// Shared helper: wipe completion data from a deal_flow + its invoice.
+/// Called when cascading an undo back through the 'complete' stage.
+fn clear_completion(df: &DealFlow, id: &str, now: &str) -> Result<(), String> {
+    let mut cols = Map::new();
+    cols.insert("completed_at".into(), Value::Null);
+    cols.insert("gross_revenue".into(), json!(0));
+    cols.insert("net_profit".into(), json!(0));
+    cols.insert("total_cost".into(), json!(0));
+    cols.insert("profit_jack".into(), json!(0));
+    cols.insert("profit_ben".into(), json!(0));
+    cols.insert("profit_business".into(), json!(0));
+    cols.insert("updated_at".into(), Value::String(now.to_string()));
+    sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET completed_at=NULL, gross_revenue=0, net_profit=0, total_cost=0, \
+             profit_jack=0, profit_ben=0, profit_business=0, updated_at=?1 WHERE id=?2",
+            rusqlite::params![now, id],
+        ).map_err(|e| e.to_string())?;
+    }
+    let mut inv_cols = Map::new();
+    inv_cols.insert("is_complete".into(), json!(false));
+    inv_cols.insert("profit".into(), Value::Null);
+    inv_cols.insert("total_cost".into(), Value::Null);
+    inv_cols.insert("margin".into(), Value::Null);
+    sync::record_upsert("invoices", &df.invoice_id, inv_cols).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE invoices SET is_complete=0, profit=NULL, total_cost=NULL, margin=NULL WHERE id=?1",
+            rusqlite::params![df.invoice_id],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn unmark_payment_received(id: String) -> Result<(), String> {
     let df = read_df(&id)?;
-    if df.stage != "payment_received" { return Err("Can only unmark from 'payment_received' stage".into()); }
+    // Nothing to undo — already at the earliest stage
+    if df.stage == "invoiced" { return Ok(()); }
 
     let now = Utc::now().to_rfc3339();
+
+    // Cascade: if complete, wipe completion data first
+    if df.stage == "complete" {
+        clear_completion(&df, &id, &now)?;
+    }
+
+    // Cascade: if supplier_paid or complete, unmark all supplier payments
+    if df.stage == "supplier_paid" || df.stage == "complete" {
+        let mut payments = df.supplier_payments.clone();
+        for p in payments.iter_mut() {
+            p.paid = false;
+            p.paid_at = None;
+        }
+        write_sp(&id, &payments, &df.invoice_id)?;
+    }
+
+    // Reset payment fields and stage → invoiced
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("invoiced".into()));
     cols.insert("payment_received_amount".into(), json!(0));
@@ -1934,7 +1989,6 @@ pub async fn unmark_payment_received(id: String) -> Result<(), String> {
     cols.insert("payment_received_at".into(), Value::Null);
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
-
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
@@ -2098,8 +2152,14 @@ pub async fn mark_supplier_payment_paid(id: String, payment_id: String) -> Resul
 #[tauri::command]
 pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Result<(), String> {
     let df = read_df(&id)?;
-    if df.stage != "supplier_paid" && df.stage != "payment_received" {
-        return Err("Cannot unmark from current stage".into());
+    // No supplier payments can be paid if still at 'invoiced' stage
+    if df.stage == "invoiced" { return Ok(()); }
+
+    let now = Utc::now().to_rfc3339();
+
+    // Cascade: if complete, wipe completion data first so the deal re-opens
+    if df.stage == "complete" {
+        clear_completion(&df, &id, &now)?;
     }
 
     let mut payments = df.supplier_payments.clone();
@@ -2109,8 +2169,8 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
 
     write_sp(&id, &payments, &df.invoice_id)?;
 
-    if df.stage == "supplier_paid" {
-        let now = Utc::now().to_rfc3339();
+    // If we came from supplier_paid or complete, step back to payment_received
+    if df.stage == "supplier_paid" || df.stage == "complete" {
         let mut cols = Map::new();
         cols.insert("stage".into(), Value::String("payment_received".into()));
         cols.insert("updated_at".into(), Value::String(now.clone()));
@@ -2190,7 +2250,7 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
 #[tauri::command]
 pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     let df = read_df(&id)?;
-    if df.stage != "complete" { return Err("Can only uncomplete from 'complete' stage".into()); }
+    if df.stage != "complete" { return Ok(()); } // Already not complete — nothing to undo
 
     let now = Utc::now().to_rfc3339();
     let mut cols = Map::new();
