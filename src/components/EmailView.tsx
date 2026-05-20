@@ -9,7 +9,7 @@ import {
 type Mode = "inbox" | "compose" | "drafts" | "newsletter";
 
 export default function EmailView() {
-  const [mode, setMode] = useState<Mode>("inbox");
+  const [mode, setMode] = useState<Mode>("newsletter");
   const [emails, setEmails] = useState<ParsedEmail[]>([]);
   const [selected, setSelected] = useState<ParsedEmail | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -49,7 +49,7 @@ export default function EmailView() {
 
       {/* Underline tabs */}
       <div className="flex gap-0 border-b border-gray-200 mb-5">
-        {(["inbox", "drafts", "compose", "newsletter"] as const).map((m) => {
+        {(["newsletter", "inbox", "drafts", "compose"] as const).map((m) => {
           const icons = { inbox: Inbox, drafts: FileEdit, compose: Mail, newsletter: Megaphone };
           const labels = { inbox: "Inbox", drafts: "Drafts", compose: "Compose", newsletter: "Newsletter" };
           const Icon = icons[m];
