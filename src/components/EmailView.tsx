@@ -494,6 +494,7 @@ function NewsletterTab() {
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
   const [templates, setTemplates] = useState<Newsletter[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [previewIdx, setPreviewIdx] = useState(0);
   const [allCategories, setAllCategories] = useState<Category[]>([]);
   const [recipientCategoryFilter, setRecipientCategoryFilter] = useState<string | null>(null);
@@ -584,6 +585,17 @@ function NewsletterTab() {
   const loadTemplate = (nl: Newsletter) => {
     setSubject(nl.subject);
     setBody(nl.body);
+  };
+
+  const deleteTemplate = async (t: Newsletter) => {
+    if (!confirm(`Delete template "${t.subject || "Untitled"}"? This cannot be undone.`)) return;
+    const prev = templates;
+    setTemplates(prev.filter((x) => x.id !== t.id));
+    try {
+      await api.deleteNewsletter(t.id);
+    } catch {
+      setTemplates(prev);
+    }
   };
 
   const handleSend = async () => {
@@ -764,6 +776,34 @@ function NewsletterTab() {
                 Reset default
               </button>
             </div>
+
+            {templates.filter((t) => t.status === "draft").length > 0 && (
+              <div className="mb-2">
+                <button onClick={() => setShowTemplates(!showTemplates)}
+                  className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 w-full mb-1">
+                  <ChevronDown size={11} className={`transition-transform ${showTemplates ? "rotate-180" : ""}`} />
+                  Saved Templates ({templates.filter((t) => t.status === "draft").length})
+                </button>
+                {showTemplates && (
+                  <div className="space-y-0.5 max-h-[140px] overflow-y-auto">
+                    {templates.filter((t) => t.status === "draft").map((t) => (
+                      <div key={t.id}
+                        className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-gray-50 group cursor-pointer transition-colors"
+                        onClick={() => loadTemplate(t)}>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-medium text-gray-800 truncate">{t.subject || "Untitled"}</div>
+                          <div className="text-[10px] text-gray-400">{new Date(t.created_at).toLocaleDateString()}</div>
+                        </div>
+                        <button onClick={(e) => { e.stopPropagation(); deleteTemplate(t); }}
+                          className="text-gray-300 hover:text-red-500 p-1 rounded hover:bg-red-50 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex-shrink-0">
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-3 mb-2 text-[12px] text-gray-500">
               <button onClick={insertPlaceholder} className="text-indigo-600 hover:text-indigo-800 font-medium bg-indigo-50 px-2 py-0.5 rounded">
