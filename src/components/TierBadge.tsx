@@ -14,33 +14,33 @@ const TIER_CONFIG: Record<string, {
   S: {
     label: "Diamond",
     glyph: "◆",
-    bg: "linear-gradient(135deg, rgba(99,102,241,0.13) 0%, rgba(139,92,246,0.13) 100%)",
-    border: "rgba(139,92,246,0.3)",
-    color: "#6D28D9",
-    shadow: "0 0 14px rgba(99,102,241,0.2), inset 0 1px 0 rgba(255,255,255,0.15)",
+    bg: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(251,191,36,0.14) 100%)",
+    border: "rgba(245,158,11,0.35)",
+    color: "#92400E",
+    shadow: "0 0 12px rgba(245,158,11,0.2), inset 0 1px 0 rgba(255,255,255,0.15)",
   },
   A: {
     label: "Gold",
     glyph: "★",
-    bg: "linear-gradient(135deg, rgba(245,158,11,0.11) 0%, rgba(251,191,36,0.11) 100%)",
-    border: "rgba(245,158,11,0.3)",
-    color: "#B45309",
-    shadow: "0 0 10px rgba(245,158,11,0.15), inset 0 1px 0 rgba(255,255,255,0.1)",
+    bg: "linear-gradient(135deg, rgba(99,102,241,0.1) 0%, rgba(129,140,248,0.1) 100%)",
+    border: "rgba(99,102,241,0.28)",
+    color: "#4338CA",
+    shadow: "0 0 8px rgba(99,102,241,0.12), inset 0 1px 0 rgba(255,255,255,0.1)",
   },
   B: {
     label: "Silver",
     glyph: "●",
-    bg: "linear-gradient(135deg, rgba(100,116,139,0.09) 0%, rgba(148,163,184,0.09) 100%)",
-    border: "rgba(148,163,184,0.3)",
-    color: "#475569",
+    bg: "linear-gradient(135deg, rgba(16,185,129,0.1) 0%, rgba(52,211,153,0.1) 100%)",
+    border: "rgba(16,185,129,0.28)",
+    color: "#047857",
     shadow: "inset 0 1px 0 rgba(255,255,255,0.08)",
   },
   C: {
     label: "Bronze",
     glyph: "○",
-    bg: "linear-gradient(135deg, rgba(120,53,15,0.08) 0%, rgba(180,83,9,0.08) 100%)",
-    border: "rgba(180,83,9,0.22)",
-    color: "#92400E",
+    bg: "linear-gradient(135deg, rgba(249,115,22,0.1) 0%, rgba(251,146,60,0.1) 100%)",
+    border: "rgba(249,115,22,0.25)",
+    color: "#C2410C",
     shadow: "none",
   },
   Prospect: {
@@ -48,13 +48,21 @@ const TIER_CONFIG: Record<string, {
     glyph: "·",
     bg: "rgba(249,250,251,1)",
     border: "rgba(209,213,219,1)",
-    color: "#9CA3AF",
+    color: "#6B7280",
+    shadow: "none",
+  },
+  New: {
+    label: "New",
+    glyph: "✦",
+    bg: "rgba(249,250,251,1)",
+    border: "rgba(209,213,219,1)",
+    color: "#6B7280",
     shadow: "none",
   },
 };
 
 export default function TierBadge({ tier, size = "md" }: TierBadgeProps) {
-  const cfg = TIER_CONFIG[tier] ?? TIER_CONFIG["Prospect"];
+  const cfg = TIER_CONFIG[tier] ?? TIER_CONFIG["New"];
 
   return (
     <span

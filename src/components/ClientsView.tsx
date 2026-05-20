@@ -416,7 +416,7 @@ export default function ClientsView() {
             <tr className="border-b border-gray-50">
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Name</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Company</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Status</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Tier</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Email</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Phone</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Category</th>
@@ -439,7 +439,6 @@ export default function ClientsView() {
                     <span className="flex items-center gap-1.5">
                       {c.name}
                       {c.needs_review && <AlertCircle size={13} className="text-amber-400 flex-shrink-0" />}
-                      {bt && bt.tier !== "Prospect" && <TierBadge tier={bt.tier} size="sm" />}
                       {!c.email && <Mail size={10} className="text-gray-200 flex-shrink-0" />}
                       {!c.phone && <Phone size={10} className="text-gray-200 flex-shrink-0" />}
                       {!c.street_address && <MapPin size={10} className="text-gray-200 flex-shrink-0" />}
@@ -448,13 +447,7 @@ export default function ClientsView() {
                   </td>
                   <td className="px-4 py-3 text-[13px] text-gray-500">{c.company || "—"}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    <select
-                      className={`text-[10px] font-semibold px-2.5 py-1 rounded-full cursor-pointer appearance-none ${statusColor(c.lead_status)}`}
-                      value={c.lead_status}
-                      onChange={async (e) => { await api.updateClientStatus(c.id, e.target.value); applyFilter(filter); }}
-                    >
-                      {LEAD_STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                    </select>
+                    <TierBadge tier={bt ? bt.tier : "New"} size="sm" />
                   </td>
                   <td className="px-4 py-3 text-[12px] text-gray-500">{c.email || "—"}</td>
                   <td className="px-4 py-3 text-[12px] text-gray-500">{c.phone || "—"}</td>
