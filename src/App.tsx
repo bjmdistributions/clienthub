@@ -101,7 +101,7 @@ export default function App() {
     { id: "invoices",  label: "Invoices",   icon: FileText },
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
     { id: "suppliers", label: "Suppliers",  icon: Package },
-    { id: "email",     label: "AI Email",   icon: Mail },
+    { id: "email",     label: "Newsletter", icon: Mail },
     { id: "brief",     label: "Brief",      icon: FileText },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];

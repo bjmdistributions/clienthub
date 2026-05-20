@@ -44,7 +44,7 @@ export default function EmailView() {
     <div>
       {/* Header */}
       <div className="flex justify-between items-center mb-1">
-        <h2 className="text-[18px] font-semibold text-gray-900">AI Email</h2>
+        <h2 className="text-[18px] font-semibold text-gray-900">Newsletter</h2>
       </div>
 
       {/* Underline tabs */}
