@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, DashboardStats, Client, Invoice, BuyerTier } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtCompactCurrency, fmtFullAmount } from "../lib/format";
 import {
   Users, FileText, DollarSign, TrendingUp, Mail,
   ArrowRight, CheckCircle2, Clock, ChevronLeft, ChevronRight, Package,
@@ -19,6 +19,14 @@ const invStatusColor = (s: string) => {
   if (lo === "overdue") return "bg-red-100 text-red-800";
   return "bg-gray-100 text-gray-700";
 };
+
+function CompactAmount({ value }: { value: number }) {
+  return (
+    <span title={fmtFullAmount(value)} style={{ cursor: "help" }}>
+      {fmtCompactCurrency(value)}
+    </span>
+  );
+}
 
 export default function DashboardView({ onNavigate }: Props) {
   const [stats, setStats]             = useState<DashboardStats | null>(null);
@@ -86,17 +94,17 @@ export default function DashboardView({ onNavigate }: Props) {
   const allTimeProfit = stats?.all_time_profit  ?? 0;
   const kpis = [
     { label: "Total Clients",    sub: "in account",          value: stats?.clients ?? 0,                icon: Users,       tab: "clients",   clr: "text-gray-900" },
-    { label: "Outstanding",      sub: "awaiting payment",    value: fmtAmount(stats?.outstanding ?? 0), icon: DollarSign,  tab: "invoices",  clr: (stats?.outstanding ?? 0) > 0 ? "text-amber-600" : "text-gray-900" },
-    { label: "Revenue MTD",      sub: "closed this month",   value: fmtAmount(revenueMtd),              icon: TrendingUp,  tab: "analytics", clr: "text-gray-900" },
-    { label: "Profit MTD",       sub: "closed this month",   value: fmtAmount(profitMtd),               icon: TrendingUp,  tab: "analytics", clr: profitMtd >= 0 ? "text-emerald-600" : "text-red-600" },
-    { label: "All-Time Revenue", sub: "from closed deals",   value: fmtAmount(allTimeRev),              icon: DollarSign,  tab: "analytics", clr: "text-gray-900" },
-    { label: "All-Time Profit",  sub: "from closed deals",   value: fmtAmount(allTimeProfit),           icon: TrendingUp,  tab: "analytics", clr: allTimeProfit >= 0 ? "text-emerald-600" : "text-red-600" },
+    { label: "Outstanding",      sub: "awaiting payment",    value: <CompactAmount value={stats?.outstanding ?? 0} />, icon: DollarSign,  tab: "invoices",  clr: (stats?.outstanding ?? 0) > 0 ? "text-amber-600" : "text-gray-900" },
+    { label: "Revenue MTD",      sub: "closed this month",   value: <CompactAmount value={revenueMtd} />,              icon: TrendingUp,  tab: "analytics", clr: "text-gray-900" },
+    { label: "Profit MTD",       sub: "closed this month",   value: <CompactAmount value={profitMtd} />,               icon: TrendingUp,  tab: "analytics", clr: profitMtd >= 0 ? "text-emerald-600" : "text-red-600" },
+    { label: "All-Time Revenue", sub: "from closed deals",   value: <CompactAmount value={allTimeRev} />,              icon: DollarSign,  tab: "analytics", clr: "text-gray-900" },
+    { label: "All-Time Profit",  sub: "from closed deals",   value: <CompactAmount value={allTimeProfit} />,           icon: TrendingUp,  tab: "analytics", clr: allTimeProfit >= 0 ? "text-emerald-600" : "text-red-600" },
     { label: "Deals MTD",        sub: "completed this month", value: stats?.deals_mtd ?? 0,             icon: FileText,    tab: "deals",     clr: "text-gray-900" },
     { label: "Active Deals",     sub: "in pipeline",         value: stats?.pipeline_count ?? 0,         icon: FileText,    tab: "dealflow",  clr: "text-gray-900" },
   ];
 
   const weekStats = [
-    { label: "Revenue",       value: fmtAmount(stats?.revenue_this_week ?? 0), color: "text-emerald-600" },
+    { label: "Revenue",       value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "text-emerald-600" },
     { label: "New Clients",   value: String(stats?.clients_this_week ?? 0),    color: "text-indigo-600" },
     { label: "Interactions",  value: String(stats?.interactions_this_week ?? 0), color: "text-violet-600" },
   ];
@@ -116,13 +124,13 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="text-right">
             <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Outstanding</p>
             <p className="text-[15px] font-bold text-amber-500 tabular-nums leading-none">
-              {fmtAmount(stats?.outstanding ?? 0)}
+              <CompactAmount value={stats?.outstanding ?? 0} />
             </p>
           </div>
           <div className="text-right">
             <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Profit MTD</p>
             <p className={`text-[15px] font-bold tabular-nums leading-none ${profitMtd >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-              {fmtAmount(profitMtd)}
+              <CompactAmount value={profitMtd} />
             </p>
           </div>
           <button
@@ -182,7 +190,7 @@ export default function DashboardView({ onNavigate }: Props) {
                   <YAxis tick={{ fontSize: 10, fill: "#9CA3AF" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ background: "#1A1A1E", border: "none", borderRadius: 8, color: "#fff", fontSize: 12 }}
-                    formatter={(v: any) => [fmtAmount(Number(v) || 0), "Profit"]}
+                    formatter={(v: any) => [fmtFullAmount(Number(v) || 0), "Profit"]}
                     cursor={{ stroke: "#E5E7EB", strokeWidth: 1 }}
                   />
                   <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: "#10b981", strokeWidth: 0 }} />
@@ -211,7 +219,7 @@ export default function DashboardView({ onNavigate }: Props) {
                         <div className="text-[12px] font-medium text-gray-900 truncate">{c.name}</div>
                         <div className="text-[10px] text-gray-400">{c.margin.toFixed(1)}% margin</div>
                       </div>
-                      <div className="text-[12px] font-semibold text-emerald-600 tabular-nums flex-shrink-0">{fmtAmount(c.total_profit)}</div>
+                      <div className="text-[12px] font-semibold text-emerald-600 tabular-nums flex-shrink-0"><CompactAmount value={c.total_profit} /></div>
                     </div>
                   ))}
                 </div>
@@ -233,7 +241,7 @@ export default function DashboardView({ onNavigate }: Props) {
                         <div className="text-[12px] font-medium text-gray-900 truncate">{s.name}</div>
                         <div className="text-[10px] text-gray-400 truncate">{s.contact_name || `${s.deal_count} deals`}</div>
                       </div>
-                      <div className="text-[12px] font-semibold text-gray-700 tabular-nums flex-shrink-0">{fmtAmount(s.total_paid)}</div>
+                      <div className="text-[12px] font-semibold text-gray-700 tabular-nums flex-shrink-0"><CompactAmount value={s.total_paid} /></div>
                     </div>
                   ))}
                 </div>
@@ -306,7 +314,7 @@ export default function DashboardView({ onNavigate }: Props) {
                           </span>
                         </td>
                         <td className="px-5 py-3 text-right text-[13px] font-bold text-gray-900 tabular-nums">
-                          {fmtAmount(inv.total)}
+                          <CompactAmount value={inv.total} />
                         </td>
                       </tr>
                     ))}
@@ -353,7 +361,7 @@ export default function DashboardView({ onNavigate }: Props) {
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-red-500">Loss Deals This Month</div>
                 <div className="mt-1 flex items-end justify-between">
                   <div className="text-[22px] font-bold text-red-700">{stats?.loss_deals_this_month}</div>
-                  <div className="text-[14px] font-semibold text-red-700">{fmtAmount(stats?.loss_total_this_month ?? 0)}</div>
+                  <div className="text-[14px] font-semibold text-red-700"><CompactAmount value={stats?.loss_total_this_month ?? 0} /></div>
                 </div>
               </div>
             )}
@@ -368,7 +376,7 @@ export default function DashboardView({ onNavigate }: Props) {
                       <div className="min-w-0 flex-1">
                         <div className="text-[12px] font-medium text-gray-900 truncate">{h.client_name}</div>
                         <div className="text-[10px] text-gray-400 mt-0.5">
-                          {h.actual_paid > 0 ? fmtAmount(h.actual_paid) : "No purchases yet"}
+                          {h.actual_paid > 0 ? <CompactAmount value={h.actual_paid} /> : "No purchases yet"}
                         </div>
                       </div>
                       <TierBadge tier={h.tier} size="sm" />
