@@ -21,9 +21,12 @@ const invStatusColor = (s: string) => {
 };
 
 function CompactAmount({ value }: { value: number }) {
+  const full = fmtFullAmount(value);
+  const compact = fmtCompactCurrency(value);
+  if (full === compact) return <>{compact}</>;
   return (
-    <span title={fmtFullAmount(value)} style={{ cursor: "help" }}>
-      {fmtCompactCurrency(value)}
+    <span className="compact-amount group" data-tip={full}>
+      {compact}
     </span>
   );
 }

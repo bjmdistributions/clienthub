@@ -138,7 +138,54 @@ button:not(:disabled):active {
   border-radius: 6px;
 }
 
-/* Stagger helpers — apply alongside animate-fade-up */
+/* Compact currency tooltip */
+.compact-amount {
+  position: relative;
+  cursor: help;
+}
+.compact-amount::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.96);
+  background: #1A1A1E;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 7px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 50;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.compact-amount::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: #1A1A1E;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 50;
+}
+.compact-amount:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+}
+.compact-amount:hover::before {
+  opacity: 1;
+}
+
+@media print {
+  .compact-amount::after, .compact-amount::before { display: none; }
+}
 .stagger-1  { animation-delay:  60ms !important; animation-fill-mode: backwards !important; }
 .stagger-2  { animation-delay: 120ms !important; animation-fill-mode: backwards !important; }
 .stagger-3  { animation-delay: 180ms !important; animation-fill-mode: backwards !important; }
