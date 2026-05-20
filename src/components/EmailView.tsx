@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from "react";
-import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category } from "../lib/api";
+import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
-  Users, X, Search, ChevronDown, Eye, Megaphone, CheckCircle2, Paperclip,
+  Users, X, Search, ChevronDown, Eye, Megaphone, CheckCircle2, Paperclip, Clock,
 } from "lucide-react";
 
 type Mode = "inbox" | "compose" | "drafts" | "newsletter";
@@ -491,7 +491,9 @@ function NewsletterTab() {
   const [aiLoading, setAiLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendProgress, setSendProgress] = useState("");
-  const [sendResult, setSendResult] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
+  const [sendResult, setSendResult] = useState<NewsletterSendResult | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [showErrors, setShowErrors] = useState(false);
   const [templates, setTemplates] = useState<Newsletter[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -501,6 +503,12 @@ function NewsletterTab() {
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null);
   const [attachmentSearch, setAttachmentSearch] = useState("");
   const [manualEmail, setManualEmail] = useState("");
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [scheduleInterval, setScheduleInterval] = useState(0);
+  const [scheduleCustomDate, setScheduleCustomDate] = useState("");
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduledSends, setScheduledSends] = useState<ScheduledSend[]>([]);
+  const [showScheduled, setShowScheduled] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const defaultSubject = "Update from ClientHub";
@@ -510,8 +518,11 @@ function NewsletterTab() {
     api.listClients().then(setClients);
     api.listCategories().then(setAllCategories);
     api.listNewsletters().then(setTemplates);
+    api.listScheduledSends().then(setScheduledSends);
     if (!subject && !body) { setSubject(defaultSubject); setBody(defaultBody); }
   }, []);
+
+  const activeScheduled = scheduledSends.filter((s) => s.status === "pending" || s.status === "running");
 
   const categoryLabels = allCategories.map((c) => c.label);
   const validRecipients = selected.filter((c) => c.email);
@@ -603,6 +614,8 @@ function NewsletterTab() {
     if (!confirm(`Send to ${count} recipient${count !== 1 ? "s" : ""}? Each will receive an individual email. This cannot be undone.`)) return;
     setSending(true);
     setSendResult(null);
+    setSendError(null);
+    setShowErrors(false);
     setSendProgress("Sending...");
     try {
       const nl = await api.saveNewsletter(null, subject, body);
@@ -612,8 +625,57 @@ function NewsletterTab() {
       api.listNewsletters().then(setTemplates);
     } catch (e: any) {
       setSendProgress("");
-      alert(e);
+      setSendError(String(e));
     } finally { setSending(false); }
+  };
+
+  const handleSchedule = async () => {
+    if (validRecipients.length === 0 || !subject.trim() || !body.trim()) return;
+    setScheduling(true);
+    setSendError(null);
+    try {
+      const now = new Date();
+      let intervalSeconds: number;
+      let scheduledAt: string;
+
+      if (scheduleInterval === 0) {
+        intervalSeconds = 0;
+        scheduledAt = now.toISOString();
+      } else if (scheduleInterval === -1) {
+        const parsed = new Date(scheduleCustomDate);
+        if (isNaN(parsed.getTime())) { setSendError("Invalid date"); setScheduling(false); return; }
+        if (parsed <= new Date(now.getTime() + 60000)) { setSendError("Must be at least 1 minute in the future"); setScheduling(false); return; }
+        intervalSeconds = Math.max(3600, Math.floor((parsed.getTime() - now.getTime()) / 1000));
+        scheduledAt = parsed.toISOString();
+      } else {
+        intervalSeconds = scheduleInterval;
+        scheduledAt = now.toISOString();
+      }
+
+      await api.scheduleNewsletterSend(
+        subject, body, validRecipients.map((c) => c.id),
+        intervalSeconds, scheduledAt, attachmentPath,
+      );
+      setShowSchedule(false);
+      api.listScheduledSends().then(setScheduledSends);
+      api.listNewsletters().then(setTemplates);
+      startNew();
+    } catch (e: any) {
+      setSendError(String(e));
+    } finally { setScheduling(false); }
+  };
+
+  const handleCancelScheduled = async (id: string) => {
+    try {
+      await api.cancelScheduledSend(id);
+      api.listScheduledSends().then(setScheduledSends);
+    } catch (e: any) {
+      setSendError(String(e));
+    }
+  };
+
+  const refreshScheduledSends = () => {
+    api.listScheduledSends().then(setScheduledSends);
   };
 
   const startNew = () => {
@@ -623,7 +685,11 @@ function NewsletterTab() {
     setAttachmentPath(null);
     setAiPrompt("");
     setSendResult(null);
+    setSendError(null);
+    setShowErrors(false);
     setShowHistory(false);
+    setShowSchedule(false);
+    setScheduleInterval(0);
     setPreviewIdx(0);
   };
 
@@ -923,9 +989,87 @@ function NewsletterTab() {
             {sending ? sendProgress : `Send ${validRecipients.length} emails`}
           </button>
 
+          <button
+            onClick={() => setShowSchedule(!showSchedule)}
+            disabled={validRecipients.length === 0 || !subject.trim() || !body.trim()}
+            className="w-full mt-2 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 rounded-md text-[13px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+            style={{ height: 36 }}
+          >
+            <Clock size={14} />
+            Schedule send
+          </button>
+
+          {showSchedule && (
+            <div className="mt-2 border border-gray-200 rounded-md p-3 bg-gray-50 space-y-2">
+              <div className="text-[12px] font-medium text-gray-700 mb-1">When should this send?</div>
+              {[
+                { val: 0, label: "Now" },
+                { val: 3600, label: "Over 1 hour · ~" + Math.ceil(validRecipients.length / 60) + "/min" },
+                { val: 7200, label: "Over 2 hours · ~" + Math.ceil(validRecipients.length / 120) + "/min" },
+                { val: 14400, label: "Over 4 hours · ~" + Math.ceil(validRecipients.length / 240) + "/min" },
+              ].map((opt) => (
+                <label key={opt.val} className="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
+                  <input type="radio" checked={scheduleInterval === opt.val} onChange={() => setScheduleInterval(opt.val)} className="accent-indigo-600" />
+                  {opt.label}
+                </label>
+              ))}
+              <label className="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
+                <input type="radio" checked={scheduleInterval === -1} onChange={() => setScheduleInterval(-1)} className="accent-indigo-600" />
+                Custom
+              </label>
+              {scheduleInterval === -1 && (
+                <input type="datetime-local" value={scheduleCustomDate} onChange={(e) => setScheduleCustomDate(e.target.value)}
+                  className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px]" />
+              )}
+              <button onClick={handleSchedule} disabled={scheduling}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
+                {scheduling ? "Scheduling..." : "Schedule"}
+              </button>
+            </div>
+          )}
+
+          {activeScheduled.length > 0 && (
+            <div className="mt-3 border border-gray-200 rounded-md p-3 bg-blue-50 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-medium text-blue-800">Scheduled Sends</span>
+                <button onClick={refreshScheduledSends} className="text-[11px] text-blue-600 hover:text-blue-800">Refresh</button>
+              </div>
+              {activeScheduled.map((job) => (
+                <div key={job.id} className="bg-white rounded-md p-2 border border-blue-100">
+                  <div className="text-[12px] font-medium text-gray-800 truncate">{job.subject || "Untitled"}</div>
+                  <div className="mt-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${job.total_recipients > 0 ? ((job.sent_count + job.failed_count + job.skipped_count) / job.total_recipients * 100) : 0}%` }} />
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-[11px] text-gray-500">
+                      {job.status === "running"
+                        ? `${job.sent_count}/${job.total_recipients} sent`
+                        : `Pending · ${new Date(job.scheduled_at).toLocaleString()}`}
+                    </span>
+                    <button onClick={() => handleCancelScheduled(job.id)}
+                      className="text-[11px] text-red-500 hover:text-red-700 font-medium">Cancel</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {sendError && (
+            <div className="mt-3 text-[13px] px-3 py-2 rounded-md bg-red-50 text-red-800 border border-red-200">
+              <div className="flex items-center gap-1.5 font-medium mb-1">
+                <AlertCircle size={14} /> Send failed
+              </div>
+              <div className="text-[12px] whitespace-pre-wrap">{sendError}</div>
+              <button onClick={startNew}
+                className="mt-2 w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-md text-[12px] font-medium py-1.5 transition-colors">
+                + Compose new
+              </button>
+            </div>
+          )}
+
           {sendResult && (
-            <div className={`mt-3 text-[13px] px-3 py-2 rounded-md ${sendResult.failed > 0 ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200"}`}>
-              {sendResult.failed === 0 ? (
+            <div className={`mt-3 text-[13px] px-3 py-2 rounded-md ${sendResult.failed > 0 || sendResult.skipped > 0 ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200"}`}>
+              {sendResult.failed === 0 && sendResult.skipped === 0 ? (
                 <div>
                   <div className="flex items-center gap-1.5 font-medium mb-1">
                     <CheckCircle2 size={14} /> Sent successfully
@@ -934,9 +1078,26 @@ function NewsletterTab() {
                 </div>
               ) : (
                 <div>
-                  <div className="font-medium mb-1">{sendResult.sent} sent, {sendResult.failed} failed</div>
+                  <div className="font-medium mb-1">
+                    {sendResult.sent} sent{sendResult.failed > 0 ? `, ${sendResult.failed} failed` : ""}{sendResult.skipped > 0 ? `, ${sendResult.skipped} skipped` : ""}
+                  </div>
                   {sendResult.errors.length > 0 && (
-                    <button onClick={() => alert(sendResult.errors.join("\n"))} className="underline text-[12px]">View errors</button>
+                    <div>
+                      <button onClick={() => setShowErrors(!showErrors)}
+                        className="underline text-[12px] mb-1">
+                        {showErrors ? "Hide details" : `View ${sendResult.errors.length} error${sendResult.errors.length !== 1 ? "s" : ""}`}
+                      </button>
+                      {showErrors && (
+                        <div className="mt-1 space-y-1 max-h-[160px] overflow-y-auto">
+                          {sendResult.errors.map((err, i) => (
+                            <div key={i} className="text-[11px] bg-white/60 rounded px-2 py-1 border border-amber-100">
+                              <span className="font-medium">{err.client_name}</span>
+                              <span className="text-amber-600 ml-1">— {err.error}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

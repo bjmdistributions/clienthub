@@ -237,6 +237,13 @@ fn main() {
             delete_newsletter,
             send_newsletter,
             ai_draft_newsletter,
+            // Scheduled Sends
+            schedule_newsletter_send,
+            cancel_scheduled_send,
+            list_scheduled_sends,
+            get_scheduled_send_progress,
+            save_smtp_settings_for_pi,
+            get_smtp_settings_for_pi,
             // Categories
             list_categories,
             create_category,

@@ -4316,7 +4316,14 @@ pub struct Newsletter {
 pub struct NewsletterSendResult {
     pub sent: u32,
     pub failed: u32,
-    pub errors: Vec<String>,
+    pub skipped: u32,
+    pub errors: Vec<NewsletterSendError>,
+}
+
+#[derive(Serialize)]
+pub struct NewsletterSendError {
+    pub client_name: String,
+    pub error: String,
 }
 
 #[tauri::command]
@@ -4366,11 +4373,21 @@ pub async fn send_newsletter(
     body_template: String,
     attachment_path: Option<String>,
 ) -> Result<NewsletterSendResult, String> {
+    crate::email::test_smtp().await.map_err(|e| format!("SMTP connection failed: {}", e))?;
+
+    if let Some(ref path) = attachment_path {
+        let meta = std::fs::metadata(path).map_err(|e| format!("Attachment error: {}", e))?;
+        if meta.len() > 25 * 1024 * 1024 {
+            return Err("Attachment too large (max 25 MB)".into());
+        }
+    }
+
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut sent: u32 = 0;
     let mut failed: u32 = 0;
-    let mut errors: Vec<String> = Vec::new();
+    let mut skipped: u32 = 0;
+    let mut errors: Vec<NewsletterSendError> = Vec::new();
     let total = client_ids.len() as u32;
 
     for cid in &client_ids {
@@ -4396,22 +4413,21 @@ pub async fn send_newsletter(
                     }
                     Err(e) => {
                         failed += 1;
-                        let err_msg = format!("{}: {}", name, e);
-                        errors.push(err_msg.clone());
+                        let err_str = format!("{}", e);
+                        errors.push(NewsletterSendError { client_name: name.clone(), error: err_str.clone() });
                         let _ = conn.execute(
                             "INSERT INTO newsletter_sends (id, newsletter_id, client_id, status, error) VALUES (?1, ?2, ?3, 'failed', ?4)",
-                            rusqlite::params![sid, &newsletter_id, cid, &err_msg],
+                            rusqlite::params![sid, &newsletter_id, cid, &err_str],
                         );
                     }
                 }
             }
             _ => {
-                failed += 1;
-                let err_msg = format!("{}: no email address", name);
-                errors.push(err_msg.clone());
+                skipped += 1;
+                errors.push(NewsletterSendError { client_name: name.clone(), error: "No email address".into() });
                 let _ = conn.execute(
-                    "INSERT INTO newsletter_sends (id, newsletter_id, client_id, status, error) VALUES (?1, ?2, ?3, 'failed', ?4)",
-                    rusqlite::params![sid, &newsletter_id, cid, &err_msg],
+                    "INSERT INTO newsletter_sends (id, newsletter_id, client_id, status, error) VALUES (?1, ?2, ?3, 'skipped', ?4)",
+                    rusqlite::params![sid, &newsletter_id, cid, "No email address"],
                 );
             }
         }
@@ -4422,7 +4438,7 @@ pub async fn send_newsletter(
         rusqlite::params![total, sent, &now, &newsletter_id],
     ).map_err(|e| e.to_string())?;
 
-    Ok(NewsletterSendResult { sent, failed, errors })
+    Ok(NewsletterSendResult { sent, failed, skipped, errors })
 }
 
 #[tauri::command]
@@ -4430,6 +4446,207 @@ pub async fn ai_draft_newsletter(prompt: String, tone: String) -> Result<String,
     crate::ai::draft_newsletter(&prompt, &tone)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ============================================================
+//  Scheduled Sends (processed by Pi scheduler)
+// ============================================================
+
+#[derive(Serialize)]
+pub struct ScheduledSend {
+    pub id: String,
+    pub newsletter_id: String,
+    pub subject: String,
+    pub body: String,
+    pub attachment_path: Option<String>,
+    pub scheduled_at: String,
+    pub interval_seconds: i64,
+    pub total_recipients: i64,
+    pub recipients_json: String,
+    pub sent_count: i64,
+    pub failed_count: i64,
+    pub skipped_count: i64,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct ScheduledSendProgress {
+    pub sent_count: i64,
+    pub failed_count: i64,
+    pub skipped_count: i64,
+    pub total_recipients: i64,
+    pub status: String,
+}
+
+#[tauri::command]
+pub async fn schedule_newsletter_send(
+    subject: String,
+    body: String,
+    client_ids: Vec<String>,
+    interval_seconds: i64,
+    scheduled_at: String,
+    attachment_path: Option<String>,
+) -> Result<ScheduledSend, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+
+    let scheduled_time = chrono::DateTime::parse_from_rfc3339(&scheduled_at)
+        .map_err(|e| format!("Invalid scheduled_at: {}", e))?;
+    let min_time = Utc::now() + chrono::Duration::seconds(60);
+    let effective_at = if scheduled_time > min_time {
+        scheduled_at.clone()
+    } else {
+        now.clone()
+    };
+
+    let nid = Uuid::new_v4().to_string();
+    let id = Uuid::new_v4().to_string();
+    let recipients_json = serde_json::to_string(&client_ids).map_err(|e| e.to_string())?;
+    let total = client_ids.len() as i64;
+
+    conn.execute(
+        "INSERT INTO newsletters (id, subject, body, status, created_at) VALUES (?1, ?2, ?3, 'draft', ?4)",
+        rusqlite::params![nid, &subject, &body, &now],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO scheduled_sends (id, newsletter_id, subject, body, attachment_path, scheduled_at, interval_seconds, total_recipients, recipients_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![id, nid, &subject, &body, &attachment_path, &effective_at, interval_seconds, total, &recipients_json, &now],
+    ).map_err(|e| e.to_string())?;
+
+    let mut cols = serde_json::Map::new();
+    cols.insert("newsletter_id".into(), serde_json::Value::String(nid.clone()));
+    cols.insert("subject".into(), serde_json::Value::String(subject.clone()));
+    cols.insert("body".into(), serde_json::Value::String(body.clone()));
+    cols.insert("scheduled_at".into(), serde_json::Value::String(effective_at.clone()));
+    cols.insert("interval_seconds".into(), serde_json::json!(interval_seconds));
+    cols.insert("total_recipients".into(), serde_json::json!(total));
+    cols.insert("recipients_json".into(), serde_json::Value::String(recipients_json.clone()));
+    cols.insert("status".into(), serde_json::Value::String("pending".into()));
+    cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+    if let Some(ref ap) = attachment_path {
+        cols.insert("attachment_path".into(), serde_json::Value::String(ap.clone()));
+    }
+    crate::sync::record_upsert("scheduled_sends", &id, cols).map_err(|e| e.to_string())?;
+
+    Ok(ScheduledSend {
+        id,
+        newsletter_id: nid,
+        subject,
+        body,
+        attachment_path,
+        scheduled_at: effective_at,
+        interval_seconds,
+        total_recipients: total,
+        recipients_json,
+        sent_count: 0,
+        failed_count: 0,
+        skipped_count: 0,
+        status: "pending".into(),
+        error: None,
+        created_at: now,
+    })
+}
+
+#[tauri::command]
+pub async fn cancel_scheduled_send(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let status: String = conn.query_row(
+        "SELECT status FROM scheduled_sends WHERE id=?1", [&id],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    if status != "pending" && status != "running" {
+        return Err("Can only cancel pending or running sends".into());
+    }
+    conn.execute(
+        "UPDATE scheduled_sends SET status='cancelled' WHERE id=?1", [&id],
+    ).map_err(|e| e.to_string())?;
+
+    let mut cols = serde_json::Map::new();
+    cols.insert("status".into(), serde_json::Value::String("cancelled".into()));
+    crate::sync::record_upsert("scheduled_sends", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_scheduled_sends() -> Result<Vec<ScheduledSend>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, newsletter_id, subject, body, attachment_path, scheduled_at, interval_seconds,
+                total_recipients, recipients_json, sent_count, failed_count, skipped_count,
+                status, error, created_at
+         FROM scheduled_sends ORDER BY created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(ScheduledSend {
+            id: r.get(0)?, newsletter_id: r.get(1)?, subject: r.get(2)?, body: r.get(3)?,
+            attachment_path: r.get(4)?, scheduled_at: r.get(5)?, interval_seconds: r.get(6)?,
+            total_recipients: r.get(7)?, recipients_json: r.get(8)?,
+            sent_count: r.get(9)?, failed_count: r.get(10)?, skipped_count: r.get(11)?,
+            status: r.get(12)?, error: r.get(13)?, created_at: r.get(14)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn get_scheduled_send_progress(id: String) -> Result<ScheduledSendProgress, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT sent_count, failed_count, skipped_count, total_recipients, status FROM scheduled_sends WHERE id=?1",
+        [&id],
+        |r| Ok(ScheduledSendProgress {
+            sent_count: r.get(0)?, failed_count: r.get(1)?, skipped_count: r.get(2)?,
+            total_recipients: r.get(3)?, status: r.get(4)?,
+        }),
+    ).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_smtp_settings_for_pi(settings: serde_json::Value) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let pairs = [("smtp_host", "smtp_host"), ("smtp_port", "smtp_port"), ("smtp_username", "smtp_username"), ("smtp_password", "smtp_password"), ("smtp_from_name", "smtp_from_name"), ("smtp_from_email", "smtp_from_email")];
+    for (key, field) in &pairs {
+        if let Some(val) = settings.get(field) {
+            let val_str = match val {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![key, val_str],
+            ).map_err(|e| e.to_string())?;
+
+            let mut cols = serde_json::Map::new();
+            cols.insert("key".into(), serde_json::Value::String(key.to_string()));
+            cols.insert("value".into(), serde_json::Value::String(val_str));
+            crate::sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_smtp_settings_for_pi() -> Result<serde_json::Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut result = serde_json::Map::new();
+    for key in &["smtp_host", "smtp_port", "smtp_username", "smtp_from_name", "smtp_from_email"] {
+        let val: Option<String> = conn.query_row(
+            "SELECT value FROM settings WHERE key=?1", [*key], |r| r.get(0),
+        ).ok();
+        if let Some(v) = val {
+            result.insert(key.to_string(), serde_json::Value::String(v));
+        }
+    }
+    let has_pw: bool = conn.query_row(
+        "SELECT COUNT(*) FROM settings WHERE key='smtp_password' AND value != ''", [],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    result.insert("smtp_password_set".into(), serde_json::Value::Bool(has_pw));
+    Ok(serde_json::Value::Object(result))
 }
 
 // ============================================================

@@ -103,6 +103,23 @@ pub fn save_settings(s: &EmailSettings) -> Result<()> {
 
 // ---------- SMTP ----------
 
+pub async fn test_smtp() -> Result<()> {
+    let settings = load_settings()?;
+    let pass_or_token = match settings.auth_method {
+        AuthMethod::Password => cred("smtp_pass")?,
+        AuthMethod::Oauth2 => oauth2_access_token().await?,
+    };
+    let creds = Credentials::new(settings.user.clone(), pass_or_token);
+    let mut mailer_builder =
+        AsyncSmtpTransport::<Tokio1Executor>::relay(&settings.smtp_host)?.credentials(creds);
+    if matches!(settings.auth_method, AuthMethod::Oauth2) {
+        mailer_builder = mailer_builder.authentication(vec![Mechanism::Xoauth2]);
+    }
+    let mailer: AsyncSmtpTransport<Tokio1Executor> = mailer_builder.build();
+    mailer.test_connection().await?;
+    Ok(())
+}
+
 pub async fn send(to: &str, subject: &str, body: &str, attachment: Option<&str>) -> Result<()> {
     let settings = load_settings()?;
     let pass_or_token = match settings.auth_method {

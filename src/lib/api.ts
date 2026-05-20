@@ -76,10 +76,42 @@ export interface Newsletter {
   sent_at?: string;
 }
 
+export interface NewsletterSendError {
+  client_name: string;
+  error: string;
+}
+
 export interface NewsletterSendResult {
   sent: number;
   failed: number;
-  errors: string[];
+  skipped: number;
+  errors: NewsletterSendError[];
+}
+
+export interface ScheduledSend {
+  id: string;
+  newsletter_id: string;
+  subject: string;
+  body: string;
+  attachment_path: string | null;
+  scheduled_at: string;
+  interval_seconds: number;
+  total_recipients: number;
+  recipients_json: string;
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+  status: "pending" | "running" | "completed" | "cancelled" | "failed";
+  error: string | null;
+  created_at: string;
+}
+
+export interface ScheduledSendProgress {
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+  total_recipients: number;
+  status: string;
 }
 
 export interface Category {
@@ -872,6 +904,20 @@ export const api = {
     }),
   aiDraftNewsletter: (prompt: string, tone: string) =>
     invoke<string>("ai_draft_newsletter", { prompt, tone }),
+
+  // Scheduled Sends
+  scheduleNewsletterSend: (subject: string, body: string, clientIds: string[], intervalSeconds: number, scheduledAt: string, attachmentPath?: string | null) =>
+    invoke<ScheduledSend>("schedule_newsletter_send", { subject, body, clientIds, intervalSeconds, scheduledAt, attachmentPath }),
+  cancelScheduledSend: (id: string) =>
+    invoke<void>("cancel_scheduled_send", { id }),
+  listScheduledSends: () =>
+    invoke<ScheduledSend[]>("list_scheduled_sends"),
+  getScheduledSendProgress: (id: string) =>
+    invoke<ScheduledSendProgress>("get_scheduled_send_progress", { id }),
+  saveSmtpSettingsForPi: (settings: Record<string, string>) =>
+    invoke<void>("save_smtp_settings_for_pi", { settings }),
+  getSmtpSettingsForPi: () =>
+    invoke<Record<string, string>>("get_smtp_settings_for_pi"),
 
   // Categories
   listCategories: () => invoke<Category[]>("list_categories"),

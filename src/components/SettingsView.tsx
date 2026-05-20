@@ -266,6 +266,68 @@ function EmailTab() {
         {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved" : "Save Settings"}
       </button>
+
+      <div className="mt-8 pt-6 border-t border-gray-100">
+        <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Pi / Mobile Sync</h3>
+        <p className="text-[12px] text-gray-400 mb-4">
+          Enter your SMTP password to enable newsletter sending from your phone and Pi server.
+          This is stored in the database and synced via Syncthing — separate from the keychain above.
+        </p>
+        <PiSmtpSection settings={settings} />
+      </div>
+    </div>
+  );
+}
+
+function PiSmtpSection({ settings }: { settings: EmailSettings }) {
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [fromName, setFromName] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [existing, setExisting] = useState<Record<string, string> | null>(null);
+
+  useEffect(() => {
+    api.getSmtpSettingsForPi().then((s) => {
+      setExisting(s);
+      if (s.smtp_from_name) setFromName(s.smtp_from_name);
+    }).catch(console.error);
+  }, []);
+
+  const save = async () => {
+    await api.saveSmtpSettingsForPi({
+      smtp_host: settings.smtp_host,
+      smtp_port: String(settings.smtp_port),
+      smtp_username: settings.user,
+      smtp_password: smtpPassword,
+      smtp_from_name: fromName,
+      smtp_from_email: settings.user,
+    });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="space-y-3">
+      <Field label="From name (shown in emails)">
+        <input className={inp} value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Your Business Name" />
+      </Field>
+      <Field label="SMTP password for Pi/Mobile">
+        <div className="relative">
+          <input
+            type="password"
+            value={smtpPassword}
+            onChange={(e) => setSmtpPassword(e.target.value)}
+            className={inp}
+            placeholder={existing?.smtp_password_set ? "•••••••• (currently set — leave blank to keep)" : "Enter SMTP password"}
+          />
+        </div>
+      </Field>
+      <button
+        onClick={save}
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
+      >
+        {saved ? <Check size={13} /> : <Save size={13} />}
+        {saved ? "Saved for Pi" : "Save for Pi"}
+      </button>
     </div>
   );
 }

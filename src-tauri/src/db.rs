@@ -485,4 +485,28 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE deal_flows ADD COLUMN name TEXT DEFAULT '';
         "#,
     ),
+    (
+        24,
+        r#"
+        -- Scheduled newsletter sends (processed by Pi scheduler)
+        CREATE TABLE IF NOT EXISTS scheduled_sends (
+            id TEXT PRIMARY KEY,
+            newsletter_id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            attachment_path TEXT,
+            scheduled_at TEXT NOT NULL,
+            interval_seconds INTEGER NOT NULL,
+            total_recipients INTEGER NOT NULL DEFAULT 0,
+            recipients_json TEXT NOT NULL DEFAULT '[]',
+            sent_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_sends_status ON scheduled_sends(status);
+        "#,
+    ),
 ];
