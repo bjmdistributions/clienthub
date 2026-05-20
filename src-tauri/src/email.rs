@@ -377,6 +377,37 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
         };
 
         if let Some(cid) = client_id {
+            {
+                let conn = pool().get()?;
+                let invoice_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM invoices WHERE client_id=?1",
+                        [&cid],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                if invoice_count == 0 {
+                    let current: Option<String> = conn
+                        .query_row(
+                            "SELECT lead_status FROM clients WHERE id=?1",
+                            [&cid],
+                            |r| r.get(0),
+                        )
+                        .ok();
+                    if current.as_deref() != Some("prospect") {
+                        let mut cols = serde_json::Map::new();
+                        cols.insert("lead_status".into(), serde_json::Value::String("prospect".into()));
+                        crate::sync::record_upsert("clients", &cid, cols)
+                            .context("sync record_upsert lead_status")?;
+                        conn.execute(
+                            "UPDATE clients SET lead_status=?1 WHERE id=?2",
+                            rusqlite::params!["prospect", &cid],
+                        )?;
+                        tracing::info!("auto-promoted client {} to prospect (no spend history)", cid);
+                    }
+                }
+            }
+
             let conn = pool().get()?;
             let interaction_id = uuid::Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();
