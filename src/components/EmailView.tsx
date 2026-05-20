@@ -503,6 +503,7 @@ function NewsletterTab() {
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null);
   const [attachmentSearch, setAttachmentSearch] = useState("");
   const [manualEmail, setManualEmail] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
   const [showSchedule, setShowSchedule] = useState(false);
   const [scheduleInterval, setScheduleInterval] = useState(0);
   const [scheduleCustomDate, setScheduleCustomDate] = useState("");
@@ -531,6 +532,13 @@ function NewsletterTab() {
     ? clients.filter((c) => c.category?.toLowerCase().includes(recipientCategoryFilter.toLowerCase()))
     : clients;
 
+  const searchedClients = clientSearch.trim()
+    ? filteredClients.filter((c) =>
+        c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
+        (c.email && c.email.toLowerCase().includes(clientSearch.toLowerCase()))
+      )
+    : filteredClients;
+
   const noEmailCount = selected.length - validRecipients.length;
 
   const addRecipient = (c: Client) => {
@@ -538,7 +546,7 @@ function NewsletterTab() {
   };
   const removeRecipient = (id: string) => setSelected(selected.filter((c) => c.id !== id));
   const addAllWithEmail = () => {
-    const toAdd = filteredClients.filter((c) => c.email && !selected.find((s) => s.id === c.id));
+    const toAdd = searchedClients.filter((c) => c.email && !selected.find((s) => s.id === c.id));
     setSelected([...selected, ...toAdd]);
   };
 
@@ -705,9 +713,9 @@ function NewsletterTab() {
   const charCount = body.length;
 
   return (
-    <div className="flex gap-4" style={{ minHeight: 500 }}>
+    <div className="flex flex-col lg:flex-row gap-4" style={{ minHeight: 500 }}>
       {/* Panel A: Recipients */}
-      <div className="w-[300px] flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
+      <div className="w-full lg:w-[300px] lg:flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
           <span className="text-[14px] font-semibold text-gray-900">Clients</span>
           <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{clients.length}</span>
@@ -724,8 +732,18 @@ function NewsletterTab() {
           </select>
         </div>
 
-        <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200 }}>
-          {filteredClients.map((c) => {
+        <div className="px-3 py-2 border-b border-gray-100">
+          <input
+            type="text"
+            placeholder="Search clients by name or email..."
+            value={clientSearch}
+            onChange={(e) => setClientSearch(e.target.value)}
+            className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200, minHeight: 120 }}>
+          {searchedClients.map((c) => {
             const isSelected = selected.find((s) => s.id === c.id);
             return (
               <button key={c.id}
@@ -748,8 +766,8 @@ function NewsletterTab() {
               </button>
             );
           })}
-          {filteredClients.length === 0 && (
-            <div className="text-[12px] text-gray-400 text-center py-6">No clients match this filter</div>
+          {searchedClients.length === 0 && (
+            <div className="text-[12px] text-gray-400 text-center py-6">{clientSearch ? "No clients match your search" : "No clients match this filter"}</div>
           )}
         </div>
 
@@ -790,7 +808,7 @@ function NewsletterTab() {
           </div>
           <div className="flex gap-1.5">
             <input
-              placeholder="Or type any email..."
+              placeholder="Or type an email address..."
               type="email"
               value={manualEmail}
               onChange={(e) => setManualEmail(e.target.value)}
@@ -806,19 +824,19 @@ function NewsletterTab() {
       </div>
 
       {/* Panel B: Compose */}
-      <div className="flex-1 flex flex-col gap-3 min-w-0">
+      <div className="w-full lg:flex-1 flex flex-col gap-3 min-w-0">
         <div className="bg-white border border-gray-200 rounded-lg flex flex-col flex-1">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
             <Mail size={14} className="text-indigo-500" />
             <span className="text-[14px] font-semibold text-gray-900">Compose</span>
           </div>
           <div className="p-4 flex-1 flex flex-col">
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex flex-wrap items-center gap-2 mb-3">
               <input
                 placeholder="Subject (use {{first_name}} for personalization)"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                className="flex-1 border border-gray-300 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className="flex-1 min-w-[200px] border border-gray-300 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
               <select
                 value=""
@@ -941,7 +959,7 @@ function NewsletterTab() {
       </div>
 
       {/* Panel C: Preview & Send */}
-      <div className="w-[320px] flex-shrink-0 flex flex-col gap-3">
+      <div className="w-full lg:w-[320px] lg:flex-shrink-0 flex flex-col gap-3">
         <div className="bg-white border border-gray-200 rounded-lg flex-1 flex flex-col">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
             <Eye size={14} className="text-indigo-500" />
@@ -1003,10 +1021,10 @@ function NewsletterTab() {
             <div className="mt-2 border border-gray-200 rounded-md p-3 bg-gray-50 space-y-2">
               <div className="text-[12px] font-medium text-gray-700 mb-1">When should this send?</div>
               {[
-                { val: 0, label: "Now" },
-                { val: 3600, label: "Over 1 hour · ~" + Math.ceil(validRecipients.length / 60) + "/min" },
-                { val: 7200, label: "Over 2 hours · ~" + Math.ceil(validRecipients.length / 120) + "/min" },
-                { val: 14400, label: "Over 4 hours · ~" + Math.ceil(validRecipients.length / 240) + "/min" },
+                { val: 0, label: "Send now — all " + validRecipients.length + " at once" },
+                { val: 3600, label: "Spread over 1 hour — ~" + Math.ceil(validRecipients.length / 60) + " emails per minute" },
+                { val: 7200, label: "Spread over 2 hours — ~" + Math.ceil(validRecipients.length / 120) + " emails per minute" },
+                { val: 14400, label: "Spread over 4 hours — ~" + Math.ceil(validRecipients.length / 240) + " emails per minute" },
               ].map((opt) => (
                 <label key={opt.val} className="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
                   <input type="radio" checked={scheduleInterval === opt.val} onChange={() => setScheduleInterval(opt.val)} className="accent-indigo-600" />
