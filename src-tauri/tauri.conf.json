@@ -28,6 +28,9 @@
     "active": true,
     "targets": ["app", "dmg", "msi", "nsis"],
     "icon": ["icons/icon.icns", "icons/icon.ico"],
+    "resources": {
+      "assets/*": "./"
+    },
     "category": "Productivity",
     "shortDescription": "Client management, email newsletters, and invoicing",
     "longDescription": "Local-first desktop app for client tracking, AI-assisted email replies, and PDF invoice generation, with peer-to-peer sync across your devices."

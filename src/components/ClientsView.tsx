@@ -80,6 +80,12 @@ export default function ClientsView() {
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
     loadMissingInfo();
+
+    const preselect = sessionStorage.getItem("clienthub.globe.clientId");
+    if (preselect) {
+      sessionStorage.removeItem("clienthub.globe.clientId");
+      setDetailId(preselect);
+    }
   }, []);
 
   useEffect(() => {

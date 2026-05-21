@@ -445,7 +445,7 @@ function DealFlowCard({
           </div>
 
           {/* Action panel */}
-          <div className="border-t border-gray-100 bg-[#FAFAF9] px-5 py-4">
+          <div className="border-t border-gray-100 bg-gray-50 px-5 py-4">
             {/* Delete button row */}
             <div className="flex justify-end mb-3">
               <button

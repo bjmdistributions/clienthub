@@ -931,4 +931,8 @@ export const api = {
   saveSheetSyncConfig: (config: SheetSyncConfig) => invoke<void>("save_sheet_sync_config", { config }),
   syncFromSheet: () => invoke<SheetSyncResult>("sync_from_sheet"),
   getSheetSyncLog: () => invoke<SheetSyncLogEntry[]>("get_sheet_sync_log"),
+
+  // Geocoding
+  geocodeClient: (clientId: string) => invoke<{ lat: number; lng: number }>("geocode_client", { clientId }),
+  geocodeAllClients: () => invoke<string>("geocode_all_clients"),
 };

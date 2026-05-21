@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { api, DashboardStats, Client, Invoice, BuyerTier } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount } from "../lib/format";
 import {
   Users, FileText, DollarSign, TrendingUp, Mail,
-  ArrowRight, CheckCircle2, Clock, ChevronLeft, ChevronRight, Package,
+  ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Package,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import TierBadge from "./TierBadge";
@@ -12,12 +12,12 @@ interface Props {
   onNavigate: (t: any) => void;
 }
 
-const invStatusColor = (s: string) => {
+const invStatusStyle = (s: string): React.CSSProperties => {
   const lo = s.toLowerCase();
-  if (lo === "paid")    return "bg-amber-100 text-amber-800";
-  if (lo === "sent")    return "bg-blue-100 text-blue-800";
-  if (lo === "overdue") return "bg-red-100 text-red-800";
-  return "bg-gray-100 text-gray-700";
+  if (lo === "paid")    return { background: "rgba(16,185,129,0.12)",  color: "#34D399", border: "1px solid rgba(16,185,129,0.25)" };
+  if (lo === "sent")    return { background: "rgba(59,130,246,0.12)",  color: "#60A5FA", border: "1px solid rgba(59,130,246,0.25)" };
+  if (lo === "overdue") return { background: "rgba(239,68,68,0.12)",   color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" };
+  return { background: "rgba(107,114,128,0.1)", color: "var(--t-tx3)", border: "1px solid rgba(107,114,128,0.2)" };
 };
 
 function CompactAmount({ value }: { value: number }) {
@@ -25,8 +25,44 @@ function CompactAmount({ value }: { value: number }) {
   const compact = fmtCompactCurrency(value);
   if (full === compact) return <>{compact}</>;
   return (
-    <span className="compact-amount group" data-tip={full}>
+    <span className="compact-amount" data-tip={full}>
       {compact}
+    </span>
+  );
+}
+
+function useCountUp(target: number, duration = 900) {
+  const [value, setValue] = useState(0);
+  const [popped, setPopped] = useState(false);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (target === 0) { setValue(0); return; }
+    setPopped(false);
+    const start = performance.now();
+    const tick = (now: number) => {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setValue(Math.round(target * eased));
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        setValue(target);
+        setPopped(true);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration]);
+
+  return { value, popped };
+}
+
+function AnimatedStat({ value }: { value: number }) {
+  const { value: current, popped } = useCountUp(value);
+  return (
+    <span className={popped ? "animate-number-pop inline-block" : "inline-block"}>
+      {current.toLocaleString()}
     </span>
   );
 }
@@ -48,7 +84,6 @@ export default function DashboardView({ onNavigate }: Props) {
     const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === mo;
     const profitMap: Record<string, number> = {};
     raw.forEach((r) => { profitMap[r.day] = r.profit; });
-    // Extend lastDay to cover any data points beyond today (e.g. completed_at in future)
     const maxDataDay = raw.length > 0
       ? Math.max(...raw.map((r) => parseInt(r.day.split("-")[2], 10)))
       : 0;
@@ -95,50 +130,67 @@ export default function DashboardView({ onNavigate }: Props) {
   const revenueMtd    = stats?.revenue_mtd     ?? 0;
   const allTimeRev    = stats?.all_time_revenue ?? 0;
   const allTimeProfit = stats?.all_time_profit  ?? 0;
-  const kpis = [
-    { label: "Total Clients",    sub: "in account",          value: stats?.clients ?? 0,                icon: Users,       tab: "clients",   clr: "text-gray-900" },
-    { label: "Outstanding",      sub: "awaiting payment",    value: <CompactAmount value={stats?.outstanding ?? 0} />, icon: DollarSign,  tab: "invoices",  clr: (stats?.outstanding ?? 0) > 0 ? "text-amber-600" : "text-gray-900" },
-    { label: "Revenue MTD",      sub: "closed this month",   value: <CompactAmount value={revenueMtd} />,              icon: TrendingUp,  tab: "analytics", clr: "text-gray-900" },
-    { label: "Profit MTD",       sub: "closed this month",   value: <CompactAmount value={profitMtd} />,               icon: TrendingUp,  tab: "analytics", clr: profitMtd >= 0 ? "text-emerald-600" : "text-red-600" },
-    { label: "All-Time Revenue", sub: "from closed deals",   value: <CompactAmount value={allTimeRev} />,              icon: DollarSign,  tab: "analytics", clr: "text-gray-900" },
-    { label: "All-Time Profit",  sub: "from closed deals",   value: <CompactAmount value={allTimeProfit} />,           icon: TrendingUp,  tab: "analytics", clr: allTimeProfit >= 0 ? "text-emerald-600" : "text-red-600" },
-    { label: "Deals MTD",        sub: "completed this month", value: stats?.deals_mtd ?? 0,             icon: FileText,    tab: "deals",     clr: "text-gray-900" },
-    { label: "Active Deals",     sub: "in pipeline",         value: stats?.pipeline_count ?? 0,         icon: FileText,    tab: "dealflow",  clr: "text-gray-900" },
+
+  type KpiDef = {
+    label: string; sub: string;
+    displayValue: React.ReactNode;
+    icon: any; tab: string;
+    accent: string; iconBg: string;
+  };
+
+  const kpis: KpiDef[] = [
+    { label: "Total Clients",    sub: "in account",           displayValue: <AnimatedStat value={stats?.clients ?? 0} />,          icon: Users,      tab: "clients",   accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
+    { label: "Outstanding",      sub: "awaiting payment",     displayValue: <CompactAmount value={stats?.outstanding ?? 0} />,      icon: DollarSign, tab: "invoices",  accent: "kpi-accent-amber",   iconBg: "icon-bg-amber"   },
+    { label: "Revenue MTD",      sub: "closed this month",    displayValue: <CompactAmount value={revenueMtd} />,                   icon: TrendingUp, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald" },
+    { label: "Profit MTD",       sub: "closed this month",    displayValue: <CompactAmount value={profitMtd} />,                    icon: TrendingUp, tab: "analytics", accent: profitMtd >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: profitMtd >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
+    { label: "All-Time Revenue", sub: "from closed deals",    displayValue: <CompactAmount value={allTimeRev} />,                   icon: DollarSign, tab: "analytics", accent: "kpi-accent-violet",  iconBg: "icon-bg-violet"  },
+    { label: "All-Time Profit",  sub: "from closed deals",    displayValue: <CompactAmount value={allTimeProfit} />,                 icon: TrendingUp, tab: "analytics", accent: allTimeProfit >= 0 ? "kpi-accent-cyan" : "kpi-accent-rose", iconBg: allTimeProfit >= 0 ? "icon-bg-cyan" : "icon-bg-rose" },
+    { label: "Deals MTD",        sub: "completed this month", displayValue: <AnimatedStat value={stats?.deals_mtd ?? 0} />,         icon: FileText,   tab: "deals",     accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
+    { label: "Active Deals",     sub: "in pipeline",          displayValue: <AnimatedStat value={stats?.pipeline_count ?? 0} />,    icon: FileText,   tab: "dealflow",  accent: "kpi-accent-violet",  iconBg: "icon-bg-violet"  },
   ];
 
   const weekStats = [
-    { label: "Revenue",       value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "text-emerald-600" },
-    { label: "New Clients",   value: String(stats?.clients_this_week ?? 0),    color: "text-indigo-600" },
-    { label: "Interactions",  value: String(stats?.interactions_this_week ?? 0), color: "text-violet-600" },
+    { label: "Revenue",      value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "#059669" },
+    { label: "New Clients",  value: String(stats?.clients_this_week ?? 0),                   color: "#4F46E5" },
+    { label: "Interactions", value: String(stats?.interactions_this_week ?? 0),              color: "#7C3AED" },
   ];
 
   const topBuyers = tiers.filter((h) => h.tier === "S" || h.tier === "A").slice(0, 5);
+  const staggerClass = (i: number) => `animate-fade-up stagger-${Math.min(i + 1, 8)}`;
+
+  // Reusable card style
+  const cardStyle: React.CSSProperties = { border: "1px solid var(--t-b1)", boxShadow: "var(--shadow-card)", background: "var(--t-s1)" };
 
   return (
-    <div className="min-h-full flex flex-col bg-[#F7F6F4]">
+    <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
 
       {/* ── Page Header ─────────────────────────────────── */}
-      <div className="bg-white border-b border-gray-100/80 px-6 py-4 flex items-center justify-between flex-shrink-0">
+      <div className="px-6 py-4 flex items-center justify-between flex-shrink-0"
+        style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)", boxShadow: "0 1px 0 rgba(0,0,0,0.04)" }}>
         <div>
-          <h2 className="text-[17px] font-semibold text-gray-900 tracking-tight">Dashboard</h2>
-          <p className="text-[12px] text-gray-400 mt-0.5">{dateStr}</p>
+          <h2 className="text-[17px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Dashboard</h2>
+          <p className="text-[12px] mt-0.5" style={{ color: "var(--t-tx4)" }}>{dateStr}</p>
         </div>
         <div className="flex items-center gap-4 flex-wrap justify-end">
           <div className="text-right">
-            <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Outstanding</p>
-            <p className="text-[15px] font-bold text-amber-500 tabular-nums leading-none">
+            <p className="text-[10px] uppercase tracking-widest font-semibold mb-0.5" style={{ color: "var(--t-tx4)" }}>Outstanding</p>
+            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: "#D97706" }}>
               <CompactAmount value={stats?.outstanding ?? 0} />
             </p>
           </div>
           <div className="text-right">
-            <p className="text-[10px] text-gray-400 uppercase tracking-widest font-medium mb-0.5">Profit MTD</p>
-            <p className={`text-[15px] font-bold tabular-nums leading-none ${profitMtd >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+            <p className="text-[10px] uppercase tracking-widest font-semibold mb-0.5" style={{ color: "var(--t-tx4)" }}>Profit MTD</p>
+            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: profitMtd >= 0 ? "#059669" : "#E11D48" }}>
               <CompactAmount value={profitMtd} />
             </p>
           </div>
           <button
             onClick={() => onNavigate("invoices")}
-            className="flex items-center gap-1.5 bg-[#1A1A1E] hover:bg-[#27272B] text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+            className="btn-ripple flex items-center gap-1.5 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-all duration-150 hover:-translate-y-px"
+            style={{
+              background: "linear-gradient(135deg, #4F46E5, #6366F1)",
+              boxShadow: "0 2px 10px rgba(79,70,229,0.3), 0 1px 2px rgba(79,70,229,0.2)",
+            }}
           >
             <FileText size={13} /> Invoices
           </button>
@@ -150,106 +202,130 @@ export default function DashboardView({ onNavigate }: Props) {
 
         {/* KPI grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-          {kpis.map((k) => (
-            <button
-              key={k.label}
-              onClick={() => onNavigate(k.tab)}
-              className="bg-white border border-gray-100 rounded-xl p-4 text-left hover:-translate-y-0.5 hover:shadow-[0_4px_16px_rgba(0,0,0,0.07)] transition-all duration-200 group"
-            >
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2.5 truncate">{k.label}</div>
-              <div className={`text-[19px] font-bold tabular-nums leading-none break-all ${k.clr}`}>{k.value}</div>
-              <div className="flex items-center gap-1 mt-1.5">
-                <span className="text-[11px] text-gray-400">{k.sub}</span>
-                <ArrowRight size={9} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-              </div>
-            </button>
-          ))}
+          {kpis.map((k, i) => {
+            const Icon = k.icon;
+            return (
+              <button
+                key={k.label}
+                onClick={() => onNavigate(k.tab)}
+                className={`text-left group relative overflow-hidden rounded-xl p-4 transition-all duration-200 hover:-translate-y-0.5 ${k.accent} ${staggerClass(i)}`}
+                style={cardStyle}
+                onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)")}
+                onMouseLeave={e => (e.currentTarget.style.boxShadow = "var(--shadow-card)")}
+              >
+                <div className={`w-7 h-7 rounded-lg flex items-center justify-center mb-2.5 ${k.iconBg}`}>
+                  <Icon size={13} strokeWidth={2} />
+                </div>
+                <div className="text-[10px] font-semibold uppercase tracking-widest mb-2 truncate" style={{ color: "var(--t-tx4)" }}>{k.label}</div>
+                <div className="text-[18px] font-bold tabular-nums leading-none mb-1.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>
+                  {k.displayValue}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[11px]" style={{ color: "var(--t-tx4)" }}>{k.sub}</span>
+                  <ArrowRight size={9} className="opacity-0 group-hover:opacity-60 group-hover:translate-x-0.5 transition-all duration-150" style={{ color: "var(--t-tx3)" }} />
+                </div>
+              </button>
+            );
+          })}
         </div>
 
         {/* Chart row */}
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
 
           {/* Profit chart */}
-          <div className="lg:col-span-3 bg-white border border-gray-100 rounded-xl p-5">
+          <div className="lg:col-span-3 rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
             <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="text-[13px] font-semibold text-gray-900">{monthLabel} Profit</h3>
-                <p className="text-[11px] text-gray-400 mt-0.5">Cumulative this month</p>
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>{monthLabel} Profit</h3>
+                <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Cumulative this month</p>
               </div>
               <div className="flex items-center gap-1">
-                <button onClick={() => changeMonth(-1)} className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
-                  <ChevronLeft size={14} />
-                </button>
-                <button onClick={() => changeMonth(1)} className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
-                  <ChevronRight size={14} />
-                </button>
+                {([-1, 1] as const).map(dir => (
+                  <button key={dir} onClick={() => changeMonth(dir)}
+                    className="w-7 h-7 flex items-center justify-center rounded-md transition-colors"
+                    style={{ color: "var(--t-tx4)" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "var(--t-s3)"; e.currentTarget.style.color = "#4F46E5"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--t-tx4)"; }}>
+                    {dir === -1 ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                ))}
               </div>
             </div>
             {dailyProfit.length > 0 ? (
               <ResponsiveContainer width="100%" height={210}>
                 <LineChart data={dailyProfit} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke="#F3F4F6" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: "#9CA3AF" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                  <defs>
+                    <linearGradient id="profitGrad" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#6366F1" />
+                      <stop offset="100%" stopColor="#10B981" />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="2 4" stroke="var(--t-b1)" vertical={false} />
+                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Inter" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Inter" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
-                    contentStyle={{ background: "#1A1A1E", border: "none", borderRadius: 8, color: "#fff", fontSize: 12 }}
+                    contentStyle={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)", borderRadius: 10, color: "var(--t-tx1)", fontSize: 12, fontFamily: "Inter", boxShadow: "var(--shadow-panel)" }}
                     formatter={(v: any) => [fmtFullAmount(Number(v) || 0), "Profit"]}
-                    cursor={{ stroke: "#E5E7EB", strokeWidth: 1 }}
+                    cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
-                  <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: "#10b981", strokeWidth: 0 }} />
+                  <Line type="monotone" dataKey="profit" stroke="url(#profitGrad)" strokeWidth={2.5} dot={false}
+                    activeDot={{ r: 5, fill: "#6366F1", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(99,102,241,0.6))" } }}
+                    isAnimationActive animationDuration={1000} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[210px] flex items-center justify-center text-[12px] text-gray-400">
+              <div className="h-[210px] flex items-center justify-center text-[12px]" style={{ color: "var(--t-tx4)" }}>
                 No profit data for this month
               </div>
             )}
           </div>
 
-          {/* Right column: Top Clients + Top Suppliers stacked */}
+          {/* Right column: Top Clients + Top Suppliers */}
           <div className="lg:col-span-2 flex flex-col gap-4">
 
-            {/* Top Clients by Profit */}
-            <div className="bg-white border border-gray-100 rounded-xl p-5 flex-1">
-              <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Top Clients</h3>
-              <p className="text-[11px] text-gray-400 mb-3">Ranked by net profit</p>
+            <div className="rounded-xl p-5 flex-1 animate-fade-up stagger-3" style={cardStyle}>
+              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top Clients</h3>
+              <p className="text-[11px] mb-3" style={{ color: "var(--t-tx4)" }}>Ranked by net profit</p>
               {stats?.top_clients_by_profit && stats.top_clients_by_profit.length > 0 ? (
                 <div className="space-y-0.5">
                   {stats.top_clients_by_profit.slice(0, 4).map((c, i) => (
-                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
-                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold text-gray-300 flex-shrink-0">{i + 1}</span>
+                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
+                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ color: "var(--t-b3)" }}>{i + 1}</span>
                       <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium text-gray-900 truncate">{c.name}</div>
-                        <div className="text-[10px] text-gray-400">{c.margin.toFixed(1)}% margin</div>
+                        <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</div>
+                        <div className="text-[10px]" style={{ color: "var(--t-tx4)" }}>{c.margin.toFixed(1)}% margin</div>
                       </div>
-                      <div className="text-[12px] font-semibold text-emerald-600 tabular-nums flex-shrink-0"><CompactAmount value={c.total_profit} /></div>
+                      <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "#34D399" }}><CompactAmount value={c.total_profit} /></div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-[12px] text-gray-400 text-center py-6">No profit data yet</div>
+                <div className="text-[12px] text-center py-6" style={{ color: "var(--t-tx4)" }}>No profit data yet</div>
               )}
             </div>
 
-            {/* Top Suppliers */}
-            <div className="bg-white border border-gray-100 rounded-xl p-5 flex-1">
-              <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Top Suppliers</h3>
-              <p className="text-[11px] text-gray-400 mb-3">By total spend on closed deals</p>
+            <div className="rounded-xl p-5 flex-1 animate-fade-up stagger-4" style={cardStyle}>
+              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top Suppliers</h3>
+              <p className="text-[11px] mb-3" style={{ color: "var(--t-tx4)" }}>By total spend on closed deals</p>
               {stats?.top_suppliers && stats.top_suppliers.length > 0 ? (
                 <div className="space-y-0.5">
                   {stats.top_suppliers.slice(0, 4).map((s, i) => (
-                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
-                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold text-gray-300 flex-shrink-0">{i + 1}</span>
+                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
+                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ color: "var(--t-b3)" }}>{i + 1}</span>
                       <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium text-gray-900 truncate">{s.name}</div>
-                        <div className="text-[10px] text-gray-400 truncate">{s.contact_name || `${s.deal_count} deals`}</div>
+                        <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{s.name}</div>
+                        <div className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{s.contact_name || `${s.deal_count} deals`}</div>
                       </div>
-                      <div className="text-[12px] font-semibold text-gray-700 tabular-nums flex-shrink-0"><CompactAmount value={s.total_paid} /></div>
+                      <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "var(--t-tx2)" }}><CompactAmount value={s.total_paid} /></div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-[12px] text-gray-400 text-center py-6">No supplier data yet</div>
+                <div className="text-[12px] text-center py-6" style={{ color: "var(--t-tx4)" }}>No supplier data yet</div>
               )}
             </div>
 
@@ -260,15 +336,18 @@ export default function DashboardView({ onNavigate }: Props) {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
 
           {/* Recent Invoices (2/3) */}
-          <div className="xl:col-span-2 bg-white border border-gray-100 rounded-xl overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-50">
+          <div className="xl:col-span-2 rounded-xl overflow-hidden flex flex-col animate-fade-up stagger-3" style={cardStyle}>
+            <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
               <div>
-                <h3 className="text-[13px] font-semibold text-gray-900">Recent Invoices</h3>
-                <p className="text-[11px] text-gray-400 mt-0.5">Latest billing activity</p>
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Recent Invoices</h3>
+                <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Latest billing activity</p>
               </div>
               <button
                 onClick={() => onNavigate("invoices")}
-                className="flex items-center gap-1 text-[12px] font-medium text-indigo-600 hover:text-indigo-800 transition-colors"
+                className="flex items-center gap-1 text-[12px] font-medium transition-colors"
+                style={{ color: "#6366F1" }}
+                onMouseEnter={e => (e.currentTarget.style.color = "#4F46E5")}
+                onMouseLeave={e => (e.currentTarget.style.color = "#6366F1")}
               >
                 View all <ArrowRight size={11} />
               </button>
@@ -276,9 +355,9 @@ export default function DashboardView({ onNavigate }: Props) {
             {recentInvoices.length === 0 ? (
               <div className="flex-1 flex items-center justify-center py-14 text-center">
                 <div>
-                  <FileText size={24} className="text-gray-200 mx-auto mb-2" />
-                  <p className="text-[13px] text-gray-400">No invoices yet</p>
-                  <button onClick={() => onNavigate("invoices")} className="mt-2 text-[12px] text-indigo-600 font-medium">
+                  <FileText size={24} className="mx-auto mb-2" style={{ color: "var(--t-b3)" }} />
+                  <p className="text-[13px]" style={{ color: "var(--t-tx4)" }}>No invoices yet</p>
+                  <button onClick={() => onNavigate("invoices")} className="mt-2 text-[12px] font-medium" style={{ color: "#6366F1" }}>
                     Create first invoice →
                   </button>
                 </div>
@@ -287,12 +366,11 @@ export default function DashboardView({ onNavigate }: Props) {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-gray-50">
-                      <th className="text-left px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Client</th>
-                      <th className="text-left px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest hidden sm:table-cell">Invoice #</th>
-                      <th className="text-left px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest hidden md:table-cell">Due</th>
-                      <th className="text-left px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Status</th>
-                      <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Amount</th>
+                    <tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
+                      {["Client", "Invoice #", "Due", "Status", "Amount"].map((h, i) => (
+                        <th key={h} className={`text-left px-5 py-2.5 text-[10px] font-semibold uppercase tracking-widest ${i === 1 ? "hidden sm:table-cell" : i === 2 ? "hidden md:table-cell" : ""} ${i === 4 ? "text-right" : ""}`}
+                          style={{ color: "var(--t-tx4)" }}>{h}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -300,23 +378,21 @@ export default function DashboardView({ onNavigate }: Props) {
                       <tr
                         key={inv.id}
                         onClick={() => onNavigate("invoices")}
-                        className="border-b border-gray-50 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
+                        className="cursor-pointer transition-colors"
+                        style={{ borderBottom: "1px solid var(--t-b2)" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "")}
                       >
-                        <td className="px-5 py-3 text-[13px] font-medium text-gray-900">
-                          {clientName(inv.client_id)}
-                        </td>
-                        <td className="px-5 py-3 font-mono text-[11px] text-gray-400 hidden sm:table-cell">
-                          {inv.number}
-                        </td>
-                        <td className="px-5 py-3 text-[12px] text-gray-500 tabular-nums hidden md:table-cell">
-                          {inv.due_date.slice(0, 10)}
-                        </td>
+                        <td className="px-5 py-3 text-[13px] font-medium" style={{ color: "var(--t-tx1)" }}>{clientName(inv.client_id)}</td>
+                        <td className="px-5 py-3 font-mono text-[11px] hidden sm:table-cell" style={{ color: "var(--t-tx4)" }}>{inv.number}</td>
+                        <td className="px-5 py-3 text-[12px] tabular-nums hidden md:table-cell" style={{ color: "var(--t-tx3)" }}>{inv.due_date.slice(0, 10)}</td>
                         <td className="px-5 py-3">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${invStatusColor(inv.status)}`}>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide"
+                            style={invStatusStyle(inv.status)}>
                             {inv.status.replace(/_/g, " ")}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-right text-[13px] font-bold text-gray-900 tabular-nums">
+                        <td className="px-5 py-3 text-right text-[13px] font-bold tabular-nums" style={{ color: "var(--t-tx1)" }}>
                           <CompactAmount value={inv.total} />
                         </td>
                       </tr>
@@ -331,14 +407,14 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="flex flex-col gap-4">
 
             {/* This Week */}
-            <div className="bg-white border border-gray-100 rounded-xl p-5">
-              <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">This Week</h3>
-              <p className="text-[11px] text-gray-400 mb-4">Last 7 days</p>
+            <div className="rounded-xl p-5 animate-fade-up stagger-4" style={cardStyle}>
+              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>This Week</h3>
+              <p className="text-[11px] mb-4" style={{ color: "var(--t-tx4)" }}>Last 7 days</p>
               <div className="space-y-3">
                 {weekStats.map((w) => (
                   <div key={w.label} className="flex items-center justify-between">
-                    <span className="text-[12px] text-gray-500">{w.label}</span>
-                    <span className={`text-[15px] font-bold tabular-nums ${w.color}`}>{w.value}</span>
+                    <span className="text-[12px]" style={{ color: "var(--t-tx3)" }}>{w.label}</span>
+                    <span className="text-[15px] font-bold tabular-nums" style={{ color: w.color }}>{w.value}</span>
                   </div>
                 ))}
               </div>
@@ -346,39 +422,42 @@ export default function DashboardView({ onNavigate }: Props) {
 
             {/* Incomplete Shipping */}
             {(stats?.incomplete_shipping ?? 0) > 0 && (
-              <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-center justify-between">
+              <div className="rounded-xl p-4 flex items-center justify-between animate-fade-up stagger-5"
+                style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}>
                 <div className="flex items-center gap-2.5">
-                  <Package size={14} className="text-amber-500 flex-shrink-0" />
-                  <span className="text-[12px] text-gray-700">
+                  <Package size={14} style={{ color: "#D97706" }} className="flex-shrink-0" />
+                  <span className="text-[12px]" style={{ color: "var(--t-tx2)" }}>
                     {stats?.incomplete_shipping} invoice{stats?.incomplete_shipping !== 1 ? "s" : ""} need shipping info
                   </span>
                 </div>
-                <button onClick={() => onNavigate("invoices")}
-                  className="text-[12px] font-medium text-indigo-600 hover:text-indigo-800 ml-2 flex-shrink-0">View</button>
+                <button onClick={() => onNavigate("invoices")} className="text-[12px] font-medium ml-2 flex-shrink-0" style={{ color: "#6366F1" }}>View</button>
               </div>
             )}
 
             {/* Loss Deals */}
             {(stats?.loss_deals_this_month ?? 0) > 0 && (
-              <div className="bg-red-50 border border-red-100 rounded-xl p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-red-500">Loss Deals This Month</div>
+              <div className="rounded-xl p-4 animate-fade-up stagger-5"
+                style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#F87171" }}>Loss Deals This Month</div>
                 <div className="mt-1 flex items-end justify-between">
-                  <div className="text-[22px] font-bold text-red-700">{stats?.loss_deals_this_month}</div>
-                  <div className="text-[14px] font-semibold text-red-700"><CompactAmount value={stats?.loss_total_this_month ?? 0} /></div>
+                  <div className="text-[22px] font-bold" style={{ color: "#F87171" }}>{stats?.loss_deals_this_month}</div>
+                  <div className="text-[14px] font-semibold" style={{ color: "#F87171" }}><CompactAmount value={stats?.loss_total_this_month ?? 0} /></div>
                 </div>
               </div>
             )}
 
             {/* Top Buyers */}
             {topBuyers.length > 0 && (
-              <div className="bg-white border border-gray-100 rounded-xl p-5">
-                <h3 className="text-[13px] font-semibold text-gray-900 mb-4">Top Buyers</h3>
+              <div className="rounded-xl p-5 animate-fade-up stagger-5" style={cardStyle}>
+                <h3 className="text-[13px] font-semibold tracking-tight mb-4" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top Buyers</h3>
                 <div className="space-y-1.5">
                   {topBuyers.map((h) => (
-                    <div key={h.client_id} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 transition-colors">
+                    <div key={h.client_id} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
                       <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium text-gray-900 truncate">{h.client_name}</div>
-                        <div className="text-[10px] text-gray-400 mt-0.5">
+                        <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{h.client_name}</div>
+                        <div className="text-[10px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
                           {h.actual_paid > 0 ? <CompactAmount value={h.actual_paid} /> : "No purchases yet"}
                         </div>
                       </div>
@@ -390,14 +469,15 @@ export default function DashboardView({ onNavigate }: Props) {
             )}
 
             {/* Follow-ups */}
-            <div className="bg-white border border-gray-100 rounded-xl p-5 flex flex-col flex-1">
+            <div className="rounded-xl p-5 flex flex-col flex-1 animate-fade-up stagger-6" style={cardStyle}>
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h3 className="text-[13px] font-semibold text-gray-900">Follow-ups Due</h3>
-                  <p className="text-[11px] text-gray-400 mt-0.5">Clients to contact today</p>
+                  <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Follow-ups Due</h3>
+                  <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Clients to contact today</p>
                 </div>
                 {followups.length > 0 && (
-                  <span className="w-5 h-5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                  <span className="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0"
+                    style={{ background: "rgba(245,158,11,0.15)", color: "#FCD34D" }}>
                     {followups.length}
                   </span>
                 )}
@@ -405,19 +485,22 @@ export default function DashboardView({ onNavigate }: Props) {
 
               {followups.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center py-4 text-center gap-1.5">
-                  <CheckCircle2 size={22} className="text-emerald-400" />
-                  <p className="text-[12px] font-medium text-gray-600">All caught up</p>
-                  <p className="text-[11px] text-gray-400">No follow-ups due today</p>
+                  <CheckCircle2 size={22} style={{ color: "#34D399" }} />
+                  <p className="text-[12px] font-medium" style={{ color: "var(--t-tx2)" }}>All caught up</p>
+                  <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>No follow-ups due today</p>
                 </div>
               ) : (
                 <div className="space-y-0.5">
                   {followups.map((c) => (
-                    <div key={c.id} className="flex items-center justify-between px-2 py-2 rounded-lg hover:bg-gray-50 transition-colors">
+                    <div key={c.id} className="flex items-center justify-between px-2 py-2 rounded-lg transition-colors"
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
                       <div className="min-w-0">
-                        <p className="text-[12px] font-medium text-gray-900 truncate">{c.name}</p>
-                        {c.company && <p className="text-[10px] text-gray-400 truncate">{c.company}</p>}
+                        <p className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</p>
+                        {c.company && <p className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{c.company}</p>}
                       </div>
-                      <span className="ml-2 flex-shrink-0 text-[10px] font-semibold text-amber-700 bg-amber-50 ring-1 ring-amber-200/70 px-2 py-0.5 rounded-full">
+                      <span className="ml-2 flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                        style={{ background: "rgba(245,158,11,0.12)", color: "#FCD34D", border: "1px solid rgba(245,158,11,0.2)" }}>
                         Today
                       </span>
                     </div>
@@ -425,33 +508,42 @@ export default function DashboardView({ onNavigate }: Props) {
                 </div>
               )}
             </div>
+
           </div>
         </div>
 
         {/* Quick Actions */}
-        <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-          <div className="px-5 py-2.5 border-b border-gray-50">
-            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Quick Actions</p>
+        <div className="rounded-xl overflow-hidden animate-fade-up stagger-5" style={cardStyle}>
+          <div className="px-5 py-2.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
+            <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Quick Actions</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-50">
             {[
-              { label: "Add Client",  sub: "Create a new client profile",  icon: Users,    tab: "clients",  dot: "bg-indigo-500" },
-              { label: "New Invoice", sub: "Generate and send an invoice",  icon: FileText, tab: "invoices", dot: "bg-violet-500" },
-              { label: "Scan Inbox",  sub: "AI-process new emails",        icon: Mail,     tab: "email",    dot: "bg-emerald-500" },
-            ].map((a) => (
-              <button
-                key={a.label}
-                onClick={() => onNavigate(a.tab)}
-                className="group flex items-center gap-3.5 px-5 py-4 hover:bg-gray-50/80 transition-colors w-full text-left"
-              >
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${a.dot}`} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium text-gray-800 group-hover:text-gray-900 transition-colors">{a.label}</p>
-                  <p className="text-[11px] text-gray-400">{a.sub}</p>
-                </div>
-                <ArrowRight size={13} className="text-gray-300 group-hover:text-gray-400 group-hover:translate-x-0.5 flex-shrink-0 transition-all" />
-              </button>
-            ))}
+              { label: "Add Client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "#4F46E5", dotBg: "rgba(99,102,241,0.1)"  },
+              { label: "New Invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "#7C3AED", dotBg: "rgba(124,58,237,0.1)"  },
+              { label: "Scan Inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "#059669", dotBg: "rgba(16,185,129,0.1)"  },
+            ].map((a) => {
+              const Icon = a.icon;
+              return (
+                <button
+                  key={a.label}
+                  onClick={() => onNavigate(a.tab)}
+                  className="group flex items-center gap-3.5 px-5 py-4 transition-colors w-full text-left"
+                  onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                  onMouseLeave={e => (e.currentTarget.style.background = "")}
+                >
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105"
+                    style={{ background: a.dotBg }}>
+                    <Icon size={14} style={{ color: a.dot }} strokeWidth={2} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium" style={{ color: "var(--t-tx1)" }}>{a.label}</p>
+                    <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>{a.sub}</p>
+                  </div>
+                  <ArrowRight size={13} className="opacity-0 group-hover:opacity-50 group-hover:translate-x-0.5 flex-shrink-0 transition-all duration-150" style={{ color: "var(--t-tx3)" }} />
+                </button>
+              );
+            })}
           </div>
         </div>
 

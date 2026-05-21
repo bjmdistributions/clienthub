@@ -14,34 +14,34 @@ const TIER_CONFIG: Record<string, {
   S: {
     label: "Diamond",
     glyph: "◆",
-    bg: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(251,191,36,0.14) 100%)",
-    border: "rgba(245,158,11,0.35)",
-    color: "#92400E",
-    shadow: "0 0 12px rgba(245,158,11,0.2), inset 0 1px 0 rgba(255,255,255,0.15)",
+    bg: "linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 40%, #BAE6FD 70%, #EFF6FF 100%)",
+    border: "rgba(14,165,233,0.45)",
+    color: "#0369A1",
+    shadow: "0 0 16px rgba(14,165,233,0.22), 0 0 4px rgba(186,230,253,0.5), inset 0 1px 0 rgba(255,255,255,0.8)",
   },
   A: {
     label: "Gold",
     glyph: "★",
-    bg: "linear-gradient(135deg, rgba(99,102,241,0.1) 0%, rgba(129,140,248,0.1) 100%)",
-    border: "rgba(99,102,241,0.28)",
-    color: "#4338CA",
-    shadow: "0 0 8px rgba(99,102,241,0.12), inset 0 1px 0 rgba(255,255,255,0.1)",
+    bg: "linear-gradient(135deg, #FEFCE8 0%, #FEF9C3 50%, #FEF08A 100%)",
+    border: "rgba(202,138,4,0.45)",
+    color: "#854D0E",
+    shadow: "0 0 12px rgba(234,179,8,0.22), inset 0 1px 0 rgba(255,255,255,0.6)",
   },
   B: {
     label: "Silver",
     glyph: "●",
-    bg: "linear-gradient(135deg, rgba(16,185,129,0.1) 0%, rgba(52,211,153,0.1) 100%)",
-    border: "rgba(16,185,129,0.28)",
-    color: "#047857",
-    shadow: "inset 0 1px 0 rgba(255,255,255,0.08)",
+    bg: "linear-gradient(135deg, #F8FAFC 0%, #E2E8F0 50%, #F1F5F9 100%)",
+    border: "rgba(100,116,139,0.4)",
+    color: "#334155",
+    shadow: "0 0 8px rgba(148,163,184,0.15), inset 0 1px 0 rgba(255,255,255,0.7)",
   },
   C: {
     label: "Bronze",
     glyph: "○",
-    bg: "linear-gradient(135deg, rgba(249,115,22,0.1) 0%, rgba(251,146,60,0.1) 100%)",
-    border: "rgba(249,115,22,0.25)",
-    color: "#C2410C",
-    shadow: "none",
+    bg: "linear-gradient(135deg, #FFF7ED 0%, #FFEDD5 50%, #FED7AA 100%)",
+    border: "rgba(194,65,12,0.35)",
+    color: "#9A3412",
+    shadow: "0 0 8px rgba(234,88,12,0.1), inset 0 1px 0 rgba(255,255,255,0.4)",
   },
   Prospect: {
     label: "Prospect",
@@ -66,6 +66,7 @@ export default function TierBadge({ tier, size = "md" }: TierBadgeProps) {
 
   return (
     <span
+      data-tier={tier}
       style={{
         background: cfg.bg,
         border: `1px solid ${cfg.border}`,

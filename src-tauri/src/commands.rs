@@ -2109,7 +2109,7 @@ pub async fn remove_supplier_payment(id: String, payment_id: String) -> Result<(
         let now = Utc::now().to_rfc3339();
         let mut cols = Map::new();
         cols.insert("stage".into(), Value::String("payment_received".into()));
-        cols.insert("updated_at".into(), Value::String(now));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
         sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute("UPDATE deal_flows SET stage='payment_received', updated_at=?1 WHERE id=?2", rusqlite::params![Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
@@ -5099,6 +5099,155 @@ pub fn spawn_periodic_sheet_sync(interval_secs: u64) {
             }
         }
     });
+}
+
+// ============================================================
+//  Geocoding
+// ============================================================
+
+#[derive(Serialize)]
+pub struct GeocodeResult {
+    pub lat: f64,
+    pub lng: f64,
+}
+
+#[tauri::command]
+pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> {
+    let lookup = crate::geocode::get().ok_or("geocode not initialized")?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (meta_str,): (Option<String>,) = conn
+        .query_row("SELECT metadata FROM clients WHERE id=?1", [&client_id], |r| Ok((r.get(0)?,)))
+        .map_err(|e| e.to_string())?;
+
+    let mut meta: serde_json::Map<String, Value> = match &meta_str {
+        Some(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::Map::new()),
+        None => serde_json::Map::new(),
+    };
+
+    if let Some(lat) = meta.get("lat").and_then(|v| v.as_f64()) {
+        let lng = meta.get("lng").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        return Ok(GeocodeResult { lat, lng });
+    }
+
+    let city = meta.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if city.is_empty() || state.is_empty() {
+        return Err("client has no city/state".into());
+    }
+
+    let (lat, lng) = lookup.lookup(&city, &state).ok_or("city not found in dataset")?;
+
+    meta.insert("lat".into(), json!(lat));
+    meta.insert("lng".into(), json!(lng));
+    let metadata_str = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(metadata_str.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("clients", &client_id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE clients SET metadata=?1, updated_at=?2 WHERE id=?3",
+        rusqlite::params![metadata_str, now, client_id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(GeocodeResult { lat, lng })
+}
+
+#[tauri::command]
+pub async fn geocode_all_clients() -> Result<String, String> {
+    let lookup = match crate::geocode::get() {
+        Some(l) => l,
+        None => return Err("geocode not initialized — CSV may not have loaded".into()),
+    };
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, metadata FROM clients")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let total = rows.len();
+    let mut matched = 0u32;
+    let mut skipped = 0u32;
+    let mut not_found = 0u32;
+    let mut sample_logged = false;
+
+    for (id, meta_str) in &rows {
+        let mut meta: serde_json::Map<String, Value> = match meta_str {
+            Some(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::Map::new()),
+            None => serde_json::Map::new(),
+        };
+
+        if meta.get("lat").and_then(|v| v.as_f64()).is_some() {
+            skipped += 1;
+            continue;
+        }
+
+        let city = meta.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        if city.is_empty() || state.is_empty() {
+            skipped += 1;
+            if !sample_logged && !city.is_empty() {
+                tracing::info!("geocode sample: city={:?}, state={:?}", city, state);
+                sample_logged = true;
+            }
+            continue;
+        }
+
+        if !sample_logged {
+            tracing::info!("geocode sample: city={:?}, state={:?}", city, state);
+            sample_logged = true;
+        }
+
+        match lookup.lookup(&city, &state) {
+            Some((lat, lng)) => {
+                meta.insert("lat".into(), json!(lat));
+                meta.insert("lng".into(), json!(lng));
+                let metadata_str = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+
+                let now = Utc::now().to_rfc3339();
+                let mut cols = Map::new();
+                cols.insert("metadata".into(), Value::String(metadata_str.clone()));
+                cols.insert("updated_at".into(), Value::String(now.clone()));
+                if let Err(e) = sync::record_upsert("clients", id, cols) {
+                    tracing::warn!("geocode: sync failed for client {}: {}", id, e);
+                    continue;
+                }
+
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                if let Err(e) = conn.execute(
+                    "UPDATE clients SET metadata=?1, updated_at=?2 WHERE id=?3",
+                    rusqlite::params![metadata_str, now, id],
+                ) {
+                    tracing::warn!("geocode: db update failed for client {}: {}", id, e);
+                    continue;
+                }
+
+                matched += 1;
+            }
+            None => {
+                tracing::debug!("geocode: not found for city={:?}, state={:?}", city, state);
+                not_found += 1;
+            }
+        }
+    }
+
+    let msg = format!(
+        "geocode: matched {}/{}, skipped {} (already geocoded or no city/state), {} not found in dataset",
+        matched, total, skipped, not_found
+    );
+    tracing::info!("{}", msg);
+    Ok(msg)
 }
 
 // ============================================================

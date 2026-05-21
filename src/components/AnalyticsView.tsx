@@ -27,11 +27,11 @@ const STATUS_CLR: Record<string, string> = {
 };
 
 const TIER_CLR: Record<string, string> = {
-  S:        "#7c3aed",
-  A:        CLR.amber,
-  B:        "#94a3b8",
-  C:        "#b45309",
-  Prospect: "#e2e8f0",
+  S:        "#0EA5E9",   // diamond — sky blue
+  A:        "#EAB308",   // gold — yellow
+  B:        "#94A3B8",   // silver — slate
+  C:        "#EA580C",   // bronze — orange
+  Prospect: "#6B7280",   // prospect — gray
 };
 
 const TIER_ORDER = ["S", "A", "B", "C", "Prospect"];
@@ -239,7 +239,7 @@ export default function AnalyticsView() {
           <div className="text-[32px] font-bold text-indigo-600 tabular-nums leading-none tracking-tight">
             {fmtAmount(aRevenue)}
           </div>
-          <div className="text-[11px] text-gray-300 mt-2">Total closed deal revenue</div>
+          <div className="text-[11px] text-gray-400 mt-2">Total closed deal revenue</div>
         </div>
 
         <StatCard label="Net Profit"   delay={65}
@@ -534,13 +534,13 @@ export default function AnalyticsView() {
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             {[
-              { label: "Total Revenue",  value: fmtAmount(stats.paid_ytd),         clr: "#111827" },
-              { label: "Total Cost",     value: fmtAmount(stats.total_cost),        clr: "#111827" },
+              { label: "Total Revenue",  value: fmtAmount(stats.paid_ytd),         clr: "var(--t-tx1)" },
+              { label: "Total Cost",     value: fmtAmount(stats.total_cost),        clr: "var(--t-tx1)" },
               { label: "Net Profit",     value: fmtAmount(stats.total_profit),
                 clr: stats.total_profit >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Avg Margin",     value: `${stats.avg_margin.toFixed(1)}%`, clr: "#111827" },
+              { label: "Avg Margin",     value: `${stats.avg_margin.toFixed(1)}%`, clr: "var(--t-tx1)" },
               { label: "Outstanding",    value: fmtAmount(stats.outstanding),       clr: CLR.amber },
-              { label: "Open Closeouts", value: String(stats.incomplete_shipping),  clr: "#111827" },
+              { label: "Open Closeouts", value: String(stats.incomplete_shipping),  clr: "var(--t-tx1)" },
             ].map((item) => (
               <div key={item.label}>
                 <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
@@ -582,7 +582,7 @@ function StatCard({
       </div>
       <div
         className="text-[22px] font-bold tabular-nums leading-none"
-        style={{ color: color ?? "#111827" }}
+        style={{ color: color ?? "var(--t-tx1)" }}
       >
         {children}
       </div>

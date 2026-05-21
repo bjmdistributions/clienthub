@@ -5,6 +5,7 @@ mod commands;
 mod csv_import;
 mod db;
 mod email;
+mod geocode;
 mod invoice;
 mod oauth_flow;
 mod signup_rules;
@@ -12,6 +13,7 @@ mod sync;
 mod sync_crypto;
 
 use commands::*;
+use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
 fn main() {
@@ -31,6 +33,12 @@ fn main() {
         .setup(|app| {
             db::init(app)?;
             signup_rules::ensure_table()?;
+
+            {
+                if let Err(e) = geocode::init() {
+                    tracing::warn!("geocode init failed: {}", e);
+                }
+            }
 
             // Sync folder lives next to the DB. Syncthing/Dropbox can target this.
             let sync_dir = db::app_data_dir().join("sync");
@@ -78,6 +86,14 @@ fn main() {
                     }
                     Err(e) => tracing::warn!("due_followups failed: {}", e),
                     _ => {}
+                }
+            });
+
+            tauri::async_runtime::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                match commands::geocode_all_clients().await {
+                    Ok(msg) => tracing::info!("{}", msg),
+                    Err(e) => tracing::warn!("geocode_all failed: {}", e),
                 }
             });
 
@@ -178,6 +194,9 @@ fn main() {
             get_buyer_tier,
             generate_weekly_brief,
             pipeline_analytics,
+            // Geocoding
+            geocode_client,
+            geocode_all_clients,
             // Email
             send_email,
             scan_inbox,
