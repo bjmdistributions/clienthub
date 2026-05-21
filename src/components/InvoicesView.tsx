@@ -348,6 +348,7 @@ export default function InvoicesView() {
 function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial?: Invoice | null; onClose: () => void }) {
   const [clientId, setClientId]     = useState(initial?.client_id ?? clients[0]?.id ?? "");
   const [clientSearch, setClientSearch] = useState("");
+  const [showClientPicker, setShowClientPicker] = useState(true);
   const [createNew, setCreateNew]   = useState(false);
   const [newClient, setNewClient]   = useState({ name: "", email: "", phone: "", company: "" });
   const [dueDate, setDueDate]       = useState(() => initial ? initial.due_date.slice(0, 10) : new Date().toISOString().slice(0, 10));
@@ -419,15 +420,44 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       {!initial && (
         <div className="grid grid-cols-3 gap-4 mb-5">
           <Field label="Client">
-            <input className={inp} placeholder="Type to search..." value={clientSearch}
-              onChange={(e) => { setClientSearch(e.target.value); const match = clients.find((c) => c.name.toLowerCase().includes(e.target.value.toLowerCase())); if (match) setClientId(match.id); }} />
-            <select className="border border-gray-200 px-3 rounded-lg text-[13px] w-full mt-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white"
-              value={createNew ? "__new__" : clientId}
-              onChange={(e) => { const v = e.target.value; if (v === "__new__") { setCreateNew(true); setClientSearch(""); } else { setCreateNew(false); setClientId(v); const found = clients.find((c) => c.id === v); if (found) setClientSearch(found.name); } }}
-              size={Math.min(6, filteredClients.length + 1)}>
-              {filteredClients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              <option value="__new__">+ Create new client</option>
-            </select>
+            {!createNew && !showClientPicker && clientId ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] text-gray-800 font-medium">{clients.find((c) => c.id === clientId)?.name ?? "Unknown"}</span>
+                <button type="button" onClick={() => { setShowClientPicker(true); setClientSearch(""); }}
+                  className="text-[11px] text-indigo-600 hover:text-indigo-800 underline">Change</button>
+              </div>
+            ) : (
+              <>
+                <input className={inp} placeholder="Type to search clients..." value={clientSearch}
+                  onChange={(e) => { setClientSearch(e.target.value); }}
+                  onFocus={() => setShowClientPicker(true)} />
+                {showClientPicker && (
+                  <div className="border border-gray-200 rounded-lg mt-1 max-h-[160px] overflow-y-auto bg-white">
+                    {filteredClients.map((c) => (
+                      <button key={c.id} type="button"
+                        onClick={() => { setClientId(c.id); setClientSearch(c.name); setShowClientPicker(false); setCreateNew(false); }}
+                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-indigo-50 border-b border-gray-50 last:border-0 transition-colors">
+                        {c.name}
+                      </button>
+                    ))}
+                    <button type="button"
+                      onClick={() => { setCreateNew(true); setShowClientPicker(false); setClientSearch(""); }}
+                      className="w-full text-left px-3 py-2 text-[13px] text-indigo-600 hover:bg-indigo-50 transition-colors">
+                      + Create new client
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+            {createNew && (
+              <div className="mt-2 space-y-2 p-3 bg-gray-50 rounded-lg border border-gray-100">
+                <input className={inp} placeholder="Client name" value={newClient.name} onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} />
+                <input className={inp} placeholder="Email (optional)" value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} />
+                <input className={inp} placeholder="Phone (optional)" value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} />
+                <button type="button" onClick={() => { setCreateNew(false); setShowClientPicker(true); }}
+                  className="text-[11px] text-gray-500 hover:text-gray-700 underline">Cancel</button>
+              </div>
+            )}
           </Field>
           <Field label="Due date"><input type="date" className={inp} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
           <Field label="Issue date"><input type="date" className={inp} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
