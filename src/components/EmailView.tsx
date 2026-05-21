@@ -504,6 +504,9 @@ function NewsletterTab() {
   const [attachmentSearch, setAttachmentSearch] = useState("");
   const [manualEmail, setManualEmail] = useState("");
   const [clientSearch, setClientSearch] = useState("");
+  const [excludeAsNeeded, setExcludeAsNeeded] = useState(false);
+  const [excludeUnder10k, setExcludeUnder10k] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [scheduleInterval, setScheduleInterval] = useState(0);
   const [scheduleCustomDate, setScheduleCustomDate] = useState("");
@@ -539,6 +542,13 @@ function NewsletterTab() {
       )
     : filteredClients;
 
+  const metadataFilteredClients = searchedClients.filter((c) => {
+    if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
+    if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;
+    return true;
+  });
+  const excludedByFilter = searchedClients.length - metadataFilteredClients.length;
+
   const noEmailCount = selected.length - validRecipients.length;
 
   const addRecipient = (c: Client) => {
@@ -546,7 +556,7 @@ function NewsletterTab() {
   };
   const removeRecipient = (id: string) => setSelected(selected.filter((c) => c.id !== id));
   const addAllWithEmail = () => {
-    const toAdd = searchedClients.filter((c) => c.email && !selected.find((s) => s.id === c.id));
+    const toAdd = metadataFilteredClients.filter((c) => c.email && !selected.find((s) => s.id === c.id));
     setSelected([...selected, ...toAdd]);
   };
 
@@ -742,8 +752,33 @@ function NewsletterTab() {
           />
         </div>
 
+        <div className="px-3 py-2 border-b border-gray-100">
+          <button onClick={() => setShowFilters(!showFilters)}
+            className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-700 w-full">
+            <ChevronDown size={11} className={`transition-transform ${showFilters ? "rotate-180" : ""}`} />
+            Filter recipients
+          </button>
+          {showFilters && (
+            <div className="mt-2 space-y-1.5">
+              <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={excludeAsNeeded} onChange={(e) => setExcludeAsNeeded(e.target.checked)}
+                  className="accent-indigo-600" />
+                Exclude "As Needed / One Time"
+              </label>
+              <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={excludeUnder10k} onChange={(e) => setExcludeUnder10k(e.target.checked)}
+                  className="accent-indigo-600" />
+                Exclude under $10k annual spend
+              </label>
+              {excludedByFilter > 0 && (
+                <div className="text-[10px] text-amber-600">{excludedByFilter} client{excludedByFilter !== 1 ? "s" : ""} excluded by filters</div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200, minHeight: 120 }}>
-          {searchedClients.map((c) => {
+          {metadataFilteredClients.map((c) => {
             const isSelected = selected.find((s) => s.id === c.id);
             return (
               <button key={c.id}
@@ -766,8 +801,8 @@ function NewsletterTab() {
               </button>
             );
           })}
-          {searchedClients.length === 0 && (
-            <div className="text-[12px] text-gray-400 text-center py-6">{clientSearch ? "No clients match your search" : "No clients match this filter"}</div>
+          {metadataFilteredClients.length === 0 && (
+            <div className="text-[12px] text-gray-400 text-center py-6">{clientSearch || excludeAsNeeded || excludeUnder10k ? "No clients match your filters" : "No clients match this filter"}</div>
           )}
         </div>
 
