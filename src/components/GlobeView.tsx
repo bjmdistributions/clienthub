@@ -4,9 +4,6 @@ import { fmtAmount } from "../lib/format";
 import TierBadge from "./TierBadge";
 import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw } from "lucide-react";
 
-const THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js";
-const GLOBE_CDN = "https://cdn.jsdelivr.net/npm/globe.gl@2.27.0/dist/globe.gl.min.js";
-
 const STAR_COUNT  = 900;
 const CLOUDS_IMG  = "//unpkg.com/three-globe/example/img/fair_clouds_4k.png";
 const CLOUDS_ALT  = 0.004;
@@ -36,17 +33,6 @@ function tierColor(tier: string): string {
   if (t === "c")       return "#FDBA74"; // bronze — warm orange
   if (t === "prospect") return "#A5B4FC"; // prospect — indigo
   return "#A5B4FC";
-}
-
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload  = () => resolve();
-    s.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(s);
-  });
 }
 
 const relTime = (d: string | null | undefined): string => {
@@ -144,23 +130,14 @@ export default function GlobeView() {
         runGeocode();
       }
 
-      try {
-        await loadScript(THREE_CDN);
-        await loadScript(GLOBE_CDN);
-      } catch {
-        if (destroyed) return;
-        setError("Globe unavailable — check internet connection");
-        return;
-      }
-      if (destroyed) return;
-
       const W     = (window as any);
       const Globe = W.Globe;
       const THREE = W.THREE;
       if (!Globe || !THREE || !containerRef.current) {
-        setError("Globe unavailable — check internet connection");
+        if (!destroyed) setError("Globe unavailable — check internet connection");
         return;
       }
+      if (destroyed) return;
 
       // ── Starfield ───────────────────────────────────────────
       initStarfield(starCanvasRef, starRafRef);
@@ -251,11 +228,6 @@ export default function GlobeView() {
         if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
         if (globe._destructor) globe._destructor();
         globeRef.current = null;
-        [THREE_CDN, GLOBE_CDN].forEach(src => {
-          document.querySelector(`script[src="${src}"]`)?.remove();
-        });
-        delete (window as any).THREE;
-        delete (window as any).Globe;
       };
     };
 
