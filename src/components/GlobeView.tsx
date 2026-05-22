@@ -1,16 +1,16 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import Globe from "globe.gl";
 import { api, Client } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import TierBadge from "./TierBadge";
 import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw } from "lucide-react";
 
-const STAR_COUNT  = 900;
-const CLOUDS_IMG  = "//unpkg.com/three-globe/example/img/fair_clouds_4k.png";
-const CLOUDS_ALT  = 0.004;
-const CLOUDS_SPEED = -0.006;
+const STAR_COUNT  = 450;
 
 // Initial camera — slightly tilted view of Earth
 const HOME_POV = { lat: 25, lng: -30, altitude: 2.0 };
+// Clicking the globe zooms to the continental US so all clients are visible
+const US_POV   = { lat: 38, lng: -97, altitude: 0.7 };
 
 interface Point {
   lat: number;
@@ -24,15 +24,9 @@ interface Point {
   id: string;
 }
 
-// Tier → dot/label color (space-theme palette)
-function tierColor(tier: string): string {
-  const t = (tier || "").toLowerCase();
-  if (t === "s")       return "#7DD3FC"; // diamond — sky blue
-  if (t === "a")       return "#FDE68A"; // gold — warm gold
-  if (t === "b")       return "#E2E8F0"; // silver — near-white
-  if (t === "c")       return "#FDBA74"; // bronze — warm orange
-  if (t === "prospect") return "#A5B4FC"; // prospect — indigo
-  return "#A5B4FC";
+// All client dots are red
+function tierColor(_tier: string): string {
+  return "#EF4444";
 }
 
 const relTime = (d: string | null | undefined): string => {
@@ -59,29 +53,36 @@ export default function GlobeView() {
   const starCanvasRef      = useRef<HTMLCanvasElement>(null);
   const globeRef           = useRef<any>(null);
   const starRafRef         = useRef<number>(0);
-  const cloudRafRef        = useRef<number>(0);
   const autoRotateTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const cleanupRef         = useRef<(() => void) | null>(null);
   // Prevents the OrbitControls "start" event from cancelling programmatic navigation
   const isProgNavRef       = useRef(false);
+  // Set briefly when a client dot is clicked so the page-level click handler
+  // (which would otherwise re-route to US_POV) leaves the client zoom alone.
+  const justClickedDotRef  = useRef(false);
 
   const viewProfile = useCallback((clientId: string) => {
     sessionStorage.setItem("clienthub.globe.clientId", clientId);
     window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clients" }));
   }, []);
 
-  // Programmatic camera navigation — shields the move from the "start" listener
-  const navTo = useCallback((pov: object, duration = 700, thenSpin = false) => {
+  // Programmatic camera move. Only thing we toggle is autoRotate — locking
+  // controls.enabled made the globe feel unresponsive during the tween, and
+  // it was unnecessary anyway since the tween writes the camera directly.
+  const navTo = useCallback((pov: object, duration = 600, thenSpin = false) => {
     const globe = globeRef.current;
     if (!globe) return;
     isProgNavRef.current = true;
+    const c = globe.controls?.();
+    if (c) c.autoRotate = false;
     globe.pointOfView(pov, duration);
     if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
     setTimeout(() => {
       isProgNavRef.current = false;
       if (thenSpin && globeRef.current?.controls()) {
-        globeRef.current.controls().autoRotate      = true;
-        globeRef.current.controls().autoRotateSpeed = 0.45;
+        const cc = globeRef.current.controls();
+        cc.autoRotate      = true;
+        cc.autoRotateSpeed = 0.45;
       }
     }, duration + 80);
   }, []);
@@ -95,16 +96,21 @@ export default function GlobeView() {
       const allClients = await api.listClientsFiltered({});
       const points = toPoints(allClients);
       setMappedCount(points.length);
-      // Hot-reload the labels on the existing globe
+      // Hot-reload the dots on the existing globe
       if (globeRef.current && points.length > 0) {
-        applyLabels(globeRef.current, points);
+        applyDots(globeRef.current, points, (d) => {
+          justClickedDotRef.current = true;
+          setTimeout(() => { justClickedDotRef.current = false; }, 250);
+          setSelected(d);
+          navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
+        });
       }
     } catch (e: any) {
       setGeocodeMsg(e?.toString?.() || "Geocode failed");
     } finally {
       setGeocoding(false);
     }
-  }, []);
+  }, [navTo]);
 
   useEffect(() => {
     let destroyed = false;
@@ -130,54 +136,51 @@ export default function GlobeView() {
         runGeocode();
       }
 
-      const W     = (window as any);
-      const Globe = W.Globe;
-      const THREE = W.THREE;
-      if (!Globe || !THREE || !containerRef.current) {
-        if (!destroyed) setError("Globe unavailable — check internet connection");
+      if (destroyed) return;
+
+      // containerRef is always mounted now (rendered unconditionally above)
+      if (!containerRef.current) {
+        setError("Globe container not ready");
         return;
       }
-      if (destroyed) return;
 
       // ── Starfield ───────────────────────────────────────────
       initStarfield(starCanvasRef, starRafRef);
 
       // ── Globe instance ──────────────────────────────────────
-      const globe = Globe()
-        .globeImageUrl("//unpkg.com/three-globe/example/img/earth-blue-marble.jpg")
-        .bumpImageUrl("//unpkg.com/three-globe/example/img/earth-topology.png")
-        .backgroundColor("rgba(0,0,0,0)")
-        .showAtmosphere(true)
-        .atmosphereColor("#1a6dff")
-        .atmosphereAltitude(0.14)
-        .width(containerRef.current.clientWidth)
-        .height(containerRef.current.clientHeight)
-        (containerRef.current);
+      let globe: any;
+      try {
+        globe = Globe()
+          .globeImageUrl("https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg")
+          .bumpImageUrl("https://unpkg.com/three-globe/example/img/earth-topology.png")
+          .backgroundColor("rgba(0,0,0,0)")
+          .showAtmosphere(true)
+          .atmosphereColor("#1a6dff")
+          .atmosphereAltitude(0.14)
+          .width(containerRef.current.clientWidth)
+          .height(containerRef.current.clientHeight)
+          (containerRef.current);
+      } catch (e: any) {
+        setError(`Globe init failed: ${e?.message ?? e}`);
+        return;
+      }
 
       globeRef.current = globe;
 
-      // ── Labels (dot + name) — replaces raw points layer ────
-      applyLabels(globe, points);
-
-      globe.onLabelClick((point: any) => {
-        globe.controls().autoRotate = false;
-        if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
-        isProgNavRef.current = true;
-        globe.pointOfView({ lat: point.lat, lng: point.lng, altitude: 0.45 }, 500);
-        setSelected(point);
-        setTimeout(() => { isProgNavRef.current = false; }, 600);
-      });
+      // ── Client dots (DOM-based, fixed pixel size) ──────────
+      // Clusters resolve naturally on zoom because dots don't grow on screen.
+      const onDotClick = (d: Point) => {
+        justClickedDotRef.current = true;
+        setTimeout(() => { justClickedDotRef.current = false; }, 250);
+        setSelected(d);
+        navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
+      };
+      applyDots(globe, points, onDotClick);
 
       globe.onGlobeClick(() => {
+        // Clicking the globe sphere → zoom into US to see all clients
         setSelected(null);
-        navTo(HOME_POV, 700, false);
-        if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
-        autoRotateTimerRef.current = setTimeout(() => {
-          if (globeRef.current?.controls()) {
-            globeRef.current.controls().autoRotate      = true;
-            globeRef.current.controls().autoRotateSpeed = 0.45;
-          }
-        }, 3500);
+        navTo(US_POV, 600, false);
       });
 
       // ── Controls ────────────────────────────────────────────
@@ -196,23 +199,6 @@ export default function GlobeView() {
         if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
       });
 
-      // ── Clouds ──────────────────────────────────────────────
-      globe.onGlobeReady?.(() => {
-        new THREE.TextureLoader().load(CLOUDS_IMG, (tex: any) => {
-          const r      = (globe as any).getGlobeRadius?.() || 100;
-          const clouds = new THREE.Mesh(
-            new THREE.SphereGeometry(r * (1 + CLOUDS_ALT), 75, 75),
-            new THREE.MeshPhongMaterial({ map: tex, transparent: true, opacity: 0.65 })
-          );
-          globe.scene().add(clouds);
-          const spin = () => {
-            clouds.rotation.y += (CLOUDS_SPEED * Math.PI) / 180;
-            cloudRafRef.current = requestAnimationFrame(spin);
-          };
-          spin();
-        });
-      });
-
       // ── Resize ──────────────────────────────────────────────
       const onResize = () => {
         if (!containerRef.current) return;
@@ -224,7 +210,6 @@ export default function GlobeView() {
       cleanupRef.current = () => {
         window.removeEventListener("resize", onResize);
         if (starRafRef.current) cancelAnimationFrame(starRafRef.current);
-        if (cloudRafRef.current) cancelAnimationFrame(cloudRafRef.current);
         if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
         if (globe._destructor) globe._destructor();
         globeRef.current = null;
@@ -241,23 +226,44 @@ export default function GlobeView() {
     navTo(HOME_POV, 800, true);
   };
 
+  // Clicking anywhere on the globe page (other than dots, buttons, or the
+  // client panel) zooms into the US. The native click bubbles up here even
+  // when the user clicks empty canvas space that globe.gl didn't handle.
+  const handleRootClick = (e: React.MouseEvent) => {
+    if (justClickedDotRef.current) return; // a dot click is mid-flight
+    const t = e.target as HTMLElement;
+    // Skip clicks on UI overlays/buttons/panels so they keep working
+    if (t.closest("button, .globe-client-panel, .globe-bottom-bar, .globe-top-controls, .globe-geocode-msg")) return;
+    if (selected) return; // panel is open — let X-button handle close
+    navTo(US_POV, 600, false);
+  };
+
   // ── Render ──────────────────────────────────────────────────
-  if (loading) return (
-    <div className="flex items-center justify-center w-full h-full" style={{ background: "#060610" }}>
-      <div className="text-[13px]" style={{ color: "#555" }}>Loading globe…</div>
-    </div>
-  );
-
-  if (error) return (
-    <div className="flex items-center justify-center w-full h-full" style={{ background: "#060610" }}>
-      <div className="text-[13px] text-center" style={{ color: "#666" }}>{error}</div>
-    </div>
-  );
-
+  // Always render the container so containerRef is mounted before the async
+  // init resolves — otherwise containerRef.current would be null when checked.
+  // Loading and error states are overlays, not replacements.
   return (
-    <div className="globe-root relative w-full h-full" style={{ background: "#060610", color: "#eef0f6" }}>
+    <div
+      className="globe-root relative w-full h-full"
+      style={{ background: "#060610", color: "#eef0f6" }}
+      onClick={handleRootClick}
+    >
       <canvas ref={starCanvasRef} className="globe-starfield" />
       <div ref={containerRef} className="globe-container" />
+
+      {/* Loading overlay */}
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="text-[13px]" style={{ color: "#555" }}>Loading globe…</div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="text-[13px] text-center" style={{ color: "#666" }}>{error}</div>
+        </div>
+      )}
 
       {/* Zero-clients overlay */}
       {mappedCount === 0 && !geocoding && (
@@ -385,37 +391,45 @@ function toPoints(clients: Client[]): Point[] {
     .filter(Boolean) as Point[];
 }
 
-function applyLabels(globe: any, points: Point[]) {
+// Two-element pattern: globe.gl writes `style.transform` directly on the
+// element it gets back from htmlElement. If we styled the dot itself we'd
+// fight that inline transform. Instead, the outer wrap (zero-sized) is what
+// globe.gl positions, and the inner dot is absolutely positioned so that
+// its center sits exactly on the wrap's origin — i.e. the geo coord.
+function applyDots(globe: any, points: Point[], onClick: (d: Point) => void) {
   globe
-    .labelsData(points)
-    .labelLat((d: any)  => d.lat)
-    .labelLng((d: any)  => d.lng)
-    // Truncate long names so labels don't crowd
-    .labelText((d: any) => d.name.length > 20 ? d.name.slice(0, 18) + "…" : d.name)
-    .labelSize(0.42)
-    .labelDotRadius(0.42)
-    .labelColor((d: any) => tierColor(d.tier))
-    .labelResolution(3)
-    .labelAltitude(0.013)
-    .labelIncludeDot(true)
-    // Hover tooltip
-    .labelLabel((d: any) => `
-      <div style="
-        background: rgba(6,6,18,0.94);
-        border: 1px solid rgba(165,180,252,0.22);
-        border-radius: 10px;
-        padding: 9px 13px;
-        color: #eee;
-        font-family: system-ui, sans-serif;
-        font-size: 12px;
-        min-width: 160px;
-        pointer-events: none;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-      ">
-        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${d.name}</div>
-        ${d.city || d.state ? `<div style="color:#888">${d.city}${d.state ? ", " + d.state : ""}</div>` : ""}
-      </div>
-    `);
+    .htmlElementsData(points)
+    .htmlLat((d: Point) => d.lat)
+    .htmlLng((d: Point) => d.lng)
+    .htmlAltitude(0.005)
+    .htmlElement((d: Point) => {
+      const c = tierColor(d.tier);
+
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
+
+      const dot = document.createElement("div");
+      dot.className = "globe-dot";
+      dot.style.background = c;
+      dot.innerHTML = `
+        <div class="globe-dot-tip">
+          <strong>${escapeHtml(d.name)}</strong>
+          ${d.city || d.state ? `<span>${escapeHtml(d.city)}${d.state ? ", " + escapeHtml(d.state) : ""}</span>` : ""}
+        </div>`;
+      dot.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        onClick(d);
+      });
+
+      wrap.appendChild(dot);
+      return wrap;
+    });
+}
+
+function escapeHtml(s: string): string {
+  return (s || "").replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch] || ch)
+  );
 }
 
 function initStarfield(
@@ -445,7 +459,14 @@ function initStarfield(
   }));
 
   let frame = 0;
-  const draw = () => {
+  let lastDraw = 0;
+  // Cap star redraw at ~30 FPS — twinkle is imperceptibly different from 60
+  // and halves the CPU spent on the background canvas.
+  const FRAME_MS = 1000 / 30;
+  const draw = (t: number) => {
+    rafRef.current = requestAnimationFrame(draw);
+    if (t - lastDraw < FRAME_MS) return;
+    lastDraw = t;
     frame++;
     const { width: w, height: h } = canvas;
     ctx.clearRect(0, 0, w, h);
@@ -456,7 +477,6 @@ function initStarfield(
       ctx.fillStyle = `rgba(255,255,255,${opacity})`;
       ctx.fill();
     }
-    rafRef.current = requestAnimationFrame(draw);
   };
-  draw();
+  rafRef.current = requestAnimationFrame(draw);
 }
