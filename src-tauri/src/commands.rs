@@ -2248,6 +2248,13 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         "UPDATE invoices SET status='paid', is_complete=?1, profit=?2, total_cost=?3, margin=?4 WHERE id=?5",
         rusqlite::params![(!awaiting_shipping) as i64, net, total_cost, margin_pct, df.invoice_id],
     ).map_err(|e| e.to_string())?;
+    // Auto-mark linked inventory lot as Sold (best-effort)
+    if let Err(e) = conn.execute(
+        "UPDATE inventory SET status='sold' WHERE linked_deal_id = (SELECT d.id FROM deals d WHERE d.converted_invoice_id = ?1) AND status='reserved'",
+        [&df.invoice_id],
+    ) {
+        tracing::warn!("auto-mark inventory sold failed: {}", e);
+    }
     let warning = if is_loss { Some(format!("This deal resulted in a loss of ${:.2}", net.abs())) } else { None };
     Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
 }
@@ -3288,6 +3295,95 @@ pub async fn get_current_user() -> Result<Option<User>, String> {
 pub async fn set_current_user(id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
+//  Inventory / Lots Board
+// ============================================================
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct InventoryLot {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub quantity: i64,
+    pub total_cost: f64,
+    pub asking_price: f64,
+    pub status: String,
+    pub linked_deal_id: Option<String>,
+    pub photos_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[tauri::command]
+pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (sql, params): (String, Vec<String>) = match &status {
+        Some(s) => ("SELECT * FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
+        None => ("SELECT * FROM inventory ORDER BY created_at DESC".into(), vec![]),
+    };
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |r| Ok(InventoryLot {
+        id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, category: r.get(3)?,
+        quantity: r.get(4)?, total_cost: r.get(5)?, asking_price: r.get(6)?,
+        status: r.get(7)?, linked_deal_id: r.get(8)?, photos_json: r.get(9)?,
+        created_at: r.get(10)?, updated_at: r.get(11)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>) -> Result<InventoryLot, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let photos_json = serde_json::to_string(&photos.unwrap_or_default()).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9)",
+        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now })
+}
+
+#[tauri::command]
+pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut sets = vec!["updated_at = ?1".to_string()];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now.clone())];
+    if let Some(v) = name { sets.push("name = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = description { sets.push("description = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = category { sets.push("category = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = quantity { sets.push("quantity = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = total_cost { sets.push("total_cost = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = asking_price { sets.push("asking_price = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = photos { sets.push("photos_json = ?".to_string()); params.push(Box::new(serde_json::to_string(&v).map_err(|e| e.to_string())?)); }
+    let sql = format!("UPDATE inventory SET {} WHERE id = ?", sets.join(", "));
+    params.push(Box::new(id));
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn archive_lot(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let status: String = conn.query_row("SELECT status FROM inventory WHERE id = ?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if status == "reserved" { return Err("Cannot archive a reserved lot. Remove the deal link first.".into()); }
+    conn.execute("UPDATE inventory SET status = 'archived', updated_at = ?1 WHERE id = ?2", rusqlite::params![chrono::Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn link_lot_to_deal(lot_id: String, deal_id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let exists: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE id = ?1", [&deal_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if exists == 0 { return Err("Deal not found".into()); }
+    conn.execute("UPDATE inventory SET linked_deal_id = ?1, status = 'reserved', updated_at = ?2 WHERE id = ?3", rusqlite::params![deal_id, chrono::Utc::now().to_rfc3339(), lot_id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 export type Role = "owner" | "sales_rep" | "viewer";
-export type Feature = "dashboard" | "clients" | "invoices" | "deals" | "dealflow" | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings" | "health";
+export type Feature = "dashboard" | "clients" | "invoices" | "deals" | "dealflow" | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings" | "health" | "inventory";
 
 export function canView(role: Role, feature: Feature): boolean {
   if (role === "owner") return true;

@@ -621,6 +621,21 @@ export interface User {
   created_at: string;
 }
 
+export interface Lot {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  quantity: number;
+  total_cost: number;
+  asking_price: number;
+  status: string;
+  linked_deal_id: string | null;
+  photos_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SyncStatus {
   events_applied: number;
   last_applied: string | null;
@@ -964,4 +979,12 @@ export const api = {
   updateUserRole: (id: string, role: string) => invoke<void>("update_user_role", { id, role }),
   getCurrentUser: () => invoke<User | null>("get_current_user"),
   setCurrentUser: (id: string) => invoke<void>("set_current_user", { id }),
+
+  // Inventory
+  listInventory: (status?: string) => invoke<Lot[]>("list_inventory", { status: status ?? null }),
+  createLot: (lot: { name: string; quantity: number; total_cost: number; asking_price: number; description?: string; category?: string; photos?: string[] }) =>
+    invoke<Lot>("create_lot", { ...lot }),
+  updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
+  archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
+  linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 };

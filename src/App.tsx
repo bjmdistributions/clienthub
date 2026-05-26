@@ -14,6 +14,7 @@ import {
   Sun,
   Moon,
   Globe,
+  Grid3X3,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -23,6 +24,7 @@ import DashboardView from "./components/DashboardView";
 import DealsView from "./components/DealsView";
 import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
+import InventoryView from "./components/InventoryView";
 import CloseoutView from "./components/CloseoutView";
 import HealthView from "./components/HealthView";
 import BriefView from "./components/BriefView";
@@ -36,7 +38,7 @@ import { useAppStore } from "./lib/store";
 import { api, User } from "./lib/api";
 import { canView } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "invoices" | "email" | "analytics" | "brief" | "globe" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "email" | "analytics" | "brief" | "globe" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -154,6 +156,7 @@ export default function App() {
     { id: "invoices",  label: "Invoices",   icon: FileText },
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
     { id: "suppliers", label: "Suppliers",  icon: Package },
+    { id: "inventory", label: "Inventory",  icon: Grid3X3 },
     { id: "email",     label: "Newsletter", icon: Mail },
     { id: "brief",     label: "Brief",      icon: FileText },
     { id: "globe",     label: "Globe",      icon: Globe },
@@ -308,6 +311,7 @@ export default function App() {
                 {tab === "invoices"  && <InvoicesView />}
                 {tab === "dealflow"  && <DealFlowView />}
                 {tab === "suppliers" && <SuppliersView />}
+                {tab === "inventory" && <InventoryView />}
                 {tab === "deals"     && <CloseoutView />}
                 {tab === "analytics" && <AnalyticsView />}
                 {tab === "health"    && <TiersView />}

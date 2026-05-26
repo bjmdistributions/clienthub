@@ -536,4 +536,23 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE interactions ADD COLUMN user_name TEXT;
         "#,
     ),
+    (
+        26,
+        r#"
+        CREATE TABLE IF NOT EXISTS inventory (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            category TEXT,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            total_cost REAL NOT NULL DEFAULT 0,
+            asking_price REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','reserved','sold','archived')),
+            linked_deal_id TEXT,
+            photos_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    ),
 ];

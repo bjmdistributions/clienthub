@@ -266,6 +266,12 @@ fn main() {
             update_user_role,
             get_current_user,
             set_current_user,
+            // Inventory
+            list_inventory,
+            create_lot,
+            update_lot,
+            archive_lot,
+            link_lot_to_deal,
             // Sync
             sync_replay,
             sync_status,
