@@ -7,6 +7,7 @@ mod db;
 mod email;
 mod geocode;
 mod invoice;
+mod manifest;
 mod oauth_flow;
 mod signup_rules;
 mod sync;
@@ -314,6 +315,8 @@ fn main() {
             generate_portal_link,
             revoke_portal_link,
             list_portal_links,
+            // Manifest
+            analyze_manifest,
             // Sync
             sync_replay,
             sync_status,

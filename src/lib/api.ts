@@ -657,6 +657,22 @@ export interface FollowUpLogEntry {
   details: string | null;
 }
 
+export interface ManifestCategory {
+  category: string;
+  items: number;
+  total_retail: number;
+}
+
+export interface ManifestAnalysis {
+  categories: ManifestCategory[];
+  suggested_bid: number;
+  total_retail: number;
+  overall_margin_pct: number;
+  total_items: number;
+  skipped_rows: number;
+  formula: string;
+}
+
 export interface PortalLink {
   id: string;
   client_id: string;
@@ -1033,4 +1049,7 @@ export const api = {
   generatePortalLink: (clientId: string) => invoke<PortalLink>("generate_portal_link", { clientId }),
   revokePortalLink: (token: string) => invoke<void>("revoke_portal_link", { token }),
   listPortalLinks: (clientId?: string) => invoke<PortalLink[]>("list_portal_links", { clientId: clientId ?? null }),
+
+  // Manifest
+  analyzeManifest: (path: string) => invoke<ManifestAnalysis>("analyze_manifest", { path }),
 };

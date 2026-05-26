@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, Lot, Deal } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2 } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as const;
@@ -22,6 +22,11 @@ export default function InventoryView() {
   const [showArchived, setShowArchived] = useState(false);
   const [linkModal, setLinkModal] = useState<string | null>(null);
   const [deals, setDeals] = useState<Deal[]>([]);
+  const [manifest, setManifest] = useState<ManifestAnalysis | null>(null);
+  const [manifestBusy, setManifestBusy] = useState(false);
+  const [showManifest, setShowManifest] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   const load = async () => { const l = await api.listInventory(); setLots(l); };
   useEffect(() => { load(); }, []);
@@ -47,6 +52,11 @@ export default function InventoryView() {
 
   return (
     <div>
+      {toast && (
+        <div className="fixed bottom-5 right-5 bg-[#1A1A1E] text-white px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">
+          {toast}
+        </div>
+      )}
       <div className="flex justify-between items-center mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Inventory</h2>
@@ -55,6 +65,74 @@ export default function InventoryView() {
         <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
           <Plus size={14} /> Add Lot
         </button>
+      </div>
+
+      <div className="mb-5 bg-white border border-gray-100 rounded-xl overflow-hidden">
+        <button onClick={() => setShowManifest(!showManifest)} className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50/50 transition-colors">
+          <div className="flex items-center gap-2">
+            <BarChart3 size={15} className="text-indigo-500" />
+            <h3 className="text-[13px] font-semibold text-gray-900">Manifest Analyzer</h3>
+          </div>
+          <ChevronDown size={13} className={`text-gray-400 transition-transform ${showManifest ? "rotate-180" : ""}`} />
+        </button>
+        {showManifest && (
+          <div className="px-5 pb-4 border-t border-gray-50">
+            <p className="text-[11px] text-gray-400 mt-3 mb-3">Upload a manifest CSV to analyze categories, estimate margins, and calculate a suggested bid.</p>
+            {!manifest && (
+              <button onClick={async () => {
+                const f = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
+                if (typeof f !== "string") return;
+                setManifestBusy(true);
+                try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { alert(e); }
+                setManifestBusy(false);
+              }} disabled={manifestBusy} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+                <Upload size={12} /> {manifestBusy ? "Analyzing..." : "Upload CSV"}
+              </button>
+            )}
+            {manifest && (
+              <div>
+                <div className="grid grid-cols-4 gap-3 mb-4">
+                  {[
+                    { label: "Total Items", value: manifest.total_items },
+                    { label: "Total Retail", value: fmtAmount(manifest.total_retail) },
+                    { label: "Avg Margin", value: `${manifest.overall_margin_pct.toFixed(0)}%` },
+                    { label: "Suggested Bid", value: fmtAmount(manifest.suggested_bid) },
+                  ].map((s) => (
+                    <div key={s.label} className="bg-gray-50 rounded-lg px-3 py-2.5">
+                      <p className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">{s.label}</p>
+                      <p className="text-[15px] font-bold text-gray-900 tabular-nums">{s.value}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-500 mb-3 bg-amber-50 border border-amber-100 px-3 py-2 rounded-lg">{manifest.formula}</p>
+                {manifest.skipped_rows > 0 && <p className="text-[11px] text-amber-600 mb-3">{manifest.skipped_rows} rows skipped (missing price).</p>}
+                <table className="w-full text-[12px] mb-3">
+                  <thead className="bg-gray-50">
+                    <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-r-lg">Retail</th></tr>
+                  </thead>
+                  <tbody>
+                    {manifest.categories.map((c) => (
+                      <tr key={c.category} className="border-t border-gray-50">
+                        <td className="px-3 py-2 font-medium text-gray-700">{c.category}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{c.items}</td>
+                        <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(c.total_retail)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="flex gap-2">
+                  <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => showToast("Suggested bid copied — paste into your deal."))}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
+                    <Clipboard size={11} /> Copy Bid
+                  </button>
+                  <button onClick={() => { setManifest(null); }} className="text-[11px] text-gray-500 hover:text-gray-700 px-3 h-8 rounded-lg hover:bg-gray-50">
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex gap-5">
