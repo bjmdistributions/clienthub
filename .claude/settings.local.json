@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-Item three.min.js, globe.gl.min.js)",
+      "Bash(Select-Object Name, Length)",
+      "Bash(dd if=\"C:/Users/Jack/Desktop/BUSINESS APP/public/globe.gl.min.js\" bs=1 skip=8280 count=120)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

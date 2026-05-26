@@ -30,6 +30,7 @@ import AnalyticsView from "./components/AnalyticsView";
 import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import QuickLogModal from "./components/QuickLogModal";
+import UpdateNotification from "./components/UpdateNotification";
 import { useAppStore } from "./lib/store";
 import { api } from "./lib/api";
 
@@ -264,8 +265,9 @@ export default function App() {
 
       {/* Main */}
       <main className={`flex-1 ${tab === "globe" ? "overflow-hidden" : "overflow-auto"}`} style={{ background: tab === "globe" ? "#0a0a14" : "var(--t-bg)" }}>
-        <div key={pageKey} className="page-enter h-full">
-          {tab === "dashboard" ? (
+          <div key={pageKey} className="page-enter h-full">
+            {tab !== "globe" && <UpdateNotification />}
+            {tab === "dashboard" ? (
             <DashboardView onNavigate={setTab} />
           ) : tab === "globe" ? (
             <GlobeView />
