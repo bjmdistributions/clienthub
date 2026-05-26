@@ -3405,6 +3405,217 @@ pub async fn link_lot_to_deal(lot_id: String, deal_id: String) -> Result<(), Str
 }
 
 // ============================================================
+//  Follow-Up Rules Automation
+// ============================================================
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct FollowUpRule {
+    pub id: String,
+    pub name: String,
+    pub trigger_type: String,
+    pub trigger_value: i64,
+    pub action_type: String,
+    pub email_subject: Option<String>,
+    pub email_body: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn list_followup_rules() -> Result<Vec<FollowUpRule>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id,name,trigger_type,trigger_value,action_type,email_subject,email_body,is_active,created_at FROM followup_rules ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(FollowUpRule {
+        id: r.get(0)?, name: r.get(1)?, trigger_type: r.get(2)?, trigger_value: r.get(3)?,
+        action_type: r.get(4)?, email_subject: r.get(5)?, email_body: r.get(6)?,
+        is_active: r.get::<_,i64>(7)? != 0, created_at: r.get(8)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_followup_rule(name: String, trigger_type: String, trigger_value: i64, action_type: String, email_subject: Option<String>, email_body: Option<String>) -> Result<FollowUpRule, String> {
+    let valid_triggers = ["no_order", "no_contact", "overdue_invoice", "stale_deal"];
+    let valid_actions = ["email", "reminder", "both"];
+    if !valid_triggers.contains(&trigger_type.as_str()) { return Err("Invalid trigger_type".into()); }
+    if !valid_actions.contains(&action_type.as_str()) { return Err("Invalid action_type".into()); }
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO followup_rules (id,name,trigger_type,trigger_value,action_type,email_subject,email_body,is_active,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8)",
+        rusqlite::params![id, name, trigger_type, trigger_value, action_type, email_subject, email_body, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(FollowUpRule { id, name, trigger_type, trigger_value, action_type, email_subject, email_body, is_active: true, created_at: now })
+}
+
+#[tauri::command]
+pub async fn update_followup_rule(id: String, name: Option<String>, trigger_type: Option<String>, trigger_value: Option<i64>, action_type: Option<String>, email_subject: Option<String>, email_body: Option<String>) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut sets = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(v) = name { sets.push("name = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = trigger_type { sets.push("trigger_type = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = trigger_value { sets.push("trigger_value = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = action_type { sets.push("action_type = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = email_subject { sets.push("email_subject = ?".to_string()); params.push(Box::new(v)); }
+    if let Some(v) = email_body { sets.push("email_body = ?".to_string()); params.push(Box::new(v)); }
+    if sets.is_empty() { return Ok(()); }
+    let sql = format!("UPDATE followup_rules SET {} WHERE id = ?", sets.join(", "));
+    params.push(Box::new(id));
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_followup_rule(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM followup_log WHERE rule_id=?1", [&id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM followup_rules WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_followup_rule(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE followup_rules SET is_active = 1 - is_active WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct FollowUpLogEntry {
+    pub id: String,
+    pub rule_id: String,
+    pub client_id: Option<String>,
+    pub triggered_at: String,
+    pub action_taken: String,
+    pub details: Option<String>,
+}
+
+#[tauri::command]
+pub async fn process_followup_rules() -> Result<Vec<FollowUpLogEntry>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339();
+
+    let rules: Vec<FollowUpRule> = conn.prepare("SELECT id,name,trigger_type,trigger_value,action_type,email_subject,email_body,is_active,created_at FROM followup_rules WHERE is_active=1")
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| Ok(FollowUpRule {
+            id: r.get(0)?, name: r.get(1)?, trigger_type: r.get(2)?, trigger_value: r.get(3)?,
+            action_type: r.get(4)?, email_subject: r.get(5)?, email_body: r.get(6)?,
+            is_active: r.get::<_,i64>(7)? != 0, created_at: r.get(8)?,
+        })).map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok()).collect();
+
+    let mut log_entries: Vec<FollowUpLogEntry> = Vec::new();
+
+    for rule in &rules {
+        let cutoff = (now - chrono::Duration::days(rule.trigger_value)).to_rfc3339();
+
+        let matched: Vec<(String, Option<String>, Option<String>, Option<String>)> = match rule.trigger_type.as_str() {
+            "no_order" => {
+                let sql = "SELECT c.id, c.name, c.email, MAX(i.issue_date) as last_order FROM clients c LEFT JOIN invoices i ON i.client_id=c.id GROUP BY c.id HAVING last_order IS NULL OR last_order < ?1";
+                conn.prepare(sql).map_err(|e| e.to_string())?
+                    .query_map([&cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_,Option<String>>(3).ok().flatten())))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok()).collect()
+            }
+            "no_contact" => {
+                let sql = "SELECT c.id, c.name, c.email, ic.mc FROM clients c LEFT JOIN (SELECT client_id, MAX(created_at) as mc FROM interactions GROUP BY client_id) ic ON ic.client_id=c.id WHERE ic.mc IS NULL OR ic.mc < ?1";
+                conn.prepare(sql).map_err(|e| e.to_string())?
+                    .query_map([&cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_,Option<String>>(3).ok().flatten())))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok()).collect()
+            }
+            "overdue_invoice" => {
+                let sql = "SELECT c.id, c.name, c.email, i.due_date FROM invoices i JOIN clients c ON c.id=i.client_id WHERE i.status='overdue' AND i.due_date < ?1 GROUP BY c.id";
+                conn.prepare(sql).map_err(|e| e.to_string())?
+                    .query_map([&cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_,Option<String>>(3).ok().flatten())))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok()).collect()
+            }
+            "stale_deal" => {
+                let sql = "SELECT c.id, c.name, c.email, d.updated_at FROM deals d JOIN clients c ON c.id=d.client_id WHERE d.stage NOT IN ('won','lost') AND d.updated_at < ?1 GROUP BY c.id";
+                conn.prepare(sql).map_err(|e| e.to_string())?
+                    .query_map([&cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_,Option<String>>(3).ok().flatten())))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok()).collect()
+            }
+            _ => Vec::new(),
+        };
+
+        for (client_id, client_name, client_email, _) in &matched {
+            let already_done: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM followup_log WHERE rule_id=?1 AND client_id=?2 AND triggered_at > ?3",
+                rusqlite::params![rule.id, client_id, cutoff],
+                |r| r.get(0),
+            ).unwrap_or(0);
+            if already_done > 0 { continue; }
+
+            let should_email = rule.action_type == "email" || rule.action_type == "both";
+            let should_remind = rule.action_type == "reminder" || rule.action_type == "both";
+
+            let mut details_bits: Vec<String> = Vec::new();
+
+            if should_email {
+                let subject = rule.email_subject.clone().unwrap_or_else(|| "Follow-up".into());
+                let body = rule.email_body.clone().unwrap_or_default().replace("{client_name}", client_name.as_ref().unwrap_or(&String::new()));
+                match crate::email::send(client_email.as_ref().unwrap_or(&String::new()), &subject, &body, None).await {
+                    Ok(()) => { details_bits.push("email sent".into()); }
+                    Err(e) => { details_bits.push(format!("SMTP error: {}", e)); }
+                }
+            }
+
+            if should_remind {
+                let iid = uuid::Uuid::new_v4().to_string();
+                if let Err(e) = conn.execute(
+                    "INSERT INTO interactions (id,client_id,kind,subject,body,created_at) VALUES (?1,?2,'reminder','Automated follow-up',?3,?4)",
+                    rusqlite::params![iid, client_id, format!("Rule: {}", rule.name), now_str],
+                ) {
+                    details_bits.push(format!("reminder insert failed: {}", e));
+                }
+                if let Err(e) = conn.execute(
+                    "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), '$.next_follow_up_date', json('clear')) WHERE id=?1",
+                    [client_id],
+                ) {
+                    details_bits.push(format!("metadata update failed: {}", e));
+                }
+            }
+
+            let action_label = if should_email && should_remind { "email+reminder" } else if should_email { "email" } else { "reminder" };
+            let log_id = uuid::Uuid::new_v4().to_string();
+            let details_str = if details_bits.is_empty() { None } else { Some(details_bits.join("; ")) };
+            conn.execute(
+                "INSERT INTO followup_log (id,rule_id,client_id,triggered_at,action_taken,details) VALUES (?1,?2,?3,?4,?5,?6)",
+                rusqlite::params![log_id, rule.id, client_id, now_str, action_label, details_str],
+            ).map_err(|e| e.to_string())?;
+            log_entries.push(FollowUpLogEntry { id: log_id, rule_id: rule.id.clone(), client_id: Some(client_id.clone()), triggered_at: now_str.clone(), action_taken: action_label.into(), details: details_str });
+        }
+    }
+
+    // Cleanup: delete log entries older than 90 days
+    let old_cutoff = (now - chrono::Duration::days(90)).to_rfc3339();
+    let _ = conn.execute("DELETE FROM followup_log WHERE triggered_at < ?1", [&old_cutoff]);
+
+    // Record last run time
+    conn.execute("INSERT INTO settings (key,value) VALUES ('last_rules_run',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&now_str]).map_err(|e| e.to_string())?;
+
+    Ok(log_entries)
+}
+
+#[tauri::command]
+pub async fn get_followup_log() -> Result<Vec<FollowUpLogEntry>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id,rule_id,client_id,triggered_at,action_taken,details FROM followup_log ORDER BY triggered_at DESC LIMIT 50").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(FollowUpLogEntry {
+        id: r.get(0)?, rule_id: r.get(1)?, client_id: r.get(2)?,
+        triggered_at: r.get(3)?, action_taken: r.get(4)?, details: r.get(5)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ============================================================
 //  Sync controls
 // ============================================================
 

@@ -17,6 +17,8 @@ import {
   SheetSyncLogEntry,
   ProfitSplit,
   User,
+  FollowUpRule,
+  FollowUpLogEntry,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -815,6 +817,54 @@ function AutomationTab() {
     } catch (e: any) { alert(e); }
   };
 
+  // Follow-up rules state
+  const [fuRules, setFuRules] = useState<FollowUpRule[]>([]);
+  const [fuLog, setFuLog] = useState<FollowUpLogEntry[]>([]);
+  const [lastRun, setLastRun] = useState<string | null>(null);
+  const [showFuForm, setShowFuForm] = useState(false);
+  const [editingFu, setEditingFu] = useState<FollowUpRule | null>(null);
+  const [fuForm, setFuForm] = useState({ name: "", trigger_type: "no_order" as string, trigger_value: 30, action_type: "email" as string, email_subject: "", email_body: "" });
+
+  const loadFu = () => {
+    api.listFollowupRules().then(setFuRules).catch(() => {});
+    api.getFollowupLog().then(setFuLog).catch(() => {});
+    api.getBackupStatus().then(s => {
+      if ((s as any).last_rules_run) setLastRun((s as any).last_rules_run);
+    }).catch(() => {});
+  };
+  useEffect(() => { loadFu(); }, []);
+
+  const saveFu = async () => {
+    if (!fuForm.name.trim()) return;
+    try {
+      if (editingFu) {
+        await api.updateFollowupRule(editingFu.id, fuForm);
+      } else {
+        await api.createFollowupRule({
+          name: fuForm.name.trim(),
+          trigger_type: fuForm.trigger_type,
+          trigger_value: fuForm.trigger_value,
+          action_type: fuForm.action_type,
+          email_subject: fuForm.action_type !== "reminder" ? fuForm.email_subject || null : null,
+          email_body: fuForm.action_type !== "reminder" ? fuForm.email_body || null : null,
+        });
+      }
+      setShowFuForm(false);
+      setEditingFu(null);
+      loadFu();
+    } catch (e: any) { alert(e); }
+  };
+
+  const editFu = (r: FollowUpRule) => {
+    setFuForm({ name: r.name, trigger_type: r.trigger_type, trigger_value: r.trigger_value, action_type: r.action_type, email_subject: r.email_subject || "", email_body: r.email_body || "" });
+    setEditingFu(r);
+    setShowFuForm(true);
+  };
+
+  const isEmailAction = fuForm.action_type === "email" || fuForm.action_type === "both";
+  const triggerLabels: Record<string, string> = { no_order: "No order", no_contact: "No contact", overdue_invoice: "Overdue invoice", stale_deal: "Stale deal" };
+  const actionLabels: Record<string, string> = { email: "Send email", reminder: "Create reminder", both: "Both" };
+
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-3xl">
       <div className="flex items-center gap-2 mb-1">
@@ -824,20 +874,10 @@ function AutomationTab() {
       <p className="text-[12px] text-gray-400 mb-5">
         When an incoming email matches a rule, AI extracts client info from the body and
         auto-creates a client record. Patterns are{" "}
-        <a
-          href="https://docs.rs/regex/latest/regex/#syntax"
-          target="_blank"
-          rel="noreferrer"
-          className="text-indigo-500 underline"
-        >
-          regular expressions
-        </a>.
+        <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-indigo-500 underline">regular expressions</a>.
       </p>
 
-      <button
-        onClick={() => setShowForm(true)}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors"
-      >
+      <button onClick={() => setShowForm(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors">
         <Plus size={13} /> Add rule
       </button>
 
@@ -845,44 +885,24 @@ function AutomationTab() {
         <div className="border border-gray-100 rounded-xl p-4 mb-5 space-y-3 bg-gray-50/80">
           <div>
             <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Rule name</label>
-            <input
-              className={inp}
-              placeholder="e.g. Typeform new client signups"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
+            <input className={inp} placeholder="e.g. Typeform new client signups" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <div>
             <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Sender pattern (regex)</label>
-            <input
-              className={`${inp} font-mono`}
-              placeholder="e.g. noreply@typeform\.com"
-              value={form.sender_pattern}
-              onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })}
-            />
+            <input className={`${inp} font-mono`} placeholder="e.g. noreply@typeform\.com" value={form.sender_pattern} onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })} />
           </div>
           <div>
             <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Subject pattern (regex)</label>
-            <input
-              className={`${inp} font-mono`}
-              placeholder="e.g. (?i)new\s+(client|signup|inquiry)"
-              value={form.subject_pattern}
-              onChange={(e) => setForm({ ...form, subject_pattern: e.target.value })}
-            />
+            <input className={`${inp} font-mono`} placeholder="e.g. (?i)new\s+(client|signup|inquiry)" value={form.subject_pattern} onChange={(e) => setForm({ ...form, subject_pattern: e.target.value })} />
           </div>
           <div className="flex justify-end gap-2">
             <button onClick={() => setShowForm(false)} className="text-[13px] text-gray-500 hover:text-gray-800 transition-colors">Cancel</button>
-            <button
-              onClick={save}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
-            >
-              Save Rule
-            </button>
+            <button onClick={save} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Save Rule</button>
           </div>
         </div>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-2 mb-8">
         {rules.map((r) => (
           <div key={r.id} className="border border-gray-100 rounded-xl px-4 py-3 flex items-center justify-between hover:border-gray-200 transition-colors">
             <div className="flex-1">
@@ -894,37 +914,112 @@ function AutomationTab() {
             </div>
             <div className="flex items-center gap-3">
               <label className="flex items-center gap-1.5 text-[12px] cursor-pointer text-gray-500">
-                <input
-                  type="checkbox"
-                  className="accent-indigo-600"
-                  checked={r.active}
-                  onChange={(e) => api.toggleSignupRule(r.id, e.target.checked).then(load)}
-                />
-                Active
+                <input type="checkbox" className="accent-indigo-600" checked={r.active} onChange={(e) => api.toggleSignupRule(r.id, e.target.checked).then(load)} /> Active
               </label>
-              <button
-                onClick={() => confirm("Delete rule?") && api.deleteSignupRule(r.id).then(load)}
-                className="text-gray-300 hover:text-red-500 p-1 rounded-lg hover:bg-red-50 transition-colors"
-              >
-                <Trash2 size={13} />
-              </button>
+              <button onClick={() => confirm("Delete rule?") && api.deleteSignupRule(r.id).then(load)} className="text-gray-300 hover:text-red-500 p-1 rounded-lg hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
             </div>
           </div>
         ))}
-        {rules.length === 0 && (
-          <div className="text-center text-[13px] text-gray-400 py-10">
-            No rules yet. Add one to start auto-importing clients from signup emails.
-          </div>
-        )}
+        {rules.length === 0 && <div className="text-center text-[13px] text-gray-400 py-10">No rules yet. Add one to start auto-importing clients from signup emails.</div>}
       </div>
 
-      <div className="mt-6 p-4 bg-indigo-50/70 border border-indigo-100 rounded-xl text-[12px]">
-        <div className="font-semibold text-indigo-800 mb-1.5">Example rules</div>
-        <div className="space-y-1 text-indigo-700">
-          <div>• Typeform: <code className="bg-indigo-100 px-1 rounded">noreply@typeform\.com</code> + any subject</div>
-          <div>• Google Forms: <code className="bg-indigo-100 px-1 rounded">forms-receipts-noreply@google\.com</code></div>
-          <div>• Your contact form: <code className="bg-indigo-100 px-1 rounded">contact@yourbusiness\.com</code> + subject <code className="bg-indigo-100 px-1 rounded">(?i)new inquiry</code></div>
+      <div className="border-t border-gray-100 pt-5">
+        <div className="flex items-center gap-2 mb-1">
+          <RefreshCw size={15} className="text-indigo-500" />
+          <h3 className="text-[14px] font-semibold text-gray-900">Follow-Up Rules</h3>
         </div>
+        <p className="text-[12px] text-gray-400 mb-1">
+          Automatically email or remind clients based on triggers.{" "}
+          {lastRun && <span>Last checked: {(() => { const d = new Date(lastRun); const mins = Math.floor((Date.now() - d.getTime()) / 60000); return mins < 120 ? `${mins} min ago` : `${Math.floor(mins / 60)} hours ago`; })()}</span>}
+        </p>
+
+        <div className="flex items-center gap-2 mb-4">
+          <button onClick={() => { setEditingFu(null); setFuForm({ name: "", trigger_type: "no_order", trigger_value: 30, action_type: "email", email_subject: "", email_body: "" }); setShowFuForm(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1">
+            <Plus size={12} /> Add Rule
+          </button>
+          <button onClick={() => api.processFollowupRules().then(loadFu).catch(alert)} className="text-[12px] text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50">Run Now</button>
+        </div>
+
+        {showFuForm && (
+          <div className="border border-gray-100 rounded-xl p-4 mb-4 space-y-3 bg-gray-50/80">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Name</label>
+                <input className={inp} value={fuForm.name} onChange={(e) => setFuForm({ ...fuForm, name: e.target.value })} placeholder="Check-in reminder" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Trigger</label>
+                <select className={inp} value={fuForm.trigger_type} onChange={(e) => setFuForm({ ...fuForm, trigger_type: e.target.value })}>
+                  {Object.entries(triggerLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Days</label>
+                <input className={inp} type="number" value={fuForm.trigger_value} onChange={(e) => setFuForm({ ...fuForm, trigger_value: parseInt(e.target.value) || 0 })} />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Action</label>
+                <select className={inp} value={fuForm.action_type} onChange={(e) => setFuForm({ ...fuForm, action_type: e.target.value })}>
+                  {Object.entries(actionLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+            </div>
+            {isEmailAction && (
+              <>
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Email Subject</label>
+                  <input className={inp} value={fuForm.email_subject} onChange={(e) => setFuForm({ ...fuForm, email_subject: e.target.value })} placeholder="Just checking in" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Email Body</label>
+                  <textarea className={inp + " h-20 resize-none"} value={fuForm.email_body} onChange={(e) => setFuForm({ ...fuForm, email_body: e.target.value })} placeholder="Hi {client_name}, hope things are going well..." />
+                  <p className="text-[10px] text-gray-400 mt-1">Available variables: {"{client_name}"}</p>
+                </div>
+              </>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowFuForm(false); setEditingFu(null); }} className="text-[13px] text-gray-500 hover:text-gray-800 transition-colors">Cancel</button>
+              <button onClick={saveFu} disabled={!fuForm.name.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50">
+                {editingFu ? "Save Changes" : "Create Rule"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {fuRules.map((r) => (
+            <div key={r.id} className="border border-gray-100 rounded-xl px-4 py-3 flex items-center justify-between hover:border-gray-200 transition-colors">
+              <div className="flex-1">
+                <div className="text-[13px] font-medium text-gray-900">{r.name}</div>
+                <div className="text-[11px] text-gray-400 mt-0.5">{triggerLabels[r.trigger_type] || r.trigger_type} &gt; {r.trigger_value}d → {actionLabels[r.action_type] || r.action_type}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-[12px] cursor-pointer text-gray-500">
+                  <input type="checkbox" className="accent-indigo-600" checked={r.is_active} onChange={() => api.toggleFollowupRule(r.id).then(loadFu)} /> Active
+                </label>
+                <button onClick={() => editFu(r)} className="text-[11px] text-gray-400 hover:text-gray-600">Edit</button>
+                <button onClick={() => confirm("Delete rule?") && api.deleteFollowupRule(r.id).then(loadFu)} className="text-gray-300 hover:text-red-500 p-1 rounded-lg hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {fuLog.length > 0 && (
+          <div className="mt-4 border-t border-gray-50 pt-4">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Recent Activity</p>
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {fuLog.slice(0, 20).map((l) => (
+                <div key={l.id} className="text-[11px] text-gray-500 flex items-center gap-2">
+                  <span className="text-gray-400 w-16 flex-shrink-0">{l.triggered_at.slice(0, 10)}</span>
+                  <span className="font-medium text-gray-600">{l.action_taken}</span>
+                  {l.details && <span className="text-gray-400 truncate">— {l.details}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -555,4 +555,28 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        27,
+        r#"
+        CREATE TABLE IF NOT EXISTS followup_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            trigger_type TEXT NOT NULL CHECK(trigger_type IN ('no_order','no_contact','overdue_invoice','stale_deal')),
+            trigger_value INTEGER NOT NULL DEFAULT 30,
+            action_type TEXT NOT NULL CHECK(action_type IN ('email','reminder','both')),
+            email_subject TEXT,
+            email_body TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS followup_log (
+            id TEXT PRIMARY KEY,
+            rule_id TEXT NOT NULL,
+            client_id TEXT,
+            triggered_at TEXT NOT NULL,
+            action_taken TEXT NOT NULL,
+            details TEXT
+        );
+        "#,
+    ),
 ];

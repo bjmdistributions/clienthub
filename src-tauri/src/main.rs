@@ -142,6 +142,36 @@ fn main() {
             // Periodic Google Sheets sync every 10 minutes
             commands::spawn_periodic_sheet_sync(600);
 
+            // Follow-up rules: check on startup (30s delay, skip if ran <6h ago) + every 6h
+            {
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    if let Ok(conn) = crate::db::pool().get() {
+                        let last: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='last_rules_run'", [], |r| r.get(0)).ok();
+                        let should_skip = last.map_or(false, |ts| {
+                            chrono::DateTime::parse_from_rfc3339(&ts).ok()
+                                .map_or(false, |t| (chrono::Utc::now() - t.to_utc()).num_hours() < 6)
+                        });
+                        if should_skip {
+                            tracing::info!("followup rules: skipped (last run <6h ago)");
+                        } else {
+                            match commands::process_followup_rules().await {
+                                Ok(entries) => tracing::info!("followup rules: {} actions", entries.len()),
+                                Err(e) => tracing::warn!("followup rules failed: {}", e),
+                            }
+                        }
+                    }
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(21600));
+                    loop {
+                        interval.tick().await;
+                        match commands::process_followup_rules().await {
+                            Ok(entries) => tracing::info!("followup rules: {} actions", entries.len()),
+                            Err(e) => tracing::warn!("followup rules failed: {}", e),
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -272,6 +302,14 @@ fn main() {
             update_lot,
             archive_lot,
             link_lot_to_deal,
+            // Follow-up rules
+            list_followup_rules,
+            create_followup_rule,
+            update_followup_rule,
+            delete_followup_rule,
+            toggle_followup_rule,
+            process_followup_rules,
+            get_followup_log,
             // Sync
             sync_replay,
             sync_status,

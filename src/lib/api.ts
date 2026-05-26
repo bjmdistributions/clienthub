@@ -636,6 +636,27 @@ export interface Lot {
   updated_at: string;
 }
 
+export interface FollowUpRule {
+  id: string;
+  name: string;
+  trigger_type: string;
+  trigger_value: number;
+  action_type: string;
+  email_subject: string | null;
+  email_body: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface FollowUpLogEntry {
+  id: string;
+  rule_id: string;
+  client_id: string | null;
+  triggered_at: string;
+  action_taken: string;
+  details: string | null;
+}
+
 export interface SyncStatus {
   events_applied: number;
   last_applied: string | null;
@@ -987,4 +1008,14 @@ export const api = {
   updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
+
+  // Follow-up rules
+  listFollowupRules: () => invoke<FollowUpRule[]>("list_followup_rules"),
+  createFollowupRule: (r: { name: string; trigger_type: string; trigger_value: number; action_type: string; email_subject?: string | null; email_body?: string | null }) =>
+    invoke<FollowUpRule>("create_followup_rule", { ...r }),
+  updateFollowupRule: (id: string, fields: Record<string, any>) => invoke<void>("update_followup_rule", { id, ...fields }),
+  deleteFollowupRule: (id: string) => invoke<void>("delete_followup_rule", { id }),
+  toggleFollowupRule: (id: string) => invoke<void>("toggle_followup_rule", { id }),
+  processFollowupRules: () => invoke<FollowUpLogEntry[]>("process_followup_rules"),
+  getFollowupLog: () => invoke<FollowUpLogEntry[]>("get_followup_log"),
 };
