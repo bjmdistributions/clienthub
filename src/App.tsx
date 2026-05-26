@@ -31,6 +31,7 @@ import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
+import OnboardingWizard from "./components/OnboardingWizard";
 import { useAppStore } from "./lib/store";
 import { api } from "./lib/api";
 
@@ -63,6 +64,11 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [quickLogOpen, setQuickLogOpen] = useState(false);
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
+  }, []);
 
   // Sliding nav indicator
   const navRef = useRef<HTMLElement>(null);
@@ -146,6 +152,9 @@ export default function App() {
     { id: "globe",     label: "Globe",      icon: Globe },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];
+
+  if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
+  if (onboarded === null) return null;
 
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>

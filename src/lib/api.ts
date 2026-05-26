@@ -848,6 +848,9 @@ export const api = {
   saveCompanyInfo: (info: CompanyInfo) => invoke<void>("save_company_info", { info }),
   getCompanyInfo: () => invoke<CompanyInfo | null>("get_company_info"),
 
+  getOnboardingStatus: () => invoke<boolean>("get_onboarding_status"),
+  completeOnboarding: () => invoke<void>("complete_onboarding"),
+
   // Sync
   syncReplay: () => invoke<number>("sync_replay"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),

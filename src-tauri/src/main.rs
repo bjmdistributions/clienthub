@@ -217,6 +217,8 @@ fn main() {
             get_email_settings,
             save_company_info,
             get_company_info,
+            get_onboarding_status,
+            complete_onboarding,
             // Sync
             sync_replay,
             sync_status,

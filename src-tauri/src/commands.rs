@@ -2981,6 +2981,26 @@ pub async fn get_company_info() -> Result<Option<crate::invoice::CompanyInfo>, S
     Ok(json.and_then(|s| serde_json::from_str(&s).ok()))
 }
 
+#[tauri::command]
+pub async fn get_onboarding_status() -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let val: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key='onboarding_completed'", [], |r| r.get(0))
+        .ok();
+    Ok(val.as_deref() == Some("true"))
+}
+
+#[tauri::command]
+pub async fn complete_onboarding() -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('onboarding_completed','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ============================================================
 //  Sync controls
 // ============================================================
