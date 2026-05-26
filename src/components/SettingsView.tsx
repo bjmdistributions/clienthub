@@ -621,6 +621,12 @@ function ImportTab() {
     { key: "phone",      label: "Phone" },
     { key: "company",    label: "Company Name" },
     { key: "notes",      label: "Notes" },
+    { key: "street_address", label: "Street Address" },
+    { key: "city",       label: "City" },
+    { key: "state",      label: "State" },
+    { key: "zip_code",   label: "Zip Code" },
+    { key: "category",   label: "Category" },
+    { key: "lead_status", label: "Lead Status" },
   ];
 
   const pickFile = async () => {

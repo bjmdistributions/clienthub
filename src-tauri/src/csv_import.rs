@@ -88,6 +88,12 @@ pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
     let phone_idx = get_idx("phone");
     let company_idx = get_idx("company");
     let notes_idx = get_idx("notes");
+    let category_idx = get_idx("category");
+    let lead_status_idx = get_idx("lead_status");
+    let street_address_idx = get_idx("street_address");
+    let city_idx = get_idx("city");
+    let state_idx = get_idx("state");
+    let zip_code_idx = get_idx("zip_code");
 
     let metadata_indices: Vec<(String, usize)> = mapping
         .metadata_keys
@@ -145,7 +151,16 @@ pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let metadata = build_metadata(&record, &metadata_indices);
+        let category = category_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let lead_status_raw = lead_status_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let valid_statuses = ["prospect", "active", "inactive", "vip"];
+        let lead_status = lead_status_raw.filter(|s| valid_statuses.contains(&s.as_str())).unwrap_or_else(|| "prospect".to_string());
+
+        let mut metadata = build_metadata(&record, &metadata_indices);
+        if let Some(v) = street_address_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { metadata.insert("street_address".into(), serde_json::Value::String(v)); }
+        if let Some(v) = city_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { metadata.insert("city".into(), serde_json::Value::String(v)); }
+        if let Some(v) = state_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { metadata.insert("state".into(), serde_json::Value::String(v)); }
+        if let Some(v) = zip_code_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { metadata.insert("zip_code".into(), serde_json::Value::String(v)); }
 
         if let Some(em) = &email {
             let exists: i64 = conn
@@ -193,6 +208,8 @@ pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
             notes.clone().map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
         );
         cols.insert("billing_status".into(), serde_json::Value::String("active".into()));
+        cols.insert("category".into(), category.clone().map(serde_json::Value::String).unwrap_or(serde_json::Value::Null));
+        cols.insert("lead_status".into(), serde_json::Value::String(lead_status.clone()));
         cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
         cols.insert("updated_at".into(), serde_json::Value::String(now.clone()));
         cols.insert(
@@ -206,9 +223,9 @@ pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
         }
 
         if let Err(e) = conn.execute(
-            "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,created_at,updated_at,metadata)
-             VALUES (?1,?2,?3,?4,?5,?6,'active',?7,?7,?8)",
-            rusqlite::params![id, name, email, phone, company, notes, now, serde_json::to_string(&metadata).unwrap_or_default()],
+            "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,category,lead_status,created_at,updated_at,metadata)
+             VALUES (?1,?2,?3,?4,?5,?6,'active',?9,?10,?7,?7,?8)",
+            rusqlite::params![id, name, email, phone, company, notes, now, serde_json::to_string(&metadata).unwrap_or_default(), category, lead_status],
         ) {
             summary.errors.push(format!("Row {}: db insert: {}", row_num + 2, e));
             continue;

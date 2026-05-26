@@ -13,6 +13,12 @@ const FIELDS = [
   { key: "phone",   label: "Phone" },
   { key: "company", label: "Company" },
   { key: "notes",   label: "Notes" },
+  { key: "street_address", label: "Street Address" },
+  { key: "city",    label: "City" },
+  { key: "state",   label: "State" },
+  { key: "zip_code", label: "Zip Code" },
+  { key: "category", label: "Category" },
+  { key: "lead_status", label: "Lead Status" },
 ];
 
 export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
