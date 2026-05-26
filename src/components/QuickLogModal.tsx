@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { api, Client } from "../lib/api";
-import { X, Send, Phone, Users, FileText, Mail } from "lucide-react";
+import { X, Send, Phone, Users, FileText, Mail, MessageCircle, Smartphone } from "lucide-react";
 
 interface Props {
   onClose: () => void;
@@ -11,6 +11,8 @@ const KIND_CONFIG: Record<string, { label: string; icon: React.ReactNode }> = {
   meeting:   { label: "Meeting",  icon: <Users size={12} /> },
   note:      { label: "Note",     icon: <FileText size={12} /> },
   email_out: { label: "Email",    icon: <Mail size={12} /> },
+  whatsapp:  { label: "WhatsApp", icon: <MessageCircle size={12} /> },
+  sms:       { label: "SMS",      icon: <Smartphone size={12} /> },
 };
 
 const KINDS = Object.keys(KIND_CONFIG);

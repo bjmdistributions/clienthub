@@ -29,6 +29,9 @@ const kindColor = (kind: string): string => {
   if (kind === "email_out") return "bg-indigo-50 text-indigo-700 border border-indigo-200";
   if (kind === "call")      return "bg-emerald-50 text-emerald-700 border border-emerald-200";
   if (kind === "meeting")   return "bg-amber-50 text-amber-700 border border-amber-200";
+  if (kind === "whatsapp")  return "bg-green-50 text-green-700 border border-green-200";
+  if (kind === "sms")       return "bg-sky-50 text-sky-700 border border-sky-200";
+  if (kind === "reminder")  return "bg-purple-50 text-purple-700 border border-purple-200";
   return "bg-gray-100 text-gray-600 border border-gray-200";
 };
 
@@ -57,6 +60,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
   const [tier, setTier] = useState<BuyerTier | null>(null);
   const [portalLink, setPortalLink] = useState<string>("");
+  const [kindFilter, setKindFilter] = useState<string | null>(null);
 
   const load = async () => {
     const c = await api.getClient(clientId);
@@ -332,8 +336,16 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                   onClose={() => { setShowNoteForm(false); load(); }}
                 />
               )}
+              <div className="flex flex-wrap gap-1.5 px-4 pb-2">
+                {["call", "meeting", "email_out", "whatsapp", "sms", "note"].map((k) => (
+                  <button key={k} onClick={() => setKindFilter(kindFilter === k ? null : k)}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border font-medium capitalize transition-colors ${kindFilter === k ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-200 hover:bg-gray-50"}`}>
+                    {k.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
               <div className="max-h-[500px] overflow-auto">
-                {interactions.map((it) => (
+                {interactions.filter((it) => !kindFilter || it.kind === kindFilter).map((it) => (
                   <div key={it.id} className="px-4 py-3 border-b border-gray-100 last:border-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${kindColor(it.kind)}`}>
