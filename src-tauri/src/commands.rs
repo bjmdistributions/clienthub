@@ -3688,6 +3688,73 @@ pub async fn analyze_manifest(path: String) -> Result<crate::manifest::ManifestA
 }
 
 // ============================================================
+//  Profit Forecasting
+// ============================================================
+
+#[derive(serde::Serialize)]
+pub struct ProfitForecast {
+    pub actual_profit_mtd: f64,
+    pub projected_profit: f64,
+    pub total_forecast: f64,
+    pub pipeline_value: f64,
+    pub open_deal_count: i64,
+    pub overall_win_rate: f64,
+    pub win_rate_label: String,
+}
+
+#[tauri::command]
+pub async fn get_profit_forecast() -> Result<ProfitForecast, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().date_naive();
+    let month_start = format!("{}-01", now.format("%Y-%m"));
+
+    let profit_mtd: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        [&month_start], |r| r.get(0),
+    ).unwrap_or(0.0);
+
+    let cutoff = (now - chrono::Duration::days(90)).format("%Y-%m-%d").to_string();
+    let (total_closed, won_closed): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN stage='won' THEN 1 ELSE 0 END),0) FROM deals WHERE stage IN ('won','lost') AND updated_at >= ?1",
+        [&cutoff], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap_or((0, 0));
+
+    let overall_win_rate = if total_closed > 0 {
+        won_closed as f64 / total_closed as f64
+    } else { 0.40 };
+    let win_rate_label = if total_closed == 0 { "default 40% (no closed deals)" } else { "" };
+
+    let open_deals: Vec<(f64, Option<f64>)> = conn.prepare(
+        "SELECT d.asking_price, i.margin FROM deals d LEFT JOIN invoices i ON i.id = d.converted_invoice_id WHERE d.stage NOT IN ('won','lost')"
+    ).map_err(|e| e.to_string())?
+    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    .map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok()).collect();
+
+    let open_deal_count = open_deals.len() as i64;
+    let mut sum_weighted = 0.0;
+    let mut pipeline_value = 0.0;
+    for (ask, margin) in &open_deals {
+        pipeline_value += ask;
+        let margin_pct = margin.unwrap_or(30.0) / 100.0;
+        sum_weighted += ask * overall_win_rate * margin_pct;
+    }
+
+    let projected_profit = sum_weighted * 0.85;
+    let total_forecast = profit_mtd + projected_profit;
+
+    Ok(ProfitForecast {
+        actual_profit_mtd: profit_mtd,
+        projected_profit,
+        total_forecast,
+        pipeline_value,
+        open_deal_count,
+        overall_win_rate: (overall_win_rate * 100.0 * 100.0).round() / 100.0,
+        win_rate_label: win_rate_label.into(),
+    })
+}
+
+// ============================================================
 //  Sync controls
 // ============================================================
 

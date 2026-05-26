@@ -317,6 +317,8 @@ fn main() {
             list_portal_links,
             // Manifest
             analyze_manifest,
+            // Forecast
+            get_profit_forecast,
             // Sync
             sync_replay,
             sync_status,

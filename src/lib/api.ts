@@ -673,6 +673,16 @@ export interface ManifestAnalysis {
   formula: string;
 }
 
+export interface ProfitForecast {
+  actual_profit_mtd: number;
+  projected_profit: number;
+  total_forecast: number;
+  pipeline_value: number;
+  open_deal_count: number;
+  overall_win_rate: number;
+  win_rate_label: string;
+}
+
 export interface PortalLink {
   id: string;
   client_id: string;
@@ -1052,4 +1062,7 @@ export const api = {
 
   // Manifest
   analyzeManifest: (path: string) => invoke<ManifestAnalysis>("analyze_manifest", { path }),
+
+  // Forecast
+  getProfitForecast: () => invoke<ProfitForecast>("get_profit_forecast"),
 };

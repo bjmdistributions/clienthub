@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { api, DashboardStats, Client, Invoice, BuyerTier } from "../lib/api";
-import { fmtCompactCurrency, fmtFullAmount } from "../lib/format";
+import { api, DashboardStats, Client, Invoice, BuyerTier, ProfitForecast } from "../lib/api";
+import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
   Users, FileText, DollarSign, TrendingUp, Mail,
   ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Package,
@@ -75,6 +75,14 @@ export default function DashboardView({ onNavigate }: Props) {
   const [tiers, setTiers]             = useState<BuyerTier[]>([]);
   const [profitMonth, setProfitMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [dailyProfit, setDailyProfit] = useState<{ day: string; profit: number }[]>([]);
+  const [forecast, setForecast] = useState<ProfitForecast | null>(null);
+
+  const loadAll = () => {
+    api.dashboardStats().then(setStats).catch(console.error);
+    api.getProfitForecast().then(setForecast).catch(() => {});
+    api.dueFollowups().then(setFollowups).catch(() => {});
+    api.listInvoices().then((inv) => setRecent(inv.slice(0, 50))).catch(() => {});
+  };
 
   const loadProfitMonth = async (m: string) => {
     const raw = await api.getMonthlyProfit(m);
@@ -99,9 +107,7 @@ export default function DashboardView({ onNavigate }: Props) {
   };
 
   useEffect(() => {
-    api.dashboardStats().then(setStats).catch(console.error);
-    api.dueFollowups().then(setFollowups).catch(console.error);
-    api.listInvoices().then((inv) => setRecent(inv.slice(0, 7))).catch(console.error);
+    loadAll();
     api.listClients().then(setClients).catch(console.error);
     api.buyerTiers().then(setTiers).catch(console.error);
     loadProfitMonth(profitMonth);
@@ -228,6 +234,54 @@ export default function DashboardView({ onNavigate }: Props) {
             );
           })}
         </div>
+
+        {/* Forecast card */}
+        {forecast && (
+          <div className="rounded-xl p-5 animate-fade-up stagger-2" style={{
+            background: "var(--t-s1)",
+            border: "1px solid var(--t-b1)",
+            borderLeft: "3px solid #8B5CF6",
+            boxShadow: "var(--shadow-xs)",
+          }}>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Profit Projection</h3>
+                <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
+                  Estimated month-end profit based on pipeline
+                </p>
+              </div>
+              <div className="flex items-center gap-4 text-[12px]">
+                <span style={{ color: "var(--t-tx3)" }}>Actual <span className="font-semibold" style={{ color: "var(--t-tx1)" }}>{fmtAmount(forecast.actual_profit_mtd)}</span></span>
+                <span style={{ color: "var(--t-tx3)" }}>Projected <span className="font-semibold" style={{ color: "#8B5CF6" }}>{fmtAmount(forecast.projected_profit)}</span></span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: "rgba(139,92,246,0.1)", color: "#8B5CF6" }}>{fmtAmount(forecast.total_forecast)}</span>
+              </div>
+            </div>
+
+            {forecast.open_deal_count > 0 ? (
+              <>
+                <div className="w-full h-2 rounded-full mb-2" style={{ background: "var(--t-s3)", overflow: "hidden" }}>
+                  {(() => {
+                    const total = Math.max(forecast.total_forecast, forecast.actual_profit_mtd + forecast.projected_profit);
+                    if (total <= 0) return null;
+                    const actualPct = Math.max(0, (forecast.actual_profit_mtd / total) * 100);
+                    const projPct = Math.max(0, (forecast.projected_profit / total) * 100);
+                    return (
+                      <>
+                        <div style={{ background: "#10B981", height: "100%", width: `${actualPct}%`, float: "left", borderRadius: "4px 0 0 4px" }} />
+                        <div style={{ background: "#8B5CF6", height: "100%", width: `${projPct}%`, float: "left", borderRadius: actualPct === 0 ? "4px 0 0 4px" : "0" }} />
+                      </>
+                    );
+                  })()}
+                </div>
+                <p className="text-[10px]" style={{ color: "var(--t-tx4)" }}>
+                  {forecast.open_deal_count} open deal{forecast.open_deal_count !== 1 ? "s" : ""} · {forecast.overall_win_rate}% overall win rate{forecast.win_rate_label ? ` (${forecast.win_rate_label})` : ""}
+                </p>
+              </>
+            ) : (
+              <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>No open deals in pipeline — projection equals actual MTD.</p>
+            )}
+          </div>
+        )}
 
         {/* Chart row */}
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
