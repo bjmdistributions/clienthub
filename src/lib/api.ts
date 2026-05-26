@@ -657,6 +657,16 @@ export interface FollowUpLogEntry {
   details: string | null;
 }
 
+export interface PortalLink {
+  id: string;
+  client_id: string;
+  token: string;
+  expires_at: string;
+  is_active: boolean;
+  created_at: string;
+  client_name: string | null;
+}
+
 export interface SyncStatus {
   events_applied: number;
   last_applied: string | null;
@@ -1018,4 +1028,9 @@ export const api = {
   toggleFollowupRule: (id: string) => invoke<void>("toggle_followup_rule", { id }),
   processFollowupRules: () => invoke<FollowUpLogEntry[]>("process_followup_rules"),
   getFollowupLog: () => invoke<FollowUpLogEntry[]>("get_followup_log"),
+
+  // Portal
+  generatePortalLink: (clientId: string) => invoke<PortalLink>("generate_portal_link", { clientId }),
+  revokePortalLink: (token: string) => invoke<void>("revoke_portal_link", { token }),
+  listPortalLinks: (clientId?: string) => invoke<PortalLink[]>("list_portal_links", { clientId: clientId ?? null }),
 };

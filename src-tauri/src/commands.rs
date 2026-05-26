@@ -3616,6 +3616,69 @@ pub async fn get_followup_log() -> Result<Vec<FollowUpLogEntry>, String> {
 }
 
 // ============================================================
+//  Client Portal Tokens
+// ============================================================
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct PortalLink {
+    pub id: String,
+    pub client_id: String,
+    pub token: String,
+    pub expires_at: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub client_name: Option<String>,
+}
+
+#[tauri::command]
+pub async fn generate_portal_link(client_id: String) -> Result<PortalLink, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let existing: Option<PortalLink> = conn.query_row(
+        "SELECT t.id, t.client_id, t.token, t.expires_at, t.is_active, t.created_at, c.name FROM client_portal_tokens t JOIN clients c ON c.id=t.client_id WHERE t.client_id=?1 AND t.is_active=1 AND t.expires_at > datetime('now') ORDER BY t.created_at DESC LIMIT 1",
+        [&client_id], |r| Ok(PortalLink {
+            id: r.get(0)?, client_id: r.get(1)?, token: r.get(2)?, expires_at: r.get(3)?,
+            is_active: r.get::<_,i64>(4)? != 0, created_at: r.get(5)?, client_name: r.get(6)?,
+        }),
+    ).ok();
+    if let Some(link) = existing { return Ok(link); }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let token = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let now = chrono::Utc::now().to_rfc3339();
+    let expires = (chrono::Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+    let client_name: Option<String> = conn.query_row("SELECT name FROM clients WHERE id=?1", [&client_id], |r| r.get(0)).ok();
+    conn.execute(
+        "INSERT INTO client_portal_tokens (id,client_id,token,expires_at,is_active,created_at) VALUES (?1,?2,?3,?4,1,?5)",
+        rusqlite::params![id, client_id, token, expires, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(PortalLink { id, client_id, token, expires_at: expires, is_active: true, created_at: now, client_name })
+}
+
+#[tauri::command]
+pub async fn revoke_portal_link(token: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let updated = conn.execute("UPDATE client_portal_tokens SET is_active=0 WHERE token=?1", [&token]).map_err(|e| e.to_string())?;
+    if updated == 0 { return Err("Token not found".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_portal_links(client_id: Option<String>) -> Result<Vec<PortalLink>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (sql, params): (String, Vec<String>) = match &client_id {
+        Some(cid) => ("SELECT t.id, t.client_id, t.token, t.expires_at, t.is_active, t.created_at, c.name FROM client_portal_tokens t JOIN clients c ON c.id=t.client_id WHERE t.client_id=?1 ORDER BY t.created_at DESC".into(), vec![cid.clone()]),
+        None => ("SELECT t.id, t.client_id, t.token, t.expires_at, t.is_active, t.created_at, c.name FROM client_portal_tokens t JOIN clients c ON c.id=t.client_id ORDER BY t.created_at DESC".into(), vec![]),
+    };
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |r| Ok(PortalLink {
+        id: r.get(0)?, client_id: r.get(1)?, token: r.get(2)?, expires_at: r.get(3)?,
+        is_active: r.get::<_,i64>(4)? != 0, created_at: r.get(5)?, client_name: r.get(6)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ============================================================
 //  Sync controls
 // ============================================================
 

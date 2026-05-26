@@ -579,4 +579,18 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        28,
+        r#"
+        CREATE TABLE IF NOT EXISTS client_portal_tokens (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            expires_at TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+        );
+        "#,
+    ),
 ];

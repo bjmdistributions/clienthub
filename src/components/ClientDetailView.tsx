@@ -56,6 +56,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
   const [tier, setTier] = useState<BuyerTier | null>(null);
+  const [portalLink, setPortalLink] = useState<string>("");
 
   const load = async () => {
     const c = await api.getClient(clientId);
@@ -64,6 +65,10 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
     setInteractions(await api.listInteractions(clientId));
     setInvoices(await api.listInvoicesForClient(clientId));
     api.getBuyerTier(clientId).then(setTier).catch(() => {});
+    api.listPortalLinks(clientId).then((links) => {
+      const active = links.find((l) => l.is_active && new Date(l.expires_at) > new Date());
+      if (active) setPortalLink(active.token);
+    }).catch(() => {});
   };
 
   useEffect(() => { load(); }, [clientId]);
@@ -182,6 +187,29 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
         <div className="mt-4 inline-flex items-center gap-2 bg-gray-100 text-gray-700 px-3 py-1.5 rounded-full text-[13px] font-medium">
           <ShoppingCart size={14} />
           <span className="font-semibold">{client.invoice_count}</span> invoices sent
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-gray-100">
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Client Portal</p>
+          {portalLink ? (
+            <div className="flex items-center gap-2">
+              <input readOnly className="border border-gray-200 px-3 h-8 rounded-lg text-[12px] text-gray-700 bg-gray-50 flex-1 font-mono" value={`http://pi:8080/portal/${portalLink}`} />
+              <button onClick={async () => { await navigator.clipboard.writeText(`http://pi:8080/portal/${portalLink}`); }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1">
+                Copy
+              </button>
+              <button onClick={async () => { if (confirm("Revoke this portal link?")) { await api.revokePortalLink(portalLink); setPortalLink(""); load(); } }}
+                className="text-[11px] text-red-500 hover:text-red-700 px-2 h-8 rounded-lg hover:bg-red-50">
+                Revoke
+              </button>
+            </div>
+          ) : (
+            <button onClick={async () => { const l = await api.generatePortalLink(clientId); setPortalLink(l.token); }}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[12px] font-medium">
+              Generate Portal Link
+            </button>
+          )}
+          <p className="text-[10px] text-gray-400 mt-1.5">Share this link so {client.name} can view their invoices. Expires in 30 days.</p>
         </div>
       </div>
 

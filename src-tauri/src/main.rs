@@ -310,6 +310,10 @@ fn main() {
             toggle_followup_rule,
             process_followup_rules,
             get_followup_log,
+            // Portal
+            generate_portal_link,
+            revoke_portal_link,
+            list_portal_links,
             // Sync
             sync_replay,
             sync_status,
