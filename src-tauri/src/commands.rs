@@ -611,19 +611,24 @@ pub struct InteractionInput {
 pub async fn add_interaction(input: InteractionInput) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let user_name: Option<String> = conn.query_row(
+        "SELECT u.name FROM users u JOIN settings s ON s.value = u.id WHERE s.key = 'current_user_id' AND u.is_active = 1",
+        [], |r| r.get(0),
+    ).ok();
     let mut cols = Map::new();
     cols.insert("client_id".into(), Value::String(input.client_id.clone()));
     cols.insert("kind".into(), Value::String(input.kind.clone()));
     cols.insert("subject".into(), to_value(input.subject.clone()));
     cols.insert("body".into(), to_value(input.body.clone()));
     cols.insert("created_at".into(), Value::String(now.clone()));
+    if let Some(ref un) = user_name { cols.insert("user_name".into(), Value::String(un.clone())); }
     sync::record_upsert("interactions", &id, cols).map_err(|e| e.to_string())?;
 
-    let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO interactions (id,client_id,kind,subject,body,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![id, input.client_id, input.kind, input.subject, input.body, now],
+        "INSERT INTO interactions (id,client_id,kind,subject,body,created_at,user_name)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![id, input.client_id, input.kind, input.subject, input.body, now, user_name],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)
@@ -3116,6 +3121,174 @@ pub async fn get_backup_status() -> Result<serde_json::Value, String> {
         dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("ClientHub Backups").to_string_lossy().to_string()
     });
     Ok(serde_json::json!({ "last_backup": last, "backup_dir": dir }))
+}
+
+// ============================================================
+//  Multi-User / Roles
+// ============================================================
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct User {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub role: String,
+    pub invite_code: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn list_users() -> Result<Vec<User>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, name, email, role, invite_code, is_active, created_at FROM users ORDER BY created_at").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(User {
+        id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, role: r.get(3)?,
+        invite_code: r.get(4)?, is_active: r.get::<_, i64>(5)? != 0, created_at: r.get(6)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_owner_user(name: String, email: String) -> Result<User, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO users (id, name, email, role, is_active, created_at) VALUES (?1, ?2, ?3, 'owner', 1, ?4)",
+        rusqlite::params![id, name, email, now],
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [&id],
+    ).map_err(|e| e.to_string())?;
+    Ok(User { id, name, email, role: "owner".into(), invite_code: None, is_active: true, created_at: now })
+}
+
+#[tauri::command]
+pub async fn invite_user(name: String, email: String, role: String) -> Result<User, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let valid = ["owner", "sales_rep", "viewer"];
+    if !valid.contains(&role.as_str()) { return Err("Invalid role".into()); }
+    let code = format!("{:06}", rand::random::<u32>() % 1_000_000);
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO users (id, name, email, role, invite_code, is_active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+        rusqlite::params![id, name, email, role, code, now],
+    ).map_err(|e| e.to_string())?;
+    let cols = {
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), serde_json::Value::String(name.clone()));
+        m.insert("email".into(), serde_json::Value::String(email.clone()));
+        m.insert("role".into(), serde_json::Value::String(role.clone()));
+        m.insert("invite_code".into(), serde_json::Value::String(code.clone()));
+        m.insert("is_active".into(), serde_json::Value::Bool(true));
+        m.insert("created_at".into(), serde_json::Value::String(now.clone()));
+        m
+    };
+    crate::sync::record_upsert("users", &id, cols).map_err(|e| e.to_string())?;
+    Ok(User { id, name, email, role, invite_code: Some(code), is_active: true, created_at: now })
+}
+
+#[tauri::command]
+pub async fn claim_invite(code: String) -> Result<User, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let user: Option<User> = conn.query_row(
+        "SELECT id, name, email, role, invite_code, is_active, created_at FROM users WHERE invite_code = ?1 AND is_active = 1",
+        [&code], |r| Ok(User {
+            id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, role: r.get(3)?,
+            invite_code: r.get(4)?, is_active: r.get::<_, i64>(5)? != 0, created_at: r.get(6)?,
+        }),
+    ).ok();
+    let user = user.ok_or("Invalid or already claimed invite code")?;
+    conn.execute("UPDATE users SET invite_code = NULL WHERE id = ?1", [&user.id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [&user.id],
+    ).map_err(|e| e.to_string())?;
+    let cols = {
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), serde_json::Value::String(user.name.clone()));
+        m.insert("email".into(), serde_json::Value::String(user.email.clone()));
+        m.insert("role".into(), serde_json::Value::String(user.role.clone()));
+        m.insert("is_active".into(), serde_json::Value::Bool(true));
+        m.insert("created_at".into(), serde_json::Value::String(user.created_at.clone()));
+        crate::sync::record_upsert("users", &user.id, m).map_err(|e| e.to_string())?;
+    };
+    Ok(User { id: user.id, name: user.name, email: user.email, role: user.role, invite_code: None, is_active: user.is_active, created_at: user.created_at })
+}
+
+#[tauri::command]
+pub async fn remove_user(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE users SET is_active = 0 WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
+    let cols = {
+        let existing: Option<User> = conn.query_row(
+            "SELECT id, name, email, role, invite_code, is_active, created_at FROM users WHERE id = ?1",
+            [&id], |r| Ok(User {
+                id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, role: r.get(3)?,
+                invite_code: r.get(4)?, is_active: r.get::<_, i64>(5)? != 0, created_at: r.get(6)?,
+            }),
+        ).ok();
+        if let Some(u) = existing {
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), serde_json::Value::String(u.name));
+            m.insert("email".into(), serde_json::Value::String(u.email));
+            m.insert("role".into(), serde_json::Value::String(u.role));
+            m.insert("is_active".into(), serde_json::Value::Bool(false));
+            m.insert("created_at".into(), serde_json::Value::String(u.created_at));
+            crate::sync::record_upsert("users", &id, m).map_err(|e| e.to_string())?;
+        }
+    };
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_user_role(id: String, role: String) -> Result<(), String> {
+    let valid = ["owner", "sales_rep", "viewer"];
+    if !valid.contains(&role.as_str()) { return Err("Invalid role".into()); }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", rusqlite::params![role, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_current_user() -> Result<Option<User>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let uid: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='current_user_id'", [], |r| r.get(0)).ok();
+    let uid = match uid {
+        Some(id) => id,
+        None => {
+            let users: Vec<User> = conn.prepare("SELECT id, name, email, role, invite_code, is_active, created_at FROM users WHERE is_active = 1 ORDER BY created_at")
+                .map_err(|e| e.to_string())?
+                .query_map([], |r| Ok(User {
+                    id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, role: r.get(3)?,
+                    invite_code: r.get(4)?, is_active: r.get::<_, i64>(5)? != 0, created_at: r.get(6)?,
+                })).map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok()).collect();
+            if users.len() == 1 {
+                conn.execute("INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&users[0].id]).map_err(|e| e.to_string())?;
+                return Ok(Some(users.into_iter().next().unwrap()));
+            }
+            return Ok(None);
+        }
+    };
+    let user = conn.query_row(
+        "SELECT id, name, email, role, invite_code, is_active, created_at FROM users WHERE id = ?1",
+        [&uid], |r| Ok(User {
+            id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, role: r.get(3)?,
+            invite_code: r.get(4)?, is_active: r.get::<_, i64>(5)? != 0, created_at: r.get(6)?,
+        }),
+    ).ok();
+    Ok(user)
+}
+
+#[tauri::command]
+pub async fn set_current_user(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ============================================================

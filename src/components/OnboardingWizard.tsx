@@ -101,6 +101,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
   const finish = async () => {
     if (!emailSkipped) { try { await saveEmail(); } catch {} }
+    if (biz.user.trim()) { try { await api.createOwnerUser(biz.user.trim(), biz.email || biz.user.trim()); } catch {} }
     await api.completeOnboarding();
     onDone();
   };

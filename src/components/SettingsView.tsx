@@ -16,6 +16,7 @@ import {
   SheetSyncResult,
   SheetSyncLogEntry,
   ProfitSplit,
+  User,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -43,10 +44,10 @@ const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full foc
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup"
+    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup" | "team"
   >("email");
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup"] as const;
+  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup", "team"] as const;
 
   return (
     <div>
@@ -84,6 +85,7 @@ export default function SettingsView() {
       {tab === "sheets"     && <SheetsTab />}
       {tab === "splits"     && <SplitsTab />}
       {tab === "backup"     && <BackupTab />}
+      {tab === "team"       && <TeamTab />}
     </div>
   );
 }
@@ -1661,6 +1663,105 @@ function BackupTab() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function TeamTab() {
+  const [users, setUsers] = useState<User[]>([]);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("sales_rep");
+  const [inviteResult, setInviteResult] = useState<User | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => { api.listUsers().then(setUsers).catch(() => {}); };
+  useEffect(() => { load(); }, []);
+
+  const handleInvite = async () => {
+    if (!name.trim() || !email.trim()) return;
+    setError(null);
+    try {
+      const u = await api.inviteUser(name.trim(), email.trim(), role);
+      setInviteResult(u);
+      setName(""); setEmail(""); setRole("sales_rep");
+      load();
+    } catch (e: any) { setError(e.toString()); }
+  };
+
+  const handleRemove = async (id: string) => {
+    if (!confirm("Remove this user? They will lose access on next app launch.")) return;
+    await api.removeUser(id);
+    load();
+  };
+
+  const handleRoleChange = async (id: string, newRole: string) => {
+    await api.updateUserRole(id, newRole);
+    load();
+  };
+
+  const roleLabel = (r: string) => r === "sales_rep" ? "Sales Rep" : r === "owner" ? "Owner" : "Viewer";
+  const roleColor = (r: string) => r === "owner" ? "bg-amber-100 text-amber-800" : r === "sales_rep" ? "bg-blue-100 text-blue-800" : "bg-gray-100 text-gray-700";
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Team</h3>
+      <p className="text-[12px] text-gray-400 mb-5">Invite team members and manage their access.</p>
+
+      <div className="space-y-2 mb-5">
+        {users.filter(u => u.is_active).map((u) => (
+          <div key={u.id} className="flex items-center justify-between px-4 py-3 bg-gray-50 rounded-xl">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-[12px] font-bold text-indigo-600">
+                {u.name.charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <p className="text-[13px] font-medium text-gray-900">{u.name}</p>
+                <p className="text-[11px] text-gray-400">{u.email}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {u.role !== "owner" ? (
+                <select value={u.role} onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                  className="border border-gray-200 px-2 h-7 rounded-lg text-[11px]">
+                  <option value="sales_rep">Sales Rep</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+              ) : (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold">OWNER</span>
+              )}
+              {u.role !== "owner" && (
+                <button onClick={() => handleRemove(u.id)} className="text-[11px] text-red-500 hover:text-red-700 font-medium">Remove</button>
+              )}
+            </div>
+          </div>
+        ))}
+        {users.length === 0 && <p className="text-[12px] text-gray-400">No team members yet.</p>}
+      </div>
+
+      {inviteResult && (
+        <div className="bg-emerald-50 border border-emerald-100 px-4 py-3 rounded-xl mb-5">
+          <p className="text-[12px] font-medium text-emerald-800 mb-1">Invitation created for {inviteResult.name}</p>
+          <p className="text-[11px] text-emerald-600">Share this invite code: <span className="font-mono font-bold text-[14px]">{inviteResult.invite_code}</span></p>
+          <button onClick={() => setInviteResult(null)} className="text-[10px] text-emerald-500 mt-1">Dismiss</button>
+        </div>
+      )}
+
+      <div className="border-t border-gray-100 pt-4">
+        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Invite New Member</p>
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          <input className="border border-gray-200 px-3 h-9 rounded-lg text-[12px]" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="border border-gray-200 px-3 h-9 rounded-lg text-[12px]" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <div className="flex gap-2">
+            <select value={role} onChange={(e) => setRole(e.target.value)} className="border border-gray-200 px-2 h-9 rounded-lg text-[12px] flex-1">
+              <option value="sales_rep">Sales Rep</option>
+              <option value="viewer">Viewer</option>
+            </select>
+            <button onClick={handleInvite} disabled={!name.trim() || !email.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-9 rounded-lg text-[12px] font-medium disabled:opacity-40">Invite</button>
+          </div>
+        </div>
+        {error && <p className="text-[11px] text-red-500">{error}</p>}
+      </div>
     </div>
   );
 }

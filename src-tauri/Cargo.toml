@@ -78,3 +78,4 @@ regex = "1"
 
 image = "0.24"
 dirs = "5"
+rand = "0.8"

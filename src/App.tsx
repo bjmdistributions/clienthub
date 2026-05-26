@@ -33,7 +33,8 @@ import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import OnboardingWizard from "./components/OnboardingWizard";
 import { useAppStore } from "./lib/store";
-import { api } from "./lib/api";
+import { api, User } from "./lib/api";
+import { canView } from "./lib/permissions";
 
 type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "invoices" | "email" | "analytics" | "brief" | "globe" | "settings";
 
@@ -65,10 +66,16 @@ export default function App() {
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  const [currentUser, setCurrentUser] = useState<any | null>(undefined);
 
   useEffect(() => {
     api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
   }, []);
+
+  useEffect(() => {
+    if (onboarded !== true) return;
+    api.getCurrentUser().then((u) => setCurrentUser(u)).catch(() => setCurrentUser(null));
+  }, [onboarded]);
 
   // Sliding nav indicator
   const navRef = useRef<HTMLElement>(null);
@@ -138,7 +145,7 @@ export default function App() {
     }
   };
 
-  const tabs: { id: Tab; label: string; icon: any }[] = [
+  const allTabs: { id: Tab; label: string; icon: any }[] = [
     { id: "dashboard", label: "Dashboard",  icon: LayoutDashboard },
     { id: "clients",   label: "Clients",    icon: Users },
     { id: "health",    label: "Tiers",      icon: Layers },
@@ -152,9 +159,23 @@ export default function App() {
     { id: "globe",     label: "Globe",      icon: Globe },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];
+  const tabs = allTabs.filter((t) => canView(currentUser?.role as any, t.id));
 
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
   if (onboarded === null) return null;
+
+  if (currentUser === undefined) return null;
+  if (currentUser === null) return <UserPicker onSetUser={(u) => setCurrentUser(u)} />;
+  if (!currentUser.is_active) {
+    return (
+      <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
+        <div className="text-center">
+          <h2 className="text-[18px] font-bold text-gray-900 mb-2">Access Revoked</h2>
+          <p className="text-[13px] text-gray-500">Your access has been removed. Contact your team owner.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
@@ -300,6 +321,55 @@ export default function App() {
       </main>
 
       {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
+    </div>
+  );
+}
+
+function UserPicker({ onSetUser }: { onSetUser: (u: any) => void }) {
+  const [users, setUsers] = useState<User[]>([]);
+  const [inviteCode, setInviteCode] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => { api.listUsers().then(setUsers).catch(() => {}); }, []);
+
+  const select = async (u: User) => {
+    await api.setCurrentUser(u.id);
+    onSetUser(u);
+  };
+
+  const claim = async () => {
+    if (!inviteCode.trim()) return;
+    setError("");
+    try {
+      const u = await api.claimInvite(inviteCode.trim());
+      onSetUser(u);
+    } catch (e: any) { setError(e.toString()); }
+  };
+
+  const active = users.filter((u) => u.is_active);
+  return (
+    <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
+      <div className="bg-white border border-gray-100 rounded-2xl shadow-xl p-8 w-full max-w-sm">
+        <h2 className="text-[18px] font-bold text-gray-900 mb-1">Select Profile</h2>
+        <p className="text-[12px] text-gray-400 mb-5">Choose your user profile or enter an invite code.</p>
+        <div className="space-y-2 mb-5">
+          {active.map((u) => (
+            <button key={u.id} onClick={() => select(u)} className="w-full text-left px-4 py-3 rounded-xl border border-gray-100 hover:border-indigo-200 hover:bg-indigo-50/50 transition-colors">
+              <p className="text-[14px] font-medium text-gray-900">{u.name}</p>
+              <p className="text-[11px] text-gray-400">{u.email} — {u.role}</p>
+            </button>
+          ))}
+          {active.length === 0 && <p className="text-[12px] text-gray-400">No users found. Enter an invite code below.</p>}
+        </div>
+        <div className="border-t border-gray-50 pt-4">
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Invite Code</p>
+          <div className="flex gap-2">
+            <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] flex-1" placeholder="Enter 6-digit code" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && claim()} />
+            <button onClick={claim} disabled={!inviteCode.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Claim</button>
+          </div>
+          {error && <p className="text-[11px] text-red-500 mt-2">{error}</p>}
+        </div>
+      </div>
     </div>
   );
 }

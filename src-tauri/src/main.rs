@@ -49,6 +49,39 @@ fn main() {
             // tauri::App is NOT Send and must never be captured in a spawn.
             let app_handle = app.handle().clone();
 
+            // Auto-backup: check on startup if last backup was > 23 hours ago.
+            // Clone BEFORE the first spawn consumes app_handle.
+            {
+                let ah = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    if let Ok(status) = commands::get_backup_status().await {
+                        let last = status.get("last_backup").and_then(|v| v.as_str());
+                        let should_backup = match last {
+                            None => true,
+                            Some(ts) => {
+                                let parsed = chrono::DateTime::parse_from_rfc3339(ts).ok();
+                                parsed.map_or(true, |t| (chrono::Utc::now() - t.to_utc()).num_hours() >= 23)
+                            }
+                        };
+                        if should_backup {
+                            match commands::backup_database(None).await {
+                                Ok(p) => tracing::info!("auto-backup: {}", p),
+                                Err(e) => tracing::warn!("auto-backup failed: {}", e),
+                            }
+                        }
+                    }
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+                    loop {
+                        interval.tick().await;
+                        match commands::backup_database(None).await {
+                            Ok(p) => tracing::info!("periodic backup: {}", p),
+                            Err(e) => tracing::warn!("periodic backup failed: {}", e),
+                        }
+                    }
+                });
+            }
+
             // Replay sync events, mark overdue invoices, fire follow-up notification.
             // All three run sequentially in one spawn so they share the same task context.
             tauri::async_runtime::spawn(async move {
@@ -97,39 +130,6 @@ fn main() {
                     Err(e) => tracing::warn!("geocode_all failed: {}", e),
                 }
             });
-
-            // Auto-backup: check on startup if last backup was > 23 hours ago
-            {
-                let app_handle2 = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    if let Ok(status) = commands::get_backup_status().await {
-                        let last = status.get("last_backup").and_then(|v| v.as_str());
-                        let should_backup = match last {
-                            None => true,
-                            Some(ts) => {
-                                let parsed = chrono::DateTime::parse_from_rfc3339(ts).ok();
-                                parsed.map_or(true, |t| (chrono::Utc::now() - t.to_utc()).num_hours() >= 23)
-                            }
-                        };
-                        if should_backup {
-                            match commands::backup_database(None).await {
-                                Ok(p) => tracing::info!("auto-backup: {}", p),
-                                Err(e) => tracing::warn!("auto-backup failed: {}", e),
-                            }
-                        }
-                    }
-                    // Periodic: check every 24 hours
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
-                    loop {
-                        interval.tick().await;
-                        match commands::backup_database(None).await {
-                            Ok(p) => tracing::info!("periodic backup: {}", p),
-                            Err(e) => tracing::warn!("periodic backup failed: {}", e),
-                        }
-                    }
-                });
-            }
 
             // File watcher: react to incoming sync events from peers.
             if let Err(e) = sync::start_watcher() {
@@ -257,6 +257,15 @@ fn main() {
             restore_database,
             list_backups,
             get_backup_status,
+            // Users
+            list_users,
+            create_owner_user,
+            invite_user,
+            claim_invite,
+            remove_user,
+            update_user_role,
+            get_current_user,
+            set_current_user,
             // Sync
             sync_replay,
             sync_status,

@@ -521,4 +521,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_scheduled_sends_status ON scheduled_sends(status);
         "#,
     ),
+    (
+        25,
+        r#"
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('owner','sales_rep','viewer')),
+            invite_code TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        ALTER TABLE interactions ADD COLUMN user_name TEXT;
+        "#,
+    ),
 ];

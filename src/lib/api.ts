@@ -611,6 +611,16 @@ export interface DashboardStats {
   all_time_profit: number;
 }
 
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  invite_code: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
 export interface SyncStatus {
   events_applied: number;
   last_applied: string | null;
@@ -944,4 +954,14 @@ export const api = {
   // Geocoding
   geocodeClient: (clientId: string) => invoke<{ lat: number; lng: number }>("geocode_client", { clientId }),
   geocodeAllClients: () => invoke<string>("geocode_all_clients"),
+
+  // Users
+  listUsers: () => invoke<User[]>("list_users"),
+  createOwnerUser: (name: string, email: string) => invoke<User>("create_owner_user", { name, email }),
+  inviteUser: (name: string, email: string, role: string) => invoke<User>("invite_user", { name, email, role }),
+  claimInvite: (code: string) => invoke<User>("claim_invite", { code }),
+  removeUser: (id: string) => invoke<void>("remove_user", { id }),
+  updateUserRole: (id: string, role: string) => invoke<void>("update_user_role", { id, role }),
+  getCurrentUser: () => invoke<User | null>("get_current_user"),
+  setCurrentUser: (id: string) => invoke<void>("set_current_user", { id }),
 };
