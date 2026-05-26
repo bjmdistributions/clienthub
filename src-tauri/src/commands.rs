@@ -2987,7 +2987,16 @@ pub async fn get_onboarding_status() -> Result<bool, String> {
     let val: Option<String> = conn
         .query_row("SELECT value FROM settings WHERE key='onboarding_completed'", [], |r| r.get(0))
         .ok();
-    Ok(val.as_deref() == Some("true"))
+    Ok(val.as_deref() == Some("true") || {
+        let cc: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
+        let has_co = conn.query_row("SELECT value FROM settings WHERE key='company_info'", [], |_| Ok(())).is_ok();
+        if cc > 0 && has_co {
+            let _ = conn.execute(
+                "INSERT INTO settings (key,value) VALUES ('onboarding_completed','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [],
+            );
+            true
+        } else { false }
+    })
 }
 
 #[tauri::command]
