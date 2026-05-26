@@ -3011,6 +3011,114 @@ pub async fn complete_onboarding() -> Result<(), String> {
 }
 
 // ============================================================
+//  Auto-Backup
+// ============================================================
+
+fn backup_dir_setting() -> Result<std::path::PathBuf, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let custom: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key='backup_dir'", [], |r| r.get(0))
+        .ok();
+    let dir = match custom {
+        Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
+        _ => dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("ClientHub Backups"),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create backup dir: {}", e))?;
+    Ok(dir)
+}
+
+#[tauri::command]
+pub async fn backup_database(custom_dir: Option<String>) -> Result<String, String> {
+    let dir = match custom_dir {
+        Some(d) if !d.is_empty() => {
+            let p = std::path::PathBuf::from(&d);
+            std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("INSERT INTO settings (key,value) VALUES ('backup_dir',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&d]).map_err(|e| e.to_string())?;
+            p
+        }
+        _ => backup_dir_setting()?,
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let filename = format!("clienthub-backup-{}.db", today);
+    let dest = dir.join(&filename);
+
+    if !dest.exists() {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| format!("checkpoint: {}", e))?;
+        let db_path = crate::db::app_data_dir().join("clienthub.db");
+        std::fs::copy(&db_path, &dest).map_err(|e| format!("copy: {}", e))?;
+    }
+
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('last_backup',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&now_iso]).map_err(|e| e.to_string())?;
+
+    // Cleanup: delete backups older than 30 days matching exact pattern
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let cutoff = chrono::Local::now() - chrono::Duration::days(30);
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("clienthub-backup-") && name.ends_with(".db") && name.len() == 33 {
+                if let Ok(date) = chrono::NaiveDate::parse_from_str(&name[18..28], "%Y-%m-%d") {
+                    if date.and_hms_opt(0, 0, 0).unwrap() < cutoff.naive_local() {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct BackupEntry {
+    pub filename: String,
+    pub size: u64,
+    pub date: String,
+}
+
+#[tauri::command]
+pub async fn list_backups() -> Result<Vec<BackupEntry>, String> {
+    let dir = backup_dir_setting()?;
+    let mut entries = Vec::new();
+    let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("clienthub-backup-") && name.ends_with(".db") && name.len() == 33 {
+            if let Ok(meta) = entry.metadata() {
+                let date = name[18..28].to_string();
+                entries.push(BackupEntry { filename: name, size: meta.len(), date });
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn restore_database(path: String) -> Result<(), String> {
+    let src = std::path::Path::new(&path);
+    if !src.exists() { return Err("Backup file not found".into()); }
+    let staging = crate::db::app_data_dir().join("clienthub.db.pending_restore");
+    std::fs::copy(src, &staging).map_err(|e| format!("stage restore: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_backup_status() -> Result<serde_json::Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let last: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='last_backup'", [], |r| r.get(0)).ok();
+    let dir: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='backup_dir'", [], |r| r.get(0)).ok();
+    let dir = dir.unwrap_or_else(|| {
+        dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("ClientHub Backups").to_string_lossy().to_string()
+    });
+    Ok(serde_json::json!({ "last_backup": last, "backup_dir": dir }))
+}
+
+// ============================================================
 //  Sync controls
 // ============================================================
 

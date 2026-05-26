@@ -43,10 +43,10 @@ const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full foc
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits"
+    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup"
   >("email");
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits"] as const;
+  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup"] as const;
 
   return (
     <div>
@@ -83,6 +83,7 @@ export default function SettingsView() {
       {tab === "templates"  && <TemplatesTab />}
       {tab === "sheets"     && <SheetsTab />}
       {tab === "splits"     && <SplitsTab />}
+      {tab === "backup"     && <BackupTab />}
     </div>
   );
 }
@@ -1564,6 +1565,102 @@ function SplitsTab() {
         {msg === "saved" && <p className="text-[12px] text-emerald-600 font-medium">Saved</p>}
         {msg && msg !== "saved" && <p className="text-[12px] text-red-600">{msg}</p>}
       </div>
+    </div>
+  );
+}
+
+function BackupTab() {
+  const [status, setStatus] = useState<{ last_backup: string | null; backup_dir: string } | null>(null);
+  const [backups, setBackups] = useState<{ filename: string; size: number; date: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const [s, b] = await Promise.all([api.getBackupStatus(), api.listBackups()]);
+      setStatus(s);
+      setBackups(b);
+    } catch {}
+  };
+  useEffect(() => { load(); }, []);
+
+  const handleBackup = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const p = await api.backupDatabase();
+      setMsg(`Backed up to ${p.split(/[\\/]/).pop()}`);
+      load();
+    } catch (e: any) { setMsg(e.toString()); }
+    setBusy(false);
+  };
+
+  const handleRestore = async (filename: string) => {
+    const dateStr = filename.replace("clienthub-backup-", "").replace(".db", "");
+    if (!confirm(`Restore from ${dateStr}? This will replace ALL current data and restart the app. This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      const dir = status?.backup_dir || "";
+      await api.restoreDatabase(dir + "/" + filename);
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (e: any) { setMsg(e.toString()); setBusy(false); }
+  };
+
+  const handleDirChange = async () => {
+    const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+    const selected = await openDialog({ directory: true });
+    if (typeof selected !== "string") return;
+    setBusy(true);
+    try { await api.backupDatabase(selected); load(); } catch (e: any) { setMsg(e.toString()); }
+    setBusy(false);
+  };
+
+  const fmtSize = (b: number) => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1024).toFixed(0)} KB`;
+  const lastTime = status?.last_backup ? new Date(status.last_backup).toLocaleString() : "Never";
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Database Backup</h3>
+      <p className="text-[12px] text-gray-400 mb-5">Automatic daily backups. Restore if something goes wrong.</p>
+
+      <div className="space-y-3 mb-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest">Backup location</p>
+            <p className="text-[12px] text-gray-600 font-mono mt-0.5">{status?.backup_dir || "—"}</p>
+          </div>
+          <button onClick={handleDirChange} className="text-[11px] text-indigo-600 hover:text-indigo-800">Change</button>
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest">Last backup</p>
+          <p className="text-[13px] text-gray-700 mt-0.5">{lastTime}</p>
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-5">
+        <button onClick={handleBackup} disabled={busy} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-1.5">
+          <RefreshCw size={13} className={busy ? "animate-spin" : ""} /> Backup Now
+        </button>
+      </div>
+
+      {msg && <p className="text-[12px] text-emerald-600 font-medium mb-4">{msg}</p>}
+
+      {backups.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Backups ({backups.length})</p>
+          <div className="space-y-1">
+            {backups.map((b) => (
+              <div key={b.filename} className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
+                <div>
+                  <p className="text-[12px] font-medium text-gray-700">{b.date}</p>
+                  <p className="text-[11px] text-gray-400">{fmtSize(b.size)}</p>
+                </div>
+                <button onClick={() => handleRestore(b.filename)} disabled={busy} className="text-[11px] text-red-500 hover:text-red-700 font-medium disabled:opacity-50">Restore</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

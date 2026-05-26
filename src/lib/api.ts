@@ -851,6 +851,12 @@ export const api = {
   getOnboardingStatus: () => invoke<boolean>("get_onboarding_status"),
   completeOnboarding: () => invoke<void>("complete_onboarding"),
 
+  // Backup
+  backupDatabase: (dir?: string) => invoke<string>("backup_database", { customDir: dir ?? null }),
+  restoreDatabase: (path: string) => invoke<void>("restore_database", { path }),
+  listBackups: () => invoke<{ filename: string; size: number; date: string }[]>("list_backups"),
+  getBackupStatus: () => invoke<{ last_backup: string | null; backup_dir: string }>("get_backup_status"),
+
   // Sync
   syncReplay: () => invoke<number>("sync_replay"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),

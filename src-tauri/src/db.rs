@@ -26,6 +26,18 @@ pub fn init(app: &App) -> Result<()> {
     let dir = app.path().app_data_dir().context("app_data_dir")?;
     std::fs::create_dir_all(&dir)?;
     let db_path = dir.join("clienthub.db");
+
+    // Pending restore: if a restore was staged, swap it in before opening the DB
+    let pending = dir.join("clienthub.db.pending_restore");
+    if pending.exists() {
+        if std::fs::copy(&pending, &db_path).is_ok() {
+            tracing::info!("restored database from pending restore file");
+        } else {
+            tracing::warn!("pending restore file corrupted, keeping existing database");
+        }
+        let _ = std::fs::remove_file(&pending);
+    }
+
     APP_DATA_DIR.set(dir.clone()).ok();
 
     let manager = SqliteConnectionManager::file(&db_path).with_init(|c| {
