@@ -10,7 +10,7 @@ export default function HealthView() {
 
   const load = async () => {
     setLoading(true);
-    try { setScores(await api.customerHealthScores()); } catch {}
+    setScores([]);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);

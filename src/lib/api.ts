@@ -883,9 +883,6 @@ export const api = {
     invoke<void>("revert_supplier_price_change", { id, paymentId }),
   getDealFlowNodeMap: (dealFlowId: string) => invoke<DealFlowNodeMap>("get_deal_flow_node_map", { dealFlowId }),
 
-  // Customer Health
-  customerHealthScores: () => invoke<CustomerHealth[]>("customer_health_scores"),
-  getCustomerHealth: (clientId: string) => invoke<CustomerHealth>("get_customer_health", { clientId }),
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),
   generateWeeklyBrief: (forDate?: string | null) => invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null }),

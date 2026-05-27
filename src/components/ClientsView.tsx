@@ -76,7 +76,6 @@ export default function ClientsView() {
       });
     });
     api.listCategories().then(setAllCategories);
-    api.customerHealthScores().then(setHealthScores).catch(() => {});
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
     loadMissingInfo();

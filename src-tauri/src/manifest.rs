@@ -20,6 +20,47 @@ pub struct ManifestAnalysis {
     pub formula: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedRow {
+    pub description: String,
+    pub quantity: f64,
+    pub price: f64,
+}
+
+pub trait ManifestParser {
+    fn parse(path: &str) -> Result<Vec<ParsedRow>>;
+}
+
+pub struct CsvManifestParser;
+impl ManifestParser for CsvManifestParser {
+    fn parse(path: &str) -> Result<Vec<ParsedRow>> {
+        let mut rdr = csv::Reader::from_path(path).context("open csv")?;
+        let headers: Vec<String> = rdr.headers()?.iter().map(|s| s.trim().to_lowercase()).collect();
+        let desc_idx = headers.iter().position(|h| h.contains("desc") || h.contains("item") || h.contains("name") || h.contains("product"));
+        let qty_idx = headers.iter().position(|h| h.contains("qty") || h.contains("quant") || h.contains("unit"));
+        let price_idx = headers.iter().position(|h| h.contains("price") || h.contains("retail") || h.contains("value") || h.contains("cost"));
+        let desc_idx = desc_idx.context("CSV must have a header row with columns like description, quantity, price")?;
+        let mut rows = Vec::new();
+        for result in rdr.records() {
+            let record = result.context("read row")?;
+            let desc = record.get(desc_idx).unwrap_or("").trim().to_string();
+            if desc.is_empty() { continue; }
+            let qty = qty_idx.and_then(|i| record.get(i)).and_then(|s| s.trim().parse().ok()).unwrap_or(1.0);
+            let price = price_idx.and_then(|i| record.get(i)).and_then(|s| s.trim().replace("$", "").replace(",", "").parse().ok()).unwrap_or(0.0);
+            if price <= 0.0 { continue; }
+            rows.push(ParsedRow { description: desc, quantity: qty, price });
+        }
+        Ok(rows)
+    }
+}
+
+pub struct PdfManifestParser;
+impl ManifestParser for PdfManifestParser {
+    fn parse(_path: &str) -> Result<Vec<ParsedRow>> {
+        unimplemented!("PDF manifest parsing not yet supported")
+    }
+}
+
 fn keyword_map() -> HashMap<&'static str, &'static str> {
     [
         ("shoe", "Shoes"), ("sneaker", "Shoes"), ("boot", "Shoes"), ("sandal", "Shoes"),
