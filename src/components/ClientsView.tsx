@@ -86,6 +86,12 @@ export default function ClientsView() {
       sessionStorage.removeItem("clienthub.globe.clientId");
       setDetailId(preselect);
     }
+
+    const preFilter = sessionStorage.getItem("clienthub.clients.filter.missing");
+    if (preFilter) {
+      sessionStorage.removeItem("clienthub.clients.filter.missing");
+      updateFilter({ missing: preFilter });
+    }
   }, []);
 
   useEffect(() => {

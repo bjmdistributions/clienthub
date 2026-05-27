@@ -5918,6 +5918,15 @@ pub struct GeocodeResult {
     pub lng: f64,
 }
 
+#[derive(Serialize)]
+pub struct GeocodeSummary {
+    pub total: u32,
+    pub matched: u32,
+    pub skipped: u32,
+    pub not_found: u32,
+    pub message: String,
+}
+
 #[tauri::command]
 pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> {
     let lookup = crate::geocode::get().ok_or("geocode not initialized")?;
@@ -5966,7 +5975,7 @@ pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> 
 }
 
 #[tauri::command]
-pub async fn geocode_all_clients() -> Result<String, String> {
+pub async fn geocode_all_clients() -> Result<GeocodeSummary, String> {
     let lookup = match crate::geocode::get() {
         Some(l) => l,
         None => return Err("geocode not initialized — CSV may not have loaded".into()),
@@ -6054,7 +6063,7 @@ pub async fn geocode_all_clients() -> Result<String, String> {
         matched, total, skipped, not_found
     );
     tracing::info!("{}", msg);
-    Ok(msg)
+    Ok(GeocodeSummary { total: total as u32, matched, skipped, not_found, message: msg })
 }
 
 // ============================================================

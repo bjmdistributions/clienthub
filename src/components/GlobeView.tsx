@@ -48,6 +48,7 @@ export default function GlobeView() {
   const [error,       setError]       = useState<string | null>(null);
   const [geocoding,   setGeocoding]   = useState(false);
   const [geocodeMsg,  setGeocodeMsg]  = useState<string | null>(null);
+  const [geocodeSummary, setGeocodeSummary] = useState<{ total: number; matched: number; skipped: number; not_found: number } | null>(null);
 
   const containerRef       = useRef<HTMLDivElement>(null);
   const starCanvasRef      = useRef<HTMLCanvasElement>(null);
@@ -91,14 +92,14 @@ export default function GlobeView() {
     setGeocoding(true);
     setGeocodeMsg("Geocoding clients…");
     try {
-      const msg = await api.geocodeAllClients();
-      setGeocodeMsg(msg);
+      const result = await api.geocodeAllClients();
+      setGeocodeMsg(result.message);
+      setGeocodeSummary({ total: result.total, matched: result.matched, skipped: result.skipped, not_found: result.not_found });
       const allClients = await api.listClientsFiltered({});
-      const points = toPoints(allClients);
-      setMappedCount(points.length);
-      // Hot-reload the dots on the existing globe
-      if (globeRef.current && points.length > 0) {
-        applyDots(globeRef.current, points, (d) => {
+      const pts = toPoints(allClients);
+      setMappedCount(pts.length);
+      if (globeRef.current && pts.length > 0) {
+        applyDots(globeRef.current, pts, (d) => {
           justClickedDotRef.current = true;
           setTimeout(() => { justClickedDotRef.current = false; }, 250);
           setSelected(d);
@@ -131,9 +132,14 @@ export default function GlobeView() {
       setMappedCount(points.length);
       setLoading(false);
 
-      // Auto-geocode on first open if nothing is mapped yet
+      // Auto-geocode on first open if nothing is mapped yet — but only if
+      // any clients have city/state to geocode
       if (points.length === 0) {
-        runGeocode();
+        const hasAddressable = allClients.some((c) => {
+          const m = c.metadata || {};
+          return (m.city || m.state) && !(m.lat || m.lng);
+        });
+        if (hasAddressable) runGeocode();
       }
 
       if (destroyed) return;
@@ -267,17 +273,36 @@ export default function GlobeView() {
 
       {/* Zero-clients overlay */}
       {mappedCount === 0 && !geocoding && (
-        <div className="absolute inset-0 flex items-center justify-center z-[5] pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center z-[5]">
           <div
-            className="text-center px-7 py-5 rounded-2xl"
+            className="text-center px-7 py-5 rounded-2xl pointer-events-auto"
             style={{
               background: "rgba(10,10,22,0.88)",
               border: "1px solid rgba(165,180,252,0.18)",
               backdropFilter: "blur(8px)",
             }}
           >
-            <div className="text-[13px] mb-2" style={{ color: "#888" }}>No client locations found</div>
-            <div className="text-[11px]" style={{ color: "#555" }}>Geocoding in progress…</div>
+            <div className="text-[13px] mb-2" style={{ color: "#888" }}>No client locations mapped</div>
+            {geocodeSummary ? (
+              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#666" }}>
+                {geocodeSummary.total} client{geocodeSummary.total !== 1 ? "s" : ""} total ·
+                {geocodeSummary.matched > 0 && <span> {geocodeSummary.matched} newly plotted ·</span>} {geocodeSummary.skipped} have no city/state
+              </div>
+            ) : (
+              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#666" }}>
+                Add city/state to your client records to plot them on the globe.
+              </div>
+            )}
+            <button
+              onClick={() => {
+                sessionStorage.setItem("clienthub.clients.filter.missing", "address");
+                window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clients" }));
+              }}
+              className="text-[11px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
+              style={{ background: "rgba(99,102,241,0.2)", color: "#A5B4FC", border: "1px solid rgba(165,180,252,0.25)" }}
+            >
+              Fill in Addresses →
+            </button>
           </div>
         </div>
       )}

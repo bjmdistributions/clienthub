@@ -127,7 +127,7 @@ fn main() {
             tauri::async_runtime::spawn(async {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 match commands::geocode_all_clients().await {
-                    Ok(msg) => tracing::info!("{}", msg),
+                    Ok(summary) => tracing::info!("{}", summary.message),
                     Err(e) => tracing::warn!("geocode_all failed: {}", e),
                 }
             });
