@@ -801,24 +801,44 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
 }
 
 fn generate_invoice_number() -> anyhow::Result<String> {
-    // Atomic counter per year. Stored in settings table.
-    let year = Utc::now().format("%Y").to_string();
-    let key = format!("invoice_seq_{}", year);
     let conn = pool().get()?;
-    let current: u32 = conn
-        .query_row("SELECT value FROM settings WHERE key=?1", [&key], |r| {
-            r.get::<_, String>(0)
-        })
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let prefix: String = conn.query_row("SELECT value FROM settings WHERE key='invoice_prefix'", [], |r| r.get(0)).ok().unwrap_or_else(|| "INV-".into());
+    let padding: usize = conn.query_row("SELECT value FROM settings WHERE key='invoice_padding'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let next_key = "invoice_next_number".to_string();
+    let current: u32 = conn.query_row("SELECT value FROM settings WHERE key=?1", [&next_key], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(1);
     let next = current + 1;
     conn.execute(
-        "INSERT INTO settings (key,value) VALUES (?1,?2)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![key, next.to_string()],
+        "INSERT INTO settings (key,value) VALUES ('invoice_next_number',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [next.to_string()],
     )?;
-    Ok(format!("INV-{}-{:04}", year, next))
+    Ok(format!("{}{:0>width$}", prefix, current, width = padding))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct InvoiceNumberingConfig {
+    pub prefix: String,
+    pub next_number: u32,
+    pub padding: u32,
+    pub preview: String,
+}
+
+#[tauri::command]
+pub async fn get_invoice_numbering_config() -> Result<InvoiceNumberingConfig, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let prefix: String = conn.query_row("SELECT value FROM settings WHERE key='invoice_prefix'", [], |r| r.get(0)).ok().unwrap_or_else(|| "INV-".into());
+    let next_number: u32 = conn.query_row("SELECT value FROM settings WHERE key='invoice_next_number'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let padding: u32 = conn.query_row("SELECT value FROM settings WHERE key='invoice_padding'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let preview = format!("{}{:0>width$}", prefix, next_number, width = padding as usize);
+    Ok(InvoiceNumberingConfig { prefix, next_number, padding, preview })
+}
+
+#[tauri::command]
+pub async fn save_invoice_numbering_config(prefix: String, next_number: u32, padding: u32) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('invoice_prefix',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&prefix]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('invoice_next_number',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&next_number.to_string()]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('invoice_padding',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&padding.to_string()]).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Deserialize)]

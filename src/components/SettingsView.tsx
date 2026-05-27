@@ -416,6 +416,10 @@ function CompanyTab() {
         {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved" : "Save"}
       </button>
+
+      <div className="mt-6 pt-5 border-t border-gray-100">
+        <InvoiceNumberingSection />
+      </div>
     </div>
   );
 }
@@ -1857,6 +1861,55 @@ function TeamTab() {
         </div>
         {error && <p className="text-[11px] text-red-500">{error}</p>}
       </div>
+    </div>
+  );
+}
+
+function InvoiceNumberingSection() {
+  const [cfg, setCfg] = useState({ prefix: "INV-", next_number: 1, padding: 4, preview: "INV-0001" });
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api.getInvoiceNumberingConfig().then((c) => setCfg(c)).catch(() => {});
+  }, []);
+
+  const update = (patch: Partial<typeof cfg>) => {
+    const next = { ...cfg, ...patch };
+    const preview = `${next.prefix}${String(next.next_number).padStart(next.padding || 1, "0")}`;
+    setCfg({ ...next, preview });
+  };
+
+  const save = async () => {
+    await api.saveInvoiceNumberingConfig(cfg.prefix, cfg.next_number, cfg.padding);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div>
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Invoice Numbering</h3>
+      <p className="text-[12px] text-gray-400 mb-4">Customize how new invoice numbers are generated.</p>
+      <div className="grid grid-cols-3 gap-3 mb-3">
+        <div>
+          <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Prefix</label>
+          <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full" value={cfg.prefix}
+            onChange={(e) => update({ prefix: e.target.value })} placeholder="INV-" />
+        </div>
+        <div>
+          <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Padding</label>
+          <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.padding}
+            onChange={(e) => update({ padding: parseInt(e.target.value) || 1 })} />
+        </div>
+        <div>
+          <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Start at</label>
+          <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.next_number}
+            onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
+        </div>
+      </div>
+      <p className="text-[11px] text-gray-500 mb-3">Preview: <span className="font-mono font-semibold text-indigo-700">{cfg.preview}</span></p>
+      <button onClick={save} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[12px] font-medium">
+        {saved ? "Saved" : "Save"}
+      </button>
     </div>
   );
 }

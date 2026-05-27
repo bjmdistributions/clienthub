@@ -219,6 +219,13 @@ export interface DealCostItem {
   supplier_name?: string;
 }
 
+export interface InvoiceNumberingConfig {
+  prefix: string;
+  next_number: number;
+  padding: number;
+  preview: string;
+}
+
 export interface SupplierNameSuggestion {
   supplier_name: string;
   count: number;
@@ -815,6 +822,11 @@ export const api = {
     invoke<void>("save_invoice_shipping", { invoiceId, info }),
   setInvoiceSentDate: (invoiceId: string, sentDate: string) =>
     invoke<void>("set_invoice_sent_date", { invoiceId, sentDate }),
+
+  // Invoice numbering
+  getInvoiceNumberingConfig: () => invoke<InvoiceNumberingConfig>("get_invoice_numbering_config"),
+  saveInvoiceNumberingConfig: (prefix: string, nextNumber: number, padding: number) =>
+    invoke<void>("save_invoice_numbering_config", { prefix, nextNumber, padding }),
 
   // Deals
   listDeals: () => invoke<Deal[]>("list_deals"),

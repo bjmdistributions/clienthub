@@ -207,6 +207,9 @@ fn main() {
             save_invoice_costs,
             save_invoice_shipping,
             set_invoice_sent_date,
+            // Invoice numbering
+            get_invoice_numbering_config,
+            save_invoice_numbering_config,
             detect_duplicate_clients,
             cleanup_clients,
             // Deals
