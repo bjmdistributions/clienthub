@@ -315,6 +315,8 @@ fn main() {
             generate_portal_link,
             revoke_portal_link,
             list_portal_links,
+            get_portal_base_url,
+            save_portal_base_url,
             // Manifest
             analyze_manifest,
             // Forecast

@@ -691,6 +691,7 @@ export interface PortalLink {
   is_active: boolean;
   created_at: string;
   client_name: string | null;
+  portal_url: string;
 }
 
 export interface SyncStatus {
@@ -1059,6 +1060,8 @@ export const api = {
   generatePortalLink: (clientId: string) => invoke<PortalLink>("generate_portal_link", { clientId }),
   revokePortalLink: (token: string) => invoke<void>("revoke_portal_link", { token }),
   listPortalLinks: (clientId?: string) => invoke<PortalLink[]>("list_portal_links", { clientId: clientId ?? null }),
+  getPortalBaseUrl: () => invoke<string | null>("get_portal_base_url"),
+  savePortalBaseUrl: (url: string) => invoke<void>("save_portal_base_url", { url }),
 
   // Manifest
   analyzeManifest: (path: string) => invoke<ManifestAnalysis>("analyze_manifest", { path }),

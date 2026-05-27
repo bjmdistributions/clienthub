@@ -3628,19 +3628,52 @@ pub struct PortalLink {
     pub is_active: bool,
     pub created_at: String,
     pub client_name: Option<String>,
+    pub portal_url: String,
+}
+
+fn portal_base_url(conn: &rusqlite::Connection) -> Option<String> {
+    conn.query_row("SELECT value FROM settings WHERE key='portal_base_url'", [], |r| r.get::<_, String>(0)).ok()
+}
+
+fn build_portal_url(base: Option<String>, token: &str) -> String {
+    match base {
+        Some(b) if !b.is_empty() => {
+            let stripped = b.trim_end_matches('/');
+            format!("{}/portal/{}", stripped, token)
+        }
+        _ => format!("<configure portal URL in Settings>", ),
+    }
+}
+
+#[tauri::command]
+pub async fn get_portal_base_url() -> Result<Option<String>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(portal_base_url(&conn))
+}
+
+#[tauri::command]
+pub async fn save_portal_base_url(url: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('portal_base_url',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [&url],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn generate_portal_link(client_id: String) -> Result<PortalLink, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    let base = portal_base_url(&conn);
     let existing: Option<PortalLink> = conn.query_row(
         "SELECT t.id, t.client_id, t.token, t.expires_at, t.is_active, t.created_at, c.name FROM client_portal_tokens t JOIN clients c ON c.id=t.client_id WHERE t.client_id=?1 AND t.is_active=1 AND t.expires_at > datetime('now') ORDER BY t.created_at DESC LIMIT 1",
         [&client_id], |r| Ok(PortalLink {
             id: r.get(0)?, client_id: r.get(1)?, token: r.get(2)?, expires_at: r.get(3)?,
             is_active: r.get::<_,i64>(4)? != 0, created_at: r.get(5)?, client_name: r.get(6)?,
+            portal_url: String::new(),
         }),
     ).ok();
-    if let Some(link) = existing { return Ok(link); }
+    if let Some(mut link) = existing { link.portal_url = build_portal_url(base, &link.token); return Ok(link); }
 
     let id = uuid::Uuid::new_v4().to_string();
     let token = uuid::Uuid::new_v4().to_string().replace("-", "");
@@ -3651,7 +3684,8 @@ pub async fn generate_portal_link(client_id: String) -> Result<PortalLink, Strin
         "INSERT INTO client_portal_tokens (id,client_id,token,expires_at,is_active,created_at) VALUES (?1,?2,?3,?4,1,?5)",
         rusqlite::params![id, client_id, token, expires, now],
     ).map_err(|e| e.to_string())?;
-    Ok(PortalLink { id, client_id, token, expires_at: expires, is_active: true, created_at: now, client_name })
+    let portal_url = build_portal_url(base, &token);
+    Ok(PortalLink { id, client_id, token, expires_at: expires, is_active: true, created_at: now, client_name, portal_url })
 }
 
 #[tauri::command]
@@ -3674,8 +3708,10 @@ pub async fn list_portal_links(client_id: Option<String>) -> Result<Vec<PortalLi
     let rows = stmt.query_map(param_refs.as_slice(), |r| Ok(PortalLink {
         id: r.get(0)?, client_id: r.get(1)?, token: r.get(2)?, expires_at: r.get(3)?,
         is_active: r.get::<_,i64>(4)? != 0, created_at: r.get(5)?, client_name: r.get(6)?,
+        portal_url: String::new(),
     })).map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let base = portal_base_url(&conn);
+    Ok(rows.filter_map(|r| r.ok()).map(|mut l| { l.portal_url = build_portal_url(base.clone(), &l.token); l }).collect())
 }
 
 // ============================================================
