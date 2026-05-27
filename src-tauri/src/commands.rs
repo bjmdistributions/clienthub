@@ -3001,8 +3001,7 @@ pub async fn get_onboarding_status() -> Result<bool, String> {
         .ok();
     Ok(val.as_deref() == Some("true") || {
         let cc: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
-        let has_co = conn.query_row("SELECT value FROM settings WHERE key='company_info'", [], |_| Ok(())).is_ok();
-        if cc > 0 && has_co {
+        if cc > 0 {
             let _ = conn.execute(
                 "INSERT INTO settings (key,value) VALUES ('onboarding_completed','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [],
             );
@@ -3282,17 +3281,16 @@ pub async fn get_current_user() -> Result<Option<User>, String> {
             if users.is_empty() {
                 let has_clients: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
                 if has_clients > 0 {
-                    if let Some(company_json) = conn.query_row::<String, _, _>("SELECT value FROM settings WHERE key='company_info'", [], |r| r.get(0)).ok() {
-                        if let Ok(ci) = serde_json::from_str::<serde_json::Value>(&company_json) {
-                            let name = ci.get("name").and_then(|v| v.as_str()).unwrap_or("Owner");
-                            let email = ci.get("email").and_then(|v| v.as_str()).unwrap_or("");
-                            let id = uuid::Uuid::new_v4().to_string();
-                            let now = chrono::Utc::now().to_rfc3339();
-                            conn.execute("INSERT INTO users (id, name, email, role, is_active, created_at) VALUES (?1, ?2, ?3, 'owner', 1, ?4)", rusqlite::params![id, name, email, now]).map_err(|e| e.to_string())?;
-                            conn.execute("INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&id]).map_err(|e| e.to_string())?;
-                            return Ok(Some(User { id, name: name.to_string(), email: email.to_string(), role: "owner".into(), invite_code: None, is_active: true, created_at: now }));
-                        }
-                    }
+                    let name = conn.query_row::<String, _, _>("SELECT value FROM settings WHERE key='company_info'", [], |r| r.get(0)).ok()
+                        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+                        .and_then(|ci| ci.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_else(|| "Owner".to_string());
+                    let email = String::new();
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let now = chrono::Utc::now().to_rfc3339();
+                    conn.execute("INSERT INTO users (id, name, email, role, is_active, created_at) VALUES (?1, ?2, ?3, 'owner', 1, ?4)", rusqlite::params![id, name, email, now]).map_err(|e| e.to_string())?;
+                    conn.execute("INSERT INTO settings (key,value) VALUES ('current_user_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&id]).map_err(|e| e.to_string())?;
+                    return Ok(Some(User { id, name, email, role: "owner".into(), invite_code: None, is_active: true, created_at: now }));
                 }
             }
             return Ok(None);
