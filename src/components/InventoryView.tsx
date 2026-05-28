@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, Lot, Deal, ManifestAnalysis } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3 } from "lucide-react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight } from "lucide-react";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as const;
 type StatusFilter = typeof STATUS_FILTERS[number] | "all";
@@ -50,6 +51,13 @@ export default function InventoryView() {
   const marginPct = (lot: Lot) => lot.total_cost > 0 ? ((lot.asking_price - lot.total_cost) / lot.total_cost) * 100 : 0;
   const profit = (lot: Lot) => lot.asking_price - lot.total_cost;
 
+  const handleExportInventory = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "inventory.csv" });
+    if (!path) return;
+    const count = await api.exportInventoryCsv(filter === "all" ? null : filter, path as string);
+    alert(`Exported ${count} inventory lots to CSV.`);
+  };
+
   return (
     <div>
       {toast && (
@@ -64,6 +72,10 @@ export default function InventoryView() {
         </div>
         <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
           <Plus size={14} /> Add Lot
+        </button>
+        <button onClick={handleExportInventory}
+          className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+          <FileDown size={13} /> Export
         </button>
       </div>
 
@@ -155,8 +167,12 @@ export default function InventoryView() {
         </div>
 
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {filtered.map((lot) => (
-            <div key={lot.id} className="bg-white border border-gray-100 rounded-xl p-4 hover:shadow-sm transition-shadow">
+          {filtered.map((lot) => {
+            const lotPhotos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
+            return (
+            <div key={lot.id} className="bg-white border border-gray-100 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
+              <div className="flex min-h-[90px]">
+                <div className="flex-1 p-4">
               <div className="flex items-start justify-between mb-2">
                 <div>
                   <div className="flex items-center gap-2 mb-0.5">
@@ -188,8 +204,17 @@ export default function InventoryView() {
                     className="text-[11px] text-amber-500 hover:text-amber-700 px-2 py-1 rounded hover:bg-amber-50">Archive</button>
                 )}
               </div>
+                </div>
+                <div className="w-[90px] flex-shrink-0 border-l border-gray-100 flex items-center justify-center bg-gray-50/50">
+                  {lotPhotos.length > 0 ? (
+                    <img src={convertFileSrc(lotPhotos[0])} alt="" className="w-[90px] h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  ) : (
+                    <Image size={24} className="text-gray-300" />
+                  )}
+                </div>
+              </div>
             </div>
-          ))}
+          )})}
           {filtered.length === 0 && (
             <div className="col-span-2 text-center py-12">
               <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3"><Package size={16} className="text-gray-400" /></div>
@@ -228,11 +253,18 @@ function LotForm({ initial, onClose, deals }: { initial?: Lot | null; onClose: (
   const [ask, setAsk] = useState(initial?.asking_price ?? 0);
   const [photos, setPhotos] = useState<string[]>(() => { try { return JSON.parse(initial?.photos_json ?? "[]") ?? []; } catch { return []; } });
   const [saving, setSaving] = useState(false);
+  const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null);
 
-  const pickPhoto = async () => {
-    const f = await openDialog({ multiple: false, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
-    if (typeof f === "string") setPhotos([...photos, f]);
-  };
+  useEffect(() => {
+    if (!lightbox) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+      if (e.key === "ArrowRight") setLightbox((prev) => prev ? { ...prev, index: Math.min(prev.index + 1, prev.photos.length - 1) } : null);
+      if (e.key === "ArrowLeft") setLightbox((prev) => prev ? { ...prev, index: Math.max(prev.index - 1, 0) } : null);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightbox]);
 
   const submit = async () => {
     if (!name.trim()) return;
@@ -246,6 +278,7 @@ function LotForm({ initial, onClose, deals }: { initial?: Lot | null; onClose: (
   };
 
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-[440px] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
@@ -289,10 +322,24 @@ function LotForm({ initial, onClose, deals }: { initial?: Lot | null; onClose: (
           </div>
           <div>
             <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Photos</label>
-            <div className="flex flex-wrap gap-2">
-              {photos.map((p, i) => <span key={i} className="text-[11px] bg-gray-100 px-2 py-1 rounded text-gray-600 truncate max-w-[150px]">{p.split(/[\\/]/).pop()}</span>)}
-              <button onClick={pickPhoto} className="text-[11px] text-indigo-600 hover:text-indigo-800">+ Add</button>
+            <div className="flex flex-wrap gap-2 mb-1">
+              {photos.map((p, i) => (
+                <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
+                  <img src={convertFileSrc(p)} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-gray-200 cursor-pointer hover:border-indigo-400 transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
+                  <button onClick={() => setPhotos(photos.filter((_, idx) => idx !== i))} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
+                </div>
+              ))}
+              <button onClick={async () => {
+                const f = await openDialog({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
+                if (Array.isArray(f)) setPhotos([...photos, ...f]);
+                else if (typeof f === "string") setPhotos([...photos, f]);
+              }} className="w-[72px] h-[72px] border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors group">
+                <Plus size={18} className="text-gray-400 group-hover:text-indigo-500 transition-colors" />
+              </button>
             </div>
+            <p className="text-[9px] text-gray-400 flex items-center gap-1">
+              <Image size={10} /> Photos are stored as paths on this device; other devices won't see them.
+            </p>
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-5">
@@ -303,5 +350,15 @@ function LotForm({ initial, onClose, deals }: { initial?: Lot | null; onClose: (
         </div>
       </div>
     </div>
+    {lightbox && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setLightbox(null)}>
+        <button onClick={() => setLightbox(null)} className="absolute top-4 right-4 text-white/70 hover:text-white p-2"><X size={24} /></button>
+        <button onClick={() => setLightbox((prev) => prev && prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev)} className="absolute left-4 top-1/2 -translate-y-1/2 text-white/70 hover:text-white disabled:opacity-30 p-2" disabled={lightbox.index === 0}><ChevronLeft size={32} /></button>
+        <button onClick={() => setLightbox((prev) => prev && prev.index < prev.photos.length - 1 ? { ...prev, index: prev.index + 1 } : prev)} className="absolute right-4 top-1/2 -translate-y-1/2 text-white/70 hover:text-white disabled:opacity-30 p-2" disabled={lightbox.index === lightbox.photos.length - 1}><ChevronRight size={32} /></button>
+        <img src={convertFileSrc(lightbox.photos[lightbox.index])} alt="" className="max-w-[90vw] max-h-[90vh] object-contain" onClick={(e) => e.stopPropagation()} />
+        <div className="absolute bottom-4 text-white/60 text-[13px]">{lightbox.index + 1} / {lightbox.photos.length}</div>
+      </div>
+    )}
+    </>
   );
 }

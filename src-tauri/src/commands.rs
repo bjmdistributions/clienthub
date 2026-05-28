@@ -276,6 +276,290 @@ pub async fn delete_client(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn bulk_delete_clients(ids: Vec<String>) -> Result<u32, String> {
+    let mut count: u32 = 0;
+    for id in &ids {
+        if let Err(e) = sync::record_delete("clients", id) {
+            tracing::warn!("sync record_delete for {}: {}", id, e);
+        }
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        if conn.execute("DELETE FROM clients WHERE id=?1", [id]).is_ok() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn bulk_update_category(ids: Vec<String>, category: String) -> Result<u32, String> {
+    let mut count: u32 = 0;
+    for id in &ids {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let meta_str: Option<String> = conn.query_row("SELECT metadata FROM clients WHERE id=?1", [id], |r| r.get(0)).ok();
+        let mut meta: Value = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(json!({}));
+        meta["category"] = Value::String(category.clone());
+        let new_meta = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("metadata".into(), Value::String(new_meta.clone()));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("clients", id, cols).map_err(|e| e.to_string())?;
+        if conn.execute("UPDATE clients SET metadata=?1, updated_at=?2 WHERE id=?3", rusqlite::params![new_meta, now, id]).is_ok() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn bulk_update_lead_status(ids: Vec<String>, lead_status: String) -> Result<u32, String> {
+    let mut count: u32 = 0;
+    for id in &ids {
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("lead_status".into(), Value::String(lead_status.clone()));
+        cols.insert("updated_at".into(), Value::String(now.clone()));
+        sync::record_upsert("clients", id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        if conn.execute("UPDATE clients SET lead_status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![lead_status, now, id]).is_ok() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_clients_csv(ids: Vec<String>, output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
+    wtr.write_record(["name","company","email","phone","street_address","city","state","zip_code","category","lead_status","tier","total_revenue","last_contact_at"]).map_err(|e| e.to_string())?;
+
+    let mut count: u32 = 0;
+    for id in &ids {
+        let row: Option<(String,Option<String>,Option<String>,Option<String>,Option<String>,String)> = conn.query_row(
+            "SELECT c.name,c.email,c.phone,c.company,c.metadata,c.lead_status FROM clients c WHERE c.id=?1",
+            [id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
+        ).ok();
+
+        if let Some((name,email,phone,company,meta_str,lead_status)) = row {
+            let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
+            let street_address = meta.as_ref().and_then(|m|m.get("street_address")).and_then(|v|v.as_str()).unwrap_or("");
+            let city = meta.as_ref().and_then(|m|m.get("city")).and_then(|v|v.as_str()).unwrap_or("");
+            let state = meta.as_ref().and_then(|m|m.get("state")).and_then(|v|v.as_str()).unwrap_or("");
+            let zip_code = meta.as_ref().and_then(|m|m.get("zip_code")).and_then(|v|v.as_str()).unwrap_or("");
+            let cat = meta.as_ref().and_then(|m|m.get("category")).and_then(|v|v.as_str()).unwrap_or("");
+
+            let total_rev: f64 = conn.query_row(
+                "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1", [id], |r| r.get(0)
+            ).unwrap_or(0.0);
+
+            let last_contact: Option<String> = conn.query_row(
+                "SELECT MAX(created_at) FROM interactions WHERE client_id=?1", [id], |r| r.get(0)
+            ).ok();
+
+            wtr.write_record(&[
+                &name,
+                company.as_deref().unwrap_or(""),
+                email.as_deref().unwrap_or(""),
+                phone.as_deref().unwrap_or(""),
+                street_address, city, state, zip_code, cat, &lead_status, "",
+                &format!("{:.2}", total_rev),
+                last_contact.as_deref().unwrap_or(""),
+            ]).map_err(|e| e.to_string())?;
+            count += 1;
+        }
+    }
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_invoices_csv(output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
+    wtr.write_record(["number","client","issue_date","due_date","status","subtotal","tax","total","cost","profit","margin"]).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT i.number,COALESCE(c.name,''),i.issue_date,i.due_date,i.status,i.subtotal,i.tax,i.total,i.total_cost,i.profit,i.margin
+         FROM invoices i LEFT JOIN clients c ON c.id=i.client_id ORDER BY i.issue_date DESC"
+    ).map_err(|e| e.to_string())?;
+    let mut count: u32 = 0;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,f64>(5)?,r.get::<_,f64>(6)?,r.get::<_,f64>(7)?,r.get::<_,Option<f64>>(8)?,r.get::<_,Option<f64>>(9)?,r.get::<_,Option<f64>>(10)?))
+    }).map_err(|e| e.to_string())?;
+    for r in rows.filter_map(|r| r.ok()) {
+        let cost_str = r.8.map(|v| format!("{:.2}", v)).unwrap_or_default();
+        let profit_str = r.9.map(|v| format!("{:.2}", v)).unwrap_or_default();
+        let margin_str = r.10.map(|v| format!("{:.1}%", v)).unwrap_or_default();
+        wtr.write_record(&[&r.0, &r.1, &r.2, &r.3, &r.4, &format!("{:.2}", r.5), &format!("{:.2}", r.6), &format!("{:.2}", r.7), &cost_str, &profit_str, &margin_str]).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_deals_csv(output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
+    wtr.write_record(["title","client","stage","asking_price","created_at","updated_at"]).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT d.title,COALESCE(c.name,''),d.stage,d.asking_price,d.created_at,d.updated_at
+         FROM deals d LEFT JOIN clients c ON c.id=d.client_id ORDER BY d.updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let mut count: u32 = 0;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))
+    }).map_err(|e| e.to_string())?;
+    for r in rows.filter_map(|r| r.ok()) {
+        wtr.write_record(&[&r.0,&r.1,&r.2,&format!("{:.2}",r.3),&r.4,&r.5]).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_deal_flows_csv(output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
+    wtr.write_record(["name","client","stage","gross_revenue","total_cost","net_profit","created_at"]).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT df.name,COALESCE(c.name,''),df.stage,COALESCE(df.gross_revenue,0),COALESCE(df.total_cost,0),COALESCE(df.net_profit,0),df.created_at
+         FROM deal_flows df LEFT JOIN clients c ON c.id=df.client_id ORDER BY df.updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let mut count: u32 = 0;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?,r.get::<_,f64>(5)?,r.get::<_,String>(6)?))
+    }).map_err(|e| e.to_string())?;
+    for r in rows.filter_map(|r| r.ok()) {
+        wtr.write_record(&[&r.0,&r.1,&r.2,&format!("{:.2}",r.3),&format!("{:.2}",r.4),&format!("{:.2}",r.5),&r.6]).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_inventory_csv(status_filter: Option<String>, output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
+    wtr.write_record(["name","category","quantity","total_cost","asking_price","status","created_at"]).map_err(|e| e.to_string())?;
+    let sql = match &status_filter {
+        Some(_) => "SELECT name,category,quantity,total_cost,asking_price,status,created_at FROM inventory WHERE status=?1 ORDER BY created_at DESC",
+        None => "SELECT name,category,quantity,total_cost,asking_price,status,created_at FROM inventory ORDER BY created_at DESC",
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut count: u32 = 0;
+    let rows: Vec<_> = match &status_filter {
+        Some(s) => stmt.query_map([s], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect(),
+        None => stmt.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect(),
+    };
+    for r in rows {
+        wtr.write_record(&[&r.0,&r.1.unwrap_or_default(),&r.2.to_string(),&format!("{:.2}",r.3),&format!("{:.2}",r.4),&r.5,&r.6]).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
+    use rust_xlsxwriter::*;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut wb = Workbook::new();
+
+    // Sheet 1: Summary
+    let ws1 = wb.add_worksheet().set_name("Summary").map_err(|e| e.to_string())?;
+    let bold = Format::new().set_bold();
+    let currency = Format::new().set_num_format("$#,##0.00");
+    ws1.write_with_format(0, 0, "ClientHub Analytics Export", &bold).map_err(|e| e.to_string())?;
+    ws1.write_string(1, 0, format!("Generated: {}", Utc::now().format("%Y-%m-%d %H:%M UTC"))).map_err(|e| e.to_string())?;
+    let total_clients: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
+    let total_invoices: i64 = conn.query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0)).unwrap_or(0);
+    let outstanding: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue')", [], |r| r.get(0)).unwrap_or(0.0);
+    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND issue_date >= ?1", [format!("{}-01-01",Utc::now().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
+    let pipeline_val: f64 = conn.query_row("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)).unwrap_or(0.0);
+    let pipeline_cnt: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)).unwrap_or(0);
+
+    ws1.write_with_format(3, 0, "Total Clients", &bold).map_err(|e| e.to_string())?;
+    ws1.write_number(3, 1, total_clients as f64).map_err(|e| e.to_string())?;
+    ws1.write_with_format(4, 0, "Total Invoices", &bold).map_err(|e| e.to_string())?;
+    ws1.write_number(4, 1, total_invoices as f64).map_err(|e| e.to_string())?;
+    ws1.write_with_format(5, 0, "Outstanding", &bold).map_err(|e| e.to_string())?;
+    ws1.write_number_with_format(5, 1, outstanding, &currency).map_err(|e| e.to_string())?;
+    ws1.write_with_format(6, 0, "Paid YTD", &bold).map_err(|e| e.to_string())?;
+    ws1.write_number_with_format(6, 1, paid_ytd, &currency).map_err(|e| e.to_string())?;
+    ws1.write_with_format(7, 0, "Pipeline Value", &bold).map_err(|e| e.to_string())?;
+    ws1.write_number_with_format(7, 1, pipeline_val, &currency).map_err(|e| e.to_string())?;
+    ws1.write_with_format(8, 0, "Pipeline Count", &bold).map_err(|e| e.to_string())?;
+    ws1.write_number(8, 1, pipeline_cnt as f64).map_err(|e| e.to_string())?;
+
+    // Sheet 2: Revenue by Month
+    let ws2 = wb.add_worksheet().set_name("Revenue by Month").map_err(|e| e.to_string())?;
+    ws2.write_string_with_format(0, 0, "Month", &bold).map_err(|e| e.to_string())?;
+    ws2.write_string_with_format(0, 1, "Revenue", &bold).map_err(|e| e.to_string())?;
+    ws2.write_string_with_format(0, 2, "Cost", &bold).map_err(|e| e.to_string())?;
+    ws2.write_string_with_format(0, 3, "Profit", &bold).map_err(|e| e.to_string())?;
+    ws2.write_string_with_format(0, 4, "Margin %", &bold).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-%m',issue_date) as month, COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(profit),0)
+         FROM invoices WHERE status='paid' AND is_complete=1 GROUP BY month ORDER BY month DESC"
+    ).map_err(|e| e.to_string())?;
+    let month_rows: Vec<(String,f64,f64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    for (i, (m, rev, cost, profit)) in month_rows.iter().enumerate() {
+        let row = (i + 1) as u32;
+        ws2.write_string(row, 0, m.as_str()).map_err(|e| e.to_string())?;
+        ws2.write_number_with_format(row, 1, *rev, &currency).map_err(|e| e.to_string())?;
+        ws2.write_number_with_format(row, 2, *cost, &currency).map_err(|e| e.to_string())?;
+        ws2.write_number_with_format(row, 3, *profit, &currency).map_err(|e| e.to_string())?;
+        let margin_pct = if *rev > 0.0 { *profit / *rev * 100.0 } else { 0.0 };
+        ws2.write_string(row, 4, format!("{:.1}%", margin_pct).as_str()).map_err(|e| e.to_string())?;
+    }
+
+    // Sheet 3: Top Clients
+    let ws3 = wb.add_worksheet().set_name("Top Clients").map_err(|e| e.to_string())?;
+    ws3.write_string_with_format(0, 0, "Name", &bold).map_err(|e| e.to_string())?;
+    ws3.write_string_with_format(0, 1, "Company", &bold).map_err(|e| e.to_string())?;
+    ws3.write_string_with_format(0, 2, "Invoices", &bold).map_err(|e| e.to_string())?;
+    ws3.write_string_with_format(0, 3, "Total Spent", &bold).map_err(|e| e.to_string())?;
+    ws3.write_string_with_format(0, 4, "Total Profit", &bold).map_err(|e| e.to_string())?;
+    ws3.write_string_with_format(0, 5, "Margin %", &bold).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT c.name, COALESCE(c.company,''), COUNT(i.id), COALESCE(SUM(i.total),0), COALESCE(SUM(i.profit),0)
+         FROM clients c JOIN invoices i ON i.client_id=c.id WHERE i.status='paid'
+         GROUP BY c.id ORDER BY SUM(i.total) DESC LIMIT 50"
+    ).map_err(|e| e.to_string())?;
+    let client_rows: Vec<(String,String,i64,f64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    for (i, (name, co, invs, spent, profit)) in client_rows.iter().enumerate() {
+        let row = (i + 1) as u32;
+        ws3.write_string(row, 0, name.as_str()).map_err(|e| e.to_string())?;
+        ws3.write_string(row, 1, co.as_str()).map_err(|e| e.to_string())?;
+        ws3.write_number(row, 2, *invs as f64).map_err(|e| e.to_string())?;
+        ws3.write_number_with_format(row, 3, *spent, &currency).map_err(|e| e.to_string())?;
+        ws3.write_number_with_format(row, 4, *profit, &currency).map_err(|e| e.to_string())?;
+        let margin_pct = if *spent > 0.0 { *profit / *spent * 100.0 } else { 0.0 };
+        ws3.write_string(row, 5, format!("{:.1}%", margin_pct).as_str()).map_err(|e| e.to_string())?;
+    }
+
+    // Sheet 4: Deal Pipeline
+    let ws4 = wb.add_worksheet().set_name("Deal Pipeline").map_err(|e| e.to_string())?;
+    ws4.write_string_with_format(0, 0, "Stage", &bold).map_err(|e| e.to_string())?;
+    ws4.write_string_with_format(0, 1, "Count", &bold).map_err(|e| e.to_string())?;
+    ws4.write_string_with_format(0, 2, "Value", &bold).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT stage, COUNT(*), COALESCE(SUM(asking_price),0) FROM deals GROUP BY stage ORDER BY stage").map_err(|e| e.to_string())?;
+    let pipeline_rows: Vec<(String,i64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    for (i, (stage, cnt, val)) in pipeline_rows.iter().enumerate() {
+        let row = (i + 1) as u32;
+        ws4.write_string(row, 0, stage.as_str()).map_err(|e| e.to_string())?;
+        ws4.write_number(row, 1, *cnt as f64).map_err(|e| e.to_string())?;
+        ws4.write_number_with_format(row, 2, *val, &currency).map_err(|e| e.to_string())?;
+    }
+
+    wb.save(&output_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let pattern = format!("%{}%", query.to_lowercase());
@@ -1055,25 +1339,169 @@ pub async fn mark_overdue_invoices() -> Result<u32, String> {
     Ok(count)
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecurringInvoice {
+    pub id: String,
+    pub client_id: String,
+    pub client_name: String,
+    pub template_name: String,
+    pub line_items_json: String,
+    pub tax_rate: f64,
+    pub notes: Option<String>,
+    pub payment_method_label: Option<String>,
+    pub frequency: String,
+    pub next_due_date: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecurringInvoiceInput {
+    pub client_id: String,
+    pub template_name: String,
+    pub line_items: Vec<crate::invoice::LineItem>,
+    pub tax_rate: f64,
+    pub notes: Option<String>,
+    pub payment_method_label: Option<String>,
+    pub frequency: String,
+}
+
+#[tauri::command]
+pub async fn list_recurring_invoices() -> Result<Vec<RecurringInvoice>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.client_id, COALESCE(c.name,''), r.template_name, r.line_items_json, r.tax_rate, r.notes,
+                r.payment_method_label, r.frequency, r.next_due_date, r.is_active, r.created_at, r.updated_at
+         FROM recurring_invoices r LEFT JOIN clients c ON c.id = r.client_id
+         ORDER BY r.is_active DESC, r.next_due_date ASC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(RecurringInvoice {
+        id: r.get(0)?, client_id: r.get(1)?, client_name: r.get(2)?,
+        template_name: r.get(3)?, line_items_json: r.get(4)?, tax_rate: r.get(5)?,
+        notes: r.get(6)?, payment_method_label: r.get(7)?, frequency: r.get(8)?,
+        next_due_date: r.get(9)?, is_active: r.get::<_, bool>(10)?,
+        created_at: r.get(11)?, updated_at: r.get(12)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_recurring_invoice(input: RecurringInvoiceInput) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let next_due = compute_next_recurring(&now, &input.frequency);
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(input.client_id.clone()));
+    cols.insert("template_name".into(), Value::String(input.template_name.clone()));
+    cols.insert("line_items_json".into(), Value::String(items_json.clone()));
+    cols.insert("tax_rate".into(), json!(input.tax_rate));
+    if let Some(n) = &input.notes { cols.insert("notes".into(), Value::String(n.clone())); }
+    if let Some(p) = &input.payment_method_label { cols.insert("payment_method_label".into(), Value::String(p.clone())); }
+    cols.insert("frequency".into(), Value::String(input.frequency.clone()));
+    cols.insert("next_due_date".into(), Value::String(next_due.clone()));
+    cols.insert("is_active".into(), json!(1));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("recurring_invoices", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO recurring_invoices (id, client_id, template_name, line_items_json, tax_rate, notes, payment_method_label, frequency, next_due_date, is_active, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?10)",
+        rusqlite::params![id, input.client_id, input.template_name, items_json, input.tax_rate, input.notes, input.payment_method_label, input.frequency, next_due, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_recurring_invoice(id: String, input: RecurringInvoiceInput) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(input.client_id.clone()));
+    cols.insert("template_name".into(), Value::String(input.template_name.clone()));
+    cols.insert("line_items_json".into(), Value::String(items_json.clone()));
+    cols.insert("tax_rate".into(), json!(input.tax_rate));
+    cols.insert("notes".into(), to_value(input.notes.clone()));
+    cols.insert("payment_method_label".into(), to_value(input.payment_method_label.clone()));
+    cols.insert("frequency".into(), Value::String(input.frequency.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("recurring_invoices", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE recurring_invoices SET client_id=?2, template_name=?3, line_items_json=?4, tax_rate=?5, notes=?6, payment_method_label=?7, frequency=?8, updated_at=?9 WHERE id=?1",
+        rusqlite::params![id, input.client_id, input.template_name, items_json, input.tax_rate, input.notes, input.payment_method_label, input.frequency, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pause_recurring_invoice(id: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("is_active".into(), json!(0));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("recurring_invoices", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE recurring_invoices SET is_active=0, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resume_recurring_invoice(id: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let next_due = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let (freq, existing_due): (String, String) = conn.query_row(
+            "SELECT frequency, next_due_date FROM recurring_invoices WHERE id=?1", [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|e| e.to_string())?;
+        let date = chrono::DateTime::parse_from_rfc3339(&existing_due).unwrap_or_else(|_| Utc::now().fixed_offset());
+        if date <= Utc::now().fixed_offset() {
+            compute_next_recurring(&now, &freq)
+        } else {
+            existing_due
+        }
+    };
+    let mut cols = Map::new();
+    cols.insert("is_active".into(), json!(1));
+    cols.insert("next_due_date".into(), Value::String(next_due.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("recurring_invoices", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE recurring_invoices SET is_active=1, next_due_date=?2, updated_at=?3 WHERE id=?1", rusqlite::params![id, next_due, now]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_recurring_invoice(id: String) -> Result<(), String> {
+    sync::record_delete("recurring_invoices", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM recurring_invoices WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn generate_recurring_invoices() -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let ids: Vec<(String, String, String, String, String, f64)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, client_id, line_items_json, recurring, next_recurring_date, tax FROM invoices
-             WHERE recurring != '' AND next_recurring_date <= date('now')",
-        ).map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String, String, String, String, f64)> = stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
-        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-        rows
-    };
+    let mut stmt = conn.prepare(
+        "SELECT id, client_id, line_items_json, tax_rate, frequency FROM recurring_invoices
+         WHERE is_active=1 AND next_due_date <= date('now')"
+    ).map_err(|e| e.to_string())?;
+    let ids: Vec<(String, String, String, f64, String)> = stmt.query_map([], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    drop(stmt);
+    drop(conn);
 
     let mut count = 0u32;
-    for (source_id, client_id, items_json, freq, _next_date, tax_amt) in &ids {
+    for (template_id, client_id, items_json, tax_rate, freq) in &ids {
         let items: Vec<crate::invoice::LineItem> = serde_json::from_str(items_json).unwrap_or_default();
-        let (subtotal, tax, total) = crate::invoice::compute_totals(&items, *tax_amt as f64 / 100.0);
-        let id = Uuid::new_v4().to_string();
+        let (subtotal, tax, total) = crate::invoice::compute_totals(&items, *tax_rate as f64);
+        let inv_id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let number = generate_invoice_number().map_err(|e| e.to_string())?;
         let issue = now.to_rfc3339();
@@ -1091,32 +1519,21 @@ pub async fn generate_recurring_invoices() -> Result<u32, String> {
         cols.insert("total".into(), json!(total));
         cols.insert("status".into(), Value::String("draft".into()));
         cols.insert("created_at".into(), Value::String(issue.clone()));
-        sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
+        sync::record_upsert("invoices", &inv_id, cols).map_err(|e| e.to_string())?;
 
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?4)",
-            rusqlite::params![id, client_id, number, issue, due, line_items_json, subtotal, tax, total],
+            rusqlite::params![inv_id, client_id, number, issue, due, line_items_json, subtotal, tax, total],
         ).map_err(|e| e.to_string())?;
 
         let next = compute_next_recurring(&now.to_rfc3339(), freq);
-        let _ = conn.execute("UPDATE invoices SET next_recurring_date=?1 WHERE id=?2", rusqlite::params![next, source_id]);
+        let _ = conn.execute("UPDATE recurring_invoices SET next_due_date=?1 WHERE id=?2", rusqlite::params![next, template_id]);
 
         count += 1;
     }
     Ok(count)
-}
-
-fn compute_next_due(freq: &str) -> String {
-    let now = Utc::now();
-    let next = match freq {
-        "monthly" => now + chrono::Duration::days(30),
-        "quarterly" => now + chrono::Duration::days(90),
-        "annually" => now + chrono::Duration::days(365),
-        _ => now + chrono::Duration::days(30),
-    };
-    next.to_rfc3339()
 }
 
 fn compute_next_recurring(current_date: &str, freq: &str) -> String {
@@ -1126,6 +1543,16 @@ fn compute_next_recurring(current_date: &str, freq: &str) -> String {
         "quarterly" => dt + chrono::Duration::days(90),
         "annually" => dt + chrono::Duration::days(365),
         _ => dt + chrono::Duration::days(30),
+    };
+    next.to_rfc3339()
+}
+
+fn compute_next_due(freq: &str) -> String {
+    let now = Utc::now();
+    let next = match freq {
+        "monthly" => now + chrono::Duration::days(30),
+        "quarterly" => now + chrono::Duration::days(90),
+        _ => now + chrono::Duration::days(30),
     };
     next.to_rfc3339()
 }
@@ -1159,7 +1586,7 @@ pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInp
     let pdf_bytes = crate::invoice::build_pdf_bytes(
         "PREVIEW", &now, &input.due_date, &input.line_items,
         subtotal, tax, total, &cname, &cemail, &ccompany, &client_address, &company,
-        &notes,
+        &notes, "draft",
     )
     .map_err(|e| e.to_string())?;
 
@@ -3732,8 +4159,10 @@ pub async fn process_followup_rules() -> Result<Vec<FollowUpLogEntry>, String> {
             let mut details_bits: Vec<String> = Vec::new();
 
             if should_email {
-                let subject = rule.email_subject.clone().unwrap_or_else(|| "Follow-up".into());
-                let body = rule.email_body.clone().unwrap_or_default().replace("{client_name}", client_name.as_ref().unwrap_or(&String::new()));
+                let raw_subject = rule.email_subject.clone().unwrap_or_else(|| "Follow-up".into());
+                let raw_body = rule.email_body.clone().unwrap_or_default();
+                let subject = crate::template::substitute_variables(&raw_subject, client_id, &conn);
+                let body = crate::template::substitute_variables(&raw_body, client_id, &conn);
                 match crate::email::send(client_email.as_ref().unwrap_or(&String::new()), &subject, &body, None).await {
                     Ok(()) => { details_bits.push("email sent".into()); }
                     Err(e) => { details_bits.push(format!("SMTP error: {}", e)); }
@@ -5379,9 +5808,8 @@ pub async fn send_newsletter(
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).map_err(|e| e.to_string())?;
 
-        let first = name.split_whitespace().next().unwrap_or(&name);
-        let subj = subject_template.replace("{{first_name}}", first);
-        let body = body_template.replace("{{first_name}}", first);
+        let subj = crate::template::substitute_variables(&subject_template, cid, &conn);
+        let body = crate::template::substitute_variables(&body_template, cid, &conn);
 
         match &email {
             Some(addr) if !addr.is_empty() => {

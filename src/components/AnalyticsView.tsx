@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, DashboardStats } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, FileDown } from "lucide-react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
@@ -167,6 +168,13 @@ export default function AnalyticsView() {
   const cats     = stats.category_breakdown.filter((c) => c.client_count > 0);
   const maxCat   = Math.max(...cats.map((c) => c.revenue), 1);
 
+  const handleExportAnalytics = async () => {
+    const path = await saveDialog({ filters: [{ name: "Excel", extensions: ["xlsx"] }], defaultPath: "analytics.xlsx" });
+    if (!path) return;
+    await api.exportAnalyticsXlsx(path as string);
+    alert("Exported analytics to Excel.");
+  };
+
   // ── Layout ───────────────────────────────────────────────────
   return (
     <div className="space-y-4">
@@ -218,6 +226,10 @@ export default function AnalyticsView() {
             className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-700
                        px-2.5 h-8 rounded-lg hover:bg-gray-100 transition-colors border border-gray-200">
             <RefreshCw size={13} /> Refresh
+          </button>
+          <button onClick={handleExportAnalytics}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-8 rounded-lg text-[12px] font-medium transition-colors">
+            <FileDown size={13} /> Export
           </button>
         </div>
       </div>

@@ -10,14 +10,9 @@
 //!   - Subtotal / Tax / Total rows
 //!   - Payment Options (active payment_methods rows)
 //!   - Footer: thank-you note + tax ID
+//!   - Watermark: PAID (green) or OVERDUE (red) diagonal stamp
 //!
-//! Transparency handling: PNG alpha channels are flattened against white
-//! before embedding. Without this, transparent pixels become an arbitrary
-//! garbage color (often green) when alpha is dropped.
-//!
-//! Sizing: Logo dimensions are computed against PDF's native 72 DPI rather
-//! than trusting embedded DPI metadata, which is unreliable across image
-//! editors and exporters.
+//! Supports multi-page output when line items overflow.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -89,16 +84,85 @@ pub fn parse_client_address(metadata: &Option<String>) -> Option<ClientAddress> 
 
 // ---------- Layout constants ----------
 
-const PAGE_W: f32 = 215.9; // US Letter width in mm
-const PAGE_H: f32 = 279.4; // US Letter height in mm
+const PAGE_W: f32 = 215.9;
+const PAGE_H: f32 = 279.4;
 const MARGIN_L: f32 = 20.0;
 const MARGIN_R: f32 = 20.0;
 const CONTENT_R: f32 = PAGE_W - MARGIN_R; // 195.9
 
-// Logo target box (max bounds — preserves aspect ratio)
-const LOGO_MAX_W: f32 = 50.0;
-const LOGO_MAX_H: f32 = 25.0;
-const LOGO_TOP: f32 = 268.0; // top edge of logo from page bottom
+const LOGO_MAX_W: f32 = 70.6;
+const LOGO_MAX_H: f32 = 28.2;
+const LOGO_TOP: f32 = 268.0;
+
+const ROW_HEIGHT: f32 = 7.0;
+const COL_DESC_X: f32 = 22.0;
+const COL_QTY_X: f32 = 130.0;
+const COL_RATE_X: f32 = 160.0;
+const COL_AMT_X: f32 = 193.0;
+const TOTALS_LABEL_X: f32 = 150.0;
+const TOTALS_VAL_X: f32 = 193.0;
+
+const FOOTER_AREA_Y: f32 = 90.0;
+const CONT_START_Y: f32 = PAGE_H - 60.0;
+const CONT_BOTTOM_Y: f32 = 30.0;
+
+// ---------- Helvetica width table (1/1000 em units) ----------
+
+const HELV_W: [f32; 96] = [
+    278.0,278.0,355.0,556.0,556.0,889.0,667.0,191.0,333.0,333.0,389.0,584.0,278.0,333.0,278.0,278.0,
+    556.0,556.0,556.0,556.0,556.0,556.0,556.0,556.0,556.0,556.0,278.0,278.0,584.0,584.0,584.0,556.0,
+    1015.0,667.0,667.0,722.0,722.0,667.0,611.0,778.0,722.0,278.0,500.0,667.0,556.0,833.0,722.0,778.0,
+    667.0,778.0,722.0,667.0,611.0,722.0,667.0,944.0,667.0,667.0,611.0,278.0,278.0,278.0,469.0,556.0,
+    333.0,556.0,556.0,500.0,556.0,556.0,278.0,556.0,556.0,222.0,222.0,500.0,222.0,833.0,556.0,556.0,
+    556.0,556.0,333.0,500.0,278.0,556.0,500.0,722.0,500.0,500.0,500.0,334.0,260.0,334.0,584.0,0.0,
+];
+
+const HELV_BOLD_W: [f32; 96] = [
+    278.0,333.0,474.0,556.0,556.0,889.0,722.0,238.0,333.0,333.0,389.0,584.0,278.0,333.0,278.0,278.0,
+    556.0,556.0,556.0,556.0,556.0,556.0,556.0,556.0,556.0,556.0,333.0,333.0,584.0,584.0,584.0,611.0,
+    975.0,722.0,722.0,722.0,722.0,667.0,611.0,778.0,722.0,278.0,556.0,722.0,611.0,833.0,722.0,778.0,
+    667.0,778.0,722.0,667.0,611.0,722.0,667.0,944.0,667.0,667.0,611.0,333.0,278.0,333.0,584.0,556.0,
+    333.0,556.0,611.0,556.0,611.0,556.0,333.0,611.0,611.0,278.0,278.0,556.0,278.0,889.0,611.0,611.0,
+    611.0,611.0,389.0,556.0,333.0,611.0,556.0,778.0,556.0,556.0,500.0,389.0,280.0,389.0,584.0,0.0,
+];
+
+fn char_width(ch: char, bold: bool) -> f32 {
+    let table = if bold { &HELV_BOLD_W } else { &HELV_W };
+    let code = ch as usize;
+    if code >= 32 && code < 128 { table[code - 32] } else { 556.0 }
+}
+
+fn text_width_mm(text: &str, size_pt: f32, bold: bool) -> f32 {
+    let units: f32 = text.chars().map(|c| char_width(c, bold)).sum();
+    let width_pt = units / 1000.0 * size_pt;
+    width_pt * 25.4 / 72.0
+}
+
+fn text_right(
+    layer: &PdfLayerReference,
+    text: &str,
+    size: f32,
+    right_x: f32,
+    y: f32,
+    font: &IndirectFontRef,
+    bold: bool,
+) {
+    let w = text_width_mm(text, size, bold);
+    layer.use_text(text, size, Mm(right_x - w), Mm(y), font);
+}
+
+fn text_center(
+    layer: &PdfLayerReference,
+    text: &str,
+    size: f32,
+    center_x: f32,
+    y: f32,
+    font: &IndirectFontRef,
+    bold: bool,
+) {
+    let w = text_width_mm(text, size, bold);
+    layer.use_text(text, size, Mm(center_x - w / 2.0), Mm(y), font);
+}
 
 // ---------- PDF builder ----------
 
@@ -116,6 +180,7 @@ pub fn build_pdf_bytes(
     client_address: &Option<ClientAddress>,
     company: &CompanyInfo,
     notes: &str,
+    status: &str,
 ) -> Result<Vec<u8>> {
     let (doc, page1, layer1) = PdfDocument::new(
         format!("Invoice {}", number),
@@ -126,12 +191,42 @@ pub fn build_pdf_bytes(
     let layer = doc.get_page(page1).get_layer(layer1);
 
     let font_regular = doc.add_builtin_font(BuiltinFont::Helvetica).context("font")?;
-    let font_bold = doc
-        .add_builtin_font(BuiltinFont::HelveticaBold)
-        .context("font_bold")?;
+    let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).context("font_bold")?;
 
-    // ----- Logo + company header -----
-    let mut header_bottom: f32 = 250.0; // baseline below header for divider line
+    // ----- Pagination: how many items fit on page 1? -----
+    let divider_y = 238.0;
+    let bill_top = divider_y - 8.0;
+    let table_top = bill_top - 35.0;
+    let first_row_y = table_top - 12.0;
+    let page1_available = first_row_y - FOOTER_AREA_Y;
+    let rows_page1 = (page1_available / ROW_HEIGHT).floor() as usize;
+
+    let rows_continuation = ((CONT_START_Y - CONT_BOTTOM_Y) / ROW_HEIGHT).floor() as usize;
+
+    let total_pages = if items.len() <= rows_page1 {
+        1
+    } else {
+        let remaining = items.len() - rows_page1;
+        1 + ((remaining + rows_continuation - 1) / rows_continuation)
+    };
+
+    // Collect (page_index, layer_index, items_slice) for each page
+    let mut page_layers: Vec<(PdfPageIndex, PdfLayerIndex, Vec<usize>)> = Vec::new();
+
+    if items.len() <= rows_page1 || items.is_empty() {
+        page_layers.push((page1, layer1, (0..items.len()).collect()));
+    } else {
+        page_layers.push((page1, layer1, (0..rows_page1).collect()));
+        let mut offset = rows_page1;
+        while offset < items.len() {
+            let end = (offset + rows_continuation).min(items.len());
+            let (pi, li) = doc.add_page(Mm(PAGE_W), Mm(PAGE_H), "Layer");
+            page_layers.push((pi, li, (offset..end).collect()));
+            offset = end;
+        }
+    }
+
+    // ----- Page 1: full header -----
 
     let logo_rendered = if let Some(logo_path) = company.logo_path.as_deref() {
         if std::path::Path::new(logo_path).exists() {
@@ -144,59 +239,31 @@ pub fn build_pdf_bytes(
     };
 
     let text_y_top = if let Some(logo_bottom) = logo_rendered {
-        // Logo on top, company text below it
-        header_bottom = logo_bottom - 4.0;
         logo_bottom - 5.0
     } else {
-        // No logo — company text starts at LOGO_TOP
-        header_bottom = LOGO_TOP - 22.0;
-        LOGO_TOP - 4.0
+        LOGO_TOP
     };
 
-    layer.use_text(
-        &company.name,
-        12.0,
-        Mm(MARGIN_L),
-        Mm(text_y_top),
-        &font_bold,
-    );
-    layer.use_text(
-        &company.address,
-        9.0,
-        Mm(MARGIN_L),
-        Mm(text_y_top - 5.0),
-        &font_regular,
-    );
-    layer.use_text(
-        &company.email,
-        9.0,
-        Mm(MARGIN_L),
-        Mm(text_y_top - 9.0),
-        &font_regular,
-    );
-    if let Some(phone) = &company.phone {
-        layer.use_text(
-            phone,
-            9.0,
-            Mm(MARGIN_L),
-            Mm(text_y_top - 13.0),
-            &font_regular,
-        );
+    if logo_rendered.is_none() {
+        layer.use_text(&company.name, 18.0, Mm(MARGIN_L), Mm(text_y_top), &font_bold);
+        layer.use_text(&company.address, 9.0, Mm(MARGIN_L), Mm(text_y_top - 7.0), &font_regular);
+        layer.use_text(&company.email, 9.0, Mm(MARGIN_L), Mm(text_y_top - 11.0), &font_regular);
+        if let Some(phone) = &company.phone {
+            layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(text_y_top - 15.0), &font_regular);
+        }
+    } else {
+        layer.use_text(&company.name, 11.0, Mm(MARGIN_L), Mm(text_y_top), &font_bold);
+        layer.use_text(&company.address, 9.0, Mm(MARGIN_L), Mm(text_y_top - 4.0), &font_regular);
+        layer.use_text(&company.email, 9.0, Mm(MARGIN_L), Mm(text_y_top - 8.0), &font_regular);
+        if let Some(phone) = &company.phone {
+            layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(text_y_top - 12.0), &font_regular);
+        }
     }
 
-    // ----- INVOICE title (right side) -----
     layer.use_text("INVOICE", 28.0, Mm(150.0), Mm(263.0), &font_bold);
-    layer.use_text(
-        format!("# {}", number),
-        11.0,
-        Mm(150.0),
-        Mm(255.0),
-        &font_regular,
-    );
+    layer.use_text(format!("# {}", number), 11.0, Mm(150.0), Mm(255.0), &font_regular);
 
-    // ----- Divider line under header -----
-    let divider_y = header_bottom.min(238.0); // never below 238mm
-    let divider = Line {
+    let div = Line {
         points: vec![
             (Point::new(Mm(MARGIN_L), Mm(divider_y)), false),
             (Point::new(Mm(CONTENT_R), Mm(divider_y)), false),
@@ -204,13 +271,11 @@ pub fn build_pdf_bytes(
         is_closed: false,
     };
     layer.set_outline_thickness(0.5);
-    layer.add_line(divider);
+    layer.add_line(div);
 
-    // ----- Bill To block -----
-    let bill_top = divider_y - 8.0;
+    // Bill To
     layer.use_text("BILL TO", 9.0, Mm(MARGIN_L), Mm(bill_top), &font_bold);
     layer.use_text(cname, 11.0, Mm(MARGIN_L), Mm(bill_top - 6.0), &font_bold);
-
     let mut y = bill_top - 11.0;
     if let Some(co) = ccompany {
         layer.use_text(co, 10.0, Mm(MARGIN_L), Mm(y), &font_regular);
@@ -218,9 +283,7 @@ pub fn build_pdf_bytes(
     }
     if let Some(addr) = client_address {
         for ln in &addr.lines {
-            if y < bill_top - 25.0 {
-                break;
-            }
+            if y < bill_top - 25.0 { break; }
             layer.use_text(ln, 10.0, Mm(MARGIN_L), Mm(y), &font_regular);
             y -= 5.0;
         }
@@ -229,128 +292,105 @@ pub fn build_pdf_bytes(
         layer.use_text(em, 10.0, Mm(MARGIN_L), Mm(y), &font_regular);
     }
 
-    // ----- Dates (right side, parallel with Bill To) -----
+    // Dates
     layer.use_text("ISSUE DATE", 9.0, Mm(140.0), Mm(bill_top), &font_bold);
-    layer.use_text(
-        short_date(issue),
-        10.0,
-        Mm(140.0),
-        Mm(bill_top - 6.0),
-        &font_regular,
-    );
+    layer.use_text(short_date(issue), 10.0, Mm(140.0), Mm(bill_top - 6.0), &font_regular);
     layer.use_text("DUE DATE", 9.0, Mm(170.0), Mm(bill_top), &font_bold);
-    layer.use_text(
-        short_date(due),
-        10.0,
-        Mm(170.0),
-        Mm(bill_top - 6.0),
-        &font_regular,
-    );
+    layer.use_text(short_date(due), 10.0, Mm(170.0), Mm(bill_top - 6.0), &font_regular);
 
-    // ----- Line items table -----
-    let table_top = bill_top - 35.0;
-    let row_height = 7.0_f32;
+    // Table header
+    render_table_header(&layer, table_top, &font_regular, &font_bold);
 
-    // Header row gray bar
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.95, 0.95, 0.95, None)));
-    let header_rect_pts = vec![
-        (Point::new(Mm(MARGIN_L), Mm(table_top + 2.0)), false),
-        (Point::new(Mm(CONTENT_R), Mm(table_top + 2.0)), false),
-        (Point::new(Mm(CONTENT_R), Mm(table_top - 5.0)), false),
-        (Point::new(Mm(MARGIN_L), Mm(table_top - 5.0)), false),
-    ];
-    layer.add_polygon(Polygon {
-        rings: vec![header_rect_pts],
-        mode: path::PaintMode::Fill,
-        winding_order: path::WindingOrder::NonZero,
-    });
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-
-    layer.use_text(
-        "DESCRIPTION",
-        9.0,
-        Mm(22.0),
-        Mm(table_top - 2.0),
-        &font_bold,
-    );
-    layer.use_text("QTY", 9.0, Mm(125.0), Mm(table_top - 2.0), &font_bold);
-    layer.use_text("RATE", 9.0, Mm(150.0), Mm(table_top - 2.0), &font_bold);
-    layer.use_text("AMOUNT", 9.0, Mm(178.0), Mm(table_top - 2.0), &font_bold);
-
-    let mut row_y = table_top - 12.0;
-    for item in items {
-        let desc = if item.description.len() > 60 {
-            format!("{}...", &item.description[..57])
-        } else {
-            item.description.clone()
-        };
-        layer.use_text(&desc, 10.0, Mm(22.0), Mm(row_y), &font_regular);
-        layer.use_text(
-            format!("{:.2}", item.qty),
-            10.0,
-            Mm(125.0),
-            Mm(row_y),
-            &font_regular,
-        );
-        layer.use_text(
-            fmt_dollar(item.rate),
-            10.0,
-            Mm(150.0),
-            Mm(row_y),
-            &font_regular,
-        );
-        layer.use_text(
-            fmt_dollar(item.amount),
-            10.0,
-            Mm(178.0),
-            Mm(row_y),
-            &font_regular,
-        );
-        row_y -= row_height;
+    // Items on page 1
+    let p1_items = &page_layers[0].2;
+    let mut row_y = first_row_y;
+    for &idx in p1_items {
+        render_item_row(&layer, &items[idx], row_y, &font_regular);
+        row_y -= ROW_HEIGHT;
     }
 
-    // ----- Totals block (right-aligned) -----
-    let totals_divider_y = row_y;
+    // Continuation pages
+    for page_idx in 1..page_layers.len() {
+        let (pi, li, item_indices) = &page_layers[page_idx];
+        let cont_layer = doc.get_page(*pi).get_layer(*li);
+
+        // Mini header
+        cont_layer.use_text("INVOICE", 14.0, Mm(MARGIN_L), Mm(PAGE_H - 20.0), &font_bold);
+        cont_layer.use_text(format!("# {}", number), 9.0, Mm(MARGIN_L), Mm(PAGE_H - 30.0), &font_regular);
+        let cont_div = Line {
+            points: vec![
+                (Point::new(Mm(MARGIN_L), Mm(PAGE_H - 35.0)), false),
+                (Point::new(Mm(CONTENT_R), Mm(PAGE_H - 35.0)), false),
+            ],
+            is_closed: false,
+        };
+        cont_layer.set_outline_thickness(0.3);
+        cont_layer.add_line(cont_div);
+
+        render_table_header(&cont_layer, PAGE_H - 45.0, &font_regular, &font_bold);
+
+        let mut cy = PAGE_H - 57.0;
+        for &iidx in item_indices {
+            render_item_row(&cont_layer, &items[iidx], cy, &font_regular);
+            cy -= ROW_HEIGHT;
+        }
+    }
+
+    // ----- Totals + Payment + Notes + Footer (on last page) -----
+    let last_page_idx = page_layers.len() - 1;
+    let last_layer = if last_page_idx == 0 {
+        layer.clone()
+    } else {
+        let (pi, li, _) = &page_layers[last_page_idx];
+        doc.get_page(*pi).get_layer(*li)
+    };
+
+    let mut last_row_y = if last_page_idx == 0 {
+        row_y
+    } else {
+        let (_, _, indices) = &page_layers[last_page_idx];
+        if indices.is_empty() {
+            CONT_START_Y
+        } else {
+            CONT_START_Y - (indices.len() as f32) * ROW_HEIGHT - 5.0
+        }
+    };
+
+    // Totals divider
     let totals_div = Line {
         points: vec![
-            (Point::new(Mm(120.0), Mm(totals_divider_y)), false),
-            (Point::new(Mm(CONTENT_R), Mm(totals_divider_y)), false),
+            (Point::new(Mm(120.0), Mm(last_row_y)), false),
+            (Point::new(Mm(CONTENT_R), Mm(last_row_y)), false),
         ],
         is_closed: false,
     };
-    layer.add_line(totals_div);
+    last_layer.set_outline_thickness(0.5);
+    last_layer.add_line(totals_div);
 
-    row_y -= 6.0;
-    layer.use_text("Subtotal", 10.0, Mm(150.0), Mm(row_y), &font_regular);
-    layer.use_text(
-        fmt_dollar(subtotal),
-        10.0,
-        Mm(178.0),
-        Mm(row_y),
-        &font_regular,
-    );
-    row_y -= 5.0;
-    layer.use_text("Tax", 10.0, Mm(150.0), Mm(row_y), &font_regular);
-    layer.use_text(fmt_dollar(tax), 10.0, Mm(178.0), Mm(row_y), &font_regular);
-    row_y -= 7.0;
-    layer.use_text("TOTAL", 12.0, Mm(150.0), Mm(row_y), &font_bold);
-    layer.use_text(fmt_dollar(total), 12.0, Mm(178.0), Mm(row_y), &font_bold);
+    last_row_y -= 6.0;
+    last_layer.use_text("Subtotal", 10.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_regular);
+    text_right(&last_layer, &fmt_dollar(subtotal), 10.0, TOTALS_VAL_X, last_row_y, &font_regular, false);
+    last_row_y -= 5.0;
+    last_layer.use_text("Tax", 10.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_regular);
+    text_right(&last_layer, &fmt_dollar(tax), 10.0, TOTALS_VAL_X, last_row_y, &font_regular, false);
+    last_row_y -= 7.0;
+    last_layer.use_text("TOTAL", 12.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_bold);
+    text_right(&last_layer, &fmt_dollar(total), 12.0, TOTALS_VAL_X, last_row_y, &font_bold, true);
 
-    // ----- Payment Options block -----
+    // Payment options
     let pm = load_active_payment_methods()?;
-    let mut next_y = row_y - 10.0;
-
+    let mut next_y = last_row_y - 10.0;
     if !pm.is_empty() {
         let mut pay_y = next_y;
-        layer.use_text("Payment Options", 10.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
+        last_layer.use_text("Payment Options", 10.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
         pay_y -= 6.0;
         for (kind, details) in &pm {
             if pay_y < 30.0 { break; }
-            layer.use_text(format!("{}:", kind), 9.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
+            last_layer.use_text(format!("{}:", kind), 9.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
             pay_y -= 4.5;
             for ln in details.lines() {
                 if pay_y < 25.0 { break; }
-                layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(pay_y), &font_regular);
+                last_layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(pay_y), &font_regular);
                 pay_y -= 3.5;
             }
             pay_y -= 2.0;
@@ -360,34 +400,48 @@ pub fn build_pdf_bytes(
 
     if !notes.is_empty() {
         let mut n_y = next_y;
-        layer.use_text("Notes:", 9.0, Mm(MARGIN_L), Mm(n_y), &font_bold);
+        last_layer.use_text("Notes:", 9.0, Mm(MARGIN_L), Mm(n_y), &font_bold);
         n_y -= 5.0;
         for ln in notes.lines() {
             if n_y < 25.0 { break; }
-            layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(n_y), &font_regular);
+            last_layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(n_y), &font_regular);
             n_y -= 3.5;
         }
     }
 
-    // ----- Footer -----
-    layer.use_text(
-        "Thank you for your business.",
-        9.0,
-        Mm(MARGIN_L),
-        Mm(18.0),
-        &font_regular,
-    );
+    // Footer
+    last_layer.use_text("Thank you for your business.", 9.0, Mm(MARGIN_L), Mm(18.0), &font_regular);
     if let Some(tax_id) = &company.tax_id {
-        layer.use_text(
-            format!("Tax ID: {}", tax_id),
-            8.0,
-            Mm(MARGIN_L),
-            Mm(13.0),
-            &font_regular,
-        );
+        last_layer.use_text(format!("Tax ID: {}", tax_id), 8.0, Mm(MARGIN_L), Mm(13.0), &font_regular);
     }
 
-    // ----- Save to bytes -----
+    // Page numbers
+    if total_pages > 1 {
+        for (pn, (pi, li, _)) in page_layers.iter().enumerate() {
+            let pg_layer = doc.get_page(*pi).get_layer(*li);
+            let label = format!("Page {} of {}", pn + 1, total_pages);
+            text_right(&pg_layer, &label, 8.0, CONTENT_R, 10.0, &font_regular, false);
+        }
+    }
+
+    // ----- Watermark -----
+    let is_paid = status == "paid";
+    let is_overdue = !is_paid
+        && status != "draft"
+        && status != "void"
+        && !due.is_empty()
+        && due[..due.len().min(10)].parse::<chrono::NaiveDate>()
+            .map(|d| d < chrono::Local::now().date_naive())
+            .unwrap_or(false);
+
+    if is_paid || is_overdue {
+        for (_, (pi, li, _)) in page_layers.iter().enumerate() {
+            let pg_layer = doc.get_page(*pi).get_layer(*li);
+            draw_watermark(&pg_layer, &font_bold, is_paid);
+        }
+    }
+
+    // ----- Save -----
     let mut writer = BufWriter::new(Vec::new());
     doc.save(&mut writer)?;
     let pdf_bytes: Vec<u8> = writer
@@ -396,24 +450,79 @@ pub fn build_pdf_bytes(
     Ok(pdf_bytes)
 }
 
+// ---------- Table rendering helpers ----------
+
+fn render_table_header(
+    layer: &PdfLayerReference,
+    ttop: f32,
+    _font_regular: &IndirectFontRef,
+    font_bold: &IndirectFontRef,
+) {
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.95, 0.95, 0.95, None)));
+    let pts = vec![
+        (Point::new(Mm(MARGIN_L), Mm(ttop + 2.0)), false),
+        (Point::new(Mm(CONTENT_R), Mm(ttop + 2.0)), false),
+        (Point::new(Mm(CONTENT_R), Mm(ttop - 5.0)), false),
+        (Point::new(Mm(MARGIN_L), Mm(ttop - 5.0)), false),
+    ];
+    layer.add_polygon(Polygon {
+        rings: vec![pts],
+        mode: path::PaintMode::Fill,
+        winding_order: path::WindingOrder::NonZero,
+    });
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+
+    layer.use_text("DESCRIPTION", 9.0, Mm(COL_DESC_X), Mm(ttop - 2.0), font_bold);
+    text_center(layer, "QTY", 9.0, COL_QTY_X, ttop - 2.0, font_bold, true);
+    text_right(layer, "UNIT PRICE", 9.0, COL_RATE_X, ttop - 2.0, font_bold, true);
+    text_right(layer, "AMOUNT", 9.0, COL_AMT_X, ttop - 2.0, font_bold, true);
+}
+
+fn render_item_row(
+    layer: &PdfLayerReference,
+    item: &LineItem,
+    y: f32,
+    font: &IndirectFontRef,
+) {
+    let desc = if item.description.len() > 60 {
+        format!("{}...", &item.description[..57])
+    } else {
+        item.description.clone()
+    };
+    layer.use_text(&desc, 10.0, Mm(COL_DESC_X), Mm(y), font);
+    text_center(layer, &format!("{:.2}", item.qty), 10.0, COL_QTY_X, y, font, false);
+    text_right(layer, &fmt_dollar(item.rate), 10.0, COL_RATE_X, y, font, false);
+    text_right(layer, &fmt_dollar(item.amount), 10.0, COL_AMT_X, y, font, false);
+}
+
+// ---------- Watermark ----------
+
+fn draw_watermark(layer: &PdfLayerReference, font: &IndirectFontRef, paid: bool) {
+    let label = if paid { "PAID" } else { "OVERDUE" };
+    let (r, g, b) = if paid {
+        (0.856, 0.946, 0.874) // green tint (simulates 0.18 alpha)
+    } else {
+        (0.973, 0.847, 0.847) // red tint (simulates 0.18 alpha)
+    };
+
+    layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
+    layer.begin_text_section();
+    layer.set_font(font, 90.0);
+    let cx: Pt = Mm(PAGE_W / 2.0).into();
+    let cy: Pt = Mm(PAGE_H / 2.0).into();
+    layer.set_text_matrix(TextMatrix::TranslateRotate(cx, cy, 45.0));
+    layer.write_text(label, font);
+    layer.end_text_section();
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+}
+
 // ---------- Logo rendering ----------
-//
-// Returns the y-coordinate of the bottom edge of the rendered logo (in mm),
-// or None if rendering failed. Caller uses this to place company text below.
-//
-// Key correctness details:
-//   1. PNGs typically have an alpha channel. Naive RGB conversion drops alpha
-//      and the resulting RGB values for fully-transparent pixels are undefined
-//      (often green, depending on the decoder). We composite over white first.
-//   2. Image DPI metadata is unreliable. We compute size from raw pixel
-//      dimensions against PDF's native 72 DPI baseline, then scale to fit
-//      within the LOGO_MAX_W x LOGO_MAX_H box while preserving aspect ratio.
+
 fn render_logo(layer: &PdfLayerReference, logo_path: &str) -> Result<Option<f32>> {
     let bytes = std::fs::read(logo_path)?;
     let dyn_img = printpdf::image_crate::load_from_memory(&bytes)
         .context("decode logo image")?;
 
-    // Composite RGBA over white background to flatten transparency.
     let rgba = dyn_img.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut raw = Vec::with_capacity((w * h * 3) as usize);
@@ -426,8 +535,6 @@ fn render_logo(layer: &PdfLayerReference, logo_path: &str) -> Result<Option<f32>
         raw.push((b as f32 * alpha + 255.0 * inv).round().clamp(0.0, 255.0) as u8);
     }
 
-    // Compute scale to fit within max box, preserving aspect ratio.
-    // PDF's native baseline is 72 DPI: 1 mm = 72/25.4 ≈ 2.835 px.
     let px_per_mm: f32 = 72.0 / 25.4;
     let native_w_mm = w as f32 / px_per_mm;
     let native_h_mm = h as f32 / px_per_mm;
@@ -483,17 +590,16 @@ fn load_active_payment_methods() -> Result<Vec<(String, String)>> {
 // ---------- Top-level commands ----------
 
 pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
-    // Collect all DB data first (conn is not Send, can't cross await)
-    let (number, _client_id, issue, due, items_json, subtotal, tax, total, notes, cname, cemail, ccompany, cmetadata) = {
+    let (number, _client_id, issue, due, items_json, subtotal, tax, total, notes, status, cname, cemail, ccompany, cmetadata) = {
         let conn = pool().get()?;
-        let inv: (String, String, String, String, String, f64, f64, f64, String) = conn.query_row(
-            "SELECT number,client_id,issue_date,due_date,line_items_json,subtotal,tax,total,notes
+        let inv: (String, String, String, String, String, f64, f64, f64, String, String) = conn.query_row(
+            "SELECT number,client_id,issue_date,due_date,line_items_json,subtotal,tax,total,notes,status
              FROM invoices WHERE id=?1",
             [invoice_id],
             |r| {
                 Ok((
                     r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
-                    r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
+                    r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
                 ))
             },
         )?;
@@ -503,7 +609,7 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         (
-            inv.0, inv.1, inv.2, inv.3, inv.4, inv.5, inv.6, inv.7, inv.8,
+            inv.0, inv.1, inv.2, inv.3, inv.4, inv.5, inv.6, inv.7, inv.8, inv.9,
             cli.0, cli.1, cli.2, cli.3,
         )
     };
@@ -514,7 +620,7 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
 
     let pdf_bytes = build_pdf_bytes(
         &number, &issue, &due, &items, subtotal, tax, total,
-        &cname, &cemail, &ccompany, &client_address, &company, &notes,
+        &cname, &cemail, &ccompany, &client_address, &company, &notes, &status,
     )?;
 
     let dir = pdf_output_dir();
@@ -532,7 +638,6 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
 }
 
 pub async fn send_invoice(invoice_id: &str) -> Result<()> {
-    // Collect everything we need before the await
     let (number, total, pdf_path, cname, cemail) = {
         let conn = pool().get()?;
         let inv: (String, String, f64, Option<String>) = conn.query_row(

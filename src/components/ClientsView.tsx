@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, CustomerHealth, DuplicateGroup, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare } from "lucide-react";
+import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send } from "lucide-react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
 import TierBadge from "./TierBadge";
 
@@ -53,6 +54,7 @@ export default function ClientsView() {
   const [buyerTiers, setBuyerTiers]         = useState<BuyerTier[]>([]);
   const [duplicates, setDuplicates]         = useState<DuplicateGroup[]>([]);
   const [summaryStats, setSummaryStats]     = useState({ total: 0, active: 0, hotLeads: 0, revenue: 0 });
+  const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   const loadMissingInfo = () => {
@@ -143,6 +145,60 @@ export default function ClientsView() {
       applyFilter(filter);
       loadMissingInfo();
     }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === clients.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(clients.map((c) => c.id)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const n = selectedIds.size;
+    if (n > 10) {
+      const typed = prompt(`Type DELETE to confirm deleting ${n} clients:`);
+      if (typed !== "DELETE") return;
+    } else {
+      if (!confirm(`Delete ${n} clients? This cannot be undone.`)) return;
+    }
+    const ids = Array.from(selectedIds);
+    await api.bulkDeleteClients(ids);
+    setSelectedIds(new Set());
+    applyFilter(filter);
+    loadMissingInfo();
+  };
+
+  const handleBulkCategory = async (cat: string) => {
+    const n = selectedIds.size;
+    if (!confirm(`Apply category "${cat}" to ${n} clients?`)) return;
+    await api.bulkUpdateCategory(Array.from(selectedIds), cat);
+    setSelectedIds(new Set());
+    applyFilter(filter);
+  };
+
+  const handleBulkLeadStatus = async (status: string) => {
+    const n = selectedIds.size;
+    if (!confirm(`Set status to "${status}" for ${n} clients?`)) return;
+    await api.bulkUpdateLeadStatus(Array.from(selectedIds), status);
+    setSelectedIds(new Set());
+    applyFilter(filter);
+  };
+
+  const handleExportCsv = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "clients.csv" });
+    if (!path) return;
+    const count = await api.exportClientsCsv(Array.from(selectedIds), path as string);
+    alert(`Exported ${count} clients to CSV.`);
   };
 
   const runCleanup = async () => {
@@ -420,11 +476,40 @@ export default function ClientsView() {
         />
       )}
 
+      {/* Bulk toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
+          <span className="text-[13px] font-medium text-indigo-700">{selectedIds.size} selected</span>
+          <button onClick={() => setSelectedIds(new Set())} className="text-[11px] text-indigo-500 hover:text-indigo-700">Clear</button>
+          <div className="flex-1" />
+          <select className="border border-gray-300 h-8 px-2 rounded-md text-[12px] bg-white" value="" onChange={(e) => { if (e.target.value) handleBulkCategory(e.target.value); }}>
+            <option value="">Category...</option>
+            {allCategories.map((cat) => <option key={cat.id} value={cat.label}>{cat.label}</option>)}
+          </select>
+          <select className="border border-gray-300 h-8 px-2 rounded-md text-[12px] bg-white" value="" onChange={(e) => { if (e.target.value) handleBulkLeadStatus(e.target.value); }}>
+            <option value="">Status...</option>
+            <option value="prospect">Prospect</option>
+            <option value="hot_lead">Hot Lead</option>
+            <option value="active_customer">Active Customer</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <button onClick={handleExportCsv} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-gray-300 hover:bg-gray-50">
+            <Download size={12} /> Export CSV
+          </button>
+          <button onClick={handleBulkDelete} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-red-200 text-red-600 hover:bg-red-50">
+            <Trash2 size={12} /> Delete
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-50">
+              <th className="px-3 py-3 w-10">
+                <input type="checkbox" className="accent-indigo-600" checked={selectedIds.size === clients.length && clients.length > 0} onChange={toggleSelectAll} />
+              </th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Name</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Company</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Tier</th>
@@ -444,8 +529,11 @@ export default function ClientsView() {
                 <tr
                   key={c.id}
                   onClick={() => setDetailId(c.id)}
-                  className="border-b border-gray-50 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
+                  className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-indigo-50/50" : ""}`}
                 >
+                  <td className="px-3 py-3 w-10" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" className="accent-indigo-600" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
+                  </td>
                   <td className="px-4 py-3 text-[13px] font-medium text-gray-900">
                     <span className="flex items-center gap-1.5">
                       {c.name}
@@ -493,7 +581,7 @@ export default function ClientsView() {
             })}
             {clients.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-16 text-center">
+                <td colSpan={11} className="px-4 py-16 text-center">
                   {hasAnyFilter ? (
                     <p className="text-[13px] text-gray-400">No clients match the current filters</p>
                   ) : (

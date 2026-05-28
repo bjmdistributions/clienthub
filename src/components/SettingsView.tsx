@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   api,
   EmailSettings,
@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import VariablePicker from "./VariablePicker";
 
 const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
 const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
@@ -830,6 +831,29 @@ function AutomationTab() {
   const [showFuForm, setShowFuForm] = useState(false);
   const [editingFu, setEditingFu] = useState<FollowUpRule | null>(null);
   const [fuForm, setFuForm] = useState({ name: "", trigger_type: "no_order" as string, trigger_value: 30, action_type: "email" as string, email_subject: "", email_body: "" });
+  const fuBodyRef = useRef<HTMLTextAreaElement>(null);
+  const fuSubjectRef = useRef<HTMLInputElement>(null);
+  const fuLastFocused = useRef<"subject" | "body">("body");
+
+  const insertFuVariable = (token: string) => {
+    if (fuLastFocused.current === "subject") {
+      const el = fuSubjectRef.current;
+      if (!el) return;
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const v = fuForm.email_subject;
+      setFuForm({ ...fuForm, email_subject: v.slice(0, start) + token + v.slice(end) });
+      setTimeout(() => { el.selectionStart = el.selectionEnd = start + token.length; }, 0);
+    } else {
+      const el = fuBodyRef.current;
+      if (!el) return;
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const v = fuForm.email_body;
+      setFuForm({ ...fuForm, email_body: v.slice(0, start) + token + v.slice(end) });
+      setTimeout(() => { el.selectionStart = el.selectionEnd = start + token.length; }, 0);
+    }
+  };
 
   const loadFu = () => {
     api.listFollowupRules().then(setFuRules).catch(() => {});
@@ -976,12 +1000,14 @@ function AutomationTab() {
               <>
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Email Subject</label>
-                  <input className={inp} value={fuForm.email_subject} onChange={(e) => setFuForm({ ...fuForm, email_subject: e.target.value })} placeholder="Just checking in" />
+                  <input ref={fuSubjectRef} className={inp} value={fuForm.email_subject} onChange={(e) => setFuForm({ ...fuForm, email_subject: e.target.value })} onFocus={() => { fuLastFocused.current = "subject"; }} placeholder="Just checking in" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Email Body</label>
-                  <textarea className={inp + " h-20 resize-none"} value={fuForm.email_body} onChange={(e) => setFuForm({ ...fuForm, email_body: e.target.value })} placeholder="Hi {client_name}, hope things are going well..." />
-                  <p className="text-[10px] text-gray-400 mt-1">Available variables: {"{client_name}"}</p>
+                  <textarea ref={fuBodyRef} className={inp + " h-20 resize-none"} value={fuForm.email_body} onChange={(e) => setFuForm({ ...fuForm, email_body: e.target.value })} onFocus={() => { fuLastFocused.current = "body"; }} placeholder="Hi {first_name}, hope things are going well..." />
+                  <div className="mt-1">
+                    <VariablePicker onSelect={insertFuVariable} />
+                  </div>
                 </div>
               </>
             )}

@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
-  DollarSign, CheckCircle2, Truck,
+  DollarSign, CheckCircle2, Truck, FileDown,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, ProfitSplit,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 function parseAmt(v: string): number { return parseFloat(v.replace(/,/g, "")) || 0; }
@@ -120,6 +121,13 @@ export default function DealFlowView() {
     </div>
   );
 
+  const handleExportDealFlows = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "deal-flows.csv" });
+    if (!path) return;
+    const count = await api.exportDealFlowsCsv(path as string);
+    alert(`Exported ${count} deal flows to CSV.`);
+  };
+
   return (
     <div className="space-y-5">
 
@@ -137,6 +145,10 @@ export default function DealFlowView() {
           className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-700 px-2.5 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
         >
           <RefreshCw size={13} /> Refresh
+        </button>
+        <button onClick={handleExportDealFlows}
+          className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-8 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+          <FileDown size={13} /> Export
         </button>
       </div>
 

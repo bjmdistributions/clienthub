@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
+import VariablePicker from "./VariablePicker";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
   Users, X, Search, ChevronDown, Eye, Megaphone, CheckCircle2, Paperclip, Clock,
@@ -514,9 +515,11 @@ function NewsletterTab() {
   const [scheduledSends, setScheduledSends] = useState<ScheduledSend[]>([]);
   const [showScheduled, setShowScheduled] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const subjectRef = useRef<HTMLInputElement>(null);
+  const lastFocusedRef = useRef<"subject" | "body">("body");
 
   const defaultSubject = "Update from ClientHub";
-  const defaultBody = "Hi {{first_name}},\n\nI hope you're doing well. I wanted to reach out and share some updates.\n\n[Your message here]\n\nBest regards,\n[Your name]";
+  const defaultBody = "Hi {first_name},\n\nI hope you're doing well. I wanted to reach out and share some updates.\n\n[Your message here]\n\nBest regards,\n[Your name]";
 
   useEffect(() => {
     api.listClients().then(setClients);
@@ -524,6 +527,13 @@ function NewsletterTab() {
     api.listNewsletters().then(setTemplates);
     api.listScheduledSends().then(setScheduledSends);
     if (!subject && !body) { setSubject(defaultSubject); setBody(defaultBody); }
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      api.listScheduledSends().then(setScheduledSends);
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const activeScheduled = scheduledSends.filter((s) => s.status === "pending" || s.status === "running");
@@ -579,15 +589,26 @@ function NewsletterTab() {
     setManualEmail("");
   };
 
-  const insertPlaceholder = () => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const before = body.slice(0, start);
-    const after = body.slice(end);
-    setBody(before + "{{first_name}}" + after);
-    setTimeout(() => { ta.selectionStart = ta.selectionEnd = start + 14; }, 0);
+  const insertVariable = (token: string) => {
+    if (lastFocusedRef.current === "subject") {
+      const el = subjectRef.current;
+      if (!el) return;
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const before = subject.slice(0, start);
+      const after = subject.slice(end);
+      setSubject(before + token + after);
+      setTimeout(() => { el.selectionStart = el.selectionEnd = start + token.length; }, 0);
+    } else {
+      const el = textareaRef.current;
+      if (!el) return;
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const before = body.slice(0, start);
+      const after = body.slice(end);
+      setBody(before + token + after);
+      setTimeout(() => { el.selectionStart = el.selectionEnd = start + token.length; }, 0);
+    }
   };
 
   const generateAI = async () => {
@@ -712,12 +733,12 @@ function NewsletterTab() {
   };
 
   const previewClient = validRecipients[previewIdx] || validRecipients[0];
-  const previewSubject = previewClient
-    ? subject.replace(/\{\{first_name\}\}/g, previewClient.name.split(" ")[0])
-    : subject;
-  const previewBody = previewClient
-    ? body.replace(/\{\{first_name\}\}/g, previewClient.name.split(" ")[0])
-    : body;
+  const previewSub = (t: string, c: Client) => t
+    .replace(/\{\{?first_name\}?\}/g, c.name.split(" ")[0])
+    .replace(/\{\{?full_name\}?\}/g, c.name)
+    .replace(/\{\{?company\}?\}/g, c.company || "");
+  const previewSubject = previewClient ? previewSub(subject, previewClient) : subject;
+  const previewBody = previewClient ? previewSub(body, previewClient) : body;
 
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
   const charCount = body.length;
@@ -868,9 +889,11 @@ function NewsletterTab() {
           <div className="p-4 flex-1 flex flex-col">
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <input
-                placeholder="Subject (use {{first_name}} for personalization)"
+                ref={subjectRef}
+                placeholder="Subject (use {first_name} for personalization)"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
+                onFocus={() => { lastFocusedRef.current = "subject"; }}
                 className="flex-1 min-w-[200px] border border-gray-300 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
               <select
@@ -925,20 +948,19 @@ function NewsletterTab() {
             )}
 
             <div className="flex items-center gap-3 mb-2 text-[12px] text-gray-500">
-              <button onClick={insertPlaceholder} className="text-indigo-600 hover:text-indigo-800 font-medium bg-indigo-50 px-2 py-0.5 rounded">
-                Insert {`{{first_name}}`}
-              </button>
+              <VariablePicker onSelect={insertVariable} />
               <span className="tabular-nums">{charCount} chars</span>
               <span className="tabular-nums">{wordCount} words</span>
             </div>
 
             <textarea
               ref={textareaRef}
-              placeholder={`Hi {{first_name}},\n\nWrite your message here...\n\nBest regards,\n[Your name]`}
+              placeholder={`Hi {first_name},\n\nWrite your message here...\n\nBest regards,\n[Your name]`}
               rows={12}
               className="flex-1 w-full border border-gray-200 rounded-md px-3 py-2.5 text-[14px] font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
               value={body}
               onChange={(e) => setBody(e.target.value)}
+              onFocus={() => { lastFocusedRef.current = "body"; }}
             />
 
             <div className="mt-3 flex items-center gap-2">

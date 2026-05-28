@@ -616,4 +616,45 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_payments_pi ON payments(stripe_payment_intent_id);
         "#,
     ),
+    (
+        30,
+        r#"
+        CREATE TABLE IF NOT EXISTS recurring_invoices (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            template_name TEXT NOT NULL,
+            line_items_json TEXT NOT NULL,
+            tax_rate REAL NOT NULL DEFAULT 0,
+            notes TEXT,
+            payment_method_label TEXT,
+            frequency TEXT NOT NULL CHECK(frequency IN ('weekly','monthly','quarterly')),
+            next_due_date TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES clients(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recurring_next ON recurring_invoices(next_due_date, is_active);
+
+        INSERT OR IGNORE INTO recurring_invoices (id, client_id, template_name, line_items_json, tax_rate,
+                                  notes, frequency, next_due_date, is_active, created_at, updated_at)
+        SELECT
+            LOWER(HEX(RANDOMBLOB(16))),
+            client_id,
+            'Migrated invoice ' || number,
+            line_items_json,
+            CASE WHEN total > 0 THEN ROUND(tax / total, 2) ELSE 0 END,
+            notes,
+            CASE recurring WHEN 'weekly' THEN 'weekly'
+                           WHEN 'monthly' THEN 'monthly'
+                           WHEN 'quarterly' THEN 'quarterly'
+                           ELSE 'monthly' END,
+            COALESCE(next_recurring_date, date('now')),
+            1,
+            created_at,
+            COALESCE(updated_at, created_at)
+        FROM invoices
+        WHERE recurring IS NOT NULL AND recurring != '' AND next_recurring_date IS NOT NULL AND next_recurring_date != '';
+        "#,
+    ),
 ];

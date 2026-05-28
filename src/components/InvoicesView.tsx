@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard } from "lucide-react";
+import RecurringView from "./RecurringView";
 
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
@@ -65,6 +67,7 @@ export default function InvoicesView() {
   const [busy, setBusy]                 = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [toast, setToast]               = useState<string | null>(null);
+  const [viewTab, setViewTab]            = useState<"all" | "drafts" | "sent" | "paid" | "recurring">("all");
   const [payModal, setPayModal]         = useState<string | null>(null);
   const [payDate, setPayDate]           = useState(new Date().toISOString().slice(0, 10));
   const [payMethod, setPayMethod]       = useState("");
@@ -143,6 +146,13 @@ export default function InvoicesView() {
   // Only count profit once a deal is fully closed (is_complete = true)
   const totalProfit   = invoices.filter((i) => i.is_complete).reduce((s, i) => s + (i.profit ?? 0), 0);
 
+  const handleExportInvoices = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "invoices.csv" });
+    if (!path) return;
+    const count = await api.exportInvoicesCsv(path as string);
+    alert(`Exported ${count} invoices to CSV.`);
+  };
+
   return (
     <div>
       {/* Header */}
@@ -157,8 +167,26 @@ export default function InvoicesView() {
         >
           <Plus size={14} /> New Invoice
         </button>
+        <button onClick={handleExportInvoices}
+          className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+          <FileDown size={13} /> Export CSV
+        </button>
       </div>
 
+      {/* Tabs */}
+      <div className="flex items-center gap-1 mb-5 border-b border-gray-100">
+        {(["all", "drafts", "sent", "paid", "recurring"] as const).map((t) => (
+          <button key={t} onClick={() => setViewTab(t)}
+            className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${viewTab === t ? "border-indigo-600 text-indigo-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {viewTab === "recurring" ? (
+        <RecurringView />
+      ) : (
+        <>
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         {[
@@ -340,6 +368,8 @@ export default function InvoicesView() {
           onCostSaved={() => { setDetailInvoice(null); api.getInvoice(detailInvoice.id).then(setDetailInvoice); }}
           clientName={clientName(detailInvoice.client_id)}
         />
+      )}
+        </>
       )}
     </div>
   );

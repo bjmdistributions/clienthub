@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, Deal, DealInput, Client, LineItem, DealCostItem, SupplierNameSuggestion } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
-  Plus, X, Briefcase, GripVertical, Check, Trash2, DollarSign, TrendingUp,
+  Plus, X, Briefcase, GripVertical, Check, Trash2, DollarSign, TrendingUp, FileDown,
 } from "lucide-react";
 
 const STAGES = ["lead", "quoted", "negotiating", "won", "lost"] as const;
@@ -126,6 +127,13 @@ export default function DealsView() {
   const marginColor = (pct: number) =>
     pct >= 20 ? "text-emerald-600 bg-emerald-50" : pct >= 10 ? "text-amber-600 bg-amber-50" : "text-red-600 bg-red-50";
 
+  const handleExportDeals = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "deals.csv" });
+    if (!path) return;
+    const count = await api.exportDealsCsv(path as string);
+    alert(`Exported ${count} deals to CSV.`);
+  };
+
   return (
     <div>
       <div className="flex justify-between items-center mb-5">
@@ -143,6 +151,10 @@ export default function DealsView() {
         }}
           className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium transition-colors">
           <Plus size={16} /> New Deal
+        </button>
+        <button onClick={handleExportDeals}
+          className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+          <FileDown size={13} /> Export CSV
         </button>
       </div>
 

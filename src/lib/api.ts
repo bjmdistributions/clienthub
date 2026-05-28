@@ -491,6 +491,32 @@ export interface InvoiceInput {
   recurring?: string;
 }
 
+export interface RecurringInvoice {
+  id: string;
+  client_id: string;
+  client_name: string;
+  template_name: string;
+  line_items_json: string;
+  tax_rate: number;
+  notes: string | null;
+  payment_method_label: string | null;
+  frequency: string;
+  next_due_date: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecurringInvoiceInput {
+  client_id: string;
+  template_name: string;
+  line_items: LineItem[];
+  tax_rate: number;
+  notes?: string;
+  payment_method_label?: string;
+  frequency: string;
+}
+
 export interface DealHighlight {
   deal_id: string;
   client_name: string;
@@ -816,6 +842,24 @@ export const api = {
   clientsMissingInfo: () => invoke<MissingInfoReport>("clients_missing_info"),
   updateClientStatus: (id: string, status: string) =>
     invoke<void>("update_client_status", { id, status }),
+  bulkDeleteClients: (ids: string[]) =>
+    invoke<number>("bulk_delete_clients", { ids }),
+  bulkUpdateCategory: (ids: string[], category: string) =>
+    invoke<number>("bulk_update_category", { ids, category }),
+  bulkUpdateLeadStatus: (ids: string[], leadStatus: string) =>
+    invoke<number>("bulk_update_lead_status", { ids, leadStatus }),
+  exportClientsCsv: (ids: string[], outputPath: string) =>
+    invoke<number>("export_clients_csv", { ids, outputPath }),
+  exportInvoicesCsv: (outputPath: string) =>
+    invoke<number>("export_invoices_csv", { outputPath }),
+  exportDealsCsv: (outputPath: string) =>
+    invoke<number>("export_deals_csv", { outputPath }),
+  exportDealFlowsCsv: (outputPath: string) =>
+    invoke<number>("export_deal_flows_csv", { outputPath }),
+  exportInventoryCsv: (statusFilter: string | null, outputPath: string) =>
+    invoke<number>("export_inventory_csv", { statusFilter, outputPath }),
+  exportAnalyticsXlsx: (outputPath: string) =>
+    invoke<void>("export_analytics_xlsx", { outputPath }),
 
   // Interactions
   listInteractions: (clientId: string) =>
@@ -849,6 +893,14 @@ export const api = {
   getInvoiceNumberingConfig: () => invoke<InvoiceNumberingConfig>("get_invoice_numbering_config"),
   saveInvoiceNumberingConfig: (prefix: string, nextNumber: number, padding: number) =>
     invoke<void>("save_invoice_numbering_config", { prefix, nextNumber, padding }),
+
+  // Recurring Invoices
+  listRecurringInvoices: () => invoke<RecurringInvoice[]>("list_recurring_invoices"),
+  createRecurringInvoice: (input: RecurringInvoiceInput) => invoke<string>("create_recurring_invoice", { input }),
+  updateRecurringInvoice: (id: string, input: RecurringInvoiceInput) => invoke<void>("update_recurring_invoice", { id, input }),
+  pauseRecurringInvoice: (id: string) => invoke<void>("pause_recurring_invoice", { id }),
+  resumeRecurringInvoice: (id: string) => invoke<void>("resume_recurring_invoice", { id }),
+  deleteRecurringInvoice: (id: string) => invoke<void>("delete_recurring_invoice", { id }),
 
   // Payments
   listPayments: (invoiceId?: string) => invoke<Payment[]>("list_payments", { invoiceId: invoiceId ?? null }),

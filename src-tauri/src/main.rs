@@ -12,6 +12,7 @@ mod oauth_flow;
 mod signup_rules;
 mod sync;
 mod sync_crypto;
+mod template;
 
 use commands::*;
 use tauri::Manager;
@@ -183,6 +184,15 @@ fn main() {
             update_client,
             update_client_status,
             delete_client,
+            bulk_delete_clients,
+            bulk_update_category,
+            bulk_update_lead_status,
+            export_clients_csv,
+            export_invoices_csv,
+            export_deals_csv,
+            export_deal_flows_csv,
+            export_inventory_csv,
+            export_analytics_xlsx,
             search_clients,
             list_stale_clients,
             due_followups,
@@ -200,6 +210,12 @@ fn main() {
             delete_invoice,
             mark_overdue_invoices,
             generate_recurring_invoices,
+            list_recurring_invoices,
+            create_recurring_invoice,
+            update_recurring_invoice,
+            pause_recurring_invoice,
+            resume_recurring_invoice,
+            delete_recurring_invoice,
             generate_invoice_pdf,
             preview_invoice_pdf,
             send_invoice,
