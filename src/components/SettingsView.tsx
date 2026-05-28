@@ -1672,7 +1672,7 @@ function SplitsTab() {
 
 function BackupTab() {
   const [status, setStatus] = useState<{ last_backup: string | null; backup_dir: string } | null>(null);
-  const [backups, setBackups] = useState<{ filename: string; size: number; date: string }[]>([]);
+  const [backups, setBackups] = useState<{ filename: string; size: number; date: string; is_valid: boolean }[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -1695,7 +1695,8 @@ function BackupTab() {
     setBusy(false);
   };
 
-  const handleRestore = async (filename: string) => {
+  const handleRestore = async (filename: string, isValid: boolean) => {
+    if (!isValid) { alert("This backup is corrupted and cannot be restored."); return; }
     const dateStr = filename.replace("clienthub-backup-", "").replace(".db", "");
     if (!confirm(`Restore from ${dateStr}? This will replace ALL current data and restart the app. This cannot be undone.`)) return;
     setBusy(true);
@@ -1753,10 +1754,12 @@ function BackupTab() {
             {backups.map((b) => (
               <div key={b.filename} className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
                 <div>
-                  <p className="text-[12px] font-medium text-gray-700">{b.date}</p>
+                  <p className="text-[12px] font-medium text-gray-700 flex items-center gap-1.5">
+                    {b.date} {!b.is_valid && <span title="Backup may be corrupted" className="text-red-400 text-[14px]">&#9888;</span>}
+                  </p>
                   <p className="text-[11px] text-gray-400">{fmtSize(b.size)}</p>
                 </div>
-                <button onClick={() => handleRestore(b.filename)} disabled={busy} className="text-[11px] text-red-500 hover:text-red-700 font-medium disabled:opacity-50">Restore</button>
+                <button onClick={() => handleRestore(b.filename, b.is_valid)} disabled={busy} className="text-[11px] text-red-500 hover:text-red-700 font-medium disabled:opacity-50">Restore</button>
               </div>
             ))}
           </div>

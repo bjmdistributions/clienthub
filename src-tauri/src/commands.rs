@@ -3091,7 +3091,7 @@ pub async fn backup_database(custom_dir: Option<String>) -> Result<String, Strin
         let cutoff = chrono::Local::now() - chrono::Duration::days(30);
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("clienthub-backup-") && name.ends_with(".db") && name.len() == 33 {
+            if name.starts_with("clienthub-backup-") && name.ends_with(".db") && name.len() == 30 {
                 if let Ok(date) = chrono::NaiveDate::parse_from_str(&name[18..28], "%Y-%m-%d") {
                     if date.and_hms_opt(0, 0, 0).unwrap() < cutoff.naive_local() {
                         let _ = std::fs::remove_file(entry.path());
@@ -3109,6 +3109,14 @@ pub struct BackupEntry {
     pub filename: String,
     pub size: u64,
     pub date: String,
+    pub is_valid: bool,
+}
+
+fn verify_backup_integrity(path: &str) -> bool {
+    rusqlite::Connection::open(path)
+        .ok()
+        .and_then(|c| c.query_row("PRAGMA integrity_check", [], |r| r.get::<_,String>(0)).ok())
+        .map_or(false, |s| s == "ok")
 }
 
 #[tauri::command]
@@ -3118,10 +3126,12 @@ pub async fn list_backups() -> Result<Vec<BackupEntry>, String> {
     let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
     for entry in rd.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with("clienthub-backup-") && name.ends_with(".db") && name.len() == 33 {
+        if name.starts_with("clienthub-backup-") && name.ends_with(".db") && name.len() == 30 {
             if let Ok(meta) = entry.metadata() {
                 let date = name[18..28].to_string();
-                entries.push(BackupEntry { filename: name, size: meta.len(), date });
+                let full_path = entry.path();
+                let is_valid = verify_backup_integrity(&full_path.to_string_lossy());
+                entries.push(BackupEntry { filename: name, size: meta.len(), date, is_valid });
             }
         }
     }
