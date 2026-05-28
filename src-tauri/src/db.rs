@@ -593,4 +593,27 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        29,
+        r#"
+        CREATE TABLE IF NOT EXISTS payments (
+            id TEXT PRIMARY KEY,
+            invoice_id TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'usd',
+            status TEXT NOT NULL CHECK(status IN ('pending','paid','failed','refunded')) DEFAULT 'pending',
+            payment_method TEXT,
+            stripe_payment_intent_id TEXT,
+            stripe_charge_id TEXT,
+            stripe_customer_id TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (invoice_id) REFERENCES invoices(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
+        CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+        CREATE INDEX IF NOT EXISTS idx_payments_pi ON payments(stripe_payment_intent_id);
+        "#,
+    ),
 ];

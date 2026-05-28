@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard } from "lucide-react";
 
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
@@ -882,6 +882,11 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
         <div className="sticky bottom-0 bg-white/95 backdrop-blur-sm border-t border-gray-100 px-6 py-4 flex gap-2.5">
           <button onClick={onPdf} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex-1 transition-colors">Download PDF</button>
           <button onClick={onResend} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors">Resend</button>
+          <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { alert(e); } }}
+            className="bg-white border border-indigo-100 hover:bg-indigo-50 text-indigo-600 px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors flex items-center gap-1 justify-center"
+            title="Request payment via Stripe">
+            <CreditCard size={13} /> Pay
+          </button>
           <button onClick={onDelete} className="bg-white border border-red-100 hover:bg-red-50 text-red-500 px-3 h-9 rounded-lg text-[12px] font-medium transition-colors flex items-center gap-1">
             <Trash2 size={12} /> Delete
           </button>

@@ -226,6 +226,28 @@ export interface InvoiceNumberingConfig {
   preview: string;
 }
 
+export interface Payment {
+  id: string;
+  invoice_id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  payment_method: string | null;
+  stripe_payment_intent_id: string | null;
+  stripe_charge_id: string | null;
+  stripe_customer_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StripeConfigStatus {
+  configured: boolean;
+  publishable_key_present: boolean;
+  secret_key_present: boolean;
+  webhook_secret_present: boolean;
+}
+
 export interface SupplierNameSuggestion {
   supplier_name: string;
   count: number;
@@ -827,6 +849,19 @@ export const api = {
   getInvoiceNumberingConfig: () => invoke<InvoiceNumberingConfig>("get_invoice_numbering_config"),
   saveInvoiceNumberingConfig: (prefix: string, nextNumber: number, padding: number) =>
     invoke<void>("save_invoice_numbering_config", { prefix, nextNumber, padding }),
+
+  // Payments
+  listPayments: (invoiceId?: string) => invoke<Payment[]>("list_payments", { invoiceId: invoiceId ?? null }),
+  getPayment: (id: string) => invoke<Payment | null>("get_payment", { id }),
+  createPaymentRequest: (invoiceId: string) => invoke<Payment>("create_payment_request", { invoiceId }),
+  updatePaymentStatus: (id: string, status: string, stripeId?: string | null) =>
+    invoke<void>("update_payment_status", { id, status, stripeId: stripeId ?? null }),
+  markPaymentFailed: (id: string, error: string) => invoke<void>("mark_payment_failed", { id, error }),
+  refundPayment: (id: string, reason?: string | null) => invoke<void>("refund_payment", { id, reason: reason ?? null }),
+  saveStripeKeys: (publishable: string, secret: string, webhookSecret: string) =>
+    invoke<void>("save_stripe_keys", { publishable, secret, webhookSecret }),
+  getStripeConfig: () => invoke<StripeConfigStatus>("get_stripe_config"),
+  deleteStripeKeys: () => invoke<void>("delete_stripe_keys"),
 
   // Deals
   listDeals: () => invoke<Deal[]>("list_deals"),

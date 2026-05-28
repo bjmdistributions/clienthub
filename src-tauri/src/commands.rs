@@ -841,6 +841,151 @@ pub async fn save_invoice_numbering_config(prefix: String, next_number: u32, pad
     Ok(())
 }
 
+// ============================================================
+//  Payments (Stripe — bare bones)
+// ============================================================
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct Payment {
+    pub id: String,
+    pub invoice_id: String,
+    pub amount: f64,
+    pub currency: String,
+    pub status: String,
+    pub payment_method: Option<String>,
+    pub stripe_payment_intent_id: Option<String>,
+    pub stripe_charge_id: Option<String>,
+    pub stripe_customer_id: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct StripeConfigStatus {
+    pub configured: bool,
+    pub publishable_key_present: bool,
+    pub secret_key_present: bool,
+    pub webhook_secret_present: bool,
+}
+
+#[tauri::command]
+pub async fn list_payments(invoice_id: Option<String>) -> Result<Vec<Payment>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (sql, params): (String, Vec<String>) = match &invoice_id {
+        Some(iid) => ("SELECT * FROM payments WHERE invoice_id=?1 ORDER BY created_at DESC".into(), vec![iid.clone()]),
+        None => ("SELECT * FROM payments ORDER BY created_at DESC".into(), vec![]),
+    };
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |r| Ok(Payment {
+        id: r.get(0)?, invoice_id: r.get(1)?, amount: r.get(2)?, currency: r.get(3)?,
+        status: r.get(4)?, payment_method: r.get(5)?, stripe_payment_intent_id: r.get(6)?,
+        stripe_charge_id: r.get(7)?, stripe_customer_id: r.get(8)?, error_message: r.get(9)?,
+        created_at: r.get(10)?, updated_at: r.get(11)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn get_payment(id: String) -> Result<Option<Payment>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let p = conn.query_row("SELECT * FROM payments WHERE id=?1", [&id], |r| Ok(Payment {
+        id: r.get(0)?, invoice_id: r.get(1)?, amount: r.get(2)?, currency: r.get(3)?,
+        status: r.get(4)?, payment_method: r.get(5)?, stripe_payment_intent_id: r.get(6)?,
+        stripe_charge_id: r.get(7)?, stripe_customer_id: r.get(8)?, error_message: r.get(9)?,
+        created_at: r.get(10)?, updated_at: r.get(11)?,
+    })).ok();
+    Ok(p)
+}
+
+#[tauri::command]
+pub async fn create_payment_request(invoice_id: String) -> Result<Payment, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let total: f64 = conn.query_row("SELECT total FROM invoices WHERE id=?1", [&invoice_id], |r| r.get(0)).map_err(|e| format!("invoice not found: {}", e))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    // TODO(stripe): replace with stripe::PaymentIntent::create when keys are configured
+    conn.execute(
+        "INSERT INTO payments (id,invoice_id,amount,currency,status,created_at,updated_at) VALUES (?1,?2,?3,'usd','pending',?4,?4)",
+        rusqlite::params![id, invoice_id, total, now],
+    ).map_err(|e| e.to_string())?;
+    let cols = {
+        let mut m = serde_json::Map::new();
+        m.insert("invoice_id".into(), serde_json::Value::String(invoice_id.clone()));
+        m.insert("amount".into(), serde_json::json!(total));
+        m.insert("currency".into(), serde_json::Value::String("usd".into()));
+        m.insert("status".into(), serde_json::Value::String("pending".into()));
+        m.insert("created_at".into(), serde_json::Value::String(now.clone()));
+        m.insert("updated_at".into(), serde_json::Value::String(now.clone()));
+        m
+    };
+    crate::sync::record_upsert("payments", &id, cols).map_err(|e| e.to_string())?;
+    Ok(Payment { id, invoice_id, amount: total, currency: "usd".into(), status: "pending".into(), payment_method: None, stripe_payment_intent_id: None, stripe_charge_id: None, stripe_customer_id: None, error_message: None, created_at: now.clone(), updated_at: now })
+}
+
+#[tauri::command]
+pub async fn update_payment_status(id: String, status: String, stripe_id: Option<String>) -> Result<(), String> {
+    let valid = ["pending", "paid", "failed", "refunded"];
+    if !valid.contains(&status.as_str()) { return Err("Invalid status".into()); }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(sid) = &stripe_id {
+        conn.execute("UPDATE payments SET status=?1, stripe_payment_intent_id=?2, updated_at=?3 WHERE id=?4", rusqlite::params![status, sid, now, id]).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute("UPDATE payments SET status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mark_payment_failed(id: String, error: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("UPDATE payments SET status='failed', error_message=?1, updated_at=?2 WHERE id=?3", rusqlite::params![error, now, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn refund_payment(id: String, reason: Option<String>) -> Result<(), String> {
+    // TODO(stripe): replace with stripe::Refund::create when keys are configured
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let err = reason.unwrap_or_else(|| "Manual refund".into());
+    conn.execute("UPDATE payments SET status='refunded', error_message=?1, updated_at=?2 WHERE id=?3 AND status='paid'", rusqlite::params![err, now, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_stripe_keys(publishable: String, secret: String, webhook_secret: String) -> Result<(), String> {
+    crate::email::save_cred("stripe_publishable_key", &publishable).map_err(|e| e.to_string())?;
+    crate::email::save_cred("stripe_secret_key", &secret).map_err(|e| e.to_string())?;
+    crate::email::save_cred("stripe_webhook_secret", &webhook_secret).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('stripe_configured','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_stripe_config() -> Result<StripeConfigStatus, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let configured: bool = conn.query_row("SELECT value FROM settings WHERE key='stripe_configured'", [], |r| r.get::<_,String>(0)).ok().map_or(false, |v| v == "1");
+    let pk = crate::email::cred_opt("stripe_publishable_key").is_some();
+    let sk = crate::email::cred_opt("stripe_secret_key").is_some();
+    let wh = crate::email::cred_opt("stripe_webhook_secret").is_some();
+    Ok(StripeConfigStatus { configured, publishable_key_present: pk, secret_key_present: sk, webhook_secret_present: wh })
+}
+
+#[tauri::command]
+pub async fn delete_stripe_keys() -> Result<(), String> {
+    crate::email::delete_cred("stripe_publishable_key").map_err(|e| e.to_string())?;
+    crate::email::delete_cred("stripe_secret_key").map_err(|e| e.to_string())?;
+    crate::email::delete_cred("stripe_webhook_secret").map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM settings WHERE key='stripe_configured'", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct UpdateInvoiceInput {
     pub due_date: String,

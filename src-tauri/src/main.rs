@@ -210,6 +210,16 @@ fn main() {
             // Invoice numbering
             get_invoice_numbering_config,
             save_invoice_numbering_config,
+            // Payments
+            list_payments,
+            get_payment,
+            create_payment_request,
+            update_payment_status,
+            mark_payment_failed,
+            refund_payment,
+            save_stripe_keys,
+            get_stripe_config,
+            delete_stripe_keys,
             detect_duplicate_clients,
             cleanup_clients,
             // Deals

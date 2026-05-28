@@ -19,6 +19,7 @@ import {
   User,
   FollowUpRule,
   FollowUpLogEntry,
+  StripeConfigStatus,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -46,10 +47,10 @@ const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full foc
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup" | "team"
+    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup" | "team" | "billing"
   >("email");
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup", "team"] as const;
+  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup", "team", "billing"] as const;
 
   return (
     <div>
@@ -88,6 +89,7 @@ export default function SettingsView() {
       {tab === "splits"     && <SplitsTab />}
       {tab === "backup"     && <BackupTab />}
       {tab === "team"       && <TeamTab />}
+      {tab === "billing"    && <BillingTab />}
     </div>
   );
 }
@@ -1913,6 +1915,71 @@ function InvoiceNumberingSection() {
       <button onClick={save} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>
+    </div>
+  );
+}
+
+function BillingTab() {
+  const [config, setConfig] = useState<StripeConfigStatus | null>(null);
+  const [pk, setPk] = useState("");
+  const [sk, setSk] = useState("");
+  const [wh, setWh] = useState("");
+  const [showKeys, setShowKeys] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  const load = () => api.getStripeConfig().then(setConfig).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    if (!pk || !sk) return;
+    await api.saveStripeKeys(pk, sk, wh);
+    setSaved("Keys saved");
+    setTimeout(() => setSaved(null), 2000);
+    load();
+  };
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Stripe (Coming Soon)</h3>
+      <p className="text-[12px] text-gray-400 mb-5">Configure Stripe keys to accept card payments from invoices.</p>
+
+      <label className="flex items-center gap-2 mb-4 cursor-pointer">
+        <input type="checkbox" className="accent-indigo-600" checked={showKeys} onChange={(e) => setShowKeys(e.target.checked)} />
+        <span className="text-[12px] text-gray-600">Enable Stripe (preview)</span>
+      </label>
+
+      {showKeys && (
+        <div className="space-y-3 mb-4">
+          <div>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">
+              Publishable Key {config?.publishable_key_present && <span className="text-emerald-500">●</span>}
+            </label>
+            <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="pk_test_..." value={pk} onChange={(e) => setPk(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">
+              Secret Key {config?.secret_key_present && <span className="text-emerald-500">●</span>}
+            </label>
+            <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="sk_test_..." value={sk} onChange={(e) => setSk(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">
+              Webhook Secret {config?.webhook_secret_present && <span className="text-emerald-500">●</span>}
+            </label>
+            <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="whsec_..." value={wh} onChange={(e) => setWh(e.target.value)} />
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save Keys</button>
+        {config?.configured && (
+          <button onClick={async () => { await api.deleteStripeKeys(); setPk(""); setSk(""); setWh(""); load(); }} className="text-[12px] text-red-500 hover:text-red-700">Clear Keys</button>
+        )}
+        {saved && <span className="text-[12px] text-emerald-600 font-medium">{saved}</span>}
+      </div>
+
+      <p className="text-[10px] text-gray-400 mt-4">When keys are configured, you'll be able to request payments from invoices and receive them via Stripe. Full activation when the SaaS server is live.</p>
     </div>
   );
 }
