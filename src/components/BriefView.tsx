@@ -164,12 +164,12 @@ export default function BriefView() {
               {/* Split boxes */}
               <div className="grid grid-cols-3 gap-3">
                 <SplitBox
-                  accent="#818CF8"
-                  accentBg="rgba(99,102,241,0.08)"
-                  accentBorder="rgba(99,102,241,0.2)"
+                  accent="var(--accent-400)"
+                  accentBg="var(--accent-tint)"
+                  accentBorder="var(--accent-glow)"
                   label={`Business ${split?.business_pct ?? 40}%`}
                   value={fmtAmount(brief.profit_business_this_week)}
-                  labelColor="#6366F1"
+                  labelColor="var(--accent-500)"
                 />
                 <SplitBox
                   accent="#34D399"
@@ -291,7 +291,7 @@ export default function BriefView() {
               <div className="rounded-xl p-4 flex items-center gap-4"
                 style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: "rgba(99,102,241,0.1)" }}>
+                  style={{ background: "var(--accent-tint)" }}>
                   <Users size={18} className="text-indigo-500" />
                 </div>
                 <div>
@@ -368,7 +368,7 @@ function HighlightCard({
   const clr = {
     emerald: { label: "text-emerald-600", stat: "text-emerald-600", borderClr: "rgba(16,185,129,0.25)" },
     amber:   { label: "text-amber-600",   stat: "text-amber-600",   borderClr: "rgba(245,158,11,0.25)"  },
-    indigo:  { label: "text-indigo-600",  stat: "text-gray-900",    borderClr: "rgba(99,102,241,0.25)"  },
+    indigo:  { label: "text-indigo-600",  stat: "text-gray-900",    borderClr: "var(--accent-glow)"  },
   }[accent];
 
   return (

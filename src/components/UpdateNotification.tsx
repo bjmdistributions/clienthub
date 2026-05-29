@@ -48,7 +48,7 @@ export default function UpdateNotification() {
 
   return (
     <div className="sticky top-0 z-50 flex items-center justify-between px-5 py-3 border-b border-indigo-200/50"
-      style={{ background: "linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 50%, #EDE9FE 100%)" }}>
+      style={{ background: "linear-gradient(135deg, var(--accent-50) 0%, var(--accent-100) 50%, var(--accent-100) 100%)" }}>
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center flex-shrink-0">
           <Download size={14} className="text-white" />

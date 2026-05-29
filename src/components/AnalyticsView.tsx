@@ -84,6 +84,7 @@ const PRESETS = [
 
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
+  const indigo = CLR.indigo;
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
@@ -281,7 +282,7 @@ export default function AnalyticsView() {
             </p>
           </div>
           <div className="flex items-center gap-5 mt-0.5">
-            <Legend color={CLR.indigo}  label="Revenue" />
+            <Legend color={indigo}  label="Revenue" />
             <Legend color={CLR.emerald} label="Profit"  />
           </div>
         </div>
@@ -295,7 +296,7 @@ export default function AnalyticsView() {
               <YAxis tick={AX} axisLine={false} tickLine={false}
                 tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
               <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-              <Bar dataKey="revenue" name="Revenue" fill={CLR.indigo}
+              <Bar dataKey="revenue" name="Revenue" fill={indigo}
                 radius={[4, 4, 0, 0]} maxBarSize={40} />
               <Bar dataKey="profit"  name="Profit"
                 radius={[4, 4, 0, 0]} maxBarSize={40}>
@@ -484,7 +485,7 @@ export default function AnalyticsView() {
                     <div className="h-full rounded-full transition-all duration-700 ease-out"
                       style={{
                         width: c.revenue > 0 && bars ? `${(c.revenue / maxCat) * 100}%` : "0%",
-                        backgroundColor: CLR.indigo,
+                        backgroundColor: indigo,
                         transitionDelay: `${i * 55}ms`,
                       }} />
                   </div>

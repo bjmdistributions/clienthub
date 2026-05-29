@@ -66,6 +66,28 @@ export default function App() {
     return () => clearTimeout(t);
   }, [dark]);
 
+  // Accent color
+  const [accent, setAccent] = useState(() => localStorage.getItem("clienthub_accent") || "indigo");
+  useEffect(() => {
+    const html = document.documentElement;
+    html.classList.add("theme-transitioning");
+    if (accent === "indigo") html.removeAttribute("data-accent");
+    else html.setAttribute("data-accent", accent);
+    localStorage.setItem("clienthub_accent", accent);
+    const t = setTimeout(() => html.classList.remove("theme-transitioning"), 300);
+    return () => clearTimeout(t);
+  }, [accent]);
+  useEffect(() => {
+    const handler = (e: Event) => setAccent((e as CustomEvent).detail);
+    window.addEventListener("accent-change", handler);
+    return () => window.removeEventListener("accent-change", handler);
+  }, []);
+  useEffect(() => {
+    const handler = (e: Event) => setDark((e as CustomEvent).detail);
+    window.addEventListener("dark-change", handler);
+    return () => window.removeEventListener("dark-change", handler);
+  }, []);
+
   const [draftCount, setDraftCount] = useState(0);
   const { aiOnline, checkAi } = useAppStore();
   const [syncing, setSyncing] = useState(false);
@@ -202,16 +224,16 @@ export default function App() {
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
       {/* Sidebar */}
       <aside className="w-[216px] flex flex-col flex-shrink-0 relative" style={{
-        background: "linear-gradient(180deg, #0A0A12 0%, #0D0D1A 100%)",
-        borderRight: "1px solid rgba(255,255,255,0.045)",
+        background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
+        borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
         {/* Brand */}
         <div className="h-[54px] px-4 flex items-center gap-2.5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
           <div
             className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 animate-glow-pulse"
             style={{
-              background: "linear-gradient(135deg, #6366F1, #7C3AED)",
-              boxShadow: "0 0 16px rgba(99,102,241,0.55)",
+              background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))",
+              boxShadow: "0 0 16px var(--accent-glow)",
             }}
           >
             <span className="text-white text-[11px] font-bold tracking-tight">C</span>
@@ -226,7 +248,7 @@ export default function App() {
             style={{ color: dark ? "#FCD34D" : "#7A7A90" }}
             onMouseEnter={e => {
               e.currentTarget.style.background = "rgba(255,255,255,0.08)";
-              e.currentTarget.style.color = dark ? "#FDE68A" : "#A5B4FC";
+              e.currentTarget.style.color = dark ? "#FDE68A" : "var(--accent-400)";
             }}
             onMouseLeave={e => {
               e.currentTarget.style.background = "";
@@ -259,13 +281,13 @@ export default function App() {
                   : "text-[#6B6B7A] hover:text-white/80"
               }`}
               style={tab === id ? {
-                background: "linear-gradient(90deg, rgba(99,102,241,0.14) 0%, rgba(99,102,241,0.05) 100%)",
+                background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)",
               } : undefined}
             >
               <Icon
                 size={15}
                 strokeWidth={tab === id ? 2.1 : 1.6}
-                style={tab === id ? { color: "#A5B4FC" } : undefined}
+                style={tab === id ? { color: "var(--accent-400)" } : undefined}
               />
               {label}
               {id === "email" && draftCount > 0 && (

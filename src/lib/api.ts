@@ -1152,6 +1152,8 @@ export const api = {
     invoke<ScheduledSendProgress>("get_scheduled_send_progress", { id }),
   saveSmtpSettingsForPi: (settings: Record<string, string>) =>
     invoke<void>("save_smtp_settings_for_pi", { settings }),
+  pushDesktopSmtpToPi: (fromName: string) =>
+    invoke<boolean>("push_desktop_smtp_to_pi", { fromName }),
   getSmtpSettingsForPi: () =>
     invoke<Record<string, string>>("get_smtp_settings_for_pi"),
 

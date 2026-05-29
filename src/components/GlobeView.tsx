@@ -299,7 +299,7 @@ export default function GlobeView() {
                 window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clients" }));
               }}
               className="text-[11px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
-              style={{ background: "rgba(99,102,241,0.2)", color: "#A5B4FC", border: "1px solid rgba(165,180,252,0.25)" }}
+              style={{ background: "var(--accent-tint)", color: "var(--accent-400)", border: "1px solid var(--accent-glow)" }}
             >
               Fill in Addresses →
             </button>
@@ -359,7 +359,7 @@ export default function GlobeView() {
             <div className="space-y-2.5 text-[13px]" style={{ color: "#aaa" }}>
               {(selected.city || selected.state) && (
                 <div className="flex items-center gap-2">
-                  <MapPin size={13} style={{ color: "#6366F1" }} />
+                  <MapPin size={13} style={{ color: "var(--accent-500)" }} />
                   {selected.city}{selected.state ? `, ${selected.state}` : ""}
                 </div>
               )}
@@ -377,12 +377,12 @@ export default function GlobeView() {
               onClick={() => viewProfile(selected.id)}
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium transition-colors"
               style={{
-                background: "rgba(99,102,241,0.12)",
-                color: "#A5B4FC",
-                border: "1px solid rgba(99,102,241,0.22)",
+                background: "var(--accent-tint)",
+                color: "var(--accent-400)",
+                border: "1px solid var(--accent-glow)",
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = "rgba(99,102,241,0.22)")}
-              onMouseLeave={e => (e.currentTarget.style.background = "rgba(99,102,241,0.12)")}
+              onMouseEnter={e => (e.currentTarget.style.background = "var(--accent-glow)")}
+              onMouseLeave={e => (e.currentTarget.style.background = "var(--accent-tint)")}
             >
               <ExternalLink size={12} />
               View Full Profile

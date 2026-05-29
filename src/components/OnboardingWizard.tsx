@@ -125,7 +125,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
           {step === 0 && (
             <div className="text-center py-6">
               <div className="w-14 h-14 rounded-xl mx-auto mb-4 flex items-center justify-center"
-                style={{ background: "linear-gradient(135deg, #6366F1, #7C3AED)", boxShadow: "0 0 20px rgba(99,102,241,0.4)" }}>
+                style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 20px var(--accent-glow)" }}>
                 <span className="text-white text-[22px] font-bold">C</span>
               </div>
               <h3 className="text-[18px] font-bold text-gray-900 mb-2">Welcome to ClientHub</h3>

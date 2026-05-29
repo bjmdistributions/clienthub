@@ -6281,6 +6281,46 @@ pub async fn save_smtp_settings_for_pi(settings: serde_json::Value) -> Result<()
     Ok(())
 }
 
+/// Proper fix for "SMTP works on desktop but not the Pi": copy the desktop's
+/// working email login to the Syncthing-synced `settings` rows the Pi reads,
+/// pulling the password straight from the OS keychain so the user never has to
+/// re-type (or hardcode) it. The plaintext password is written to the DB (which
+/// the Pi needs for basic-auth SMTP) but is never returned to the frontend.
+#[tauri::command]
+pub async fn push_desktop_smtp_to_pi(from_name: String) -> Result<bool, String> {
+    // Load the desktop email settings (host / port / user).
+    let settings = get_email_settings().await?
+        .ok_or_else(|| "No email settings configured on this device yet. Set up Email first.".to_string())?;
+
+    // Pull the working SMTP password from the OS keychain.
+    let password = crate::email::cred_opt("smtp_pass")
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| "No SMTP password found in your keychain. Save your email password under Email → SMTP password first.".to_string())?;
+
+    let pairs: Vec<(&str, String)> = vec![
+        ("smtp_host", settings.smtp_host.clone()),
+        ("smtp_port", settings.smtp_port.to_string()),
+        ("smtp_username", settings.user.clone()),
+        ("smtp_password", password),
+        ("smtp_from_name", from_name),
+        ("smtp_from_email", settings.user.clone()),
+    ];
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (key, val_str) in &pairs {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![key, val_str],
+        ).map_err(|e| e.to_string())?;
+
+        let mut cols = serde_json::Map::new();
+        cols.insert("key".into(), serde_json::Value::String(key.to_string()));
+        cols.insert("value".into(), serde_json::Value::String(val_str.clone()));
+        crate::sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
+    }
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn get_smtp_settings_for_pi() -> Result<serde_json::Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

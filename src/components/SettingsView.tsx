@@ -40,6 +40,23 @@ import {
   ChevronDown,
   Edit2,
   X,
+  Building2,
+  Palette,
+  Tag,
+  Mail,
+  FileText,
+  Zap,
+  Bot,
+  Sheet,
+  Download,
+  CreditCard,
+  Receipt,
+  Split,
+  Database,
+  Users,
+  SlidersHorizontal,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -48,52 +65,210 @@ import VariablePicker from "./VariablePicker";
 const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
 const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
 
-export default function SettingsView() {
-  const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup" | "team" | "billing" | "customfields"
-  >("email");
+type SettingsTab =
+  | "appearance" | "company" | "categories" | "customfields"
+  | "email" | "templates" | "automation"
+  | "ai" | "sheets" | "import" | "payments" | "billing"
+  | "sync" | "splits" | "backup" | "team";
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup", "team", "billing", "customfields"] as const;
+const SETTINGS_GROUPS: {
+  group: string;
+  items: { id: SettingsTab; label: string; icon: any; desc: string }[];
+}[] = [
+  {
+    group: "Workspace",
+    items: [
+      { id: "appearance",   label: "Appearance",    icon: Palette,           desc: "Theme, accent color & display" },
+      { id: "company",      label: "Company",        icon: Building2,         desc: "Business details & invoice logo" },
+      { id: "categories",   label: "Categories",     icon: Tag,               desc: "Client & deal categories" },
+      { id: "customfields", label: "Custom Fields",  icon: SlidersHorizontal, desc: "Extra fields on client records" },
+    ],
+  },
+  {
+    group: "Communication",
+    items: [
+      { id: "email",      label: "Email",       icon: Mail,     desc: "SMTP / IMAP & Pi sending" },
+      { id: "templates",  label: "Templates",   icon: FileText, desc: "Reusable line-item templates" },
+      { id: "automation", label: "Automation",  icon: Zap,      desc: "Signup detection & follow-ups" },
+    ],
+  },
+  {
+    group: "Integrations",
+    items: [
+      { id: "ai",       label: "AI",            icon: Bot,        desc: "Ollama model selection" },
+      { id: "sheets",   label: "Google Sheets", icon: Sheet,      desc: "Two-way sheet sync" },
+      { id: "import",   label: "Import",        icon: Download,   desc: "CSV & Google Contacts" },
+      { id: "payments", label: "Payments",      icon: CreditCard, desc: "Accepted payment methods" },
+      { id: "billing",  label: "Billing",       icon: Receipt,    desc: "Stripe configuration" },
+    ],
+  },
+  {
+    group: "Data & Team",
+    items: [
+      { id: "sync",   label: "Sync",   icon: RefreshCw, desc: "Event log, encryption & updates" },
+      { id: "splits", label: "Splits", icon: Split,     desc: "Profit-split partners" },
+      { id: "backup", label: "Backup", icon: Database,  desc: "Local backups & restore" },
+      { id: "team",   label: "Team",   icon: Users,     desc: "Users, roles & invites" },
+    ],
+  },
+];
+
+export default function SettingsView() {
+  const [tab, setTab] = useState<SettingsTab>(
+    () => (localStorage.getItem("clienthub_settings_tab") as SettingsTab) || "appearance"
+  );
+  const select = (t: SettingsTab) => {
+    setTab(t);
+    localStorage.setItem("clienthub_settings_tab", t);
+  };
+
+  const active = SETTINGS_GROUPS.flatMap((g) => g.items).find((i) => i.id === tab);
 
   return (
-    <div>
-      <div className="mb-5">
-        <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Settings</h2>
-        <p className="text-[12px] text-gray-400 mt-0.5">Configure your account, integrations, and preferences.</p>
+    <div className="flex gap-8 max-w-[1100px]">
+      {/* Left rail */}
+      <aside className="w-[232px] shrink-0">
+        <div className="mb-5 px-1">
+          <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Settings</h2>
+          <p className="text-[12px] text-gray-400 mt-0.5">Manage your workspace</p>
+        </div>
+        <nav className="space-y-5">
+          {SETTINGS_GROUPS.map((g) => (
+            <div key={g.group}>
+              <div className="px-3 mb-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+                {g.group}
+              </div>
+              <div className="space-y-0.5">
+                {g.items.map((it) => {
+                  const Icon = it.icon;
+                  const isActive = tab === it.id;
+                  return (
+                    <button
+                      key={it.id}
+                      onClick={() => select(it.id)}
+                      className={`w-full flex items-center gap-2.5 px-3 h-9 rounded-lg text-[13px] transition-colors ${
+                        isActive
+                          ? "accent-active font-medium"
+                          : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                      }`}
+                    >
+                      <Icon size={15} className={isActive ? "accent-active-ic" : "text-gray-400"} />
+                      {it.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+      </aside>
+
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        {active && (
+          <div className="mb-5">
+            <h3 className="text-[16px] font-semibold text-gray-900 tracking-tight">{active.label}</h3>
+            <p className="text-[12px] text-gray-400 mt-0.5">{active.desc}</p>
+          </div>
+        )}
+        <div key={tab} className="page-enter">
+          {tab === "appearance"  && <AppearanceTab />}
+          {tab === "email"       && <EmailTab />}
+          {tab === "company"     && <CompanyTab />}
+          {tab === "categories"  && <CategoriesTab />}
+          {tab === "ai"          && <AiTab />}
+          {tab === "sync"        && <SyncTab />}
+          {tab === "import"      && <ImportTab />}
+          {tab === "automation"  && <AutomationTab />}
+          {tab === "payments"    && <PaymentsTab />}
+          {tab === "templates"   && <TemplatesTab />}
+          {tab === "sheets"      && <SheetsTab />}
+          {tab === "splits"      && <SplitsTab />}
+          {tab === "backup"      && <BackupTab />}
+          {tab === "team"        && <TeamTab />}
+          {tab === "billing"     && <BillingTab />}
+          {tab === "customfields"&& <CustomFieldsTab />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppearanceTab() {
+  const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
+  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "indigo");
+
+  const setAccent = (a: string) => {
+    setAccentState(a);
+    window.dispatchEvent(new CustomEvent("accent-change", { detail: a }));
+  };
+  const toggleDark = () => {
+    const next = !dark;
+    setDark(next);
+    window.dispatchEvent(new CustomEvent("dark-change", { detail: next }));
+  };
+
+  const ACCENTS = [
+    { id: "indigo", label: "Indigo", swatch: "#4F46E5" },
+    { id: "red",    label: "Red",    swatch: "#DC2626" },
+    { id: "green",  label: "Green",  swatch: "#059669" },
+    { id: "black",  label: "Matte Black", swatch: "#27272A" },
+  ];
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <SectionLabel>Accent Color</SectionLabel>
+      <p className="text-[12px] text-gray-400 mb-3 mt-0.5">
+        Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity.
+      </p>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
+        {ACCENTS.map((a) => {
+          const isActive = accent === a.id;
+          return (
+            <button
+              key={a.id}
+              onClick={() => setAccent(a.id)}
+              className={`relative flex flex-col items-center gap-2 py-4 rounded-xl border transition-all ${
+                isActive ? "border-transparent ring-2 ring-offset-1" : "border-gray-200 hover:border-gray-300"
+              }`}
+              style={isActive ? ({ ["--tw-ring-color" as any]: a.swatch } as any) : undefined}
+            >
+              <span
+                className="w-9 h-9 rounded-full shadow-inner flex items-center justify-center"
+                style={{ background: a.swatch }}
+              >
+                {isActive && <Check size={16} className="text-white" />}
+              </span>
+              <span className="text-[12px] font-medium text-gray-700">{a.label}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Underline tab bar */}
-      <div className="flex gap-0 border-b border-gray-100 mb-7 overflow-x-auto">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2.5 text-[13px] border-b-2 -mb-px capitalize transition-colors whitespace-nowrap ${
-              tab === t
-                ? "border-indigo-500 text-indigo-700 font-medium"
-                : "border-transparent text-gray-400 hover:text-gray-700"
-            }`}
-          >
-            {t}
-          </button>
-        ))}
+      <SectionLabel>Theme</SectionLabel>
+      <p className="text-[12px] text-gray-400 mb-3 mt-0.5">Switch between light and dark interface.</p>
+      <div className="flex gap-3">
+        {[
+          { val: false, label: "Light", icon: Sun },
+          { val: true,  label: "Dark",  icon: Moon },
+        ].map((opt) => {
+          const Icon = opt.icon;
+          const isActive = dark === opt.val;
+          return (
+            <button
+              key={opt.label}
+              onClick={() => { if (dark !== opt.val) toggleDark(); }}
+              className={`flex-1 flex items-center justify-center gap-2 h-12 rounded-xl border text-[13px] font-medium transition-colors ${
+                isActive
+                  ? "accent-active accent-active-bd"
+                  : "border-gray-200 text-gray-500 hover:border-gray-300"
+              }`}
+            >
+              <Icon size={15} /> {opt.label}
+            </button>
+          );
+        })}
       </div>
-
-      {tab === "email"      && <EmailTab />}
-      {tab === "company"    && <CompanyTab />}
-      {tab === "categories" && <CategoriesTab />}
-      {tab === "ai"         && <AiTab />}
-      {tab === "sync"       && <SyncTab />}
-      {tab === "import"     && <ImportTab />}
-      {tab === "automation" && <AutomationTab />}
-      {tab === "payments"   && <PaymentsTab />}
-      {tab === "templates"  && <TemplatesTab />}
-      {tab === "sheets"     && <SheetsTab />}
-      {tab === "splits"     && <SplitsTab />}
-      {tab === "backup"     && <BackupTab />}
-      {tab === "team"       && <TeamTab />}
-      {tab === "billing"    && <BillingTab />}
-      {tab === "customfields" && <CustomFieldsTab />}
     </div>
   );
 }
@@ -294,30 +469,95 @@ function PiSmtpSection({ settings }: { settings: EmailSettings }) {
   const [smtpPassword, setSmtpPassword] = useState("");
   const [fromName, setFromName] = useState("");
   const [saved, setSaved] = useState(false);
-  const [existing, setExisting] = useState<Record<string, string> | null>(null);
+  const [pushing, setPushing] = useState(false);
+  const [pushed, setPushed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [existing, setExisting] = useState<Record<string, any> | null>(null);
 
-  useEffect(() => {
+  const reload = () =>
     api.getSmtpSettingsForPi().then((s) => {
       setExisting(s);
       if (s.smtp_from_name) setFromName(s.smtp_from_name);
     }).catch(console.error);
-  }, []);
+  useEffect(() => { reload(); }, []);
+
+  const passwordSet = !!existing?.smtp_password_set;
 
   const save = async () => {
-    await api.saveSmtpSettingsForPi({
-      smtp_host: settings.smtp_host,
-      smtp_port: String(settings.smtp_port),
-      smtp_username: settings.user,
-      smtp_password: smtpPassword,
-      smtp_from_name: fromName,
-      smtp_from_email: settings.user,
-    });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setError(null);
+    try {
+      await api.saveSmtpSettingsForPi({
+        smtp_host: settings.smtp_host,
+        smtp_port: String(settings.smtp_port),
+        smtp_username: settings.user,
+        smtp_password: smtpPassword,
+        smtp_from_name: fromName,
+        smtp_from_email: settings.user,
+      });
+      setSmtpPassword("");
+      setSaved(true);
+      await reload();
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) { setError(e.toString()); }
+  };
+
+  const pushFromDesktop = async () => {
+    setError(null);
+    setPushing(true);
+    try {
+      await api.pushDesktopSmtpToPi(fromName);
+      setPushed(true);
+      await reload();
+      setTimeout(() => setPushed(false), 2500);
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setPushing(false);
+    }
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      {/* Status banner */}
+      <div className={`flex items-start gap-2.5 rounded-lg px-3.5 py-3 border ${
+        passwordSet ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100"
+      }`}>
+        <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${passwordSet ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]" : "bg-amber-500"}`} />
+        <div className="text-[12px] leading-relaxed">
+          {passwordSet ? (
+            <span className="text-emerald-700">
+              <span className="font-medium">Password saved.</span> Your Pi & phone can send newsletters using these credentials.
+            </span>
+          ) : (
+            <span className="text-amber-700">
+              <span className="font-medium">No password set yet.</span> Sending from the Pi or phone won't work until you save one below.
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* One-click: copy the working desktop login */}
+      <button
+        onClick={pushFromDesktop}
+        disabled={pushing}
+        className={`w-full flex items-center justify-center gap-2 h-10 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 ${
+          pushed ? "bg-emerald-600 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"
+        }`}
+      >
+        {pushing ? <><RefreshCw size={13} className="animate-spin" /> Copying…</>
+          : pushed ? <><Check size={13} /> Copied from desktop</>
+          : <><RefreshCw size={13} /> Use my desktop email login</>}
+      </button>
+      <p className="text-[11px] text-gray-400 -mt-1.5">
+        Copies the SMTP password already saved in your keychain — no need to re-enter it.
+      </p>
+
+      <div className="flex items-center gap-2">
+        <div className="flex-1 h-px bg-gray-100" />
+        <span className="text-[10px] font-semibold text-gray-300 uppercase tracking-widest">or enter manually</span>
+        <div className="flex-1 h-px bg-gray-100" />
+      </div>
+
       <Field label="From name (shown in emails)">
         <input className={inp} value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Your Business Name" />
       </Field>
@@ -328,13 +568,23 @@ function PiSmtpSection({ settings }: { settings: EmailSettings }) {
             value={smtpPassword}
             onChange={(e) => setSmtpPassword(e.target.value)}
             className={inp}
-            placeholder={existing?.smtp_password_set ? "•••••••• (currently set — leave blank to keep)" : "Enter SMTP password"}
+            placeholder={passwordSet ? "•••••••• (currently set — leave blank to keep)" : "Enter SMTP password"}
           />
+          {passwordSet && !smtpPassword && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] font-medium text-emerald-600">
+              <Check size={12} /> Saved
+            </span>
+          )}
         </div>
       </Field>
+      {error && (
+        <div className="text-red-600 text-[12px] flex items-start gap-1.5">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" /> {error}
+        </div>
+      )}
       <button
         onClick={save}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
+        className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
       >
         {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved for Pi" : "Save for Pi"}
@@ -346,6 +596,8 @@ function PiSmtpSection({ settings }: { settings: EmailSettings }) {
 function CompanyTab() {
   const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
   const [saved, setSaved] = useState(false);
+  const [logoError, setLogoError] = useState(false);
+  const [logoVersion, setLogoVersion] = useState(0);
 
   useEffect(() => {
     api.getCompanyInfo().then((c) => c && setInfo(c)).catch(console.error);
@@ -362,7 +614,11 @@ function CompanyTab() {
       multiple: false,
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }],
     });
-    if (typeof selected === "string") setInfo({ ...info, logo_path: selected });
+    if (typeof selected === "string") {
+      setLogoError(false);
+      setLogoVersion((v) => v + 1);
+      setInfo({ ...info, logo_path: selected });
+    }
   };
 
   return (
@@ -370,32 +626,48 @@ function CompanyTab() {
       <p className="text-[12px] text-gray-400 mb-5">This information appears on every PDF invoice.</p>
 
       <Field label="Company Logo">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           {info.logo_path ? (
-            <div className="relative">
-              <img
-                src={convertFileSrc(info.logo_path)}
-                alt="Logo preview"
-                className="h-16 w-auto border border-gray-100 rounded-lg object-contain bg-gray-50"
-              />
+            <div className="relative group">
+              <div className="h-20 w-32 border border-gray-200 rounded-xl bg-[repeating-conic-gradient(#f3f4f6_0%_25%,#ffffff_0%_50%)] bg-[length:14px_14px] flex items-center justify-center overflow-hidden p-2">
+                <img
+                  key={info.logo_path}
+                  src={`${convertFileSrc(info.logo_path)}?t=${logoVersion}`}
+                  alt="Logo preview"
+                  className="max-h-full max-w-full object-contain"
+                  onLoad={() => setLogoError(false)}
+                  onError={() => setLogoError(true)}
+                />
+              </div>
               <button
-                onClick={() => setInfo({ ...info, logo_path: null })}
-                className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5 hover:bg-red-600 transition-colors"
+                onClick={() => { setInfo({ ...info, logo_path: null }); setLogoError(false); }}
+                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-sm hover:bg-red-600 transition-colors"
+                title="Remove logo"
               >
-                <Trash2 size={10} />
+                <X size={11} />
               </button>
             </div>
           ) : (
-            <div className="h-16 w-16 border border-gray-100 rounded-lg bg-gray-50 flex items-center justify-center text-gray-300">
+            <div className="h-20 w-32 border border-dashed border-gray-200 rounded-xl bg-gray-50 flex flex-col items-center justify-center gap-1 text-gray-300">
               <Image size={22} />
+              <span className="text-[10px] text-gray-400">No logo</span>
             </div>
           )}
-          <button
-            onClick={pickLogo}
-            className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 h-9 rounded-lg text-[13px] transition-colors"
-          >
-            {info.logo_path ? "Change" : "Choose Logo"}
-          </button>
+          <div className="space-y-1.5">
+            <button
+              onClick={pickLogo}
+              className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-3.5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors"
+            >
+              <Upload size={13} /> {info.logo_path ? "Change logo" : "Choose logo"}
+            </button>
+            {info.logo_path && !logoError && (
+              <p className="text-[11px] text-emerald-600 flex items-center gap-1"><Check size={11} /> Logo selected</p>
+            )}
+            {logoError && (
+              <p className="text-[11px] text-red-500 flex items-center gap-1"><AlertCircle size={11} /> Couldn't load image</p>
+            )}
+            {!info.logo_path && <p className="text-[11px] text-gray-400">PNG or JPG · shown on invoices</p>}
+          </div>
         </div>
       </Field>
 

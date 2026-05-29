@@ -157,7 +157,7 @@ export default function DashboardView({ onNavigate }: Props) {
 
   const weekStats = [
     { label: "Revenue",      value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "#059669" },
-    { label: "New Clients",  value: String(stats?.clients_this_week ?? 0),                   color: "#4F46E5" },
+    { label: "New Clients",  value: String(stats?.clients_this_week ?? 0),                   color: "#6366F1" },
     { label: "Interactions", value: String(stats?.interactions_this_week ?? 0),              color: "#7C3AED" },
   ];
 
@@ -194,8 +194,8 @@ export default function DashboardView({ onNavigate }: Props) {
             onClick={() => onNavigate("invoices")}
             className="btn-ripple flex items-center gap-1.5 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-all duration-150 hover:-translate-y-px"
             style={{
-              background: "linear-gradient(135deg, #4F46E5, #6366F1)",
-              boxShadow: "0 2px 10px rgba(79,70,229,0.3), 0 1px 2px rgba(79,70,229,0.2)",
+              background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))",
+              boxShadow: "0 2px 10px var(--accent-glow), 0 1px 2px var(--accent-glow)",
             }}
           >
             <FileText size={13} /> Invoices
@@ -298,7 +298,7 @@ export default function DashboardView({ onNavigate }: Props) {
                   <button key={dir} onClick={() => changeMonth(dir)}
                     className="w-7 h-7 flex items-center justify-center rounded-md transition-colors"
                     style={{ color: "var(--t-tx4)" }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "var(--t-s3)"; e.currentTarget.style.color = "#4F46E5"; }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "var(--t-s3)"; e.currentTarget.style.color = "var(--accent-600)"; }}
                     onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--t-tx4)"; }}>
                     {dir === -1 ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
                   </button>
@@ -323,7 +323,7 @@ export default function DashboardView({ onNavigate }: Props) {
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
                   <Line type="monotone" dataKey="profit" stroke="url(#profitGrad)" strokeWidth={2.5} dot={false}
-                    activeDot={{ r: 5, fill: "#6366F1", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(99,102,241,0.6))" } }}
+                    activeDot={{ r: 5, fill: "#6366F1", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(99,102,241,0.4))" } }}
                     isAnimationActive animationDuration={1000} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>
@@ -399,9 +399,9 @@ export default function DashboardView({ onNavigate }: Props) {
               <button
                 onClick={() => onNavigate("invoices")}
                 className="flex items-center gap-1 text-[12px] font-medium transition-colors"
-                style={{ color: "#6366F1" }}
-                onMouseEnter={e => (e.currentTarget.style.color = "#4F46E5")}
-                onMouseLeave={e => (e.currentTarget.style.color = "#6366F1")}
+                style={{ color: "var(--accent-500)" }}
+                onMouseEnter={e => (e.currentTarget.style.color = "var(--accent-600)")}
+                onMouseLeave={e => (e.currentTarget.style.color = "var(--accent-500)")}
               >
                 View all <ArrowRight size={11} />
               </button>
@@ -411,7 +411,7 @@ export default function DashboardView({ onNavigate }: Props) {
                 <div>
                   <FileText size={24} className="mx-auto mb-2" style={{ color: "var(--t-b3)" }} />
                   <p className="text-[13px]" style={{ color: "var(--t-tx4)" }}>No invoices yet</p>
-                  <button onClick={() => onNavigate("invoices")} className="mt-2 text-[12px] font-medium" style={{ color: "#6366F1" }}>
+                  <button onClick={() => onNavigate("invoices")} className="mt-2 text-[12px] font-medium" style={{ color: "var(--accent-500)" }}>
                     Create first invoice →
                   </button>
                 </div>
@@ -484,7 +484,7 @@ export default function DashboardView({ onNavigate }: Props) {
                     {stats?.incomplete_shipping} invoice{stats?.incomplete_shipping !== 1 ? "s" : ""} need shipping info
                   </span>
                 </div>
-                <button onClick={() => onNavigate("invoices")} className="text-[12px] font-medium ml-2 flex-shrink-0" style={{ color: "#6366F1" }}>View</button>
+                <button onClick={() => onNavigate("invoices")} className="text-[12px] font-medium ml-2 flex-shrink-0" style={{ color: "var(--accent-500)" }}>View</button>
               </div>
             )}
 
@@ -573,7 +573,7 @@ export default function DashboardView({ onNavigate }: Props) {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-50">
             {[
-              { label: "Add Client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "#4F46E5", dotBg: "rgba(99,102,241,0.1)"  },
+              { label: "Add Client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "var(--accent-600)", dotBg: "var(--accent-tint)"  },
               { label: "New Invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "#7C3AED", dotBg: "rgba(124,58,237,0.1)"  },
               { label: "Scan Inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "#059669", dotBg: "rgba(16,185,129,0.1)"  },
             ].map((a) => {

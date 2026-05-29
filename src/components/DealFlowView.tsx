@@ -424,7 +424,7 @@ function DealFlowCard({
                         className={[
                           "w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold transition-all duration-200",
                           isDone    ? "bg-indigo-600 text-white" :
-                          isCurrent ? "bg-white border-2 border-indigo-500 text-indigo-600 shadow-[0_0_0_4px_rgba(99,102,241,0.1)]" :
+                          isCurrent ? "bg-white border-2 border-indigo-500 text-indigo-600 shadow-[0_0_0_4px_var(--accent-tint)]" :
                           i === currentSi + 1
                                     ? "bg-white border-2 border-gray-300 text-gray-400 hover:border-indigo-400 hover:text-indigo-500"
                                     : "bg-gray-100 border-2 border-gray-200 text-gray-300 cursor-default",

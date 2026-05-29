@@ -1,6 +1,6 @@
 [package]
 name = "clienthub"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 
 [lib]
@@ -12,7 +12,7 @@ tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
 # Tauri core
-tauri = { version = "2.0", features = [] }
+tauri = { version = "2.0", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.0"
 tauri-plugin-fs = "2.0"
 tauri-plugin-shell = "2.0"

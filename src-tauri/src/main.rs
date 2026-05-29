@@ -401,6 +401,7 @@ fn main() {
             list_scheduled_sends,
             get_scheduled_send_progress,
             save_smtp_settings_for_pi,
+            push_desktop_smtp_to_pi,
             get_smtp_settings_for_pi,
             // Categories
             list_categories,
