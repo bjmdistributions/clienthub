@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ClientHub",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "identifier": "com.bjmdistributions.clienthub",
   "build": {
     "frontendDist": "../dist",
@@ -45,7 +45,7 @@
       "endpoints": [
         "https://github.com/bjmdistributions/clienthub/releases/latest/download/latest.json"
       ],
-      "pubkey": "UldRUDVDU2NkcUY1N1FtZW9PdmpzVkJSVTB6ZWU0Y3ZVdVJxUGlYN1J2SVl4UjI3TVZnbDc2YUk"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVENzlBMTc2OUMyNEU0MEYKUldRUDVDU2NkcUY1N1FtZW9PdmpzVkJSVTB6ZWU0Y3ZVdVJxUGlYN1J2SVl4UjI3TVZnbDc2YUkK"
     }
   }
 }
