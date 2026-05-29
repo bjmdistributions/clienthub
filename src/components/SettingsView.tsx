@@ -20,6 +20,8 @@ import {
   FollowUpRule,
   FollowUpLogEntry,
   StripeConfigStatus,
+  GoogleContact,
+  CustomField,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -48,10 +50,10 @@ const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full foc
 
 export default function SettingsView() {
   const [tab, setTab] = useState<
-    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup" | "team" | "billing"
+    "email" | "company" | "categories" | "ai" | "sync" | "import" | "automation" | "payments" | "templates" | "sheets" | "splits" | "backup" | "team" | "billing" | "customfields"
   >("email");
 
-  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup", "team", "billing"] as const;
+  const TABS = ["email", "company", "categories", "ai", "sync", "import", "automation", "payments", "templates", "sheets", "splits", "backup", "team", "billing", "customfields"] as const;
 
   return (
     <div>
@@ -91,6 +93,7 @@ export default function SettingsView() {
       {tab === "backup"     && <BackupTab />}
       {tab === "team"       && <TeamTab />}
       {tab === "billing"    && <BillingTab />}
+      {tab === "customfields" && <CustomFieldsTab />}
     </div>
   );
 }
@@ -618,6 +621,23 @@ function SyncTab() {
 }
 
 function ImportTab() {
+  const [subTab, setSubTab] = useState<"csv" | "contacts">("csv");
+  return (
+    <div>
+      <div className="flex gap-1 mb-5 border-b border-gray-100">
+        {(["csv", "contacts"] as const).map(t => (
+          <button key={t} onClick={() => setSubTab(t)}
+            className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${subTab === t ? "border-indigo-600 text-indigo-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+            {t === "csv" ? "From CSV" : "From Google Contacts"}
+          </button>
+        ))}
+      </div>
+      {subTab === "csv" ? <CsvImportSection /> : <GoogleContactsSection />}
+    </div>
+  );
+}
+
+function CsvImportSection() {
   const [path,      setPath]      = useState<string | null>(null);
   const [preview,   setPreview]   = useState<CsvPreview | null>(null);
   const [mapping,   setMapping]   = useState<Record<string, string>>({});
@@ -792,6 +812,144 @@ function ImportTab() {
         <div className="mt-4 text-red-500 text-[13px] flex items-center gap-1.5">
           <AlertCircle size={13} /> {error}
         </div>
+      )}
+    </div>
+  );
+}
+
+function GoogleContactsSection() {
+  const [connected, setConnected] = useState(false);
+  const [contacts, setContacts] = useState<GoogleContact[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ImportSummary | null>(null);
+
+  useEffect(() => {
+    api.googleContactsList().then(() => setConnected(true)).catch(() => {});
+  }, []);
+
+  const connect = async () => {
+    const id = prompt("Google Client ID:");
+    if (!id) return;
+    const secret = prompt("Google Client Secret:");
+    if (!secret) return;
+    setBusy(true);
+    try { await api.googleContactsOauthStart(id, secret); setConnected(true); } catch (e: any) { alert(e); }
+    setBusy(false);
+  };
+
+  const fetch = async () => {
+    setBusy(true);
+    try { setContacts(await api.googleContactsList()); } catch (e: any) { alert(e); }
+    setBusy(false);
+  };
+
+  const disconnect = () => {
+    setConnected(false);
+    setContacts([]);
+    setSelected(new Set());
+  };
+
+  const importContacts = async () => {
+    if (selected.size === 0) return;
+    setBusy(true);
+    const toImport = contacts.filter(c => selected.has(c.resource_name));
+    try { setResult(await api.googleContactsImport(toImport)); } catch (e: any) { alert(e); }
+    setBusy(false);
+  };
+
+  const toggleAll = () => {
+    if (selected.size === filtered.length) setSelected(new Set());
+    else setSelected(new Set(filtered.map(c => c.resource_name)));
+  };
+
+  const filtered = contacts.filter(c =>
+    !search || c.name?.toLowerCase().includes(search.toLowerCase()) ||
+    c.email?.toLowerCase().includes(search.toLowerCase()) ||
+    c.organization?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-3xl">
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-1">Google Contacts</h3>
+      <p className="text-[12px] text-gray-400 mb-5">
+        Import clients from your Google Contacts. Duplicates are skipped by email or name.
+      </p>
+
+      {!connected ? (
+        <button onClick={connect} disabled={busy}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+          {busy ? "Connecting..." : "Connect Google Account"}
+        </button>
+      ) : (
+        <>
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-[12px] text-emerald-600 font-medium">● Connected</span>
+            <button onClick={fetch} disabled={busy}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+              {busy ? "Loading..." : contacts.length > 0 ? "Refresh Contacts" : "Fetch Contacts"}
+            </button>
+            <button onClick={disconnect} className="text-[11px] text-gray-400 hover:text-red-500">Disconnect</button>
+          </div>
+
+          {contacts.length > 0 && (
+            <>
+              <div className="flex items-center gap-3 mb-3">
+                <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)}
+                  className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-[200px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40" />
+                <button onClick={toggleAll} className="text-[12px] text-indigo-600 hover:text-indigo-800">
+                  {selected.size === filtered.length ? "Deselect All" : "Select All"}
+                </button>
+                <div className="flex-1" />
+                <span className="text-[12px] text-gray-400">{selected.size} selected</span>
+              </div>
+
+              <div className="border border-gray-100 rounded-xl overflow-hidden mb-4 max-h-[400px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="w-10 px-3 py-2"><input type="checkbox" className="accent-indigo-600" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleAll} /></th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase">Name</th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase">Email</th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase">Company</th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase">Phone</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(c => (
+                      <tr key={c.resource_name} className="border-t border-gray-50 hover:bg-gray-50/50">
+                        <td className="px-3 py-2"><input type="checkbox" className="accent-indigo-600" checked={selected.has(c.resource_name)} onChange={() => {
+                          const ns = new Set(selected);
+                          if (ns.has(c.resource_name)) ns.delete(c.resource_name); else ns.add(c.resource_name);
+                          setSelected(ns);
+                        }} /></td>
+                        <td className="px-3 py-2 text-[13px] text-gray-900">{c.name || "—"}</td>
+                        <td className="px-3 py-2 text-[12px] text-gray-500">{c.email || "—"}</td>
+                        <td className="px-3 py-2 text-[12px] text-gray-500">{c.organization || "—"}</td>
+                        <td className="px-3 py-2 text-[12px] text-gray-500">{c.phone || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {selected.size > 0 && (
+                <button onClick={importContacts} disabled={busy}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+                  {busy ? "Importing..." : `Import ${selected.size} selected`}
+                </button>
+              )}
+            </>
+          )}
+
+          {result && (
+            <div className={`mt-4 px-4 py-3 rounded-xl text-[13px] ${result.errors.length > 0 ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700"}`}>
+              {result.imported} imported, {result.skipped} skipped (duplicates){result.errors.length > 0 && `, ${result.errors.length} errors`}
+              {result.errors.slice(0, 3).map((e, i) => <div key={i} className="text-[11px] mt-1 opacity-70">{e}</div>)}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1432,7 +1590,7 @@ function SheetsTab() {
     id: 1, sheet_url: null, name_col: "", first_name_col: "F", last_name_col: "G",
     email_col: "I", phone_col: "J", company_col: "E", category_col: "P",
     lead_status_col: "V", notes_col: "AA", skip_header_rows: 1,
-    last_synced_at: null, last_synced_count: 0,
+    last_synced_at: null, last_synced_count: 0, field_mapping_json: null,
   });
   const [saving,  setSaving]  = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -2021,6 +2179,116 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="mb-4">
       <label className="block text-[12px] font-medium text-gray-500 mb-1.5">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function CustomFieldsTab() {
+  const [fields, setFields] = useState<CustomField[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<CustomField | null>(null);
+  const [form, setForm] = useState({ field_key: "", label: "", field_type: "text", options_json: "" as string | null });
+
+  useEffect(() => { api.listCustomFields().then(setFields).catch(() => {}); }, []);
+
+  const openCreate = () => {
+    setEditing(null);
+    setForm({ field_key: "", label: "", field_type: "text", options_json: null });
+    setShowForm(true);
+  };
+  const openEdit = (f: CustomField) => {
+    setEditing(f);
+    setForm({ field_key: f.field_key, label: f.label, field_type: f.field_type, options_json: f.options_json });
+    setShowForm(true);
+  };
+  const save = async () => {
+    if (!form.label.trim() || !form.field_key.trim()) return;
+    await api.saveCustomField(editing?.id ?? null, form.field_key.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_"), form.label.trim(), form.field_type, form.options_json || null);
+    setShowForm(false);
+    api.listCustomFields().then(setFields);
+  };
+  const del = async (f: CustomField) => {
+    if (!confirm(`Delete "${f.label}"? Existing client data is preserved.`)) return;
+    await api.deleteCustomField(f.id);
+    api.listCustomFields().then(setFields);
+  };
+
+  return (
+    <div className="max-w-2xl">
+      <p className="text-[12px] text-gray-400 mb-4">
+        Add custom fields to store additional client data. These appear on the client profile and can be mapped from sheet columns.
+      </p>
+      <button onClick={openCreate} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium mb-4">
+        + Add Custom Field
+      </button>
+      {fields.length === 0 ? (
+        <p className="text-[13px] text-gray-400">No custom fields defined.</p>
+      ) : (
+        <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-2 text-[10px] font-semibold text-gray-400 uppercase">Label</th>
+                <th className="text-left px-4 py-2 text-[10px] font-semibold text-gray-400 uppercase">Key</th>
+                <th className="text-left px-4 py-2 text-[10px] font-semibold text-gray-400 uppercase">Type</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {fields.map(f => (
+                <tr key={f.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                  <td className="px-4 py-2.5 text-[13px] font-medium text-gray-900">{f.label}</td>
+                  <td className="px-4 py-2.5 text-[12px] text-gray-500 font-mono">{f.field_key}</td>
+                  <td className="px-4 py-2.5 text-[12px] text-gray-500 capitalize">{f.field_type}</td>
+                  <td className="px-4 py-2.5 text-right space-x-1">
+                    <button onClick={() => openEdit(f)} className="text-[11px] text-gray-400 hover:text-gray-600">Edit</button>
+                    <button onClick={() => del(f)} className="text-[11px] text-red-400 hover:text-red-600">Del</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25" onClick={() => setShowForm(false)}>
+          <div className="bg-white rounded-2xl shadow-xl w-[380px] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-[14px] font-semibold text-gray-900 mb-4">{editing ? "Edit Field" : "New Field"}</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[10px] font-medium text-gray-400 uppercase mb-1">Label</label>
+                <input className={inp} value={form.label} onChange={e => { const lbl = e.target.value; setForm({ ...form, label: lbl, field_key: lbl.toLowerCase().replace(/[^a-z0-9_]/g, "_") }); }} placeholder="e.g. Loyalty Tier" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-gray-400 uppercase mb-1">Key</label>
+                <input className={inp + " font-mono text-[12px]"} value={form.field_key} onChange={e => setForm({ ...form, field_key: e.target.value })} placeholder="loyalty_tier" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-gray-400 uppercase mb-1">Type</label>
+                <select className={inp} value={form.field_type} onChange={e => setForm({ ...form, field_type: e.target.value })}>
+                  <option value="text">Text</option>
+                  <option value="number">Number</option>
+                  <option value="date">Date</option>
+                  <option value="boolean">Boolean</option>
+                  <option value="dropdown">Dropdown</option>
+                </select>
+              </div>
+              {form.field_type === "dropdown" && (
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-400 uppercase mb-1">Options (comma-separated)</label>
+                  <input className={inp} value={form.options_json ?? ""} onChange={e => setForm({ ...form, options_json: e.target.value || null })} placeholder="Gold, Silver, Bronze" />
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50">Cancel</button>
+              <button onClick={save} disabled={!form.label.trim() || !form.field_key.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+                {editing ? "Save" : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

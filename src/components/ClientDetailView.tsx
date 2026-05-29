@@ -1,5 +1,5 @@
 import { useEffect, useState, Children } from "react";
-import { api, Client, Interaction, Invoice, BuyerTier, PortalLink } from "../lib/api";
+import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
   ArrowLeft,
@@ -17,6 +17,7 @@ import {
   User,
   Inbox,
   Clock,
+  Tag,
 } from "lucide-react";
 
 interface Props {
@@ -57,6 +58,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const [showNoteForm, setShowNoteForm] = useState(false);
+  const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
   const [tier, setTier] = useState<BuyerTier | null>(null);
   const [portalLink, setPortalLink] = useState<PortalLink | null>(null);
@@ -76,6 +78,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   };
 
   useEffect(() => { load(); }, [clientId]);
+  useEffect(() => { api.listCustomFields().then(setCustomFields).catch(() => {}); }, []);
 
   const handleSummarize = async () => {
     setSummarizing(true);
@@ -275,6 +278,14 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               </div>
             )}
           </MetadataCard>
+
+          {customFields.length > 0 && (
+            <MetadataCard title="Custom Fields" icon={<Tag size={14} />}>
+              {customFields.map(f => (
+                <MetaRow key={f.id} label={f.label} value={(client.metadata as any)?.[f.field_key] ?? ""} />
+              ))}
+            </MetadataCard>
+          )}
         </div>
       )}
 

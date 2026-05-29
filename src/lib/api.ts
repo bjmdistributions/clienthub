@@ -46,13 +46,14 @@ export interface ClientInput {
 
 export interface ClientFilter {
   category?: string;
-  lead_status?: string;
+  tiers?: string[];
   tag?: string;
   state?: string;
   stale_days?: number;
   missing?: string;
   needs_review?: boolean;
   search?: string;
+  sort_by?: string;
 }
 
 export interface MissingInfoReport {
@@ -87,6 +88,18 @@ export interface NewsletterSendResult {
   skipped: number;
   errors: NewsletterSendError[];
 }
+
+export interface GlobalSearchResults {
+  clients: SearchClient[];
+  invoices: SearchInvoice[];
+  deals: SearchDeal[];
+  suppliers: SearchSupplier[];
+}
+
+export interface SearchClient { id: string; name: string; company: string | null; email: string | null; }
+export interface SearchInvoice { id: string; number: string; client_name: string; }
+export interface SearchDeal { id: string; title: string; client_name: string; }
+export interface SearchSupplier { id: string; name: string; }
 
 export interface ScheduledSend {
   id: string;
@@ -139,6 +152,22 @@ export interface SheetSyncConfig {
   skip_header_rows: number;
   last_synced_at: string | null;
   last_synced_count: number;
+  field_mapping_json: string | null;
+}
+
+export interface CustomField {
+  id: string;
+  field_key: string;
+  label: string;
+  field_type: string;
+  options_json: string | null;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface SheetHeader {
+  column_letter: string;
+  header_text: string;
 }
 
 export interface SheetSyncResult {
@@ -770,6 +799,18 @@ export interface ColumnMapping {
   metadata_keys: string[];
 }
 
+export interface GoogleContact {
+  resource_name: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  organization: string | null;
+  street_address: string | null;
+  city: string | null;
+  state: string | null;
+  zip_code: string | null;
+}
+
 export interface ImportSummary {
   imported: number;
   skipped: number;
@@ -837,6 +878,7 @@ export const api = {
     invoke<void>("update_client", { id, input }),
   deleteClient: (id: string) => invoke<void>("delete_client", { id }),
   searchClients: (query: string) => invoke<Client[]>("search_clients", { query }),
+  globalSearch: (query: string) => invoke<GlobalSearchResults>("global_search", { query }),
   listStaleClients: (days: number) => invoke<Client[]>("list_stale_clients", { days }),
   listClientsFiltered: (filter: ClientFilter) => invoke<Client[]>("list_clients_filtered", { filter }),
   clientsMissingInfo: () => invoke<MissingInfoReport>("clients_missing_info"),
@@ -993,8 +1035,14 @@ export const api = {
   sendEmail: (to: string, subject: string, body: string, attachmentPath?: string) =>
     invoke<void>("send_email", { to, subject, body, attachmentPath }),
   scanInbox: () => invoke<ParsedEmail[]>("scan_inbox"),
-  oauthStartConsent: (clientId: string, clientSecret: string) =>
+   oauthStartConsent: (clientId: string, clientSecret: string) =>
     invoke<void>("oauth_start_consent", { clientId, clientSecret }),
+  googleContactsOauthStart: (clientId: string, clientSecret: string) =>
+    invoke<void>("google_contacts_oauth_start", { clientId, clientSecret }),
+  googleContactsList: () =>
+    invoke<GoogleContact[]>("google_contacts_list"),
+  googleContactsImport: (contacts: GoogleContact[]) =>
+    invoke<ImportSummary>("google_contacts_import", { contacts }),
 
   // Email Drafts
   listDrafts: (status?: string) => invoke<EmailDraft[]>("list_drafts", { status }),
@@ -1119,6 +1167,11 @@ export const api = {
   saveSheetSyncConfig: (config: SheetSyncConfig) => invoke<void>("save_sheet_sync_config", { config }),
   syncFromSheet: () => invoke<SheetSyncResult>("sync_from_sheet"),
   getSheetSyncLog: () => invoke<SheetSyncLogEntry[]>("get_sheet_sync_log"),
+  listCustomFields: () => invoke<CustomField[]>("list_custom_fields"),
+  saveCustomField: (id: string | null, fieldKey: string, label: string, fieldType: string, optionsJson: string | null) =>
+    invoke<CustomField>("save_custom_field", { id, fieldKey, label, fieldType, optionsJson }),
+  deleteCustomField: (id: string) => invoke<void>("delete_custom_field", { id }),
+  getSheetHeaders: (sheetUrl: string) => invoke<SheetHeader[]>("get_sheet_headers", { sheetUrl }),
 
   // Geocoding
   geocodeClient: (clientId: string) => invoke<{ lat: number; lng: number }>("geocode_client", { clientId }),

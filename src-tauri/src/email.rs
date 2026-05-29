@@ -425,6 +425,22 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
                 }
             }
 
+            if regex::Regex::new(r"(?i)\bunsubscribe\b").map_or(false, |re| re.is_match(&email.body_text)) {
+                let conn = pool().get()?;
+                let _ = conn.execute(
+                    "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), '$.newsletter_contact_frequency', 'never') WHERE id=?1",
+                    [&cid],
+                );
+                let iid = uuid::Uuid::new_v4().to_string();
+                let now = Utc::now().to_rfc3339();
+                conn.execute(
+                    "INSERT INTO interactions (id,client_id,kind,subject,body,created_at) VALUES (?1,?2,'unsubscribe','Unsubscribe request detected',?3,?4)",
+                    rusqlite::params![iid, &cid, &email.subject, now],
+                )?;
+                tracing::info!("client {} unsubscribed via email", &cid[..8]);
+                continue;
+            }
+
             let conn = pool().get()?;
             let interaction_id = uuid::Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();

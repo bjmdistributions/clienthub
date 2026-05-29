@@ -635,26 +635,52 @@ const MIGRATIONS: &[(u32, &str)] = &[
             FOREIGN KEY (client_id) REFERENCES clients(id)
         );
         CREATE INDEX IF NOT EXISTS idx_recurring_next ON recurring_invoices(next_due_date, is_active);
+        "#,
+    ),
+    (
+        31,
+        r#"
+        CREATE TABLE IF NOT EXISTS tier_history (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            from_tier TEXT,
+            to_tier TEXT NOT NULL,
+            changed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tier_history_client ON tier_history(client_id);
 
-        INSERT OR IGNORE INTO recurring_invoices (id, client_id, template_name, line_items_json, tax_rate,
-                                  notes, frequency, next_due_date, is_active, created_at, updated_at)
-        SELECT
-            LOWER(HEX(RANDOMBLOB(16))),
-            client_id,
-            'Migrated invoice ' || number,
-            line_items_json,
-            CASE WHEN total > 0 THEN ROUND(tax / total, 2) ELSE 0 END,
-            notes,
-            CASE recurring WHEN 'weekly' THEN 'weekly'
-                           WHEN 'monthly' THEN 'monthly'
-                           WHEN 'quarterly' THEN 'quarterly'
-                           ELSE 'monthly' END,
-            COALESCE(next_recurring_date, date('now')),
-            1,
-            created_at,
-            COALESCE(updated_at, created_at)
-        FROM invoices
-        WHERE recurring IS NOT NULL AND recurring != '' AND next_recurring_date IS NOT NULL AND next_recurring_date != '';
+        CREATE TABLE followup_rules_new (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            trigger_type TEXT NOT NULL CHECK(trigger_type IN (
+                'no_order','no_contact','overdue_invoice','stale_deal','tier_drop','birthday'
+            )),
+            trigger_value INTEGER NOT NULL DEFAULT 30,
+            action_type TEXT NOT NULL CHECK(action_type IN ('email','reminder','both')),
+            email_subject TEXT,
+            email_body TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO followup_rules_new SELECT * FROM followup_rules;
+        DROP TABLE followup_rules;
+        ALTER TABLE followup_rules_new RENAME TO followup_rules;
+        "#,
+    ),
+    (
+        32,
+        r#"
+        CREATE TABLE IF NOT EXISTS custom_fields (
+            id TEXT PRIMARY KEY,
+            field_key TEXT UNIQUE NOT NULL,
+            label TEXT NOT NULL,
+            field_type TEXT NOT NULL DEFAULT 'text'
+                CHECK(field_type IN ('text','number','date','boolean','dropdown')),
+            options_json TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        ALTER TABLE sheet_sync_config ADD COLUMN field_mapping_json TEXT NOT NULL DEFAULT '{}';
         "#,
     ),
 ];

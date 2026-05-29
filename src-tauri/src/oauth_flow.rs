@@ -22,6 +22,8 @@ pub async fn start_consent_flow(
     app_handle: tauri::AppHandle,
     client_id: String,
     client_secret: String,
+    scope: &str,
+    cred_prefix: &str,
 ) -> Result<()> {
     let port = find_open_port(7777, 7799)?;
     let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
@@ -38,7 +40,7 @@ pub async fn start_consent_flow(
 
     let (auth_url, _csrf) = client
         .authorize_url(|| oauth2::CsrfToken::new_random())
-        .add_scope(Scope::new("https://mail.google.com/".into()))
+        .add_scope(Scope::new(scope.into()))
         .add_extra_param("access_type", "offline")
         .add_extra_param("prompt", "consent")
         .url();
@@ -102,9 +104,9 @@ pub async fn start_consent_flow(
         .secret()
         .clone();
 
-    crate::email::save_cred("oauth_client_id", &client_id)?;
-    crate::email::save_cred("oauth_client_secret", &client_secret)?;
-    crate::email::save_cred("oauth_refresh_token", &refresh)?;
+    crate::email::save_cred(&format!("{}_client_id", cred_prefix), &client_id)?;
+    crate::email::save_cred(&format!("{}_client_secret", cred_prefix), &client_secret)?;
+    crate::email::save_cred(&format!("{}_refresh_token", cred_prefix), &refresh)?;
 
     Ok(())
 }

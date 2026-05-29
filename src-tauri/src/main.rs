@@ -6,6 +6,7 @@ mod csv_import;
 mod db;
 mod email;
 mod geocode;
+mod google_contacts;
 mod invoice;
 mod manifest;
 mod oauth_flow;
@@ -194,6 +195,7 @@ fn main() {
             export_inventory_csv,
             export_analytics_xlsx,
             search_clients,
+            global_search,
             list_stale_clients,
             due_followups,
             list_clients_filtered,
@@ -295,6 +297,9 @@ fn main() {
             send_email,
             scan_inbox,
             oauth_start_consent,
+            google_contacts_oauth_start,
+            google_contacts_list,
+            google_contacts_import,
             // AI
             ai_draft_reply,
             ai_extract_data,
@@ -408,6 +413,10 @@ fn main() {
             save_sheet_sync_config,
             sync_from_sheet,
             get_sheet_sync_log,
+            list_custom_fields,
+            save_custom_field,
+            delete_custom_field,
+            get_sheet_headers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

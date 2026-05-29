@@ -3,6 +3,7 @@ import { api, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, Layers } from "lucide-react";
 import TierBadge from "./TierBadge";
+import ClientDetailView from "./ClientDetailView";
 
 const SPEND_RANGES = [
   { label: "All",           min: 0,     max: Infinity },
@@ -21,6 +22,7 @@ export default function TiersView() {
   const [filter, setFilter]   = useState<string>("all");
   const [spendRange, setSpendRange] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -39,6 +41,8 @@ export default function TiersView() {
     });
 
   const tierCount = (t: string) => tiers.filter((x) => x.tier === t).length;
+
+  if (detailId) return <ClientDetailView clientId={detailId} onBack={() => setDetailId(null)} />;
 
   return (
     <div>
@@ -132,7 +136,8 @@ export default function TiersView() {
             {filtered.map((t, i) => (
               <tr
                 key={t.client_id}
-                className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60 transition-colors"
+                onClick={() => setDetailId(t.client_id)}
+                className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60 transition-colors cursor-pointer"
                 style={{ animationDelay: `${i * 20}ms` }}
               >
                 <td className="px-5 py-3 text-[13px] font-medium text-gray-900">{t.client_name}</td>

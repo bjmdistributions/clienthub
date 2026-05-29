@@ -15,6 +15,7 @@ import {
   Moon,
   Globe,
   Grid3X3,
+  Bot,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -33,12 +34,15 @@ import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
+import CommandPalette from "./components/CommandPalette";
+import ShortcutsModal from "./components/ShortcutsModal";
+import AutomationLogView from "./components/AutomationLogView";
 import OnboardingWizard from "./components/OnboardingWizard";
 import { useAppStore } from "./lib/store";
 import { api, User } from "./lib/api";
 import { canView } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "email" | "analytics" | "brief" | "globe" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "email" | "analytics" | "brief" | "automation" | "globe" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -67,6 +71,8 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [quickLogOpen, setQuickLogOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<any | null>(undefined);
 
@@ -115,12 +121,23 @@ export default function App() {
     };
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
+      const mod = e.metaKey || e.ctrlKey;
       if (e.key === "L" || e.key === "l") {
         if (tag === "input" || tag === "textarea" || tag === "select") return;
-        if (e.metaKey || e.ctrlKey) return;
+        if (mod) return;
         setQuickLogOpen((v) => !v);
       }
-      if (e.key === "Escape") setQuickLogOpen(false);
+      if (e.key === "Escape") { setQuickLogOpen(false); setPaletteOpen(false); setShortcutsOpen(false); }
+      if (e.key === "k" && mod) { e.preventDefault(); setPaletteOpen(v => !v); return; }
+      if (e.key === "," && mod && tag !== "input" && tag !== "textarea" && tag !== "select") { e.preventDefault(); setTab("settings"); return; }
+      if (e.key === "s" && mod) {
+        if (tag === "input" || tag === "textarea" || tag === "select") {
+          const form = (document.activeElement as HTMLElement)?.closest("form");
+          if (form) { e.preventDefault(); form.requestSubmit(); return; }
+        }
+        return;
+      }
+      if (e.key === "/" && !mod && tag !== "input" && tag !== "textarea" && tag !== "select") { e.preventDefault(); setShortcutsOpen(v => !v); return; }
       if (e.key === "n" || e.key === "N") {
         if (tag === "input" || tag === "textarea" || tag === "select") return;
         if (tab === "clients") window.dispatchEvent(new CustomEvent("clients-new-client"));
@@ -159,6 +176,7 @@ export default function App() {
     { id: "inventory", label: "Inventory",  icon: Grid3X3 },
     { id: "email",     label: "Newsletter", icon: Mail },
     { id: "brief",     label: "Brief",      icon: FileText },
+    { id: "automation", label: "Automation",  icon: Bot },
     { id: "globe",     label: "Globe",      icon: Globe },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];
@@ -315,6 +333,7 @@ export default function App() {
                 {tab === "deals"     && <CloseoutView />}
                 {tab === "analytics" && <AnalyticsView />}
                 {tab === "health"    && <TiersView />}
+                {tab === "automation" && <AutomationLogView />}
                 {tab === "brief"     && <BriefView />}
                 {tab === "email"     && <EmailView />}
                 {tab === "settings"  && <SettingsView />}
@@ -325,6 +344,8 @@ export default function App() {
       </main>
 
       {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+      {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
 }
