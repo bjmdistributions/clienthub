@@ -522,7 +522,19 @@ function NewsletterTab() {
   const defaultBody = "Hi {first_name},\n\nI hope you're doing well. I wanted to reach out and share some updates.\n\n[Your message here]\n\nBest regards,\n[Your name]";
 
   useEffect(() => {
-    api.listClients().then(setClients);
+    api.listClients().then((cs) => {
+      setClients(cs);
+      // Recipients pre-selected from the Clients view "Email" bulk action.
+      // Stashed in sessionStorage to avoid a mount-race with the navigate event.
+      const raw = sessionStorage.getItem("email_preselect_ids");
+      if (raw) {
+        sessionStorage.removeItem("email_preselect_ids");
+        try {
+          const ids = new Set<string>(JSON.parse(raw));
+          setSelected(cs.filter((c) => ids.has(c.id)));
+        } catch { /* ignore malformed stash */ }
+      }
+    });
     api.listCategories().then(setAllCategories);
     api.listNewsletters().then(setTemplates);
     api.listScheduledSends().then(setScheduledSends);

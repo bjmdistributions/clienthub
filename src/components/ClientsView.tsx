@@ -18,24 +18,6 @@ const relTime = (d: string | null | undefined): string => {
   return `${Math.floor(months / 12)}y ago`;
 };
 
-const LEAD_STATUSES = ["prospect", "hot_lead", "warm", "active_customer", "inactive"];
-
-const statusLabel = (s: string): string => {
-  const m: Record<string, string> = {
-    prospect: "Prospect", hot_lead: "Hot Lead", warm: "Warm",
-    active_customer: "Active", inactive: "Inactive",
-  };
-  return m[s] ?? s;
-};
-
-const statusColor = (s: string): string => {
-  if (s === "hot_lead")        return "bg-red-50 text-red-700 ring-1 ring-red-200/70";
-  if (s === "warm")            return "bg-orange-50 text-orange-700 ring-1 ring-orange-200/70";
-  if (s === "active_customer") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70";
-  if (s === "inactive")        return "bg-gray-100 text-gray-500 ring-1 ring-gray-200/70";
-  return "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/70";
-};
-
 const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
 
 export default function ClientsView() {
@@ -55,6 +37,8 @@ export default function ClientsView() {
   const [duplicates, setDuplicates]         = useState<DuplicateGroup[]>([]);
   const [summaryStats, setSummaryStats]     = useState({ total: 0, active: 0, hotLeads: 0, revenue: 0 });
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
+  const [showTiers, setShowTiers]           = useState(false);
+  const tierDropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   const loadMissingInfo = () => {
@@ -62,7 +46,7 @@ export default function ClientsView() {
   };
 
   const applyFilter = useCallback(async (f: ClientFilter) => {
-    const hasFilter = f.search || f.lead_status || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review;
+    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review;
     if (hasFilter) setClients(await api.listClientsFiltered(f));
     else setClients(await api.listClients());
   }, []);
@@ -107,6 +91,14 @@ export default function ClientsView() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [searchText]);
 
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (tierDropdownRef.current && !tierDropdownRef.current.contains(e.target as Node)) setShowTiers(false);
+    };
+    if (showTiers) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showTiers]);
+
   const updateFilter = (patch: Partial<ClientFilter>) => {
     const next = { ...filter, ...patch };
     Object.keys(patch).forEach((k) => {
@@ -118,10 +110,11 @@ export default function ClientsView() {
 
   const clearAll = () => { setFilter({}); setSearchText(""); applyFilter({}); };
 
-  const hasAnyFilter = filter.search || filter.lead_status || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review;
+  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review;
 
   const chips: { label: string; key: keyof ClientFilter }[] = [];
-  if (filter.lead_status) chips.push({ label: `Status: ${statusLabel(filter.lead_status)}`, key: "lead_status" });
+  const tierLabels: Record<string, string> = { S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect" };
+  if (filter.tiers && filter.tiers.length > 0) chips.push({ label: `Tiers: ${filter.tiers.map(t => tierLabels[t] || t).join(", ")}`, key: "tiers" });
   if (filter.category) chips.push({ label: `Category: ${filter.category === "__none__" ? "None" : filter.category}`, key: "category" });
   if (filter.tag) chips.push({ label: `Tag: ${filter.tag}`, key: "tag" });
   if (filter.state) chips.push({ label: `State: ${filter.state}`, key: "state" });
@@ -192,6 +185,15 @@ export default function ClientsView() {
     await api.bulkUpdateLeadStatus(Array.from(selectedIds), status);
     setSelectedIds(new Set());
     applyFilter(filter);
+  };
+
+  const handleBulkEmail = () => {
+    if (selectedIds.size === 0) return;
+    // Hand the selection to the Newsletter composer via sessionStorage, then
+    // switch tabs. EmailView reads the stash once its client list has loaded.
+    sessionStorage.setItem("email_preselect_ids", JSON.stringify(Array.from(selectedIds)));
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "email" }));
+    setSelectedIds(new Set());
   };
 
   const handleExportCsv = async () => {
@@ -386,14 +388,29 @@ export default function ClientsView() {
           <option value="__none__">No category</option>
           {allCategories.map((c) => <option key={c.id} value={c.label}>{c.label}</option>)}
         </select>
-        <select
-          value={filter.lead_status ?? ""}
-          onChange={(e) => updateFilter({ lead_status: e.target.value || undefined })}
-          className="border border-gray-200 h-10 px-3 rounded-lg text-[13px] text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 bg-white min-w-[130px] transition-colors"
-        >
-          <option value="">All Statuses</option>
-          {LEAD_STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
-        </select>
+        <div className="relative" ref={tierDropdownRef}>
+          <button onClick={() => setShowTiers(!showTiers)}
+            className={`border h-10 px-3 rounded-lg text-[13px] transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+              (filter.tiers?.length ?? 0) > 0 ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+            }`}>
+            {(filter.tiers?.length ?? 0) > 0 ? `${filter.tiers!.length} tier${filter.tiers!.length > 1 ? "s" : ""}` : "All Tiers"} <ChevronDown size={12} />
+          </button>
+          {showTiers && (
+            <div className="absolute top-full mt-1 left-0 bg-white border border-gray-200 rounded-lg shadow-lg z-20 p-1.5 min-w-[160px]">
+              {(["S","A","B","C","Prospect"] as const).map((t) => (
+                <label key={t} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 rounded text-[13px] text-gray-700 cursor-pointer">
+                  <input type="checkbox" className="accent-indigo-600" checked={(filter.tiers ?? []).includes(t)}
+                    onChange={() => {
+                      const cur = filter.tiers ?? [];
+                      const next = cur.includes(t) ? cur.filter(x => x !== t) : [...cur, t];
+                      updateFilter({ tiers: next.length > 0 ? next : undefined });
+                    }} />
+                  <TierBadge tier={t} size="sm" />
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
           className={`flex items-center gap-1.5 h-10 px-3 rounded-lg text-[13px] font-medium border transition-colors ${
@@ -402,6 +419,11 @@ export default function ClientsView() {
         >
           <SlidersHorizontal size={13} /> Filters
         </button>
+        <select value={filter.sort_by ?? ""} onChange={(e) => updateFilter({ sort_by: e.target.value || undefined })}
+          className="border border-gray-200 h-10 px-3 rounded-lg text-[13px] text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
+          <option value="">Sort: Name A-Z</option>
+          <option value="revenue_desc">Revenue Highest</option>
+        </select>
       </div>
 
       {/* Advanced Filters */}
@@ -493,6 +515,9 @@ export default function ClientsView() {
             <option value="active_customer">Active Customer</option>
             <option value="inactive">Inactive</option>
           </select>
+          <button onClick={handleBulkEmail} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50">
+            <Send size={12} /> Email
+          </button>
           <button onClick={handleExportCsv} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-gray-300 hover:bg-gray-50">
             <Download size={12} /> Export CSV
           </button>

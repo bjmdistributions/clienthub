@@ -269,9 +269,19 @@ pub async fn update_client_status(id: String, status: String) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn delete_client(id: String) -> Result<(), String> {
-    sync::record_delete("clients", &id).map_err(|e| e.to_string())?;
+    // Delete locally FIRST. The invoices FK (foreign_keys=ON, NO ACTION) blocks
+    // deleting a client that still has invoices; if we recorded the sync delete
+    // before this, a phantom delete event would broadcast to other devices even
+    // though the client was never actually removed here.
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM clients WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM clients WHERE id=?1", [&id]).map_err(|e| {
+        if e.to_string().contains("FOREIGN KEY") {
+            "Cannot delete: this client has invoices. Delete or reassign them first.".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
+    sync::record_delete("clients", &id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -279,11 +289,13 @@ pub async fn delete_client(id: String) -> Result<(), String> {
 pub async fn bulk_delete_clients(ids: Vec<String>) -> Result<u32, String> {
     let mut count: u32 = 0;
     for id in &ids {
-        if let Err(e) = sync::record_delete("clients", id) {
-            tracing::warn!("sync record_delete for {}: {}", id, e);
-        }
+        // Delete locally first; only broadcast the sync delete if it actually
+        // succeeded. A client with invoices is FK-blocked and skipped.
         let conn = pool().get().map_err(|e| e.to_string())?;
         if conn.execute("DELETE FROM clients WHERE id=?1", [id]).is_ok() {
+            if let Err(e) = sync::record_delete("clients", id) {
+                tracing::warn!("sync record_delete for {}: {}", id, e);
+            }
             count += 1;
         }
     }
@@ -591,6 +603,55 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub struct GlobalSearchResults {
+    pub clients: Vec<SearchClient>,
+    pub invoices: Vec<SearchInvoice>,
+    pub deals: Vec<SearchDeal>,
+    pub suppliers: Vec<SearchSupplier>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct SearchClient { pub id: String, pub name: String, pub company: Option<String>, pub email: Option<String> }
+#[derive(Serialize, Debug, Clone)]
+pub struct SearchInvoice { pub id: String, pub number: String, pub client_name: String }
+#[derive(Serialize, Debug, Clone)]
+pub struct SearchDeal { pub id: String, pub title: String, pub client_name: String }
+#[derive(Serialize, Debug, Clone)]
+pub struct SearchSupplier { pub id: String, pub name: String }
+
+#[tauri::command]
+pub async fn global_search(query: String) -> Result<GlobalSearchResults, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let pat = format!("%{}%", query.to_lowercase());
+
+    let mut stmt_c = conn.prepare(
+        "SELECT id, name, company, email FROM clients WHERE LOWER(name) LIKE ?1 OR LOWER(company) LIKE ?1 OR LOWER(email) LIKE ?1 ORDER BY name LIMIT 5"
+    ).map_err(|e| e.to_string())?;
+    let clients: Vec<SearchClient> = stmt_c.query_map([&pat], |r| Ok(SearchClient { id: r.get(0)?, name: r.get(1)?, company: r.get(2)?, email: r.get(3)? }))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut stmt_i = conn.prepare(
+        "SELECT i.id, i.number, COALESCE(c.name,'') FROM invoices i LEFT JOIN clients c ON c.id=i.client_id WHERE LOWER(i.number) LIKE ?1 OR LOWER(c.name) LIKE ?1 ORDER BY i.issue_date DESC LIMIT 5"
+    ).map_err(|e| e.to_string())?;
+    let invoices: Vec<SearchInvoice> = stmt_i.query_map([&pat], |r| Ok(SearchInvoice { id: r.get(0)?, number: r.get(1)?, client_name: r.get(2)? }))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut stmt_d = conn.prepare(
+        "SELECT d.id, d.title, COALESCE(c.name,'') FROM deals d LEFT JOIN clients c ON c.id=d.client_id WHERE LOWER(d.title) LIKE ?1 OR LOWER(c.name) LIKE ?1 ORDER BY d.updated_at DESC LIMIT 5"
+    ).map_err(|e| e.to_string())?;
+    let deals: Vec<SearchDeal> = stmt_d.query_map([&pat], |r| Ok(SearchDeal { id: r.get(0)?, title: r.get(1)?, client_name: r.get(2)? }))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut stmt_s = conn.prepare(
+        "SELECT id, name FROM suppliers WHERE LOWER(name) LIKE ?1 ORDER BY name LIMIT 5"
+    ).map_err(|e| e.to_string())?;
+    let suppliers: Vec<SearchSupplier> = stmt_s.query_map([&pat], |r| Ok(SearchSupplier { id: r.get(0)?, name: r.get(1)? }))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    Ok(GlobalSearchResults { clients, invoices, deals, suppliers })
+}
+
 #[tauri::command]
 pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -661,13 +722,14 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
 #[derive(Deserialize)]
 pub struct ClientFilter {
     pub category: Option<String>,
-    pub lead_status: Option<String>,
+    pub tiers: Option<Vec<String>>,
     pub tag: Option<String>,
     pub state: Option<String>,
     pub stale_days: Option<u32>,
     pub missing: Option<String>,
     pub needs_review: Option<bool>,
     pub search: Option<String>,
+    pub sort_by: Option<String>,
 }
 
 #[tauri::command]
@@ -693,11 +755,6 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
             p = param_idx
         ));
         params.push(Box::new(pat));
-        param_idx += 1;
-    }
-    if let Some(ref s) = filter.lead_status {
-        conds.push(format!("c.lead_status = ?{}", param_idx));
-        params.push(Box::new(s.clone()));
         param_idx += 1;
     }
     if let Some(ref s) = filter.category {
@@ -746,11 +803,14 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
         params.push(Box::new(cutoff));
     }
 
-    sql.push_str(" ORDER BY c.name");
+    match filter.sort_by.as_deref() {
+        Some("revenue_desc") => sql.push_str(" ORDER BY total_revenue DESC"),
+        _ => sql.push_str(" ORDER BY c.name"),
+    }
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let rows = stmt.query_map(param_refs.as_slice(), |r| {
+    let rows: Vec<Client> = stmt.query_map(param_refs.as_slice(), |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         Ok(Client {
@@ -763,8 +823,53 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
             category, tags, street_address, city, state, zip_code, next_follow_up_date,
             needs_review,
         })
-    }).map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    if let Some(ref tiers) = filter.tiers {
+        let tiers_map = build_client_tier_map(&conn)?;
+        Ok(rows.into_iter().filter(|c| {
+            tiers_map.get(&c.id).map_or(false, |t| tiers.contains(t))
+        }).collect())
+    } else {
+        Ok(rows)
+    }
+}
+
+fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut map = std::collections::HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT client_id, COALESCE(SUM(CASE WHEN status='paid' THEN total ELSE 0 END),0),
+                COUNT(CASE WHEN status IN ('sent','paid') THEN 1 END)
+         FROM invoices GROUP BY client_id"
+    ).map_err(|e| e.to_string())?;
+    let invoice_data: Vec<(String, f64, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,i64>(2)?)))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut client_stmt = conn.prepare("SELECT id, metadata FROM clients").map_err(|e| e.to_string())?;
+    let clients: Vec<(String, Option<String>)> = client_stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let invoice_map: std::collections::HashMap<String, (f64, i64)> = invoice_data.into_iter().map(|(id, p, s)| (id, (p, s))).collect();
+
+    for (client_id, meta_str) in &clients {
+        let (actual_paid, invoices_sent) = invoice_map.get(client_id).copied().unwrap_or((0.0, 0));
+        let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
+        let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
+        let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
+        let annual_spend: f64 = spend_raw.parse().unwrap_or(0.0);
+        let freq_mult = match frequency.unwrap_or("").to_lowercase().as_str() {
+            "weekly" => 52.0, "bi-weekly" => 26.0, "monthly" => 12.0,
+            "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
+        };
+        let effective_annual = freq_mult * annual_spend;
+        let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
+        else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
+        else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
+        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 { "C" }
+        else { "Prospect" };
+        map.insert(client_id.clone(), tier.to_string());
+    }
+    Ok(map)
 }
 
 #[derive(Serialize)]
@@ -3440,9 +3545,103 @@ pub async fn oauth_start_consent(
     client_id: String,
     client_secret: String,
 ) -> Result<(), String> {
-    crate::oauth_flow::start_consent_flow(app_handle, client_id, client_secret)
+    crate::oauth_flow::start_consent_flow(app_handle, client_id, client_secret, "https://mail.google.com/", "oauth")
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn google_contacts_oauth_start(
+    app_handle: tauri::AppHandle,
+    client_id: String,
+    client_secret: String,
+) -> Result<(), String> {
+    crate::oauth_flow::start_consent_flow(app_handle, client_id, client_secret, "https://www.googleapis.com/auth/contacts.readonly", "gcontacts")
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn google_contacts_list() -> Result<Vec<crate::google_contacts::GoogleContact>, String> {
+    let client_id = crate::email::cred("gcontacts_client_id").map_err(|e| format!("Not connected: {}", e))?;
+    let client_secret = crate::email::cred("gcontacts_client_secret").map_err(|e| format!("Not connected: {}", e))?;
+    let refresh_token = crate::email::cred("gcontacts_refresh_token").map_err(|e| format!("Not connected: {}", e))?;
+    let access_token = crate::google_contacts::refresh_access_token(&client_id, &client_secret, &refresh_token)
+        .await
+        .map_err(|e| format!("Token refresh: {}", e))?;
+    crate::google_contacts::list_contacts(&access_token)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn google_contacts_import(
+    contacts: Vec<crate::google_contacts::GoogleContact>,
+) -> Result<crate::csv_import::ImportSummary, String> {
+    use crate::csv_import::ImportSummary;
+    let mut summary = ImportSummary { imported: 0, skipped: 0, errors: Vec::new() };
+
+    let mut existing = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT LOWER(email), LOWER(name) FROM clients").map_err(|e| e.to_string())?;
+        let mut map = std::collections::HashMap::new();
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,Option<String>>(0)?, r.get::<_,Option<String>>(1)?))) {
+            for r in rows.filter_map(|r| r.ok()) {
+                if let Some(ref email) = r.0 { map.insert(email.to_lowercase(), true); }
+                if let Some(ref name) = r.1 { map.insert(name.to_lowercase(), true); }
+            }
+        }
+        map
+    };
+
+    for c in &contacts {
+        let email_lower = c.email.as_ref().map(|e| e.to_lowercase());
+        let name_lower = c.name.as_ref().map(|n| n.to_lowercase());
+
+        if email_lower.as_ref().map_or(false, |e| existing.contains_key(e)) ||
+           name_lower.as_ref().map_or(false, |n| existing.contains_key(n)) {
+            summary.skipped += 1;
+            continue;
+        }
+
+        let cid = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        let mut meta = serde_json::json!({});
+        if let Some(ref s) = c.street_address { meta["street_address"] = serde_json::Value::String(s.clone()); }
+        if let Some(ref s) = c.city { meta["city"] = serde_json::Value::String(s.clone()); }
+        if let Some(ref s) = c.state { meta["state"] = serde_json::Value::String(s.clone()); }
+        if let Some(ref s) = c.zip_code { meta["zip_code"] = serde_json::Value::String(s.clone()); }
+        let meta_str = serde_json::to_string(&meta).unwrap_or_default();
+
+        let mut cols = serde_json::Map::new();
+        cols.insert("name".into(), serde_json::Value::String(c.name.clone().unwrap_or_default()));
+        cols.insert("email".into(), serde_json::Value::String(c.email.clone().unwrap_or_default()));
+        cols.insert("phone".into(), serde_json::Value::String(c.phone.clone().unwrap_or_default()));
+        cols.insert("company".into(), serde_json::Value::String(c.organization.clone().unwrap_or_default()));
+        cols.insert("metadata".into(), serde_json::Value::String(meta_str.clone()));
+        cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+        cols.insert("updated_at".into(), serde_json::Value::String(now.clone()));
+        if let Err(e) = sync::record_upsert("clients", &cid, cols.clone()) {
+            summary.errors.push(format!("{}: sync failed: {}", c.name.as_deref().unwrap_or("unknown"), e));
+            continue;
+        }
+
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        if let Err(e) = conn.execute(
+            "INSERT INTO clients (id, name, email, phone, company, metadata, lead_status, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,'prospect',?7,?7)",
+            rusqlite::params![cid, c.name.as_deref().unwrap_or(""), c.email.as_deref().unwrap_or(""), c.phone.as_deref().unwrap_or(""), c.organization.as_deref().unwrap_or(""), meta_str, now],
+        ) {
+            summary.errors.push(format!("{}: insert failed: {}", c.name.as_deref().unwrap_or("unknown"), e));
+            continue;
+        }
+
+        if let Some(ref e) = c.email { existing.insert(e.to_lowercase(), true); }
+        if let Some(ref n) = c.name { existing.insert(n.to_lowercase(), true); }
+        summary.imported += 1;
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -4035,7 +4234,7 @@ pub async fn list_followup_rules() -> Result<Vec<FollowUpRule>, String> {
 
 #[tauri::command]
 pub async fn create_followup_rule(name: String, trigger_type: String, trigger_value: i64, action_type: String, email_subject: Option<String>, email_body: Option<String>) -> Result<FollowUpRule, String> {
-    let valid_triggers = ["no_order", "no_contact", "overdue_invoice", "stale_deal"];
+    let valid_triggers = ["no_order", "no_contact", "overdue_invoice", "stale_deal", "tier_drop", "birthday"];
     let valid_actions = ["email", "reminder", "both"];
     if !valid_triggers.contains(&trigger_type.as_str()) { return Err("Invalid trigger_type".into()); }
     if !valid_actions.contains(&action_type.as_str()) { return Err("Invalid action_type".into()); }
@@ -4110,6 +4309,8 @@ pub async fn process_followup_rules() -> Result<Vec<FollowUpLogEntry>, String> {
 
     let mut log_entries: Vec<FollowUpLogEntry> = Vec::new();
 
+    let tier_map = build_client_tier_map(&conn)?;
+
     for rule in &rules {
         let cutoff = (now - chrono::Duration::days(rule.trigger_value)).to_rfc3339();
 
@@ -4141,6 +4342,47 @@ pub async fn process_followup_rules() -> Result<Vec<FollowUpLogEntry>, String> {
                     .query_map([&cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_,Option<String>>(3).ok().flatten())))
                     .map_err(|e| e.to_string())?
                     .filter_map(|r| r.ok()).collect()
+            }
+            "tier_drop" => {
+                let tier_rank = |t: &str| -> i32 { match t { "Diamond"=>4,"Gold"=>3,"Silver"=>2,"Bronze"=>1,_=>0 } };
+                let mut results = Vec::new();
+                let mut stmt_c = conn.prepare("SELECT id, name, email, metadata FROM clients").map_err(|e| e.to_string())?;
+                let clients: Vec<(String, Option<String>, Option<String>, Option<String>)> = stmt_c.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,Option<String>>(3)?)))
+                    .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+                for (cid, cname, cemail, meta_str) in clients {
+                    let current_tier = tier_map.get(&cid).cloned().unwrap_or_else(|| "Prospect".into());
+                    let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
+                    let stored_tier = meta.as_ref().and_then(|m| m.get("buyer_tier")).and_then(|v| v.as_str());
+                    if let Some(stored) = stored_tier {
+                        let current_rank = tier_rank(&current_tier);
+                        let stored_rank = tier_rank(stored);
+                        if stored_rank > current_rank {
+                            results.push((cid.clone(), cname, cemail, Some(format!("{} → {}", stored, current_tier))));
+                            let hid = uuid::Uuid::new_v4().to_string();
+                            let _ = conn.execute(
+                                "INSERT INTO tier_history (id, client_id, from_tier, to_tier, changed_at) VALUES (?1,?2,?3,?4,?5)",
+                                rusqlite::params![hid, &cid, stored, &current_tier, &now_str],
+                            );
+                        }
+                    }
+                    if stored_tier.map_or(true, |s| s != current_tier) {
+                        let mut meta_update = meta.unwrap_or(json!({}));
+                        meta_update["buyer_tier"] = Value::String(current_tier);
+                        let updated_json = serde_json::to_string(&meta_update).unwrap_or_default();
+                        let _ = conn.execute("UPDATE clients SET metadata=?1 WHERE id=?2", rusqlite::params![updated_json, &cid]);
+                    }
+                }
+                results
+            }
+            "birthday" => {
+                let today_mmdd = now.format("%m-%d").to_string();
+                let like_pat = format!("%{}", today_mmdd);
+                let mut stmt_b = conn.prepare(
+                    "SELECT id, name, email FROM clients WHERE json_extract(metadata, '$.birthday') LIKE ?1"
+                ).map_err(|e| e.to_string())?;
+                let rows: Vec<_> = stmt_b.query_map([&like_pat], |r| Ok((r.get(0)?, r.get::<_,Option<String>>(1)?, r.get::<_,Option<String>>(2)?, Some(today_mmdd.clone()))))
+                    .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+                rows
             }
             _ => Vec::new(),
         };
@@ -6189,6 +6431,23 @@ pub async fn reorder_line_item_templates(ids: Vec<String>) -> Result<(), String>
 // ============================================================
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CustomField {
+    pub id: String,
+    pub field_key: String,
+    pub label: String,
+    pub field_type: String,
+    pub options_json: Option<String>,
+    pub sort_order: i64,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct SheetHeader {
+    pub column_letter: String,
+    pub header_text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SheetSyncConfig {
     pub id: i64,
     pub sheet_url: Option<String>,
@@ -6204,6 +6463,7 @@ pub struct SheetSyncConfig {
     pub skip_header_rows: i64,
     pub last_synced_at: Option<String>,
     pub last_synced_count: i64,
+    pub field_mapping_json: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -6239,7 +6499,7 @@ pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
         [],
     ).map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, last_synced_at, last_synced_count FROM sheet_sync_config WHERE id=1",
+        "SELECT id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, last_synced_at, last_synced_count, COALESCE(field_mapping_json,'{}') FROM sheet_sync_config WHERE id=1",
         [],
         |r| Ok(SheetSyncConfig {
             id: r.get(0)?, sheet_url: r.get(1)?, name_col: r.get(2)?,
@@ -6248,6 +6508,7 @@ pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
             category_col: r.get(8)?, lead_status_col: r.get(9)?,
             notes_col: r.get(10)?, skip_header_rows: r.get(11)?,
             last_synced_at: r.get(12)?, last_synced_count: r.get(13)?,
+            field_mapping_json: r.get(14)?,
         }),
     ).map_err(|e| e.to_string())
     .map(|mut c| {
@@ -6267,8 +6528,8 @@ pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
 pub async fn save_sheet_sync_config(config: SheetSyncConfig) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT OR REPLACE INTO sheet_sync_config (id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![config.sheet_url, config.name_col, config.first_name_col, config.last_name_col, config.email_col, config.phone_col, config.company_col, config.category_col, config.lead_status_col, config.notes_col, config.skip_header_rows],
+        "INSERT OR REPLACE INTO sheet_sync_config (id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, field_mapping_json) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        rusqlite::params![config.sheet_url, config.name_col, config.first_name_col, config.last_name_col, config.email_col, config.phone_col, config.company_col, config.category_col, config.lead_status_col, config.notes_col, config.skip_header_rows, config.field_mapping_json.unwrap_or_default()],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -6278,7 +6539,7 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
     let config = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row(
-            "SELECT sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows FROM sheet_sync_config WHERE id=1",
+            "SELECT sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, COALESCE(field_mapping_json,'{}') FROM sheet_sync_config WHERE id=1",
             [],
             |r| Ok((
                 r.get::<_, Option<String>>(0)?,
@@ -6287,10 +6548,11 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
                 r.get::<_, String>(5)?, r.get::<_, String>(6)?,
                 r.get::<_, String>(7)?, r.get::<_, String>(8)?,
                 r.get::<_, String>(9)?, r.get::<_, i64>(10)?,
+                r.get::<_, String>(11)?,
             )),
         ).map_err(|e| e.to_string())?
     };
-    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows) = config;
+    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, field_mapping) = config;
     let (mut first_name_col, mut last_name_col, mut email_col, mut phone_col, mut company_col, mut category_col, mut lead_status_col, mut notes_col) =
         (first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col);
     if first_name_col.is_empty() { first_name_col = "F".into(); }
@@ -6432,6 +6694,21 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
         if !other_cats.is_empty() { meta["other_categories"] = Value::String(other_cats.clone()); }
         if !purchase_freq.is_empty() { meta["purchase_frequency"] = Value::String(purchase_freq.clone()); }
         if !buy_spend.is_empty() { meta["estimated_annual_spend"] = Value::String(buy_spend.clone()); }
+
+        if let Ok(map) = serde_json::from_str::<serde_json::Value>(&field_mapping) {
+            if let Some(obj) = map.as_object() {
+                for (col_letter, field_name_val) in obj {
+                    if let Some(field_name) = field_name_val.as_str() {
+                        let idx = col_index(col_letter);
+                        let val = record.get(idx).unwrap_or("").trim().to_string();
+                        if !val.is_empty() {
+                            meta[field_name] = Value::String(val);
+                        }
+                    }
+                }
+            }
+        }
+
         let metadata_str = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
 
         let mut cols = Map::new();
@@ -6497,6 +6774,71 @@ pub async fn get_sheet_sync_log() -> Result<Vec<SheetSyncLogEntry>, String> {
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn list_custom_fields() -> Result<Vec<CustomField>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, field_key, label, field_type, options_json, sort_order, created_at FROM custom_fields ORDER BY sort_order, label")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(CustomField {
+        id: r.get(0)?, field_key: r.get(1)?, label: r.get(2)?,
+        field_type: r.get(3)?, options_json: r.get(4)?,
+        sort_order: r.get(5)?, created_at: r.get(6)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn save_custom_field(id: Option<String>, field_key: String, label: String, field_type: String, options_json: Option<String>) -> Result<CustomField, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    if let Some(existing_id) = id {
+        conn.execute(
+            "UPDATE custom_fields SET field_key=?1, label=?2, field_type=?3, options_json=?4 WHERE id=?5",
+            rusqlite::params![field_key, label, field_type, options_json, existing_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(CustomField { id: existing_id, field_key, label, field_type, options_json, sort_order: 0, created_at: now })
+    } else {
+        let new_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO custom_fields (id, field_key, label, field_type, options_json, sort_order, created_at) VALUES (?1,?2,?3,?4,?5,0,?6)",
+            rusqlite::params![new_id, field_key, label, field_type, options_json, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(CustomField { id: new_id, field_key, label, field_type, options_json, sort_order: 0, created_at: now })
+    }
+}
+
+#[tauri::command]
+pub async fn delete_custom_field(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM custom_fields WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_sheet_headers(sheet_url: String) -> Result<Vec<SheetHeader>, String> {
+    let csv_url = {
+        let base = sheet_url
+            .split('?').next().unwrap_or(&sheet_url)
+            .split('#').next().unwrap_or(&sheet_url)
+            .trim_end_matches('/');
+        if base.contains("/edit") {
+            base.replace("/edit", "/export?format=csv")
+        } else {
+            format!("{}/export?format=csv", base)
+        }
+    };
+    let resp = reqwest::get(&csv_url).await
+        .map_err(|e| format!("Failed to fetch sheet: {}", e))?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let mut reader = csv::ReaderBuilder::new().has_headers(false).from_reader(text.as_bytes());
+    let first = reader.records().next().ok_or("Sheet is empty")?.map_err(|e| e.to_string())?;
+    let headers: Vec<SheetHeader> = first.iter().enumerate().map(|(i, h)| {
+        let col = if i < 26 { format!("{}", (b'A' + i as u8) as char) } else { format!("{}{}", (b'A' + (i / 26 - 1) as u8) as char, (b'A' + (i % 26) as u8) as char) };
+        SheetHeader { column_letter: col, header_text: h.trim().to_string() }
+    }).collect();
+    Ok(headers)
 }
 
 pub fn spawn_periodic_sheet_sync(interval_secs: u64) {
