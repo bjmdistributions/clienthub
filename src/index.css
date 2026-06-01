@@ -390,6 +390,22 @@ html.dark .accent-active    { color: var(--accent-400); }
 html.dark .accent-active-ic { color: var(--accent-400); }
 
 /* ════════════════════════════════════════════════════════════
+   SPLIT-SCREEN PANES — container queries
+   Each split pane is a query container, so views can reflow to the
+   PANE's width instead of the viewport width (Tailwind's lg: etc.
+   are viewport-based and would otherwise stay in desktop layout
+   inside a narrow pane). Only applies inside .pane-container, so
+   full-screen layouts are untouched.
+   ════════════════════════════════════════════════════════════ */
+.pane-container { container-type: inline-size; }
+
+/* Newsletter composer: collapse its 3 columns when the pane is narrow. */
+@container (max-width: 760px) {
+  .nl-cols { flex-direction: column !important; }
+  .nl-cols .nl-pane { width: 100% !important; flex: 1 1 auto !important; }
+}
+
+/* ════════════════════════════════════════════════════════════
    DARK MODE — Tailwind utility overrides
    ════════════════════════════════════════════════════════════ */
 

@@ -669,6 +669,18 @@ function CompanyTab() {
             {!info.logo_path && <p className="text-[11px] text-gray-400">PNG or JPG · shown on invoices</p>}
           </div>
         </div>
+        {info.logo_path && (
+          <label className="mt-3 flex items-center gap-2 text-[12px] text-gray-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="accent-indigo-600"
+              checked={info.show_company_name !== false}
+              onChange={(e) => setInfo({ ...info, show_company_name: e.target.checked })}
+            />
+            Also show company name text on invoices
+            <span className="text-[11px] text-gray-400">(turn off if your logo already includes the name)</span>
+          </label>
+        )}
       </Field>
 
       <Field label="Company name">

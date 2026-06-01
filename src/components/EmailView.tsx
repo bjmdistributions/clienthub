@@ -756,9 +756,9 @@ function NewsletterTab() {
   const charCount = body.length;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4" style={{ minHeight: 500 }}>
+    <div className="nl-cols flex flex-col lg:flex-row gap-4" style={{ minHeight: 500 }}>
       {/* Panel A: Recipients */}
-      <div className="w-full lg:w-[300px] lg:flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
+      <div className="nl-pane w-full lg:w-[300px] lg:flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
           <span className="text-[14px] font-semibold text-gray-900">Clients</span>
           <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{clients.length}</span>
@@ -892,7 +892,7 @@ function NewsletterTab() {
       </div>
 
       {/* Panel B: Compose */}
-      <div className="w-full lg:flex-1 flex flex-col gap-3 min-w-0">
+      <div className="nl-pane w-full lg:flex-1 flex flex-col gap-3 min-w-0">
         <div className="bg-white border border-gray-200 rounded-lg flex flex-col flex-1">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
             <Mail size={14} className="text-indigo-500" />
@@ -1028,7 +1028,7 @@ function NewsletterTab() {
       </div>
 
       {/* Panel C: Preview & Send */}
-      <div className="w-full lg:w-[320px] lg:flex-shrink-0 flex flex-col gap-3">
+      <div className="nl-pane w-full lg:w-[320px] lg:flex-shrink-0 flex flex-col gap-3">
         <div className="bg-white border border-gray-200 rounded-lg flex-1 flex flex-col">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
             <Eye size={14} className="text-indigo-500" />

@@ -337,6 +337,9 @@ fn main() {
             update_lot,
             archive_lot,
             link_lot_to_deal,
+            set_lot_status,
+            import_lot_photos,
+            media_base_dir,
             // Follow-up rules
             list_followup_rules,
             create_followup_rule,

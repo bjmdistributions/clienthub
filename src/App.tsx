@@ -16,6 +16,8 @@ import {
   Globe,
   Grid3X3,
   Bot,
+  Columns2,
+  X,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -53,6 +55,48 @@ export default function App() {
     setTabState(t);
     setPageKey(k => k + 1);
     localStorage.setItem("clienthub_last_tab", t);
+  };
+
+  // Split-screen: optional second pane showing another tab alongside the main one.
+  const [splitTab, setSplitTabState] = useState<Tab | null>(
+    () => (localStorage.getItem("clienthub_split_tab") as Tab) || null
+  );
+  const setSplit = (t: Tab | null) => {
+    setSplitTabState(t);
+    if (t) localStorage.setItem("clienthub_split_tab", t);
+    else localStorage.removeItem("clienthub_split_tab");
+  };
+  const toggleSplit = () => setSplit(splitTab ? null : (tab === "inventory" ? "email" : "inventory"));
+
+  // Draggable split divider — left pane width as a fraction of the row.
+  const [splitRatio, setSplitRatio] = useState(() => {
+    const v = parseFloat(localStorage.getItem("clienthub_split_ratio") || "0.5");
+    return isNaN(v) ? 0.5 : Math.min(0.8, Math.max(0.2, v));
+  });
+  useEffect(() => { localStorage.setItem("clienthub_split_ratio", String(splitRatio)); }, [splitRatio]);
+  const splitRowRef = useRef<HTMLDivElement>(null);
+  const draggingSplit = useRef(false);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingSplit.current || !splitRowRef.current) return;
+      const rect = splitRowRef.current.getBoundingClientRect();
+      const r = (e.clientX - rect.left) / rect.width;
+      setSplitRatio(Math.min(0.8, Math.max(0.2, r)));
+    };
+    const onUp = () => {
+      if (!draggingSplit.current) return;
+      draggingSplit.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+  const startSplitDrag = () => {
+    draggingSplit.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
   };
 
   // Dark mode
@@ -204,6 +248,34 @@ export default function App() {
   ];
   const tabs = allTabs.filter((t) => canView(currentUser?.role as any, t.id));
 
+  // Background per tab (globe is full-bleed dark); shared by single + split panes.
+  const paneBg = (t: Tab) => (t === "globe" ? "#0a0a14" : "var(--t-bg)");
+
+  // Renders a tab's content without the outer scroll/background chrome, so it
+  // can be dropped into either the single main area or a split pane.
+  const paneContent = (t: Tab) => {
+    if (t === "dashboard") return <DashboardView onNavigate={setTab} />;
+    if (t === "globe") return <GlobeView />;
+    return (
+      <div className="p-7">
+        <div className="max-w-[1280px] mx-auto">
+          {t === "clients"    && <ClientsView />}
+          {t === "invoices"   && <InvoicesView />}
+          {t === "dealflow"   && <DealFlowView />}
+          {t === "suppliers"  && <SuppliersView />}
+          {t === "inventory"  && <InventoryView />}
+          {t === "deals"      && <CloseoutView />}
+          {t === "analytics"  && <AnalyticsView />}
+          {t === "health"     && <TiersView />}
+          {t === "automation" && <AutomationLogView />}
+          {t === "brief"      && <BriefView />}
+          {t === "email"      && <EmailView />}
+          {t === "settings"   && <SettingsView />}
+        </div>
+      </div>
+    );
+  };
+
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
   if (onboarded === null) return null;
 
@@ -259,6 +331,18 @@ export default function App() {
               ? <Sun size={13} strokeWidth={2} />
               : <Moon size={13} strokeWidth={2} />
             }
+          </button>
+
+          {/* Split-view toggle */}
+          <button
+            onClick={toggleSplit}
+            title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
+            className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+            style={{ color: splitTab ? "var(--accent-400)" : "#7A7A90" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (!splitTab) e.currentTarget.style.color = "var(--accent-400)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "#7A7A90"; }}
+          >
+            <Columns2 size={13} strokeWidth={2} />
           </button>
         </div>
 
@@ -337,32 +421,63 @@ export default function App() {
       </aside>
 
       {/* Main */}
-      <main className={`flex-1 ${tab === "globe" ? "overflow-hidden" : "overflow-auto"}`} style={{ background: tab === "globe" ? "#0a0a14" : "var(--t-bg)" }}>
-          <div key={pageKey} className="page-enter h-full">
-            {tab !== "globe" && <UpdateNotification />}
-            {tab === "dashboard" ? (
-            <DashboardView onNavigate={setTab} />
-          ) : tab === "globe" ? (
-            <GlobeView />
-          ) : (
-            <div className="p-7">
-              <div className="max-w-[1280px] mx-auto">
-                {tab === "clients"   && <ClientsView />}
-                {tab === "invoices"  && <InvoicesView />}
-                {tab === "dealflow"  && <DealFlowView />}
-                {tab === "suppliers" && <SuppliersView />}
-                {tab === "inventory" && <InventoryView />}
-                {tab === "deals"     && <CloseoutView />}
-                {tab === "analytics" && <AnalyticsView />}
-                {tab === "health"    && <TiersView />}
-                {tab === "automation" && <AutomationLogView />}
-                {tab === "brief"     && <BriefView />}
-                {tab === "email"     && <EmailView />}
-                {tab === "settings"  && <SettingsView />}
-              </div>
+      <main className="flex-1 overflow-hidden">
+        {splitTab ? (
+          <div ref={splitRowRef} className="flex h-full">
+            {/* Left pane — driven by the sidebar nav */}
+            <section className="min-w-0 overflow-auto pane-container" style={{ width: `${splitRatio * 100}%`, background: paneBg(tab) }}>
+              {tab !== "globe" && <UpdateNotification />}
+              <div key={`l-${pageKey}`} className="page-enter h-full">{paneContent(tab)}</div>
+            </section>
+
+            {/* Draggable divider */}
+            <div
+              onMouseDown={startSplitDrag}
+              className="w-1.5 flex-shrink-0 cursor-col-resize relative group"
+              style={{ background: "var(--t-b1)" }}
+              title="Drag to resize"
+            >
+              <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-[var(--accent-glow)] transition-colors" />
             </div>
-          )}
-        </div>
+
+            {/* Right pane — independent tab picker */}
+            <section className="flex-1 min-w-0 overflow-auto relative pane-container" style={{ background: paneBg(splitTab) }}>
+              <div className="sticky top-0 z-20 flex items-center gap-2 px-3 h-10 flex-shrink-0"
+                style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)" }}>
+                <Columns2 size={12} style={{ color: "var(--t-tx4)" }} />
+                <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Split</span>
+                <select
+                  value={splitTab}
+                  onChange={(e) => setSplit(e.target.value as Tab)}
+                  className="text-[12px] rounded-md px-2 h-7"
+                  style={{ background: "var(--t-input-bg)", color: "var(--t-tx1)", border: "1px solid var(--t-b1)" }}
+                >
+                  {tabs.filter((t) => t.id !== "globe").map((t) => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setSplit(null)}
+                  className="ml-auto w-7 h-7 flex items-center justify-center rounded-md transition-colors"
+                  style={{ color: "var(--t-tx3)" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--t-s3)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                  title="Close split view"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div key={`r-${splitTab}`} className="page-enter">{paneContent(splitTab)}</div>
+            </section>
+          </div>
+        ) : (
+          <div className={tab === "globe" ? "h-full overflow-hidden" : "h-full overflow-auto"} style={{ background: paneBg(tab) }}>
+            <div key={pageKey} className="page-enter h-full">
+              {tab !== "globe" && <UpdateNotification />}
+              {paneContent(tab)}
+            </div>
+          </div>
+        )}
       </main>
 
       {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}

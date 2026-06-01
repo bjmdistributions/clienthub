@@ -359,7 +359,7 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
 
 // ---------- Apply remote events ----------
 
-const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "scheduled_sends", "users", "payments"];
+const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "scheduled_sends", "users", "payments", "inventory"];
 
 fn apply_event(event: &SyncEvent) -> Result<()> {
     if already_applied(&event.id)? {

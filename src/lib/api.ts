@@ -664,6 +664,7 @@ export interface CompanyInfo {
   phone?: string | null;
   tax_id?: string | null;
   logo_path?: string | null;
+  show_company_name?: boolean | null;
 }
 
 export interface DashboardStats {
@@ -718,6 +719,11 @@ export interface Lot {
   photos_json: string;
   created_at: string;
   updated_at: string;
+  notes: string | null;
+  sent_whatsapp: boolean;
+  sent_email: boolean;
+  supplier: string | null;
+  location: string | null;
 }
 
 export interface FollowUpRule {
@@ -1191,9 +1197,12 @@ export const api = {
 
   // Inventory
   listInventory: (status?: string) => invoke<Lot[]>("list_inventory", { status: status ?? null }),
-  createLot: (lot: { name: string; quantity: number; total_cost: number; asking_price: number; description?: string; category?: string; photos?: string[] }) =>
+  createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string }) =>
     invoke<Lot>("create_lot", { ...lot }),
   updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
+  setLotStatus: (id: string, status: string) => invoke<void>("set_lot_status", { id, status }),
+  importLotPhotos: (paths: string[]) => invoke<string[]>("import_lot_photos", { paths }),
+  mediaBaseDir: () => invoke<string>("media_base_dir"),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 

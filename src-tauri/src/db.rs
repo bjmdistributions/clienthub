@@ -683,4 +683,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE sheet_sync_config ADD COLUMN field_mapping_json TEXT NOT NULL DEFAULT '{}';
         "#,
     ),
+    (
+        33,
+        r#"
+        ALTER TABLE inventory ADD COLUMN notes TEXT;
+        ALTER TABLE inventory ADD COLUMN sent_whatsapp INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE inventory ADD COLUMN sent_email INTEGER NOT NULL DEFAULT 0;
+        "#,
+    ),
+    (
+        34,
+        r#"
+        ALTER TABLE inventory ADD COLUMN supplier TEXT;
+        ALTER TABLE inventory ADD COLUMN location TEXT;
+        "#,
+    ),
 ];

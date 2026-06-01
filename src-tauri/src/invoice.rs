@@ -40,6 +40,10 @@ pub struct CompanyInfo {
     pub phone: Option<String>,
     pub tax_id: Option<String>,
     pub logo_path: Option<String>,
+    /// When a logo is present, whether to also print the company name as
+    /// text. Defaults to true. Missing in older saved settings → None → true.
+    #[serde(default)]
+    pub show_company_name: Option<bool>,
 }
 
 pub struct ClientAddress {
@@ -64,6 +68,7 @@ pub fn load_company() -> Result<CompanyInfo> {
             phone: None,
             tax_id: None,
             logo_path: None,
+            show_company_name: Some(true),
         }),
     }
 }
@@ -252,11 +257,17 @@ pub fn build_pdf_bytes(
             layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(text_y_top - 15.0), &font_regular);
         }
     } else {
-        layer.use_text(&company.name, 11.0, Mm(MARGIN_L), Mm(text_y_top), &font_bold);
-        layer.use_text(&company.address, 9.0, Mm(MARGIN_L), Mm(text_y_top - 4.0), &font_regular);
-        layer.use_text(&company.email, 9.0, Mm(MARGIN_L), Mm(text_y_top - 8.0), &font_regular);
+        // Logo present. Optionally print the company name as text too — some
+        // logos already contain the name, so showing it twice looks off.
+        let mut y = text_y_top;
+        if company.show_company_name.unwrap_or(true) {
+            layer.use_text(&company.name, 11.0, Mm(MARGIN_L), Mm(y), &font_bold);
+            y -= 4.0;
+        }
+        layer.use_text(&company.address, 9.0, Mm(MARGIN_L), Mm(y), &font_regular);
+        layer.use_text(&company.email, 9.0, Mm(MARGIN_L), Mm(y - 4.0), &font_regular);
         if let Some(phone) = &company.phone {
-            layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(text_y_top - 12.0), &font_regular);
+            layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(y - 8.0), &font_regular);
         }
     }
 

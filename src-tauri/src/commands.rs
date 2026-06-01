@@ -4132,6 +4132,11 @@ pub struct InventoryLot {
     pub photos_json: String,
     pub created_at: String,
     pub updated_at: String,
+    pub notes: Option<String>,
+    pub sent_whatsapp: bool,
+    pub sent_email: bool,
+    pub supplier: Option<String>,
+    pub location: Option<String>,
 }
 
 #[tauri::command]
@@ -4148,40 +4153,71 @@ pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>,
         quantity: r.get(4)?, total_cost: r.get(5)?, asking_price: r.get(6)?,
         status: r.get(7)?, linked_deal_id: r.get(8)?, photos_json: r.get(9)?,
         created_at: r.get(10)?, updated_at: r.get(11)?,
+        notes: r.get(12)?, sent_whatsapp: r.get::<_, i64>(13)? != 0, sent_email: r.get::<_, i64>(14)? != 0,
+        supplier: r.get(15)?, location: r.get(16)?,
     })).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
-pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>) -> Result<InventoryLot, String> {
+pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>, notes: Option<String>, supplier: Option<String>, location: Option<String>) -> Result<InventoryLot, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let photos_json = serde_json::to_string(&photos.unwrap_or_default()).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9)",
-        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now],
+        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9,?10,0,0,?11,?12)",
+        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now, notes, supplier, location],
     ).map_err(|e| e.to_string())?;
-    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now })
+
+    // Sync the full row so other devices can reconstruct it.
+    let mut cols = serde_json::Map::new();
+    cols.insert("name".into(), serde_json::json!(name));
+    cols.insert("description".into(), serde_json::json!(description));
+    cols.insert("category".into(), serde_json::json!(category));
+    cols.insert("quantity".into(), serde_json::json!(quantity));
+    cols.insert("total_cost".into(), serde_json::json!(total_cost));
+    cols.insert("asking_price".into(), serde_json::json!(asking_price));
+    cols.insert("status".into(), serde_json::json!("available"));
+    cols.insert("photos_json".into(), serde_json::json!(photos_json));
+    cols.insert("created_at".into(), serde_json::json!(now));
+    cols.insert("updated_at".into(), serde_json::json!(now));
+    cols.insert("notes".into(), serde_json::json!(notes));
+    cols.insert("sent_whatsapp".into(), serde_json::json!(0));
+    cols.insert("sent_email".into(), serde_json::json!(0));
+    cols.insert("supplier".into(), serde_json::json!(supplier));
+    cols.insert("location".into(), serde_json::json!(location));
+    crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
+
+    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, supplier, location })
 }
 
 #[tauri::command]
-pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>) -> Result<(), String> {
+pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, supplier: Option<String>, location: Option<String>) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut sets = vec!["updated_at = ?1".to_string()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now.clone())];
-    if let Some(v) = name { sets.push("name = ?".to_string()); params.push(Box::new(v)); }
-    if let Some(v) = description { sets.push("description = ?".to_string()); params.push(Box::new(v)); }
-    if let Some(v) = category { sets.push("category = ?".to_string()); params.push(Box::new(v)); }
-    if let Some(v) = quantity { sets.push("quantity = ?".to_string()); params.push(Box::new(v)); }
-    if let Some(v) = total_cost { sets.push("total_cost = ?".to_string()); params.push(Box::new(v)); }
-    if let Some(v) = asking_price { sets.push("asking_price = ?".to_string()); params.push(Box::new(v)); }
-    if let Some(v) = photos { sets.push("photos_json = ?".to_string()); params.push(Box::new(serde_json::to_string(&v).map_err(|e| e.to_string())?)); }
+    // Sync columns mirror the SET clause so changes propagate per-column.
+    let mut cols = serde_json::Map::new();
+    cols.insert("updated_at".into(), serde_json::json!(now));
+    if let Some(v) = name { sets.push("name = ?".to_string()); cols.insert("name".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = description { sets.push("description = ?".to_string()); cols.insert("description".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = category { sets.push("category = ?".to_string()); cols.insert("category".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = quantity { sets.push("quantity = ?".to_string()); cols.insert("quantity".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = total_cost { sets.push("total_cost = ?".to_string()); cols.insert("total_cost".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = asking_price { sets.push("asking_price = ?".to_string()); cols.insert("asking_price".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = photos { let pj = serde_json::to_string(&v).map_err(|e| e.to_string())?; sets.push("photos_json = ?".to_string()); cols.insert("photos_json".into(), serde_json::json!(pj)); params.push(Box::new(pj)); }
+    if let Some(v) = notes { sets.push("notes = ?".to_string()); cols.insert("notes".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = sent_whatsapp { sets.push("sent_whatsapp = ?".to_string()); cols.insert("sent_whatsapp".into(), serde_json::json!(v as i64)); params.push(Box::new(v as i64)); }
+    if let Some(v) = sent_email { sets.push("sent_email = ?".to_string()); cols.insert("sent_email".into(), serde_json::json!(v as i64)); params.push(Box::new(v as i64)); }
+    if let Some(v) = supplier { sets.push("supplier = ?".to_string()); cols.insert("supplier".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = location { sets.push("location = ?".to_string()); cols.insert("location".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     let sql = format!("UPDATE inventory SET {} WHERE id = ?", sets.join(", "));
-    params.push(Box::new(id));
+    params.push(Box::new(id.clone()));
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     conn.execute(&sql, refs.as_slice()).map_err(|e| e.to_string())?;
+    crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4190,7 +4226,12 @@ pub async fn archive_lot(id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let status: String = conn.query_row("SELECT status FROM inventory WHERE id = ?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if status == "reserved" { return Err("Cannot archive a reserved lot. Remove the deal link first.".into()); }
-    conn.execute("UPDATE inventory SET status = 'archived', updated_at = ?1 WHERE id = ?2", rusqlite::params![chrono::Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("UPDATE inventory SET status = 'archived', updated_at = ?1 WHERE id = ?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+    let mut cols = serde_json::Map::new();
+    cols.insert("status".into(), serde_json::json!("archived"));
+    cols.insert("updated_at".into(), serde_json::json!(now));
+    crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4199,7 +4240,73 @@ pub async fn link_lot_to_deal(lot_id: String, deal_id: String) -> Result<(), Str
     let conn = pool().get().map_err(|e| e.to_string())?;
     let exists: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE id = ?1", [&deal_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if exists == 0 { return Err("Deal not found".into()); }
-    conn.execute("UPDATE inventory SET linked_deal_id = ?1, status = 'reserved', updated_at = ?2 WHERE id = ?3", rusqlite::params![deal_id, chrono::Utc::now().to_rfc3339(), lot_id]).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("UPDATE inventory SET linked_deal_id = ?1, status = 'reserved', updated_at = ?2 WHERE id = ?3", rusqlite::params![deal_id, now, lot_id]).map_err(|e| e.to_string())?;
+    let mut cols = serde_json::Map::new();
+    cols.insert("linked_deal_id".into(), serde_json::json!(deal_id));
+    cols.insert("status".into(), serde_json::json!("reserved"));
+    cols.insert("updated_at".into(), serde_json::json!(now));
+    crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Directory where synced inventory photos live: <app_data>/sync/media.
+/// It sits inside the Syncthing-shared `sync` folder so the image files
+/// replicate to every device alongside the event log.
+fn media_dir() -> Result<std::path::PathBuf, String> {
+    let dir = crate::db::app_data_dir().join("sync").join("media");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Copy picked image files into the synced media folder and return their
+/// device-independent relative paths (e.g. "media/<uuid>.jpg"). Stored in
+/// photos_json so they resolve on any device. Already-relative inputs pass
+/// through unchanged (idempotent on re-save).
+#[tauri::command]
+pub async fn import_lot_photos(paths: Vec<String>) -> Result<Vec<String>, String> {
+    let dir = media_dir()?;
+    let mut out = Vec::new();
+    for p in paths {
+        if p.starts_with("media/") || p.starts_with("media\\") {
+            out.push(p.replace('\\', "/"));
+            continue;
+        }
+        let src = std::path::Path::new(&p);
+        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("img").to_lowercase();
+        let fname = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+        let dest = dir.join(&fname);
+        std::fs::copy(src, &dest).map_err(|e| format!("Couldn't copy photo: {}", e))?;
+        out.push(format!("media/{}", fname));
+    }
+    Ok(out)
+}
+
+/// Absolute path of the synced folder that relative photo paths resolve
+/// against on THIS device (frontend joins "<base>/media/<file>").
+#[tauri::command]
+pub fn media_base_dir() -> Result<String, String> {
+    Ok(crate::db::app_data_dir().join("sync").to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
+    if !["available", "reserved", "sold", "archived"].contains(&status.as_str()) {
+        return Err("Invalid status".into());
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    // Returning to "available" also clears any deal link.
+    let mut cols = serde_json::Map::new();
+    cols.insert("status".into(), serde_json::json!(status));
+    cols.insert("updated_at".into(), serde_json::json!(now));
+    if status == "available" {
+        conn.execute("UPDATE inventory SET status = ?1, linked_deal_id = NULL, updated_at = ?2 WHERE id = ?3", rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+        cols.insert("linked_deal_id".into(), serde_json::Value::Null);
+    } else {
+        conn.execute("UPDATE inventory SET status = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+    }
+    crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
     Ok(())
 }
 
