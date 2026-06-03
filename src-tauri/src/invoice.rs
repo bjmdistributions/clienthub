@@ -186,9 +186,15 @@ pub fn build_pdf_bytes(
     company: &CompanyInfo,
     notes: &str,
     status: &str,
+    kind: &str,
 ) -> Result<Vec<u8>> {
+    // "quote" reuses the exact invoice layout (incl. logo placement) but
+    // swaps the title, the due→valid-until label, drops payment options for
+    // a validity note, and omits paid/overdue watermarks.
+    let is_quote = kind == "quote";
+    let title = if is_quote { "QUOTE" } else { "INVOICE" };
     let (doc, page1, layer1) = PdfDocument::new(
-        format!("Invoice {}", number),
+        format!("{} {}", if is_quote { "Quote" } else { "Invoice" }, number),
         Mm(PAGE_W),
         Mm(PAGE_H),
         "Layer 1",
@@ -271,7 +277,7 @@ pub fn build_pdf_bytes(
         }
     }
 
-    layer.use_text("INVOICE", 28.0, Mm(150.0), Mm(263.0), &font_bold);
+    layer.use_text(title, 28.0, Mm(150.0), Mm(263.0), &font_bold);
     layer.use_text(format!("# {}", number), 11.0, Mm(150.0), Mm(255.0), &font_regular);
 
     let div = Line {
@@ -306,7 +312,7 @@ pub fn build_pdf_bytes(
     // Dates
     layer.use_text("ISSUE DATE", 9.0, Mm(140.0), Mm(bill_top), &font_bold);
     layer.use_text(short_date(issue), 10.0, Mm(140.0), Mm(bill_top - 6.0), &font_regular);
-    layer.use_text("DUE DATE", 9.0, Mm(170.0), Mm(bill_top), &font_bold);
+    layer.use_text(if is_quote { "VALID UNTIL" } else { "DUE DATE" }, 9.0, Mm(170.0), Mm(bill_top), &font_bold);
     layer.use_text(short_date(due), 10.0, Mm(170.0), Mm(bill_top - 6.0), &font_regular);
 
     // Table header
@@ -326,7 +332,7 @@ pub fn build_pdf_bytes(
         let cont_layer = doc.get_page(*pi).get_layer(*li);
 
         // Mini header
-        cont_layer.use_text("INVOICE", 14.0, Mm(MARGIN_L), Mm(PAGE_H - 20.0), &font_bold);
+        cont_layer.use_text(title, 14.0, Mm(MARGIN_L), Mm(PAGE_H - 20.0), &font_bold);
         cont_layer.use_text(format!("# {}", number), 9.0, Mm(MARGIN_L), Mm(PAGE_H - 30.0), &font_regular);
         let cont_div = Line {
             points: vec![
@@ -388,25 +394,35 @@ pub fn build_pdf_bytes(
     last_layer.use_text("TOTAL", 12.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_bold);
     text_right(&last_layer, &fmt_dollar(total), 12.0, TOTALS_VAL_X, last_row_y, &font_bold, true);
 
-    // Payment options
-    let pm = load_active_payment_methods()?;
     let mut next_y = last_row_y - 10.0;
-    if !pm.is_empty() {
-        let mut pay_y = next_y;
-        last_layer.use_text("Payment Options", 10.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
-        pay_y -= 6.0;
-        for (kind, details) in &pm {
-            if pay_y < 30.0 { break; }
-            last_layer.use_text(format!("{}:", kind), 9.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
-            pay_y -= 4.5;
-            for ln in details.lines() {
-                if pay_y < 25.0 { break; }
-                last_layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(pay_y), &font_regular);
-                pay_y -= 3.5;
+    if is_quote {
+        // Quotes show a validity/terms note instead of payment options.
+        last_layer.use_text("This is a quotation, not an invoice.", 9.0, Mm(MARGIN_L), Mm(next_y), &font_bold);
+        next_y -= 5.0;
+        last_layer.use_text(
+            format!("Valid until {}. Prices and availability are subject to change.", short_date(due)),
+            8.0, Mm(MARGIN_L), Mm(next_y), &font_regular,
+        );
+        next_y -= 8.0;
+    } else {
+        let pm = load_active_payment_methods()?;
+        if !pm.is_empty() {
+            let mut pay_y = next_y;
+            last_layer.use_text("Payment Options", 10.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
+            pay_y -= 6.0;
+            for (pkind, details) in &pm {
+                if pay_y < 30.0 { break; }
+                last_layer.use_text(format!("{}:", pkind), 9.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
+                pay_y -= 4.5;
+                for ln in details.lines() {
+                    if pay_y < 25.0 { break; }
+                    last_layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(pay_y), &font_regular);
+                    pay_y -= 3.5;
+                }
+                pay_y -= 2.0;
             }
-            pay_y -= 2.0;
+            next_y = pay_y - 8.0;
         }
-        next_y = pay_y - 8.0;
     }
 
     if !notes.is_empty() {
@@ -435,9 +451,10 @@ pub fn build_pdf_bytes(
         }
     }
 
-    // ----- Watermark -----
-    let is_paid = status == "paid";
-    let is_overdue = !is_paid
+    // ----- Watermark (invoices only) -----
+    let is_paid = !is_quote && status == "paid";
+    let is_overdue = !is_quote
+        && !is_paid
         && status != "draft"
         && status != "void"
         && !due.is_empty()
@@ -631,7 +648,7 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
 
     let pdf_bytes = build_pdf_bytes(
         &number, &issue, &due, &items, subtotal, tax, total,
-        &cname, &cemail, &ccompany, &client_address, &company, &notes, &status,
+        &cname, &cemail, &ccompany, &client_address, &company, &notes, &status, "invoice",
     )?;
 
     let dir = pdf_output_dir();
@@ -692,6 +709,87 @@ pub async fn send_invoice(invoice_id: &str) -> Result<()> {
         "UPDATE invoices SET status='sent', sent_at=?1 WHERE id=?2",
         rusqlite::params![now, invoice_id],
     )?;
+    Ok(())
+}
+
+// ---------- Quotes ----------
+
+fn quote_output_dir() -> std::path::PathBuf {
+    crate::db::app_data_dir().join("quotes")
+}
+
+pub async fn generate_quote_pdf(quote_id: &str) -> Result<String> {
+    let conn0 = pool().get()?;
+    let q: (String, String, String, String, String, f64, f64, f64, String, String) = conn0.query_row(
+        "SELECT number,client_id,issue_date,valid_until,line_items_json,subtotal,tax,total,notes,status
+         FROM quotes WHERE id=?1",
+        [quote_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
+    )?;
+    let cli: (String, Option<String>, Option<String>, Option<String>) = conn0.query_row(
+        "SELECT name,email,company,metadata FROM clients WHERE id=?1",
+        [&q.1],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    drop(conn0);
+
+    let items: Vec<LineItem> = serde_json::from_str(&q.4)?;
+    let client_address = parse_client_address(&cli.3);
+    let company = load_company()?;
+
+    let pdf_bytes = build_pdf_bytes(
+        &q.0, &q.2, &q.3, &items, q.5, q.6, q.7,
+        &cli.0, &cli.1, &cli.2, &client_address, &company, &q.8, &q.9, "quote",
+    )?;
+
+    let dir = quote_output_dir();
+    std::fs::create_dir_all(&dir)?;
+    let pdf_path = dir.join(format!("{}.pdf", q.0));
+    std::fs::write(&pdf_path, pdf_bytes)?;
+
+    let conn = pool().get()?;
+    conn.execute("UPDATE quotes SET pdf_path=?1 WHERE id=?2", rusqlite::params![pdf_path.to_string_lossy(), quote_id])?;
+    Ok(pdf_path.to_string_lossy().to_string())
+}
+
+pub async fn send_quote(quote_id: &str) -> Result<()> {
+    let (number, total, pdf_path, cname, cemail) = {
+        let conn = pool().get()?;
+        let q: (String, String, f64, Option<String>) = conn.query_row(
+            "SELECT number,client_id,total,pdf_path FROM quotes WHERE id=?1",
+            [quote_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        let cli: (String, Option<String>) = conn.query_row(
+            "SELECT name,email FROM clients WHERE id=?1", [&q.1],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        (q.0, q.2, q.3, cli.0, cli.1)
+    };
+
+    let pdf = match pdf_path {
+        Some(p) if std::path::Path::new(&p).exists() => p,
+        _ => generate_quote_pdf(quote_id).await?,
+    };
+
+    let to = cemail.context("client has no email")?;
+    let subject = format!("Quote {}", number);
+    let body = format!(
+        "Hi {},\n\nPlease find attached our quote {} for {}.\n\n\
+         This quotation is valid until the date shown in the document. \
+         Let us know if you'd like to proceed.\n\nThank you!",
+        cname.split_whitespace().next().unwrap_or(&cname), number, fmt_dollar(total),
+    );
+
+    crate::email::send(&to, &subject, &body, Some(&pdf)).await?;
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = serde_json::Map::new();
+    cols.insert("status".into(), serde_json::Value::String("sent".into()));
+    cols.insert("sent_at".into(), serde_json::Value::String(now.clone()));
+    crate::sync::record_upsert("quotes", quote_id, cols)?;
+    let conn = pool().get()?;
+    conn.execute("UPDATE quotes SET status='sent', sent_at=?1 WHERE id=?2", rusqlite::params![now, quote_id])?;
     Ok(())
 }
 

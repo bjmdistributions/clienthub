@@ -1231,6 +1231,183 @@ pub async fn save_invoice_numbering_config(prefix: String, next_number: u32, pad
 }
 
 // ============================================================
+//  Quotes — customer-facing estimates (no deal flow / shipping)
+// ============================================================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Quote {
+    pub id: String,
+    pub client_id: String,
+    pub number: String,
+    pub issue_date: String,
+    pub valid_until: String,
+    pub line_items_json: String,
+    pub subtotal: f64,
+    pub tax: f64,
+    pub total: f64,
+    pub status: String,
+    pub pdf_path: Option<String>,
+    pub sent_at: Option<String>,
+    pub notes: Option<String>,
+    pub converted_invoice_id: Option<String>,
+    pub created_at: String,
+}
+
+const QUOTE_COLS: &str = "id,client_id,number,issue_date,valid_until,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,converted_invoice_id,created_at";
+
+fn row_to_quote(r: &rusqlite::Row) -> rusqlite::Result<Quote> {
+    Ok(Quote {
+        id: r.get(0)?, client_id: r.get(1)?, number: r.get(2)?, issue_date: r.get(3)?,
+        valid_until: r.get(4)?, line_items_json: r.get(5)?, subtotal: r.get(6)?,
+        tax: r.get(7)?, total: r.get(8)?, status: r.get(9)?, pdf_path: r.get(10)?,
+        sent_at: r.get(11)?, notes: r.get(12)?, converted_invoice_id: r.get(13)?, created_at: r.get(14)?,
+    })
+}
+
+#[tauri::command]
+pub async fn list_quotes() -> Result<Vec<Quote>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!("SELECT {} FROM quotes ORDER BY issue_date DESC", QUOTE_COLS)).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], row_to_quote).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn list_quotes_for_client(client_id: String) -> Result<Vec<Quote>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!("SELECT {} FROM quotes WHERE client_id=?1 ORDER BY issue_date DESC", QUOTE_COLS)).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([client_id], row_to_quote).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn get_quote(id: String) -> Result<Quote, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.query_row(&format!("SELECT {} FROM quotes WHERE id=?1", QUOTE_COLS), [&id], row_to_quote).map_err(|e| e.to_string())
+}
+
+fn generate_quote_number() -> anyhow::Result<String> {
+    let conn = pool().get()?;
+    let prefix: String = conn.query_row("SELECT value FROM settings WHERE key='quote_prefix'", [], |r| r.get(0)).ok().unwrap_or_else(|| "QUO-".into());
+    let padding: usize = conn.query_row("SELECT value FROM settings WHERE key='quote_padding'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let current: u32 = conn.query_row("SELECT value FROM settings WHERE key='quote_next_number'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let next = current + 1;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('quote_next_number',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [next.to_string()])?;
+    Ok(format!("{}{:0>width$}", prefix, current, width = padding))
+}
+
+#[derive(Deserialize)]
+pub struct QuoteInput {
+    pub client_id: String,
+    pub valid_until: String,
+    pub issue_date: Option<String>,
+    pub line_items: Vec<crate::invoice::LineItem>,
+    pub tax_rate: f64,
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+pub async fn create_quote(input: QuoteInput) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    let number = generate_quote_number().map_err(|e| e.to_string())?;
+    let issue = input.issue_date.clone().unwrap_or_else(|| now.to_rfc3339());
+    let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+    let notes = input.notes.unwrap_or_default();
+
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(input.client_id.clone()));
+    cols.insert("number".into(), Value::String(number.clone()));
+    cols.insert("issue_date".into(), Value::String(issue.clone()));
+    cols.insert("valid_until".into(), Value::String(input.valid_until.clone()));
+    cols.insert("line_items_json".into(), Value::String(line_items_json.clone()));
+    cols.insert("subtotal".into(), json!(subtotal));
+    cols.insert("tax".into(), json!(tax));
+    cols.insert("total".into(), json!(total));
+    cols.insert("status".into(), Value::String("draft".into()));
+    cols.insert("notes".into(), Value::String(notes.clone()));
+    cols.insert("created_at".into(), Value::String(issue.clone()));
+    sync::record_upsert("quotes", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO quotes (id,client_id,number,issue_date,valid_until,line_items_json,subtotal,tax,total,status,notes,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?4)",
+        rusqlite::params![id, input.client_id, number, issue, input.valid_until, line_items_json, subtotal, tax, total, notes],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_quote(id: String, input: QuoteInput) -> Result<(), String> {
+    let line_items_json = serde_json::to_string(&input.line_items).map_err(|e| e.to_string())?;
+    let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
+    let notes = input.notes.unwrap_or_default();
+
+    let mut cols = Map::new();
+    cols.insert("valid_until".into(), Value::String(input.valid_until.clone()));
+    cols.insert("line_items_json".into(), Value::String(line_items_json.clone()));
+    cols.insert("subtotal".into(), json!(subtotal));
+    cols.insert("tax".into(), json!(tax));
+    cols.insert("total".into(), json!(total));
+    cols.insert("notes".into(), Value::String(notes.clone()));
+    sync::record_upsert("quotes", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE quotes SET valid_until=?1, line_items_json=?2, subtotal=?3, tax=?4, total=?5, notes=?6 WHERE id=?7",
+        rusqlite::params![input.valid_until, line_items_json, subtotal, tax, total, notes, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_quote(id: String) -> Result<(), String> {
+    sync::record_delete("quotes", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM quotes WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_quote_status(id: String, status: String) -> Result<(), String> {
+    if !["draft", "sent", "accepted", "declined", "expired"].contains(&status.as_str()) {
+        return Err("Invalid quote status".into());
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE quotes SET status=?1 WHERE id=?2", rusqlite::params![status, id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("status".into(), Value::String(status));
+    sync::record_upsert("quotes", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn generate_quote_pdf(quote_id: String) -> Result<String, String> {
+    crate::invoice::generate_quote_pdf(&quote_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn send_quote(quote_id: String) -> Result<(), String> {
+    crate::invoice::send_quote(&quote_id).await.map_err(|e| e.to_string())
+}
+
+/// Mark a quote accepted and link it to the invoice it was converted into.
+/// The invoice itself is created via the normal create_invoice flow (prefilled
+/// on the frontend), which is what actually drives the client's score.
+#[tauri::command]
+pub async fn mark_quote_converted(quote_id: String, invoice_id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE quotes SET status='accepted', converted_invoice_id=?1 WHERE id=?2", rusqlite::params![invoice_id, quote_id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("status".into(), Value::String("accepted".into()));
+    cols.insert("converted_invoice_id".into(), Value::String(invoice_id));
+    sync::record_upsert("quotes", &quote_id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ============================================================
 //  Payments (Stripe — bare bones)
 // ============================================================
 
@@ -1691,7 +1868,7 @@ pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInp
     let pdf_bytes = crate::invoice::build_pdf_bytes(
         "PREVIEW", &now, &input.due_date, &input.line_items,
         subtotal, tax, total, &cname, &cemail, &ccompany, &client_address, &company,
-        &notes, "draft",
+        &notes, "draft", "invoice",
     )
     .map_err(|e| e.to_string())?;
 
@@ -5193,6 +5370,7 @@ pub struct BuyerTier {
     pub last_invoice_date: Option<String>,
     pub purchase_frequency: Option<String>,
     pub avg_commission_pct: f64,
+    pub quotes_sent: u32,
 }
 
 fn tier_label(s: &str) -> &str {
@@ -5216,6 +5394,16 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
     };
     let invoice_map: std::collections::HashMap<String, (f64, u32, Option<String>)> =
         invoice_data.into_iter().map(|(id, p, s, d)| (id, (p, s, d))).collect();
+
+    // Quotes sent/accepted per client — a lighter engagement signal than invoices.
+    let quotes_map: std::collections::HashMap<String, u32> = {
+        let mut stmt = conn.prepare(
+            "SELECT client_id, COUNT(*) FROM quotes WHERE status IN ('sent','accepted','declined','expired') GROUP BY client_id"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)? as u32)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
 
     let client_rows: Vec<(String, String, Option<String>)> = {
         let mut stmt = conn.prepare("SELECT id, name, metadata FROM clients ORDER BY name")
@@ -5254,11 +5442,13 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
 
         let (actual_paid, invoices_sent, last_inv) = invoice_map.get(client_id)
             .map(|(p, s, d)| (*p, *s, d.clone())).unwrap_or((0.0, 0, None));
+        let quotes_sent = quotes_map.get(client_id).copied().unwrap_or(0);
 
         let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
         else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
         else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
-        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 { "C" }
+        // Quoting a client is active engagement: it lifts a bare prospect to C.
+        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
         else { "Prospect" };
 
         let avg_commission_pct = commission_map.get(client_id).copied().unwrap_or(0.0);
@@ -5268,6 +5458,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             actual_paid, invoices_sent, last_invoice_date: last_inv,
             purchase_frequency: frequency.map(|s| s.to_string()),
             avg_commission_pct,
+            quotes_sent,
         });
     }
     results.sort_by(|a, b| {

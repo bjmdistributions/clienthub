@@ -698,4 +698,28 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE inventory ADD COLUMN location TEXT;
         "#,
     ),
+    (
+        35,
+        r#"
+        CREATE TABLE IF NOT EXISTS quotes (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            number TEXT UNIQUE NOT NULL,
+            issue_date TEXT NOT NULL,
+            valid_until TEXT NOT NULL,
+            line_items_json TEXT NOT NULL,
+            subtotal REAL NOT NULL,
+            tax REAL DEFAULT 0,
+            total REAL NOT NULL,
+            status TEXT DEFAULT 'draft',
+            pdf_path TEXT,
+            sent_at TEXT,
+            notes TEXT,
+            converted_invoice_id TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_quotes_client ON quotes(client_id);
+        CREATE INDEX IF NOT EXISTS idx_quotes_status ON quotes(status);
+        "#,
+    ),
 ];

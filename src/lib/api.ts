@@ -495,6 +495,7 @@ export interface BuyerTier {
   last_invoice_date: string | null;
   purchase_frequency: string | null;
   avg_commission_pct: number;
+  quotes_sent: number;
 }
 
 export interface CustomerHealth {
@@ -518,6 +519,33 @@ export interface InvoiceInput {
   tax_rate: number;
   notes?: string;
   recurring?: string;
+}
+
+export interface Quote {
+  id: string;
+  client_id: string;
+  number: string;
+  issue_date: string;
+  valid_until: string;
+  line_items_json: string;
+  subtotal: number;
+  tax: number;
+  total: number;
+  status: string;
+  pdf_path: string | null;
+  sent_at: string | null;
+  notes: string | null;
+  converted_invoice_id: string | null;
+  created_at: string;
+}
+
+export interface QuoteInput {
+  client_id: string;
+  valid_until: string;
+  issue_date?: string;
+  line_items: LineItem[];
+  tax_rate: number;
+  notes?: string;
 }
 
 export interface RecurringInvoice {
@@ -928,6 +956,18 @@ export const api = {
   previewInvoicePdf: (input: InvoiceInput) =>
     invoke<string>("preview_invoice_pdf", { input }),
   sendInvoice: (invoiceId: string) => invoke<void>("send_invoice", { invoiceId }),
+
+  // Quotes
+  listQuotes: () => invoke<Quote[]>("list_quotes"),
+  listQuotesForClient: (clientId: string) => invoke<Quote[]>("list_quotes_for_client", { clientId }),
+  getQuote: (id: string) => invoke<Quote>("get_quote", { id }),
+  createQuote: (input: QuoteInput) => invoke<string>("create_quote", { input }),
+  updateQuote: (id: string, input: QuoteInput) => invoke<void>("update_quote", { id, input }),
+  deleteQuote: (id: string) => invoke<void>("delete_quote", { id }),
+  setQuoteStatus: (id: string, status: string) => invoke<void>("set_quote_status", { id, status }),
+  generateQuotePdf: (quoteId: string) => invoke<string>("generate_quote_pdf", { quoteId }),
+  sendQuote: (quoteId: string) => invoke<void>("send_quote", { quoteId }),
+  markQuoteConverted: (quoteId: string, invoiceId: string) => invoke<void>("mark_quote_converted", { quoteId, invoiceId }),
   markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
   saveInvoiceCosts: (invoiceId: string, costItems: CostItem[]) =>

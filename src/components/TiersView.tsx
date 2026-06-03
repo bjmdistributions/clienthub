@@ -128,6 +128,7 @@ export default function TiersView() {
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Spend / Freq.</th>
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Actually Paid</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Invoices</th>
+              <th className="text-center px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Quotes</th>
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Avg Margin</th>
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Frequency</th>
             </tr>
@@ -151,6 +152,7 @@ export default function TiersView() {
                   {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "—"}
                 </td>
                 <td className="px-5 py-3 text-center text-[13px] text-gray-600 tabular-nums">{t.invoices_sent}</td>
+                <td className="px-5 py-3 text-center text-[13px] text-gray-600 tabular-nums">{t.quotes_sent || "—"}</td>
                 <td className="px-5 py-3 text-right">
                   {t.avg_commission_pct > 0 ? (
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tabular-nums ${
@@ -169,7 +171,7 @@ export default function TiersView() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-5 py-16 text-center">
+                <td colSpan={8} className="px-5 py-16 text-center">
                   <Layers size={24} className="text-gray-200 mx-auto mb-2" />
                   <p className="text-[13px] text-gray-400">No clients in this tier</p>
                 </td>

@@ -18,9 +18,11 @@ import {
   Bot,
   Columns2,
   X,
+  FileSignature,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
+import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
 import SettingsView from "./components/SettingsView";
 import DashboardView from "./components/DashboardView";
@@ -44,7 +46,7 @@ import { useAppStore } from "./lib/store";
 import { api, User } from "./lib/api";
 import { canView } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "email" | "analytics" | "brief" | "automation" | "globe" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -237,6 +239,7 @@ export default function App() {
     { id: "deals",     label: "Completed",  icon: Briefcase },
     { id: "analytics", label: "Analytics",  icon: BarChart3 },
     { id: "invoices",  label: "Invoices",   icon: FileText },
+    { id: "quotes",    label: "Quotes",     icon: FileSignature },
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
     { id: "suppliers", label: "Suppliers",  icon: Package },
     { id: "inventory", label: "Inventory",  icon: Grid3X3 },
@@ -261,6 +264,7 @@ export default function App() {
         <div className="max-w-[1280px] mx-auto">
           {t === "clients"    && <ClientsView />}
           {t === "invoices"   && <InvoicesView />}
+          {t === "quotes"     && <QuotesView onNavigate={setTab} />}
           {t === "dealflow"   && <DealFlowView />}
           {t === "suppliers"  && <SuppliersView />}
           {t === "inventory"  && <InventoryView />}
