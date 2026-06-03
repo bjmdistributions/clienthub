@@ -132,15 +132,14 @@ export default function GlobeView() {
       setMappedCount(points.length);
       setLoading(false);
 
-      // Auto-geocode on first open if nothing is mapped yet — but only if
-      // any clients have city/state to geocode
-      if (points.length === 0) {
-        const hasAddressable = allClients.some((c) => {
-          const m = c.metadata || {};
-          return (m.city || m.state) && !(m.lat || m.lng);
-        });
-        if (hasAddressable) runGeocode();
-      }
+      // Auto-geocode any client that has a city/state/country but isn't placed
+      // yet — so newly added or freshly synced clients (incl. international ones)
+      // get a pin without needing a manual refresh.
+      const hasUnmappedAddressable = allClients.some((c) => {
+        const m = c.metadata || {};
+        return (m.city || m.state) && !(m.lat || m.lng);
+      });
+      if (hasUnmappedAddressable) runGeocode();
 
       if (destroyed) return;
 

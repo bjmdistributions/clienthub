@@ -3,6 +3,7 @@ import { api, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, Layers } from "lucide-react";
 import TierBadge from "./TierBadge";
+import ReliabilityBadge from "./ReliabilityBadge";
 import ClientDetailView from "./ClientDetailView";
 
 const SPEND_RANGES = [
@@ -129,6 +130,7 @@ export default function TiersView() {
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Actually Paid</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Invoices</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Quotes</th>
+              <th className="text-left px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Reliability</th>
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Avg Margin</th>
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Frequency</th>
             </tr>
@@ -153,6 +155,9 @@ export default function TiersView() {
                 </td>
                 <td className="px-5 py-3 text-center text-[13px] text-gray-600 tabular-nums">{t.invoices_sent}</td>
                 <td className="px-5 py-3 text-center text-[13px] text-gray-600 tabular-nums">{t.quotes_sent || "—"}</td>
+                <td className="px-5 py-3">
+                  <ReliabilityBadge reliability={t.reliability} pct={t.reliability_pct} quotesSent={t.quotes_sent} quotesWon={t.quotes_won} />
+                </td>
                 <td className="px-5 py-3 text-right">
                   {t.avg_commission_pct > 0 ? (
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold tabular-nums ${

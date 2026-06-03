@@ -498,6 +498,9 @@ export interface BuyerTier {
   purchase_frequency: string | null;
   avg_commission_pct: number;
   quotes_sent: number;
+  quotes_won: number;
+  reliability: string;       // "unrated" | "reliable" | "mixed" | "low"
+  reliability_pct: number;
 }
 
 export interface CustomerHealth {

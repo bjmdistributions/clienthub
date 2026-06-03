@@ -1,6 +1,7 @@
 import { useEffect, useState, Children } from "react";
 import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import ReliabilityBadge from "./ReliabilityBadge";
 import {
   ArrowLeft,
   Mail,
@@ -149,6 +150,9 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                       {tier.avg_commission_pct.toFixed(1)}% avg margin
                     </span>
                   )}
+                  <span className="ml-1 inline-flex">
+                    <ReliabilityBadge reliability={tier.reliability} pct={tier.reliability_pct} quotesSent={tier.quotes_sent} quotesWon={tier.quotes_won} size="md" />
+                  </span>
                 </>
               )}
             </div>

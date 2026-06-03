@@ -5403,6 +5403,9 @@ pub struct BuyerTier {
     pub purchase_frequency: Option<String>,
     pub avg_commission_pct: f64,
     pub quotes_sent: u32,
+    pub quotes_won: u32,
+    pub reliability: String,
+    pub reliability_pct: f64,
 }
 
 fn tier_label(s: &str) -> &str {
@@ -5427,12 +5430,16 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
     let invoice_map: std::collections::HashMap<String, (f64, u32, Option<String>)> =
         invoice_data.into_iter().map(|(id, p, s, d)| (id, (p, s, d))).collect();
 
-    // Quotes sent/accepted per client — a lighter engagement signal than invoices.
-    let quotes_map: std::collections::HashMap<String, u32> = {
+    // Quotes per client: (total sent, accepted/converted). Used for engagement
+    // signal AND buyer-reliability scoring (how often quotes turn into deals).
+    let quotes_map: std::collections::HashMap<String, (u32, u32)> = {
         let mut stmt = conn.prepare(
-            "SELECT client_id, COUNT(*) FROM quotes WHERE status IN ('sent','accepted','declined','expired') GROUP BY client_id"
+            "SELECT client_id,
+                    COUNT(*),
+                    COUNT(CASE WHEN status='accepted' THEN 1 END)
+             FROM quotes WHERE status IN ('sent','accepted','declined','expired') GROUP BY client_id"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)? as u32)))
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, (r.get::<_,i64>(1)? as u32, r.get::<_,i64>(2)? as u32))))
             .map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -5474,7 +5481,14 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
 
         let (actual_paid, invoices_sent, last_inv) = invoice_map.get(client_id)
             .map(|(p, s, d)| (*p, *s, d.clone())).unwrap_or((0.0, 0, None));
-        let quotes_sent = quotes_map.get(client_id).copied().unwrap_or(0);
+        let (quotes_sent, quotes_won) = quotes_map.get(client_id).copied().unwrap_or((0, 0));
+        // Buyer reliability: of the quotes we've sent, how many converted to a
+        // deal. Only meaningful once we've sent a few — flagged after 3.
+        let reliability_pct = if quotes_sent > 0 { (quotes_won as f64 / quotes_sent as f64) * 100.0 } else { 0.0 };
+        let reliability = if quotes_sent < 3 { "unrated" }
+            else if reliability_pct >= 50.0 { "reliable" }
+            else if reliability_pct >= 25.0 { "mixed" }
+            else { "low" };
 
         let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
         else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
@@ -5491,6 +5505,9 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             purchase_frequency: frequency.map(|s| s.to_string()),
             avg_commission_pct,
             quotes_sent,
+            quotes_won,
+            reliability: reliability.to_string(),
+            reliability_pct,
         });
     }
     results.sort_by(|a, b| {

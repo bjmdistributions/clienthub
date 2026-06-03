@@ -5,6 +5,7 @@ import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizon
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
 import TierBadge from "./TierBadge";
+import ReliabilityBadge from "./ReliabilityBadge";
 
 const relTime = (d: string | null | undefined): string => {
   if (!d) return "Never";
@@ -571,7 +572,10 @@ export default function ClientsView() {
                   </td>
                   <td className="px-4 py-3 text-[13px] text-gray-500">{c.company || "—"}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    <TierBadge tier={bt ? bt.tier : "New"} size="sm" />
+                    <div className="flex flex-col items-start gap-1">
+                      <TierBadge tier={bt ? bt.tier : "New"} size="sm" />
+                      {bt && <ReliabilityBadge reliability={bt.reliability} pct={bt.reliability_pct} quotesSent={bt.quotes_sent} quotesWon={bt.quotes_won} compact />}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-[12px] text-gray-500">{c.email || "—"}</td>
                   <td className="px-4 py-3 text-[12px] text-gray-500">{c.phone || "—"}</td>
