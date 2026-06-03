@@ -82,6 +82,67 @@ pub fn get() -> Option<&'static CityLookup> {
     CITY_LOOKUP.get()
 }
 
+/// Coordinates for international clients the US dataset can't cover.
+/// Currently Canada: major cities, with a province-centroid fallback so any
+/// Canadian client still gets a pin even if the city isn't listed.
+pub fn lookup_international(city: &str, region: &str, country: &str) -> Option<(f64, f64)> {
+    let c = country.trim().to_lowercase();
+    if !(c == "canada" || c == "ca" || c == "can") {
+        return None;
+    }
+    let city_l = city.trim().to_lowercase();
+    let city_coord = match city_l.as_str() {
+        "toronto" => Some((43.6532, -79.3832)),
+        "ottawa" => Some((45.4215, -75.6972)),
+        "mississauga" => Some((43.5890, -79.6441)),
+        "brampton" => Some((43.7315, -79.7624)),
+        "hamilton" => Some((43.2557, -79.8711)),
+        "london" => Some((42.9849, -81.2453)),
+        "markham" => Some((43.8561, -79.3370)),
+        "vaughan" => Some((43.8361, -79.4983)),
+        "kitchener" => Some((43.4516, -80.4925)),
+        "windsor" => Some((42.3149, -83.0364)),
+        "montreal" | "montréal" => Some((45.5019, -73.5674)),
+        "quebec city" | "québec" | "quebec" => Some((46.8139, -71.2080)),
+        "laval" => Some((45.6066, -73.7124)),
+        "gatineau" => Some((45.4765, -75.7013)),
+        "vancouver" => Some((49.2827, -123.1207)),
+        "surrey" => Some((49.1913, -122.8490)),
+        "burnaby" => Some((49.2488, -122.9805)),
+        "victoria" => Some((48.4284, -123.3656)),
+        "calgary" => Some((51.0447, -114.0719)),
+        "edmonton" => Some((53.5461, -113.4938)),
+        "winnipeg" => Some((49.8951, -97.1384)),
+        "saskatoon" => Some((52.1332, -106.6700)),
+        "regina" => Some((50.4452, -104.6189)),
+        "halifax" => Some((44.6488, -63.5752)),
+        "st. john's" | "st johns" | "st. johns" => Some((47.5615, -52.7126)),
+        "fredericton" => Some((45.9636, -66.6431)),
+        "charlottetown" => Some((46.2382, -63.1311)),
+        _ => None,
+    };
+    if city_coord.is_some() {
+        return city_coord;
+    }
+    // Province centroid fallback (2-letter code or full name).
+    match region.trim().to_lowercase().as_str() {
+        "on" | "ontario" => Some((50.0, -85.0)),
+        "qc" | "quebec" | "québec" => Some((52.0, -72.0)),
+        "bc" | "british columbia" => Some((53.7267, -127.6476)),
+        "ab" | "alberta" => Some((53.9333, -116.5765)),
+        "mb" | "manitoba" => Some((53.7609, -98.8139)),
+        "sk" | "saskatchewan" => Some((52.9399, -106.4509)),
+        "ns" | "nova scotia" => Some((44.6820, -63.7443)),
+        "nb" | "new brunswick" => Some((46.5653, -66.4619)),
+        "nl" | "newfoundland and labrador" | "newfoundland" => Some((53.1355, -57.6604)),
+        "pe" | "prince edward island" => Some((46.5107, -63.4168)),
+        "yt" | "yukon" => Some((64.2823, -135.0000)),
+        "nt" | "northwest territories" => Some((64.8255, -124.8457)),
+        "nu" | "nunavut" => Some((70.2998, -83.1076)),
+        _ => None,
+    }
+}
+
 impl CityLookup {
     pub fn lookup(&self, city: &str, state: &str) -> Option<(f64, f64)> {
         let city_lower = city.trim().to_lowercase();

@@ -75,16 +75,22 @@ pub fn load_company() -> Result<CompanyInfo> {
 
 pub fn parse_client_address(metadata: &Option<String>) -> Option<ClientAddress> {
     let meta: serde_json::Value = serde_json::from_str(metadata.as_deref()?).ok()?;
-    let street = meta.get("street_address")?.as_str()?;
-    let city = meta.get("city")?.as_str()?;
-    let state = meta.get("state")?.as_str()?;
-    let zip = meta.get("zip_code")?.as_str()?;
-    Some(ClientAddress {
-        lines: vec![
-            street.to_string(),
-            format!("{}, {} {}", city, state, zip),
-        ],
-    })
+    let g = |k: &str| meta.get(k).and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(s) = g("street_address") { lines.push(s.to_string()); }
+
+    // "City, Region Postal" — include whichever parts exist (works for US ZIP
+    // or international province/postal codes).
+    let mut region = String::new();
+    if let Some(c) = g("city") { region.push_str(c); }
+    if let Some(st) = g("state") { if !region.is_empty() { region.push_str(", "); } region.push_str(st); }
+    if let Some(z) = g("zip_code") { if !region.is_empty() { region.push(' '); } region.push_str(z); }
+    if !region.is_empty() { lines.push(region); }
+
+    if let Some(co) = g("country") { lines.push(co.to_string()); }
+
+    if lines.is_empty() { None } else { Some(ClientAddress { lines }) }
 }
 
 // ---------- Layout constants ----------

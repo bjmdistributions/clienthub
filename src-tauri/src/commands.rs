@@ -34,6 +34,7 @@ pub struct Client {
     pub city: Option<String>,
     pub state: Option<String>,
     pub zip_code: Option<String>,
+    pub country: Option<String>,
     pub next_follow_up_date: Option<String>,
     pub needs_review: bool,
 }
@@ -42,7 +43,7 @@ fn extract_meta_str(meta: &Option<Value>, key: &str) -> Option<String> {
     meta.as_ref()?.get(key)?.as_str().map(|s| s.to_string())
 }
 
-fn extract_client_fields(meta: &Option<Value>) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
+fn extract_client_fields(meta: &Option<Value>) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
     let needs_review = meta.as_ref()
         .and_then(|m| m.get("needs_review"))
         .and_then(|v| v.as_bool())
@@ -54,6 +55,7 @@ fn extract_client_fields(meta: &Option<Value>) -> (Option<String>, Option<String
         extract_meta_str(meta, "city"),
         extract_meta_str(meta, "state"),
         extract_meta_str(meta, "zip_code"),
+        extract_meta_str(meta, "country"),
         extract_meta_str(meta, "next_follow_up_date"),
         needs_review,
     )
@@ -77,7 +79,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
     let rows = stmt
         .query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-            let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             Ok(Client {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -93,7 +95,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                 invoice_count: r.get(11)?,
                 last_contact_at: r.get(12)?,
                 total_revenue: r.get(13)?,
-                category, tags, street_address, city, state, zip_code, next_follow_up_date,
+                category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
             })
         })
@@ -116,7 +118,7 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
         [&id],
         |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-            let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             Ok(Client {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -132,7 +134,7 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 invoice_count: r.get(11)?,
                 last_contact_at: r.get(12)?,
                 total_revenue: r.get(13)?,
-                category, tags, street_address, city, state, zip_code, next_follow_up_date,
+                category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
             })
         },
@@ -159,6 +161,7 @@ pub struct ClientInput {
     pub city: Option<String>,
     pub state: Option<String>,
     pub zip_code: Option<String>,
+    pub country: Option<String>,
     pub next_follow_up_date: Option<String>,
     pub needs_review: Option<bool>,
 }
@@ -176,6 +179,7 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
     if let Some(v) = &input.city { meta["city"] = Value::String(v.clone()); }
     if let Some(v) = &input.state { meta["state"] = Value::String(v.clone()); }
     if let Some(v) = &input.zip_code { meta["zip_code"] = Value::String(v.clone()); }
+    if let Some(v) = &input.country { meta["country"] = Value::String(v.clone()); }
     if let Some(v) = &input.next_follow_up_date { meta["next_follow_up_date"] = Value::String(v.clone()); }
     if let Some(v) = input.needs_review { meta["needs_review"] = Value::Bool(v); }
     let metadata_str = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
@@ -202,7 +206,7 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
         total_revenue: 0.0,
         category: input.category, tags: input.tags,
         street_address: input.street_address, city: input.city,
-        state: input.state, zip_code: input.zip_code,
+        state: input.state, zip_code: input.zip_code, country: input.country,
         next_follow_up_date: input.next_follow_up_date,
         needs_review: input.needs_review.unwrap_or(false),
     })
@@ -235,6 +239,7 @@ pub async fn update_client(id: String, input: ClientInput) -> Result<(), String>
     if let Some(v) = &input.city { meta["city"] = Value::String(v.clone()); }
     if let Some(v) = &input.state { meta["state"] = Value::String(v.clone()); }
     if let Some(v) = &input.zip_code { meta["zip_code"] = Value::String(v.clone()); }
+    if let Some(v) = &input.country { meta["country"] = Value::String(v.clone()); }
     if let Some(v) = &input.next_follow_up_date { meta["next_follow_up_date"] = Value::String(v.clone()); }
     if let Some(v) = input.needs_review { meta["needs_review"] = Value::Bool(v); }
     let metadata_str = serde_json::to_string(&meta).unwrap_or_else(|_| "{}".into());
@@ -588,7 +593,7 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([pattern], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-        let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -596,7 +601,7 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
             metadata: meta,
             invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
                 total_revenue: r.get(13)?,
-            category, tags, street_address, city, state, zip_code, next_follow_up_date,
+            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
             })
         }).map_err(|e| e.to_string())?;
@@ -669,7 +674,7 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([cutoff], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-        let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -677,7 +682,7 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
             metadata: meta,
             invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
                 total_revenue: r.get(13)?,
-            category, tags, street_address, city, state, zip_code, next_follow_up_date,
+            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
             })
         }).map_err(|e| e.to_string())?;
@@ -702,7 +707,7 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
     let rows = stmt
         .query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-            let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -711,7 +716,7 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
                 invoice_count: r.get(11)?,
                 last_contact_at: None,
                 total_revenue: r.get(12)?,
-                category, tags, street_address, city, state, zip_code, next_follow_up_date,
+                category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
             })
         })
@@ -812,7 +817,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows: Vec<Client> = stmt.query_map(param_refs.as_slice(), |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-        let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -820,7 +825,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
             metadata: meta,
             invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
             total_revenue: r.get(13)?,
-            category, tags, street_address, city, state, zip_code, next_follow_up_date,
+            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
         })
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
@@ -895,14 +900,14 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(params, |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-        let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
             lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
             metadata: meta, invoice_count: r.get(11)?, last_contact_at: None,
             total_revenue: r.get(12)?,
-            category, tags, street_address, city, state, zip_code, next_follow_up_date,
+            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
         })
     }).map_err(|e| e.to_string())?;
@@ -927,14 +932,14 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-            let (category, tags, street_address, city, state, zip_code, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
                 lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
                 metadata: meta, invoice_count: r.get(11)?, last_contact_at: None,
                 total_revenue: r.get(12)?,
-                category, tags, street_address, city, state, zip_code, next_follow_up_date,
+                category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
             })
         }).map_err(|e| e.to_string())?;
@@ -1404,6 +1409,33 @@ pub async fn mark_quote_converted(quote_id: String, invoice_id: String) -> Resul
     cols.insert("status".into(), Value::String("accepted".into()));
     cols.insert("converted_invoice_id".into(), Value::String(invoice_id));
     sync::record_upsert("quotes", &quote_id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct QuoteNumberingConfig {
+    pub prefix: String,
+    pub next_number: u32,
+    pub padding: u32,
+    pub preview: String,
+}
+
+#[tauri::command]
+pub async fn get_quote_numbering_config() -> Result<QuoteNumberingConfig, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let prefix: String = conn.query_row("SELECT value FROM settings WHERE key='quote_prefix'", [], |r| r.get(0)).ok().unwrap_or_else(|| "QUO-".into());
+    let next_number: u32 = conn.query_row("SELECT value FROM settings WHERE key='quote_next_number'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let padding: u32 = conn.query_row("SELECT value FROM settings WHERE key='quote_padding'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let preview = format!("{}{:0>width$}", prefix, next_number, width = padding as usize);
+    Ok(QuoteNumberingConfig { prefix, next_number, padding, preview })
+}
+
+#[tauri::command]
+pub async fn save_quote_numbering_config(prefix: String, next_number: u32, padding: u32) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('quote_prefix',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&prefix]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('quote_next_number',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&next_number.to_string()]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES ('quote_padding',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&padding.to_string()]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -6936,6 +6968,11 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
     let other_cat_idx = col_index("Q");
     let purchase_freq_idx = col_index("R");
     let buy_spend_idx = col_index("S");
+    // Country column position varies between forms — auto-detect by header name
+    // so we pull it regardless of where it sits in the sheet.
+    let country_idx: Option<usize> = csv::ReaderBuilder::new().has_headers(false).from_reader(text.as_bytes())
+        .records().next().and_then(|r| r.ok())
+        .and_then(|rec| rec.iter().position(|c| c.trim().to_lowercase().contains("country")));
 
     let mut new_clients: u32 = 0;
     let mut skipped: u32 = 0;
@@ -6969,6 +7006,7 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
         let other_cats = record.get(other_cat_idx).unwrap_or("").trim().to_string();
         let purchase_freq = record.get(purchase_freq_idx).unwrap_or("").trim().to_string();
         let buy_spend = record.get(buy_spend_idx).unwrap_or("").trim().to_string();
+        let country = country_idx.and_then(|i| record.get(i)).unwrap_or("").trim().to_string();
 
         if name.is_empty() && email.is_empty() { continue; }
 
@@ -7006,6 +7044,7 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
             if !city.is_empty() { meta["city"] = Value::String(city.clone()); }
             if !state.is_empty() { meta["state"] = Value::String(state.clone()); }
             if !zip.is_empty() { meta["zip_code"] = Value::String(zip.clone()); }
+            if !country.is_empty() { meta["country"] = Value::String(country.clone()); }
             if !other_cats.is_empty() { meta["other_categories"] = Value::String(other_cats.clone()); }
             if !purchase_freq.is_empty() { meta["purchase_frequency"] = Value::String(purchase_freq.clone()); }
             if !buy_spend.is_empty() { meta["estimated_annual_spend"] = Value::String(buy_spend.clone()); }
@@ -7029,6 +7068,7 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
         if !city.is_empty() { meta["city"] = Value::String(city.clone()); }
         if !state.is_empty() { meta["state"] = Value::String(state.clone()); }
         if !zip.is_empty() { meta["zip_code"] = Value::String(zip.clone()); }
+        if !country.is_empty() { meta["country"] = Value::String(country.clone()); }
         if !other_cats.is_empty() { meta["other_categories"] = Value::String(other_cats.clone()); }
         if !purchase_freq.is_empty() { meta["purchase_frequency"] = Value::String(purchase_freq.clone()); }
         if !buy_spend.is_empty() { meta["estimated_annual_spend"] = Value::String(buy_spend.clone()); }
@@ -7231,12 +7271,15 @@ pub async fn geocode_client(client_id: String) -> Result<GeocodeResult, String> 
 
     let city = meta.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let country = meta.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-    if city.is_empty() || state.is_empty() {
+    if city.is_empty() && state.is_empty() {
         return Err("client has no city/state".into());
     }
 
-    let (lat, lng) = lookup.lookup(&city, &state).ok_or("city not found in dataset")?;
+    let (lat, lng) = lookup.lookup(&city, &state)
+        .or_else(|| crate::geocode::lookup_international(&city, &state, &country))
+        .ok_or("location not found in dataset")?;
 
     meta.insert("lat".into(), json!(lat));
     meta.insert("lng".into(), json!(lng));
@@ -7293,22 +7336,19 @@ pub async fn geocode_all_clients() -> Result<GeocodeSummary, String> {
 
         let city = meta.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let country = meta.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-        if city.is_empty() || state.is_empty() {
+        if city.is_empty() && state.is_empty() {
             skipped += 1;
-            if !sample_logged && !city.is_empty() {
-                tracing::info!("geocode sample: city={:?}, state={:?}", city, state);
-                sample_logged = true;
-            }
             continue;
         }
 
         if !sample_logged {
-            tracing::info!("geocode sample: city={:?}, state={:?}", city, state);
+            tracing::info!("geocode sample: city={:?}, state={:?}, country={:?}", city, state, country);
             sample_logged = true;
         }
 
-        match lookup.lookup(&city, &state) {
+        match lookup.lookup(&city, &state).or_else(|| crate::geocode::lookup_international(&city, &state, &country)) {
             Some((lat, lng)) => {
                 meta.insert("lat".into(), json!(lat));
                 meta.insert("lng".into(), json!(lng));

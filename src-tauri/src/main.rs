@@ -232,6 +232,8 @@ fn main() {
             generate_quote_pdf,
             send_quote,
             mark_quote_converted,
+            get_quote_numbering_config,
+            save_quote_numbering_config,
             save_invoice_costs,
             save_invoice_shipping,
             set_invoice_sent_date,

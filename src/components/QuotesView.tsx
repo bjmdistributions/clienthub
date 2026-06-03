@@ -18,7 +18,9 @@ const statusStyle = (s: string): string => {
   }
 };
 
-const inp = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+const inp = "border border-gray-200 bg-white text-gray-900 placeholder-gray-400 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+// Narrow variant (no w-full) for the line-item editor columns.
+const inpNarrow = "border border-gray-200 bg-white text-gray-900 placeholder-gray-400 px-2 h-10 rounded-lg text-[14px] text-right focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
 
 // A sent quote whose valid-until date has passed reads as "expired".
 const displayStatus = (q: Quote): string =>
@@ -33,6 +35,7 @@ export default function QuotesView({ onNavigate }: Props) {
   const [editing, setEditing] = useState<Quote | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3000); };
   const load = async () => { setQuotes(await api.listQuotes()); };
@@ -125,7 +128,7 @@ export default function QuotesView({ onNavigate }: Props) {
             {filtered.map((q) => {
               const ds = displayStatus(q);
               return (
-                <tr key={q.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                <tr key={q.id} onClick={() => setDetailId(q.id)} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors cursor-pointer">
                   <td className="px-4 py-3 font-mono text-[12px] text-gray-700">{q.number}</td>
                   <td className="px-4 py-3 text-[13px] font-medium text-gray-900">{clientName(q.client_id)}</td>
                   <td className="px-4 py-3 text-[12px] text-gray-500 tabular-nums hidden md:table-cell">{q.issue_date.slice(0, 10)}</td>
@@ -134,7 +137,7 @@ export default function QuotesView({ onNavigate }: Props) {
                   <td className="px-4 py-3 text-right">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusStyle(ds)}`}>{ds}</span>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <button disabled={busy === q.id} onClick={() => handlePdf(q.id)} title="Generate PDF" className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100"><FileDown size={14} /></button>
                       <button disabled={busy === q.id} onClick={() => handleSend(q.id)} title="Email quote" className="p-1.5 rounded-md text-gray-400 hover:text-indigo-600 hover:bg-indigo-50"><Send size={14} /></button>
@@ -165,6 +168,25 @@ export default function QuotesView({ onNavigate }: Props) {
         </table>
       </div>
 
+      {detailId && (() => {
+        const q = quotes.find((x) => x.id === detailId);
+        if (!q) return null;
+        return (
+          <QuoteDetailPanel
+            quote={q}
+            clientName={clientName(q.client_id)}
+            displayStatus={displayStatus(q)}
+            onClose={() => setDetailId(null)}
+            onPdf={() => handlePdf(q.id)}
+            onSend={() => handleSend(q.id)}
+            onConvert={() => convert(q)}
+            onDecline={() => setStatus(q.id, "declined")}
+            onEdit={() => { setEditing(q); setShowForm(true); setDetailId(null); }}
+            onDelete={() => { del(q.id); setDetailId(null); }}
+          />
+        );
+      })()}
+
       {showForm && (
         <QuoteForm
           initial={editing}
@@ -173,6 +195,96 @@ export default function QuotesView({ onNavigate }: Props) {
         />
       )}
     </div>
+  );
+}
+
+function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, onSend, onConvert, onDecline, onEdit, onDelete }: {
+  quote: Quote; clientName: string; displayStatus: string; onClose: () => void;
+  onPdf: () => void; onSend: () => void; onConvert: () => void; onDecline: () => void; onEdit: () => void; onDelete: () => void;
+}) {
+  const items: LineItem[] = (() => { try { return JSON.parse(quote.line_items_json || "[]"); } catch { return []; } })();
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={onClose} />
+      <div className="fixed inset-y-0 right-0 w-[480px] max-w-[95vw] bg-white shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white/95 backdrop-blur-sm border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
+          <h3 className="text-[14px] font-semibold text-gray-900 font-mono">{quote.number}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-gray-100 transition-colors"><X size={16} /></button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusStyle(displayStatus)}`}>{displayStatus}</span>
+
+          <div>
+            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Client</div>
+            <div className="text-[14px] font-medium text-gray-900 mt-0.5">{clientName}</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { label: "Issued", val: quote.issue_date.slice(0, 10) },
+              { label: "Valid Until", val: quote.valid_until.slice(0, 10) },
+              ...(quote.sent_at ? [{ label: "Sent", val: new Date(quote.sent_at).toLocaleDateString() }] : []),
+            ].map((r) => (
+              <div key={r.label}>
+                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">{r.label}</div>
+                <div className="text-[13px] text-gray-900 mt-0.5 tabular-nums">{r.val}</div>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Line Items</div>
+            <table className="w-full text-[13px]">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-l-lg">Description</th>
+                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Qty</th>
+                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Rate</th>
+                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-r-lg">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, i) => (
+                  <tr key={i} className="border-t border-gray-50">
+                    <td className="px-3 py-2.5 text-gray-700">{it.description}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{it.qty}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmtAmount(it.rate)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-medium">{fmtAmount(it.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="border-t border-gray-100 pt-4 space-y-1.5 text-[13px]">
+            <div className="flex justify-between text-gray-600"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(quote.subtotal)}</span></div>
+            <div className="flex justify-between text-gray-600"><span>Tax</span><span className="tabular-nums">{fmtAmount(quote.tax)}</span></div>
+            <div className="flex justify-between text-[15px] font-bold text-gray-900 pt-1"><span>Total</span><span className="tabular-nums">{fmtAmount(quote.total)}</span></div>
+          </div>
+
+          {quote.notes && (
+            <div>
+              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Notes</div>
+              <p className="text-[13px] text-gray-700 whitespace-pre-wrap">{quote.notes}</p>
+            </div>
+          )}
+
+          <div className="border-t border-gray-100 pt-4 flex flex-wrap gap-2">
+            <button onClick={onEdit} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
+            <button onClick={onPdf} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50"><FileDown size={13} /> PDF</button>
+            <button onClick={onSend} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50"><Send size={13} /> Email</button>
+            {quote.status !== "accepted" && (
+              <button onClick={onConvert} className="flex items-center gap-1.5 border border-emerald-200 text-emerald-700 px-3 h-9 rounded-lg text-[12px] hover:bg-emerald-50"><ArrowRightCircle size={13} /> Convert to Invoice</button>
+            )}
+            {displayStatus === "sent" && (
+              <button onClick={onDecline} className="border border-red-200 text-red-600 px-3 h-9 rounded-lg text-[12px] hover:bg-red-50">Mark Declined</button>
+            )}
+            <button onClick={onDelete} className="flex items-center gap-1.5 border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 px-3 h-9 rounded-lg text-[12px]"><Trash2 size={13} /> Delete</button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -246,11 +358,11 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
             <div className="space-y-2">
               {items.map((it, i) => (
                 <div key={i} className="flex gap-2 items-center">
-                  <input className={inp + " flex-1"} placeholder="Description" value={it.description} onChange={(e) => setItem(i, "description", e.target.value)} />
-                  <input className={inp + " w-16 text-right"} type="number" step="1" placeholder="Qty" value={it.qty || ""} onChange={(e) => setItem(i, "qty", parseFloat(e.target.value) || 0)} />
-                  <input className={inp + " w-24 text-right"} type="number" step="0.01" placeholder="Rate" value={it.rate || ""} onChange={(e) => setItem(i, "rate", parseFloat(e.target.value) || 0)} />
-                  <span className="w-24 text-right text-[13px] font-medium text-gray-700 tabular-nums">{fmtAmount(it.amount)}</span>
-                  <button onClick={() => setItems(items.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-500 p-1"><X size={14} /></button>
+                  <input className={`${inpNarrow} flex-1 text-left`} placeholder="Description" value={it.description} onChange={(e) => setItem(i, "description", e.target.value)} />
+                  <input className={`${inpNarrow} w-16`} type="number" step="1" placeholder="Qty" value={it.qty || ""} onChange={(e) => setItem(i, "qty", parseFloat(e.target.value) || 0)} />
+                  <input className={`${inpNarrow} w-24`} type="number" step="0.01" placeholder="Rate" value={it.rate || ""} onChange={(e) => setItem(i, "rate", parseFloat(e.target.value) || 0)} />
+                  <span className="w-24 text-right text-[13px] font-medium text-gray-700 tabular-nums flex-shrink-0">{fmtAmount(it.amount)}</span>
+                  <button onClick={() => setItems(items.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-500 p-1 flex-shrink-0"><X size={14} /></button>
                 </div>
               ))}
             </div>

@@ -22,6 +22,7 @@ export interface Client {
   city: string | null;
   state: string | null;
   zip_code: string | null;
+  country: string | null;
   next_follow_up_date: string | null;
   needs_review: boolean;
 }
@@ -40,6 +41,7 @@ export interface ClientInput {
   city?: string | null;
   state?: string | null;
   zip_code?: string | null;
+  country?: string | null;
   next_follow_up_date?: string | null;
   needs_review?: boolean;
 }
@@ -968,6 +970,9 @@ export const api = {
   generateQuotePdf: (quoteId: string) => invoke<string>("generate_quote_pdf", { quoteId }),
   sendQuote: (quoteId: string) => invoke<void>("send_quote", { quoteId }),
   markQuoteConverted: (quoteId: string, invoiceId: string) => invoke<void>("mark_quote_converted", { quoteId, invoiceId }),
+  getQuoteNumberingConfig: () => invoke<InvoiceNumberingConfig>("get_quote_numbering_config"),
+  saveQuoteNumberingConfig: (prefix: string, nextNumber: number, padding: number) =>
+    invoke<void>("save_quote_numbering_config", { prefix, nextNumber, padding }),
   markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
   saveInvoiceCosts: (invoiceId: string, costItems: CostItem[]) =>

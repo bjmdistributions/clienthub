@@ -47,29 +47,34 @@ export default function UpdateNotification() {
   };
 
   return (
-    <div className="sticky top-0 z-50 flex items-center justify-between px-5 py-3 border-b border-indigo-200/50"
-      style={{ background: "linear-gradient(135deg, var(--accent-50) 0%, var(--accent-100) 50%, var(--accent-100) 100%)" }}>
+    <div className="sticky top-0 z-50 flex items-center justify-between px-5 py-3"
+      style={{ background: "var(--accent-tint)", borderBottom: "1px solid var(--accent-glow)" }}>
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center flex-shrink-0">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+          style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 12px var(--accent-glow)" }}>
           <Download size={14} className="text-white" />
         </div>
         <div>
-          <p className="text-[13px] font-semibold text-indigo-900">ClientHub {update.version} is available</p>
-          <p className="text-[11px] text-indigo-500">
+          <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>ClientHub {update.version} is available</p>
+          <p className="text-[11px]" style={{ color: "var(--t-tx3)" }}>
             {installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}MB` : "Update now to get the latest features and fixes"}
           </p>
         </div>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {!installing && (
-          <button onClick={handleLater} className="h-8 px-3 rounded-lg text-[12px] font-medium text-indigo-500 hover:bg-indigo-100/60 transition-colors">
+          <button onClick={handleLater} className="h-8 px-3 rounded-lg text-[12px] font-medium transition-colors"
+            style={{ color: "var(--t-tx2)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-glow)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
             Later
           </button>
         )}
         <button
           onClick={handleInstall}
           disabled={downloading || installing}
-          className="h-8 px-4 rounded-lg text-[12px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+          className="h-8 px-4 rounded-lg text-[12px] font-semibold text-white disabled:opacity-50 transition-all flex items-center gap-1.5"
+          style={{ background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))", boxShadow: "0 2px 8px var(--accent-glow)" }}
         >
           {installing ? <Check size={12} /> : downloading ? <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : null}
           {installing ? "Restarting…" : downloading ? "Downloading" : "Install Now"}

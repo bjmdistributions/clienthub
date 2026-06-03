@@ -641,6 +641,7 @@ function ClientForm({
     lead_status: initial?.lead_status ?? "prospect", category: initial?.category ?? "",
     tags: initial?.tags ?? "", street_address: initial?.street_address ?? "",
     city: initial?.city ?? "", state: initial?.state ?? "", zip_code: initial?.zip_code ?? "",
+    country: initial?.country ?? "",
     next_follow_up_date: initial?.next_follow_up_date ?? "", needs_review: initial?.needs_review ?? false,
   });
 
@@ -688,9 +689,10 @@ function ClientForm({
           </div>
           <Field label="City"><input className={inp} value={form.city ?? ""} onChange={(e) => set("city", e.target.value)} /></Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="State"><input className={inp} value={form.state ?? ""} onChange={(e) => set("state", e.target.value)} /></Field>
-            <Field label="ZIP"><input className={inp} value={form.zip_code ?? ""} onChange={(e) => set("zip_code", e.target.value)} /></Field>
+            <Field label="State / Province"><input className={inp} value={form.state ?? ""} onChange={(e) => set("state", e.target.value)} /></Field>
+            <Field label="ZIP / Postal"><input className={inp} value={form.zip_code ?? ""} onChange={(e) => set("zip_code", e.target.value)} /></Field>
           </div>
+          <Field label="Country"><input className={inp} value={form.country ?? ""} onChange={(e) => set("country", e.target.value)} placeholder="e.g. United States, Canada" /></Field>
           <div className="col-span-2 flex items-center gap-2 mt-1">
             <input type="checkbox" id="needs-review" checked={form.needs_review ?? false}
               onChange={(e) => set("needs_review", e.target.checked)}
