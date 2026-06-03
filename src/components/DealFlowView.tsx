@@ -382,11 +382,22 @@ function DealFlowCard({
           )}
         </div>
 
-        {/* Total + invoice status + deal flow stage + chevron */}
+        {/* Total + projected profit + invoice status + deal flow stage + chevron */}
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-[13px] font-semibold text-gray-700 tabular-nums">
-            {fmtAmount(flow.invoice_total)}
-          </span>
+          <div className="flex flex-col items-end leading-tight">
+            <span className="text-[13px] font-semibold text-gray-700 tabular-nums">
+              {fmtAmount(flow.invoice_total)}
+            </span>
+            {flow.stage !== "complete" && (() => {
+              const proj = flow.invoice_total - flow.total_supplier_cost;
+              return (
+                <span className={`text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-emerald-600" : "text-red-500"}`}
+                  title="Projected profit — revenue minus supplier costs entered so far">
+                  {fmtAmount(proj)} <span className="text-[8px] text-gray-400 uppercase">proj</span>
+                </span>
+              );
+            })()}
+          </div>
           {/* Invoice status — tells you where the invoice actually is */}
           <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full ${invPill.cls}`}>
             {invPill.label}

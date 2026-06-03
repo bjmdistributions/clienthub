@@ -81,10 +81,16 @@ export default function InvoicesView() {
     try { setDetailInvoice(await api.getInvoice(id)); } catch { setDetailInvoice(null); }
   };
 
+  // invoice_id -> { stage, cost } from in-progress deal flows, for projected profit
+  const [flowMap, setFlowMap] = useState<Record<string, { stage: string; cost: number }>>({});
+
   const load = async () => {
-    const [inv, cli] = await Promise.all([api.listInvoices(), api.listClients()]);
+    const [inv, cli, flows] = await Promise.all([api.listInvoices(), api.listClients(), api.listDealFlows().catch(() => [])]);
     setInvoices(inv);
     setClients(cli);
+    const fm: Record<string, { stage: string; cost: number }> = {};
+    for (const f of flows) fm[f.invoice_id] = { stage: f.stage, cost: f.total_supplier_cost ?? 0 };
+    setFlowMap(fm);
   };
   useEffect(() => { load(); }, []);
 
@@ -271,7 +277,23 @@ export default function InvoicesView() {
           </thead>
           <tbody>
             {invoices.map((inv) => {
-              const profit = inv.profit != null ? inv.profit : (inv.total_cost != null ? inv.total - (inv.total_cost ?? 0) : null);
+              // Completed → actual profit. In-progress deal flow → projected
+              // (revenue − supplier costs entered so far). Else fall back to costs.
+              const df = flowMap[inv.id];
+              let profit: number | null;
+              let projected = false;
+              if (inv.is_complete && inv.profit != null) {
+                profit = inv.profit;
+              } else if (df && df.stage !== "complete") {
+                profit = inv.total - df.cost;
+                projected = true;
+              } else if (inv.profit != null) {
+                profit = inv.profit;
+              } else if (inv.total_cost != null) {
+                profit = inv.total - inv.total_cost;
+              } else {
+                profit = null;
+              }
               return (
                 <tr key={inv.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors" onClick={() => openDetail(inv.id)}>
                   <td className="px-4 py-3 font-mono text-[11px] text-gray-400">{inv.number}</td>
@@ -280,7 +302,12 @@ export default function InvoicesView() {
                   <td className="px-4 py-3 text-[12px] text-gray-500 tabular-nums">{inv.due_date.slice(0, 10)}</td>
                   <td className="px-4 py-3 text-[13px] font-semibold text-gray-900 tabular-nums">{fmtAmount(inv.total)}</td>
                   <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${profit != null ? (profit >= 0 ? "text-emerald-600" : "text-red-600") : "text-gray-300"}`}>
-                    {profit != null ? fmtAmount(profit) : "—"}
+                    {profit != null ? (
+                      <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit — revenue minus costs entered so far" : undefined}>
+                        {fmtAmount(profit)}
+                        {projected && <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-wide">proj</span>}
+                      </span>
+                    ) : "—"}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-0 flex-wrap gap-y-1">
