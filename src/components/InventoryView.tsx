@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Lot, Deal, ManifestAnalysis } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, ShieldCheck, Truck, MapPin, DollarSign, Ban } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, ShieldCheck, Truck, MapPin, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
@@ -65,6 +65,39 @@ export default function InventoryView() {
     try { setDeals(await api.listDeals()); } catch {}
   };
 
+  // ── Multi-select / bulk actions ──
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleSelect = (id: string) => setSelected((prev) => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const exitSelect = () => { setSelectMode(false); setSelected(new Set()); };
+
+  const deleteOne = async (lot: Lot) => {
+    if (!confirm(`Delete "${lot.name}"? This cannot be undone.`)) return;
+    try { await api.deleteLot(lot.id); setDetailId(null); load(); } catch (e: any) { alert(e); }
+  };
+  const bulkDelete = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} selected lot${selected.size !== 1 ? "s" : ""}? This cannot be undone.`)) return;
+    try { await api.deleteLots([...selected]); exitSelect(); load(); } catch (e: any) { alert(e); }
+  };
+  const bulkStatus = async (status: string) => {
+    if (selected.size === 0) return;
+    try { for (const id of selected) await api.setLotStatus(id, status); exitSelect(); load(); } catch (e: any) { alert(e); }
+  };
+  const bulkSent = async (channel: "whatsapp" | "email", val: boolean) => {
+    if (selected.size === 0) return;
+    const arg = channel === "whatsapp" ? "sentWhatsapp" : "sentEmail";
+    try { for (const id of selected) await api.updateLot(id, { [arg]: val }); exitSelect(); load(); } catch (e: any) { alert(e); }
+  };
+  const resync = async () => {
+    try { const n = await api.resyncInventory(); showToast(`Re-synced ${n} lot${n !== 1 ? "s" : ""} to your devices`); }
+    catch (e: any) { alert(e); }
+  };
+  // In select mode the card click selects instead of opening detail.
+  const onCardOpen = (id: string) => { if (selectMode) toggleSelect(id); else setDetailId(id); };
+
   // "All" hides sold/archived unless their toggles are on, so its count must
   // match what's actually visible — otherwise it shows e.g. "2" with an empty list.
   const visibleUnderAll = lots.filter(l => {
@@ -102,19 +135,51 @@ export default function InventoryView() {
           {toast}
         </div>
       )}
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Inventory</h2>
           <p className="text-[12px] text-gray-400 mt-0.5">{counts.all} lots · {totalUnits.toLocaleString()} units total</p>
         </div>
-        <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
-          <Plus size={14} /> Add Lot
-        </button>
-        <button onClick={handleExportInventory}
-          className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
-          <FileDown size={13} /> Export
-        </button>
+        <div className="flex items-center gap-2">
+          {selectMode ? (
+            <button onClick={exitSelect} className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+              Cancel
+            </button>
+          ) : (
+            <>
+              <button onClick={resync} title="Re-sync all inventory to your other devices"
+                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+                <RefreshCw size={13} /> Sync
+              </button>
+              <button onClick={() => setSelectMode(true)}
+                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+                <CheckSquare size={13} /> Select
+              </button>
+              <button onClick={handleExportInventory}
+                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+                <FileDown size={13} /> Export
+              </button>
+              <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
+                <Plus size={14} /> Add Lot
+              </button>
+            </>
+          )}
+        </div>
       </div>
+
+      {/* Bulk action bar */}
+      {selectMode && (
+        <div className="sticky top-0 z-20 mb-4 flex flex-wrap items-center gap-2 bg-white border border-gray-200 rounded-xl px-4 py-2.5 shadow-sm">
+          <span className="text-[13px] font-semibold text-gray-700 mr-1">{selected.size} selected</span>
+          <button onClick={() => setSelected(new Set(filtered.map((l) => l.id)))} className="text-[12px] text-indigo-600 hover:text-indigo-800 px-2 py-1 rounded hover:bg-indigo-50">Select all</button>
+          <div className="flex-1" />
+          <button onClick={() => bulkStatus("sold")} disabled={!selected.size} className="text-[12px] text-emerald-700 border border-emerald-200 px-2.5 h-8 rounded-lg hover:bg-emerald-50 disabled:opacity-40 flex items-center gap-1"><DollarSign size={12} /> Sold</button>
+          <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-red-600 border border-red-200 px-2.5 h-8 rounded-lg hover:bg-red-50 disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
+          <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-gray-600 border border-gray-200 px-2.5 h-8 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
+          <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-gray-600 border border-gray-200 px-2.5 h-8 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
+          <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-white bg-red-600 hover:bg-red-700 px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
+        </div>
+      )}
 
       <div className="mb-5 bg-white border border-gray-100 rounded-xl overflow-hidden">
         <button onClick={() => setShowManifest(!showManifest)} className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50/50 transition-colors">
@@ -203,13 +268,19 @@ export default function InventoryView() {
           )}
         </div>
 
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
           {filtered.map((lot) => {
             const lotPhotos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
+            const isSel = selected.has(lot.id);
             return (
-            <div key={lot.id} className="bg-white border border-gray-100 rounded-xl overflow-hidden hover:shadow-md transition-shadow flex flex-col">
+            <div key={lot.id} className={`bg-white border rounded-xl overflow-hidden hover:shadow-md transition-shadow flex flex-col ${isSel ? "border-indigo-400 ring-2 ring-indigo-200" : "border-gray-100"}`}>
               {/* Photo on top */}
-              <div onClick={() => setDetailId(lot.id)} title="View details" className="relative w-full h-44 bg-gray-50 flex items-center justify-center overflow-hidden cursor-pointer">
+              <div onClick={() => onCardOpen(lot.id)} title={selectMode ? "Select" : "View details"} className="relative w-full h-44 bg-gray-50 flex items-center justify-center overflow-hidden cursor-pointer">
+                {selectMode && (
+                  <span className={`absolute top-2 right-2 z-10 w-6 h-6 rounded-md flex items-center justify-center border-2 ${isSel ? "bg-indigo-600 border-indigo-600" : "bg-white/90 border-gray-300"}`}>
+                    {isSel && <Check size={14} className="text-white" />}
+                  </span>
+                )}
                 {lotPhotos.length > 0 ? (
                   <img src={convertFileSrc(resolvePhoto(lotPhotos[0], mediaBase))} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                 ) : (
@@ -227,7 +298,7 @@ export default function InventoryView() {
               {/* Info */}
               <div className="p-4 flex flex-col flex-1">
                 <div className="flex items-start justify-between gap-2 mb-1">
-                  <h3 onClick={() => setDetailId(lot.id)} className="text-[14px] font-semibold text-gray-900 leading-tight cursor-pointer hover:text-indigo-600 transition-colors">{lot.name}</h3>
+                  <h3 onClick={() => onCardOpen(lot.id)} className="text-[14px] font-semibold text-gray-900 leading-tight cursor-pointer hover:text-indigo-600 transition-colors">{lot.name}</h3>
                   <span className="text-[11px] text-gray-400 whitespace-nowrap flex-shrink-0">{lot.quantity} units</span>
                 </div>
                 {lot.notes && (
@@ -265,23 +336,19 @@ export default function InventoryView() {
                   </button>
                 </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-1.5 flex-wrap mt-auto pt-1">
-                  {lot.status !== "sold" && lot.status !== "archived" && (
-                    <button onClick={() => openLink(lot.id)} title="Link to deal" className="text-[11px] text-indigo-600 hover:text-indigo-800 flex items-center gap-1 px-2 py-1 rounded hover:bg-indigo-50">
-                      <Link2 size={11} /> Link
-                    </button>
-                  )}
-                  <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-gray-50">Edit</button>
+                {/* Actions — tidy single row; full set lives in the detail panel */}
+                <div className="flex items-center gap-1 flex-wrap mt-auto pt-1 border-t border-gray-50">
+                  <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-gray-500 hover:text-gray-800 px-2 py-1 rounded hover:bg-gray-50">Edit</button>
                   {lot.status !== "sold" && (
-                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded hover:bg-emerald-50 flex items-center gap-1"><DollarSign size={11} /> Mark Sold</button>
+                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded hover:bg-emerald-50 flex items-center gap-1"><DollarSign size={11} /> Sold</button>
                   )}
-                  {lot.status !== "archived" && (
-                    <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 flex items-center gap-1"><Ban size={11} /> Not Available</button>
-                  )}
-                  {(lot.status === "sold" || lot.status === "archived") && (
+                  {lot.status !== "archived" ? (
+                    <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-amber-600 hover:text-amber-700 px-2 py-1 rounded hover:bg-amber-50 flex items-center gap-1"><Ban size={11} /> N/A</button>
+                  ) : (
                     <button onClick={() => setStatus(lot, "available")} className="text-[11px] text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50">Restore</button>
                   )}
+                  <div className="flex-1" />
+                  <button onClick={() => deleteOne(lot)} title="Delete lot" className="text-gray-300 hover:text-red-500 p-1 rounded hover:bg-red-50"><Trash2 size={13} /></button>
                 </div>
               </div>
             </div>
@@ -310,6 +377,7 @@ export default function InventoryView() {
             onStatus={(s) => setStatus(detail, s)}
             onToggleSent={(c) => toggleSent(detail, c)}
             onLink={() => openLink(detail.id)}
+            onDelete={() => deleteOne(detail)}
           />
         );
       })()}
@@ -489,9 +557,9 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   );
 }
 
-function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink }: {
+function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete }: {
   lot: Lot; mediaBase: string; onClose: () => void; onEdit: () => void;
-  onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void;
+  onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void;
 }) {
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
   const [big, setBig] = useState(0);
@@ -596,6 +664,7 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           {(lot.status === "sold" || lot.status === "archived") && (
             <button onClick={() => onStatus("available")} className="border border-gray-200 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50">Restore</button>
           )}
+          <button onClick={onDelete} className="flex items-center gap-1 border border-red-200 text-red-600 px-3 h-9 rounded-lg text-[12px] hover:bg-red-50 ml-auto"><Trash2 size={13} /> Delete</button>
         </div>
       </div>
     </div>

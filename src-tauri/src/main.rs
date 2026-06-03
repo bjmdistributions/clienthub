@@ -350,6 +350,9 @@ fn main() {
             archive_lot,
             link_lot_to_deal,
             set_lot_status,
+            delete_lot,
+            delete_lots,
+            resync_inventory,
             import_lot_photos,
             media_base_dir,
             // Follow-up rules

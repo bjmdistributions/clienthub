@@ -4519,6 +4519,67 @@ pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn delete_lot(id: String) -> Result<(), String> {
+    crate::sync::record_delete("inventory", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM inventory WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_lots(ids: Vec<String>) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut n = 0u32;
+    for id in &ids {
+        crate::sync::record_delete("inventory", id).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM inventory WHERE id = ?1", [id]).map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Re-record every inventory row as a sync upsert. Fixes lots that aren't
+/// propagating to other devices (e.g. created before inventory was synced, or
+/// before a device joined). Safe to run repeatedly — last-writer-wins resolves.
+#[tauri::command]
+pub async fn resync_inventory() -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location FROM inventory"
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<serde_json::Map<String, serde_json::Value>> = stmt.query_map([], |r| {
+        let mut c = serde_json::Map::new();
+        c.insert("id".into(), serde_json::json!(r.get::<_, String>(0)?));
+        c.insert("name".into(), serde_json::json!(r.get::<_, String>(1)?));
+        c.insert("description".into(), serde_json::json!(r.get::<_, Option<String>>(2)?));
+        c.insert("category".into(), serde_json::json!(r.get::<_, Option<String>>(3)?));
+        c.insert("quantity".into(), serde_json::json!(r.get::<_, i64>(4)?));
+        c.insert("total_cost".into(), serde_json::json!(r.get::<_, f64>(5)?));
+        c.insert("asking_price".into(), serde_json::json!(r.get::<_, f64>(6)?));
+        c.insert("status".into(), serde_json::json!(r.get::<_, String>(7)?));
+        c.insert("linked_deal_id".into(), serde_json::json!(r.get::<_, Option<String>>(8)?));
+        c.insert("photos_json".into(), serde_json::json!(r.get::<_, String>(9)?));
+        c.insert("created_at".into(), serde_json::json!(r.get::<_, String>(10)?));
+        c.insert("updated_at".into(), serde_json::json!(r.get::<_, String>(11)?));
+        c.insert("notes".into(), serde_json::json!(r.get::<_, Option<String>>(12)?));
+        c.insert("sent_whatsapp".into(), serde_json::json!(r.get::<_, i64>(13)?));
+        c.insert("sent_email".into(), serde_json::json!(r.get::<_, i64>(14)?));
+        c.insert("supplier".into(), serde_json::json!(r.get::<_, Option<String>>(15)?));
+        c.insert("location".into(), serde_json::json!(r.get::<_, Option<String>>(16)?));
+        Ok(c)
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut n = 0u32;
+    for cols in rows {
+        let id = cols.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+        crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 // ============================================================
 //  Follow-Up Rules Automation
 // ============================================================
