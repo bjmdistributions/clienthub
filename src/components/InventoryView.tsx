@@ -431,7 +431,26 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   const [sentEmail, setSentEmail] = useState(initial?.sent_email ?? false);
   const [photos, setPhotos] = useState<string[]>(() => { try { return JSON.parse(initial?.photos_json ?? "[]") ?? []; } catch { return []; } });
   const [manifestPath, setManifestPath] = useState<string | null>(initial?.manifest_path ?? null);
+  const [newManifestFile, setNewManifestFile] = useState<string | null>(null); // picked file for a not-yet-created lot
   const [saving, setSaving] = useState(false);
+
+  const pickManifest = async () => {
+    const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
+    if (typeof f !== "string") return;
+    if (initial) {
+      try { const rel = await api.attachLotManifest(initial.id, f); setManifestPath(rel); } catch (e: any) { alert(e); }
+    } else {
+      setNewManifestFile(f);
+    }
+  };
+  const clearManifest = async () => {
+    if (initial && manifestPath) {
+      try { await api.removeLotManifest(initial.id); setManifestPath(null); } catch (e: any) { alert(e); }
+    } else {
+      setNewManifestFile(null);
+    }
+  };
+  const manifestLabel = (manifestPath || newManifestFile)?.split(/[/\\]/).pop() || "";
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null);
 
   useEffect(() => {
@@ -449,9 +468,16 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
     if (!name.trim()) return;
     setSaving(true);
     try {
-      if (initial) await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType });
-      else {
-        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, photos, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType });
+      if (initial) {
+        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType });
+      } else {
+        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType });
+        // Photos were picked as raw paths; copy them into the lot's synced media folder now that it has an id.
+        if (photos.length > 0) {
+          const rel = await api.importLotPhotos(lot.id, photos);
+          await api.updateLot(lot.id, { photos: rel });
+        }
+        if (newManifestFile) await api.attachLotManifest(lot.id, newManifestFile);
         if (sentWa || sentEmail) await api.updateLot(lot.id, { sentWhatsapp: sentWa, sentEmail: sentEmail });
       }
       onClose();
@@ -501,14 +527,14 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Total Cost</label>
+              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Cost Price</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} />
               </div>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Asking Price</label>
+              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Selling Price</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} />
@@ -575,28 +601,21 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
             </p>
           </div>
 
-          {initial && (
-            <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Manifest</label>
-              {manifestPath ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] text-gray-600 truncate max-w-[260px]">{manifestPath.split(/[/\\]/).pop()!.length > 20 ? manifestPath.split(/[/\\]/).pop()!.slice(0, 17) + "..." : manifestPath.split(/[/\\]/).pop()}</span>
-                  <button onClick={async () => {
-                    try { await api.removeLotManifest(initial.id); setManifestPath(null); } catch (e: any) { alert(e); }
-                  }} className="text-[11px] text-red-400 hover:text-red-600">Remove</button>
-                </div>
-              ) : (
-                <button onClick={async () => {
-                  const f = await openDialog({ multiple: false, filters: [{ name: "Documents", extensions: ["pdf", "csv"] }] });
-                  if (typeof f !== "string") return;
-                  try {
-                    const rel = await api.attachLotManifest(initial.id, f);
-                    setManifestPath(rel);
-                  } catch (e: any) { alert(e); }
-                }} className="text-[11px] text-indigo-600 hover:text-indigo-800 font-medium">+ Attach Manifest (PDF or CSV)</button>
-              )}
-            </div>
-          )}
+          <div>
+            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Manifest</label>
+            {(manifestPath || newManifestFile) ? (
+              <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+                <FileText size={14} className="text-gray-400 flex-shrink-0" />
+                <span className="text-[12px] text-gray-600 truncate flex-1" title={manifestLabel}>{manifestLabel}</span>
+                <button onClick={clearManifest} className="text-[11px] text-gray-400 hover:text-red-500">Remove</button>
+              </div>
+            ) : (
+              <button onClick={pickManifest}
+                className="flex items-center gap-1.5 text-[12px] text-gray-600 border border-dashed border-gray-300 hover:border-indigo-400 hover:text-indigo-600 px-3 h-9 rounded-lg transition-colors">
+                <Plus size={13} /> Add manifest (PDF / CSV)
+              </button>
+            )}
+          </div>
 
         </div>
         <div className="flex justify-end gap-2 mt-5">
