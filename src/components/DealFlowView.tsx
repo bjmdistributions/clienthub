@@ -307,7 +307,8 @@ function DealFlowCard({
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
-  const [invItems,  setInvItems]  = useState<{ description: string; qty: number }[]>([]);
+  const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
+  const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
 
   useEffect(() => { setPanel(defaultPanel(flow.stage as Stage)); }, [flow.stage]);
 
@@ -316,9 +317,10 @@ function DealFlowCard({
     api.getInvoice(flow.invoice_id)
       .then((inv) => {
         setInvStatus(inv.status);
+        setInvMeta({ subtotal: inv.subtotal ?? 0, tax: inv.tax ?? 0, total: inv.total ?? 0, number: inv.number ?? "" });
         try {
           const li: any[] = JSON.parse(inv.line_items_json || "[]");
-          setInvItems(li.map((it: any) => ({ description: it.description, qty: it.qty })));
+          setInvItems(li.map((it: any) => ({ description: it.description, qty: it.qty, rate: it.rate ?? 0, amount: it.amount ?? 0 })));
         } catch {}
       })
       .catch(() => {});
@@ -467,6 +469,42 @@ function DealFlowCard({
             </div>
           </div>
 
+          {/* Invoice breakdown — what was bought, exactly as on the invoice */}
+          {invItems.length > 0 && (
+            <div className="px-5 pb-4 border-t border-gray-100">
+              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mt-3 mb-2">
+                Invoice Breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
+              </div>
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="text-gray-400">
+                    <th className="text-left font-semibold py-1">Description</th>
+                    <th className="text-right font-semibold py-1 w-12">Qty</th>
+                    <th className="text-right font-semibold py-1 w-20">Rate</th>
+                    <th className="text-right font-semibold py-1 w-24">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invItems.map((it, i) => (
+                    <tr key={i} className="border-t border-gray-50">
+                      <td className="py-1.5 text-gray-700">{it.description}</td>
+                      <td className="py-1.5 text-right tabular-nums text-gray-500">{it.qty}</td>
+                      <td className="py-1.5 text-right tabular-nums text-gray-500">{fmtAmount(it.rate)}</td>
+                      <td className="py-1.5 text-right tabular-nums font-medium text-gray-800">{fmtAmount(it.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {invMeta && (
+                <div className="mt-2 pt-2 border-t border-gray-100 space-y-0.5 text-[12px]">
+                  <div className="flex justify-between text-gray-500"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(invMeta.subtotal)}</span></div>
+                  <div className="flex justify-between text-gray-500"><span>Tax</span><span className="tabular-nums">{fmtAmount(invMeta.tax)}</span></div>
+                  <div className="flex justify-between font-semibold text-gray-900"><span>Total</span><span className="tabular-nums">{fmtAmount(invMeta.total)}</span></div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Action panel */}
           <div className="border-t border-gray-100 bg-gray-50 px-5 py-4">
             {/* Delete button row */}
@@ -555,6 +593,10 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
   >([]);
   const [showForm, setShowForm] = useState(false);
   const [saving,   setSaving]   = useState(false);
+  // Actual dollars received — defaults to the invoice total but the user can
+  // enter a different amount (e.g. a slight underpayment they'll eat).
+  const [receivedAmount, setReceivedAmount] = useState<string>(String(flow.invoice_total || ""));
+  useEffect(() => { setReceivedAmount(String(flow.invoice_total || "")); }, [flow.invoice_total]);
 
   const isDone = si(flow.stage) > si("invoiced");
 
@@ -624,11 +666,11 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
 
   const handleMarkReceived = async () => {
     if (!hasSuppliers) return;
+    const amt = parseFloat(receivedAmount);
+    if (isNaN(amt) || amt < 0) { alert("Enter a valid amount received."); return; }
     setSaving(true);
     try {
-      await api.markPaymentReceived(flow.id, {
-        amount: flow.invoice_total, method: null, notes: null,
-      });
+      await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null });
       onReload();
     } catch (e: any) { alert(e); }
     setSaving(false);
@@ -881,6 +923,27 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
                 Add at least one supplier before marking payment received
               </div>
             )}
+            <div>
+              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Amount received</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">$</span>
+                  <input
+                    type="number" step="0.01" min="0"
+                    value={receivedAmount}
+                    onChange={(e) => setReceivedAmount(e.target.value)}
+                    disabled={!hasSuppliers}
+                    className="border border-gray-200 bg-white text-gray-900 pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 disabled:opacity-50"
+                  />
+                </div>
+                {(() => {
+                  const amt = parseFloat(receivedAmount);
+                  const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
+                  if (!isFinite(diff) || Math.abs(diff) < 0.005) return <span className="text-[11px] text-gray-400">matches invoice {fmtAmount(flow.invoice_total)}</span>;
+                  return <span className={`text-[11px] font-medium ${diff < 0 ? "text-red-500" : "text-emerald-600"}`}>{diff < 0 ? "−" : "+"}{fmtAmount(Math.abs(diff))} vs invoice {fmtAmount(flow.invoice_total)}</span>;
+                })()}
+              </div>
+            </div>
             <button
               onClick={handleMarkReceived}
               disabled={saving || !hasSuppliers}
