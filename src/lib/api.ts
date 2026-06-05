@@ -758,6 +758,7 @@ export interface Lot {
   supplier: string | null;
   location: string | null;
   manifest_path: string | null;
+  price_type: string;
 }
 
 export interface FollowUpRule {
@@ -847,6 +848,13 @@ export interface LotMediaFile {
 export interface LotMediaFiles {
   photos: LotMediaFile[];
   manifests: LotMediaFile[];
+}
+
+export interface WhatsappSettings {
+  template: string;
+  lot_format: string;
+  footer: string;
+  phone: string;
 }
 
 export interface GoogleContact {
@@ -1256,7 +1264,7 @@ export const api = {
 
   // Inventory
   listInventory: (status?: string) => invoke<Lot[]>("list_inventory", { status: status ?? null }),
-  createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string }) =>
+  createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string; priceType?: string }) =>
     invoke<Lot>("create_lot", { ...lot }),
   updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
   setLotStatus: (id: string, status: string) => invoke<void>("set_lot_status", { id, status }),
@@ -1272,6 +1280,9 @@ export const api = {
   getLotMediaFiles: (lotIds: string[]) => invoke<LotMediaFiles>("get_lot_media_files", { lotIds }),
   saveWhatsappFooter: (footer: string) => invoke<void>("save_whatsapp_footer", { footer }),
   getWhatsappFooter: () => invoke<string>("get_whatsapp_footer"),
+  getWhatsappSettings: () => invoke<WhatsappSettings>("get_whatsapp_settings"),
+  saveWhatsappSettings: (s: WhatsappSettings) =>
+    invoke<void>("save_whatsapp_settings", { template: s.template, lotFormat: s.lot_format, footer: s.footer, phone: s.phone }),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 

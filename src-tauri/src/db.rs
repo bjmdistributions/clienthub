@@ -728,4 +728,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE inventory ADD COLUMN manifest_path TEXT;
         "#,
     ),
+    (
+        37,
+        r#"
+        ALTER TABLE inventory ADD COLUMN price_type TEXT NOT NULL DEFAULT 'per_unit' CHECK(price_type IN ('per_unit','total'));
+        "#,
+    ),
 ];

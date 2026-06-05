@@ -362,6 +362,8 @@ fn main() {
             get_lot_media_files,
             save_whatsapp_footer,
             get_whatsapp_footer,
+            get_whatsapp_settings,
+            save_whatsapp_settings,
             // Follow-up rules
             list_followup_rules,
             create_followup_rule,

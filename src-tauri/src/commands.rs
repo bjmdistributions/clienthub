@@ -4346,14 +4346,16 @@ pub struct InventoryLot {
     pub sent_email: bool,
     pub supplier: Option<String>,
     pub location: Option<String>,
+    pub price_type: String,
+    pub manifest_path: Option<String>,
 }
 
 #[tauri::command]
 pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let (sql, params): (String, Vec<String>) = match &status {
-        Some(s) => ("SELECT * FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
-        None => ("SELECT * FROM inventory ORDER BY created_at DESC".into(), vec![]),
+        Some(s) => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
+        None => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path FROM inventory ORDER BY created_at DESC".into(), vec![]),
     };
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
@@ -4361,22 +4363,23 @@ pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>,
         id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, category: r.get(3)?,
         quantity: r.get(4)?, total_cost: r.get(5)?, asking_price: r.get(6)?,
         status: r.get(7)?, linked_deal_id: r.get(8)?, photos_json: r.get(9)?,
-        created_at: r.get(10)?, updated_at: r.get(11)?,
-        notes: r.get(12)?, sent_whatsapp: r.get::<_, i64>(13)? != 0, sent_email: r.get::<_, i64>(14)? != 0,
-        supplier: r.get(15)?, location: r.get(16)?,
+        created_at: r.get(10)?, updated_at: r.get(11)?, notes: r.get(12)?,
+        sent_whatsapp: r.get(13)?, sent_email: r.get(14)?, supplier: r.get(15)?,
+        location: r.get(16)?, price_type: r.get(17)?, manifest_path: r.get(18)?,
     })).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
-pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>, notes: Option<String>, supplier: Option<String>, location: Option<String>) -> Result<InventoryLot, String> {
+pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>, notes: Option<String>, supplier: Option<String>, location: Option<String>, price_type: Option<String>) -> Result<InventoryLot, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let photos_json = serde_json::to_string(&photos.unwrap_or_default()).map_err(|e| e.to_string())?;
+    let pt = price_type.unwrap_or_else(|| "per_unit".into());
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9,?10,0,0,?11,?12)",
-        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now, notes, supplier, location],
+        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location,price_type) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9,?10,0,0,?11,?12,?13)",
+        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now, notes, supplier, location, pt],
     ).map_err(|e| e.to_string())?;
 
     // Sync the full row so other devices can reconstruct it.
@@ -4396,13 +4399,14 @@ pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_pri
     cols.insert("sent_email".into(), serde_json::json!(0));
     cols.insert("supplier".into(), serde_json::json!(supplier));
     cols.insert("location".into(), serde_json::json!(location));
+    cols.insert("price_type".into(), serde_json::json!(pt));
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
 
-    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, supplier, location })
+    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, supplier, location, price_type: pt, manifest_path: None })
 }
 
 #[tauri::command]
-pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, supplier: Option<String>, location: Option<String>) -> Result<(), String> {
+pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, supplier: Option<String>, location: Option<String>, price_type: Option<String>) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut sets = vec!["updated_at = ?1".to_string()];
@@ -4422,6 +4426,7 @@ pub async fn update_lot(id: String, name: Option<String>, description: Option<St
     if let Some(v) = sent_email { sets.push("sent_email = ?".to_string()); cols.insert("sent_email".into(), serde_json::json!(v as i64)); params.push(Box::new(v as i64)); }
     if let Some(v) = supplier { sets.push("supplier = ?".to_string()); cols.insert("supplier".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     if let Some(v) = location { sets.push("location = ?".to_string()); cols.insert("location".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = price_type { sets.push("price_type = ?".to_string()); cols.insert("price_type".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     let sql = format!("UPDATE inventory SET {} WHERE id = ?", sets.join(", "));
     params.push(Box::new(id.clone()));
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
@@ -4587,50 +4592,90 @@ pub struct LotMediaFiles {
 #[tauri::command]
 pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let company: String = conn.query_row(
+
+    // Business name always comes from company_info — never hardcoded.
+    let company_name: String = conn.query_row(
         "SELECT COALESCE(json_extract(value, '$.name'), '') FROM settings WHERE key='company_info'",
         [], |r| r.get(0),
     ).unwrap_or_default();
-    let company_name = if company.is_empty() { "BJM Distributions" } else { company.as_str() };
+    let business_name = if company_name.trim().is_empty() { "Available Inventory".to_string() } else { company_name };
 
-    let footer: String = conn.query_row(
-        "SELECT value FROM settings WHERE key='whatsapp_footer'",
-        [], |r| r.get(0),
-    ).unwrap_or_else(|_| "💬 Reply to claim or for more info".into());
+    let template   = wa_setting(&conn, "whatsapp_message_template", DEFAULT_WA_TEMPLATE);
+    let lot_format = wa_setting(&conn, "whatsapp_lot_format",       DEFAULT_WA_LOT_FORMAT);
+    let footer     = wa_setting(&conn, "whatsapp_footer",           DEFAULT_WA_FOOTER);
+    let phone      = wa_setting(&conn, "whatsapp_phone",            "");
 
-    let phone: String = conn.query_row(
-        "SELECT COALESCE(json_extract(value, '$.phone'), '') FROM settings WHERE key='company_info'",
-        [], |r| r.get(0),
-    ).unwrap_or_default();
-
-    let mut msg = format!("📦 *{} — Available Inventory*\n\n", company_name);
+    // Build the lot list by substituting each lot into the lot-format template.
+    let mut lot_list = String::new();
     let mut idx = 1;
     for lid in &lot_ids {
         let (name, qty, ask, cat): (String, i64, f64, Option<String>) = conn.query_row(
             "SELECT name, quantity, asking_price, category FROM inventory WHERE id=?1",
             [lid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|e| e.to_string())?;
-        msg.push_str(&format!("{}️⃣ *{}*\n", num_emoji(idx), name));
-        msg.push_str(&format!("   📦 {} units · 💰 Asking: {}\n", qty, fmt_money(ask)));
-        if let Some(c) = cat { msg.push_str(&format!("   📂 {}\n", c)); }
-        msg.push('\n');
+        let entry = lot_format
+            .replace("{number}", &idx.to_string())
+            .replace("{lot_name}", &name)
+            .replace("{quantity}", &qty.to_string())
+            .replace("{asking_price}", &fmt_money(ask))
+            .replace("{category}", cat.as_deref().unwrap_or(""));
+        lot_list.push_str(&entry);
+        lot_list.push('\n');
         idx += 1;
     }
-    msg.push_str(&footer);
-    msg.push('\n');
-    if !phone.is_empty() {
-        msg.push_str(&format!("📞 {}", phone));
-        msg.push('\n');
-    }
+    let lot_list = lot_list.trim_end().to_string();
+
+    let msg = template
+        .replace("{business_name}", &business_name)
+        .replace("{lot_list}", &lot_list)
+        .replace("{footer}", &footer)
+        .replace("{phone}", &phone);
     Ok(msg)
 }
 
-fn num_emoji(n: i32) -> String {
-    match n {
-        1 => "1".into(), 2 => "2".into(), 3 => "3".into(), 4 => "4".into(), 5 => "5".into(),
-        6 => "6".into(), 7 => "7".into(), 8 => "8".into(), 9 => "9".into(), 10 => "10".into(),
-        _ => n.to_string(),
+const DEFAULT_WA_TEMPLATE: &str = "*{business_name}*\n\n{lot_list}\n{footer}";
+const DEFAULT_WA_LOT_FORMAT: &str = "{number}\u{fe0f}\u{20e3} *{lot_name}*\n   {quantity} units · Asking: {asking_price} · {category}";
+const DEFAULT_WA_FOOTER: &str = "Reply to claim or for more info";
+
+fn wa_setting(conn: &rusqlite::Connection, key: &str, default: &str) -> String {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
+        .unwrap_or_else(|_| default.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct WhatsappSettings {
+    pub template: String,
+    pub lot_format: String,
+    pub footer: String,
+    pub phone: String,
+}
+
+#[tauri::command]
+pub async fn get_whatsapp_settings() -> Result<WhatsappSettings, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(WhatsappSettings {
+        template:   wa_setting(&conn, "whatsapp_message_template", DEFAULT_WA_TEMPLATE),
+        lot_format: wa_setting(&conn, "whatsapp_lot_format",       DEFAULT_WA_LOT_FORMAT),
+        footer:     wa_setting(&conn, "whatsapp_footer",           DEFAULT_WA_FOOTER),
+        phone:      wa_setting(&conn, "whatsapp_phone",            ""),
+    })
+}
+
+#[tauri::command]
+pub async fn save_whatsapp_settings(template: String, lot_format: String, footer: String, phone: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (k, v) in [
+        ("whatsapp_message_template", &template),
+        ("whatsapp_lot_format",       &lot_format),
+        ("whatsapp_footer",           &footer),
+        ("whatsapp_phone",            &phone),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![k, v],
+        ).map_err(|e| e.to_string())?;
     }
+    Ok(())
 }
 
 fn fmt_money(n: f64) -> String {

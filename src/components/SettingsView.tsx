@@ -22,6 +22,7 @@ import {
   StripeConfigStatus,
   GoogleContact,
   CustomField,
+  WhatsappSettings,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import {
@@ -57,6 +58,8 @@ import {
   SlidersHorizontal,
   Moon,
   Sun,
+  MessageCircle,
+  CheckCheck,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -67,7 +70,7 @@ const inpSm = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full foc
 
 type SettingsTab =
   | "appearance" | "company" | "categories" | "customfields"
-  | "email" | "templates" | "automation"
+  | "email" | "whatsapp" | "templates" | "automation"
   | "ai" | "sheets" | "import" | "payments" | "billing"
   | "sync" | "splits" | "backup" | "team";
 
@@ -87,8 +90,9 @@ const SETTINGS_GROUPS: {
   {
     group: "Communication",
     items: [
-      { id: "email",      label: "Email",       icon: Mail,     desc: "SMTP / IMAP & Pi sending" },
-      { id: "templates",  label: "Templates",   icon: FileText, desc: "Reusable line-item templates" },
+      { id: "email",      label: "Email",       icon: Mail,          desc: "SMTP / IMAP & Pi sending" },
+      { id: "whatsapp",   label: "WhatsApp",    icon: MessageCircle, desc: "Inventory share message template" },
+      { id: "templates",  label: "Templates",   icon: FileText,      desc: "Reusable line-item templates" },
       { id: "automation", label: "Automation",  icon: Zap,      desc: "Signup detection & follow-ups" },
     ],
   },
@@ -174,6 +178,7 @@ export default function SettingsView() {
         <div key={tab} className="page-enter">
           {tab === "appearance"  && <AppearanceTab />}
           {tab === "email"       && <EmailTab />}
+          {tab === "whatsapp"    && <WhatsAppTab />}
           {tab === "company"     && <CompanyTab />}
           {tab === "categories"  && <CategoriesTab />}
           {tab === "ai"          && <AiTab />}
@@ -301,6 +306,123 @@ function SecretInput({
         </button>
       </div>
     </Field>
+  );
+}
+
+// Render WhatsApp *bold* markup faithfully; newlines handled by the pre-wrap container.
+function waFormat(text: string): React.ReactNode {
+  return text.split(/(\*[^*\n]+\*)/g).map((p, i) =>
+    /^\*[^*\n]+\*$/.test(p) ? <strong key={i}>{p.slice(1, -1)}</strong> : <span key={i}>{p}</span>
+  );
+}
+
+const WA_SAMPLE_LOTS = [
+  { name: "Mixed Electronics Pallet", qty: 48, ask: "$1,200.00", cat: "Electronics" },
+  { name: "Designer Sneakers Lot", qty: 120, ask: "$3,400.00", cat: "Shoes" },
+];
+
+function WhatsAppTab() {
+  const [s, setS] = useState<WhatsappSettings>({ template: "", lot_format: "", footer: "", phone: "" });
+  const [companyName, setCompanyName] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getWhatsappSettings().then((v) => { setS(v); setLoaded(true); }).catch(() => setLoaded(true));
+    api.getCompanyInfo().then((c) => c && setCompanyName(c.name || "")).catch(() => {});
+  }, []);
+
+  const set = (k: keyof WhatsappSettings, v: string) => setS((prev) => ({ ...prev, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try { await api.saveWhatsappSettings(s); setSaved(true); setTimeout(() => setSaved(false), 2000); }
+    catch (e: any) { alert(e); }
+    setSaving(false);
+  };
+
+  // Live preview — substitutes sample lots client-side (same logic as the backend).
+  const sub = (str: string, map: Record<string, string>) =>
+    Object.entries(map).reduce((acc, [k, v]) => acc.split(k).join(v), str);
+  const lotList = WA_SAMPLE_LOTS.map((l, i) => sub(s.lot_format, {
+    "{number}": String(i + 1), "{lot_name}": l.name, "{quantity}": String(l.qty),
+    "{asking_price}": l.ask, "{category}": l.cat,
+  })).join("\n");
+  const preview = sub(s.template, {
+    "{business_name}": companyName || "Your Business",
+    "{lot_list}": lotList,
+    "{footer}": s.footer,
+    "{phone}": s.phone,
+  });
+
+  const VarHint = ({ vars }: { vars: string[] }) => (
+    <p className="text-[11px] text-gray-400 mt-1.5">
+      Variables:{" "}
+      {vars.map((v, i) => (
+        <span key={v}>
+          <code className="font-mono text-gray-500">{v}</code>{i < vars.length - 1 ? " · " : ""}
+        </span>
+      ))}
+    </p>
+  );
+
+  const ta = "border border-gray-200 px-3 py-2.5 rounded-lg text-[13px] w-full font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors resize-y";
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-6 max-w-2xl">
+      <p className="text-[12px] text-gray-400 mb-5">
+        Customize the message used when you share inventory to WhatsApp. The business name is pulled from your Company settings.
+      </p>
+
+      <Field label="Message Template">
+        <textarea className={ta} rows={10} value={s.template} onChange={(e) => set("template", e.target.value)} spellCheck={false} />
+      </Field>
+      <VarHint vars={["{business_name}", "{lot_list}", "{footer}", "{phone}"]} />
+
+      <div className="mt-5">
+        <Field label="Lot Format (per item)">
+          <textarea className={ta} rows={3} value={s.lot_format} onChange={(e) => set("lot_format", e.target.value)} spellCheck={false} />
+        </Field>
+        <VarHint vars={["{number}", "{lot_name}", "{quantity}", "{asking_price}", "{category}"]} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mt-5">
+        <Field label="Footer Text">
+          <input className={inp} value={s.footer} onChange={(e) => set("footer", e.target.value)} placeholder="Reply to claim or for more info" />
+        </Field>
+        <Field label="Business Phone">
+          <input className={inp} value={s.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+1 555 123 4567" />
+        </Field>
+      </div>
+
+      {/* Live preview */}
+      <div className="mt-2 mb-6">
+        <SectionLabel>Preview</SectionLabel>
+        <p className="text-[12px] text-gray-400 mt-1 mb-2.5">How it will appear in WhatsApp, with sample lots.</p>
+        <div className="rounded-xl p-4" style={{ background: "var(--t-s3)" }}>
+          <div className="ml-auto max-w-[88%] rounded-2xl rounded-br-md px-3.5 py-2.5 shadow-sm"
+            style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
+            <div className="text-[13px] leading-relaxed whitespace-pre-wrap break-words" style={{ color: "var(--t-tx1)" }}>
+              {loaded ? waFormat(preview) : <span style={{ color: "var(--t-tx4)" }}>Loading…</span>}
+            </div>
+            <div className="flex items-center justify-end gap-1 mt-1.5 text-[10px]" style={{ color: "var(--t-tx4)" }}>
+              <span>12:34 PM</span>
+              <CheckCheck size={13} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button
+        onClick={save}
+        disabled={saving}
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+      >
+        {saved ? <Check size={13} /> : <Save size={13} />}
+        {saved ? "Saved" : "Save WhatsApp Settings"}
+      </button>
+    </div>
   );
 }
 

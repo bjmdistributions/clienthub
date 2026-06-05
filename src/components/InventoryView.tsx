@@ -116,10 +116,13 @@ export default function InventoryView() {
     return true;
   });
 
-  const margin = (lot: Lot) => lot.total_cost > 0 ? `${(((lot.asking_price - lot.total_cost) / lot.total_cost) * 100).toFixed(0)}%` : "—";
-  const marginPct = (lot: Lot) => lot.total_cost > 0 ? ((lot.asking_price - lot.total_cost) / lot.total_cost) * 100 : 0;
-  // Cost & price are per-unit, so total profit = per-unit margin × quantity.
-  const profit = (lot: Lot) => (lot.asking_price - lot.total_cost) * lot.quantity;
+  const unitCost = (lot: Lot) => lot.price_type === "total" && lot.quantity > 0 ? lot.total_cost / lot.quantity : lot.total_cost;
+  const unitAsk = (lot: Lot) => lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
+  const margin = (lot: Lot) => unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "—";
+  const marginPct = (lot: Lot) => unitCost(lot) > 0 ? ((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100 : 0;
+  const totalProfit = (lot: Lot) => lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
+  const totalAsk = (lot: Lot) => lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
+  const totalCostAll = (lot: Lot) => lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
 
   const handleExportInventory = async () => {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "inventory.csv" });
@@ -321,9 +324,11 @@ export default function InventoryView() {
                 {lot.description && <p className="text-[11px] text-gray-400 mb-2 truncate" title={lot.description}>{lot.description}</p>}
 
                 <div className="flex items-center gap-3 text-[12px] mb-2 flex-wrap">
-                  <span className="text-gray-500">Cost/u: <span className="font-medium text-gray-700">{fmtAmount(lot.total_cost)}</span></span>
-                  <span className="text-gray-500">Ask/u: <span className="font-medium text-gray-700">{fmtAmount(lot.asking_price)}</span></span>
-                  <span className={`font-semibold ${profit(lot) >= 0 ? "text-emerald-600" : "text-red-500"}`}>{margin(lot)} · {fmtAmount(profit(lot))}</span>
+                  <span className="text-gray-500">{lot.price_type === "total" ? "Cost/u:" : "Cost/u:"} <span className="font-medium text-gray-700">{fmtAmount(unitCost(lot))}</span></span>
+                  <span className="text-gray-500">Ask/u: <span className="font-medium text-gray-700">{fmtAmount(unitAsk(lot))}</span></span>
+                  <span className="text-[10px] text-gray-400">{lot.price_type === "total" ? "(total)" : `(${lot.quantity}u)`}</span>
+                  <span className={`font-semibold ${totalProfit(lot) >= 0 ? "text-emerald-600" : "text-red-500"}`}>{margin(lot)}</span>
+                  <span className={`text-[12px] font-semibold ${totalProfit(lot) >= 0 ? "text-emerald-700" : "text-red-600"}`}>{fmtAmount(totalProfit(lot))}</span>
                 </div>
                 <div className="w-full h-1.5 bg-gray-100 rounded-full mb-3 overflow-hidden">
                   <div className={`h-full rounded-full transition-all ${marginPct(lot) > 40 ? "bg-emerald-500" : marginPct(lot) > 20 ? "bg-lime-500" : marginPct(lot) >= 0 ? "bg-amber-400" : "bg-red-400"}`}
@@ -412,6 +417,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   const [qty, setQty] = useState(initial?.quantity ?? 1);
   const [cost, setCost] = useState(initial?.total_cost ?? 0);
   const [ask, setAsk] = useState(initial?.asking_price ?? 0);
+  const [priceType, setPriceType] = useState(initial?.price_type ?? "per_unit");
   const [supplier, setSupplier] = useState(initial?.supplier ?? "");
   const [location, setLocation] = useState(initial?.location ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
@@ -437,9 +443,9 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
     if (!name.trim()) return;
     setSaving(true);
     try {
-      if (initial) await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null });
+      if (initial) await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType });
       else {
-        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, photos, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined });
+        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, photos, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType });
         if (sentWa || sentEmail) await api.updateLot(lot.id, { sentWhatsapp: sentWa, sentEmail: sentEmail });
       }
       onClose();
@@ -501,6 +507,17 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} />
               </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Price Type</label>
+            <div className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
+              {(["per_unit", "total"] as const).map(pt => (
+                <button key={pt} onClick={() => setPriceType(pt)}
+                  className={`flex-1 text-[12px] font-medium py-1.5 rounded-md transition-colors ${priceType === pt ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+                  {pt === "per_unit" ? "Per Unit" : "Total"}
+                </button>
+              ))}
             </div>
           </div>
           <div>
@@ -604,10 +621,13 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
   const [big, setBig] = useState(0);
   const [zoom, setZoom] = useState(false);
-  // Cost & price are per-unit; total profit = per-unit margin × quantity.
-  const profit = (lot.asking_price - lot.total_cost) * lot.quantity;
-  const marginPct = lot.total_cost > 0 ? ((lot.asking_price - lot.total_cost) / lot.total_cost) * 100 : 0;
-  const marginStr = lot.total_cost > 0 ? `${marginPct.toFixed(0)}%` : "—";
+  const uCost = lot.price_type === "total" && lot.quantity > 0 ? lot.total_cost / lot.quantity : lot.total_cost;
+  const uAsk = lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
+  const profit = lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
+  const marginPct = uCost > 0 ? ((uAsk - uCost) / uCost) * 100 : 0;
+  const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "—";
+  const totalCostAll = lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
+  const totalAskAll = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
 
   const Row = ({ label, value }: { label: string; value: string }) => (
     <div>
@@ -664,11 +684,24 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
 
           {/* Financials */}
           <div className="grid grid-cols-4 gap-3">
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost/unit</p><p className="text-[14px] font-bold text-gray-900 tabular-nums">{fmtAmount(lot.total_cost)}</p></div>
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask/unit</p><p className="text-[14px] font-bold text-gray-900 tabular-nums">{fmtAmount(lot.asking_price)}</p></div>
+            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost/unit</p><p className="text-[14px] font-bold text-gray-900 tabular-nums">{fmtAmount(uCost)}</p></div>
+            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask/unit</p><p className="text-[14px] font-bold text-gray-900 tabular-nums">{fmtAmount(uAsk)}</p></div>
             <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-emerald-600" : "text-red-500"}`}>{marginStr}</p></div>
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Profit ×{lot.quantity}</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtAmount(profit)}</p></div>
+            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Profit Total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtAmount(profit)}</p></div>
           </div>
+          {lot.price_type === "total" && lot.quantity > 1 && (
+            <div className="grid grid-cols-3 gap-3 mt-0.5">
+              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className={inp + " text-[11px] text-gray-400 bg-gray-50 flex items-center justify-center rounded-lg"}>×{lot.quantity} units</div>
+            </div>
+          )}
+          {lot.price_type === "per_unit" && (
+            <div className="grid grid-cols-3 gap-3 mt-0.5">
+              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+            </div>
+          )}
 
           {/* Details grid */}
           <div className="grid grid-cols-2 gap-4">
