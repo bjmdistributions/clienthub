@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Lot, Deal, ManifestAnalysis } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, ShieldCheck, Truck, MapPin, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
@@ -279,87 +279,92 @@ export default function InventoryView() {
             const lotPhotos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
             const isSel = selected.has(lot.id);
             return (
-            <div key={lot.id} className={`bg-white border rounded-xl overflow-hidden hover:shadow-md transition-shadow flex flex-col ${isSel ? "border-indigo-400 ring-2 ring-indigo-200" : "border-gray-100"}`}>
-              {/* Photo on top */}
-              <div onClick={() => onCardOpen(lot.id)} title={selectMode ? "Select" : "View details"} className="relative w-full h-44 bg-gray-50 flex items-center justify-center overflow-hidden cursor-pointer">
+            <div key={lot.id} onClick={() => onCardOpen(lot.id)} title={selectMode ? "Select" : "Open lot"}
+              className={`group bg-white border rounded-xl overflow-hidden transition-all cursor-pointer flex flex-col hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)] ${isSel ? "border-indigo-400 ring-2 ring-indigo-200" : "border-gray-200 hover:border-gray-300"}`}>
+              {/* Photo */}
+              <div className="relative w-full h-40 bg-gray-50 flex items-center justify-center overflow-hidden">
+                {lotPhotos.length > 0 ? (
+                  <img src={convertFileSrc(resolvePhoto(lotPhotos[0], mediaBase))} alt="" className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                ) : (
+                  <Image size={28} className="text-gray-300" strokeWidth={1.5} />
+                )}
                 {selectMode && (
-                  <span className={`absolute top-2 right-2 z-10 w-6 h-6 rounded-md flex items-center justify-center border-2 ${isSel ? "bg-indigo-600 border-indigo-600" : "bg-white/90 border-gray-300"}`}>
+                  <span className={`absolute top-2.5 right-2.5 z-10 w-6 h-6 rounded-md flex items-center justify-center border-2 ${isSel ? "bg-indigo-600 border-indigo-600" : "bg-white/95 border-gray-300"}`}>
                     {isSel && <Check size={14} className="text-white" />}
                   </span>
                 )}
-                {lotPhotos.length > 0 ? (
-                  <img src={convertFileSrc(resolvePhoto(lotPhotos[0], mediaBase))} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                ) : (
-                  <Image size={30} className="text-gray-300" />
-                )}
-                <div className="absolute top-2 left-2 flex items-center gap-1.5 flex-wrap">
-                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase shadow-sm ${statusColor(lot.status)}`}>{lot.status}</span>
-                  {lot.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/90 text-indigo-600 font-semibold uppercase shadow-sm">{lot.category}</span>}
+                <span className={`absolute top-2.5 left-2.5 text-[9px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide backdrop-blur-sm ${statusColor(lot.status)}`}>{lot.status}</span>
+                <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
+                  {lot.manifest_path && (
+                    <span className="w-5 h-5 rounded-full bg-black/55 text-white flex items-center justify-center" title="Manifest attached"><FileText size={11} /></span>
+                  )}
+                  {lotPhotos.length > 1 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white font-medium flex items-center gap-1"><Image size={9} /> {lotPhotos.length}</span>
+                  )}
                 </div>
-                {lotPhotos.length > 0 && (
-                  <span className="absolute bottom-2 right-2 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white font-medium flex items-center gap-1"><Image size={9} /> {lotPhotos.length}</span>
-                )}
-                {lot.manifest_path && (
-                  <span className="absolute bottom-2 left-2 text-[9px] px-1.5 py-0.5 rounded-full bg-violet-600/80 text-white font-medium flex items-center gap-1" title={lot.manifest_path}>📄 Manifest</span>
-                )}
               </div>
 
               {/* Info */}
-              <div className="p-4 flex flex-col flex-1">
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <h3 onClick={() => onCardOpen(lot.id)} className="text-[14px] font-semibold text-gray-900 leading-tight cursor-pointer hover:text-indigo-600 transition-colors">{lot.name}</h3>
-                  <span className="text-[11px] text-gray-400 whitespace-nowrap flex-shrink-0">{lot.quantity} units</span>
+              <div className="p-3.5 flex flex-col flex-1">
+                <div className="flex items-start justify-between gap-2">
+                  <h3 className="text-[14px] font-semibold text-gray-900 leading-snug line-clamp-1 group-hover:text-indigo-600 transition-colors">{lot.name}</h3>
+                  <span className="text-[11px] text-gray-400 whitespace-nowrap flex-shrink-0 mt-px tabular-nums">{lot.quantity.toLocaleString()} units</span>
                 </div>
-                {lot.notes && (
-                  <span className="inline-flex self-start items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 font-semibold mb-1.5 max-w-full truncate" title={lot.notes}>
-                    <ShieldCheck size={9} className="flex-shrink-0" /> {lot.notes}
-                  </span>
+                {[lot.category, lot.supplier, lot.location].some(Boolean) && (
+                  <p className="text-[11px] text-gray-400 truncate mt-0.5">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
                 )}
-                {(lot.supplier || lot.location) && (
-                  <div className="flex items-center gap-3 text-[11px] text-gray-500 mb-2 flex-wrap">
-                    {lot.supplier && <span className="inline-flex items-center gap-1"><Truck size={11} className="text-gray-400" /> {lot.supplier}</span>}
-                    {lot.location && <span className="inline-flex items-center gap-1"><MapPin size={11} className="text-gray-400" /> {lot.location}</span>}
+                {lot.notes && <p className="text-[11px] text-gray-500 truncate mt-1.5">{lot.notes}</p>}
+
+                {/* Metrics */}
+                <div className="flex items-end justify-between mt-3">
+                  <div>
+                    <div className="text-[9px] uppercase tracking-wider text-gray-400 font-medium">Unit cost → ask</div>
+                    <div className="text-[13px] text-gray-700 tabular-nums mt-0.5">
+                      <span className="font-semibold">{fmtAmount(unitCost(lot))}</span>
+                      <span className="text-gray-300 mx-1">→</span>
+                      <span className="font-semibold">{fmtAmount(unitAsk(lot))}</span>
+                    </div>
                   </div>
-                )}
-                {lot.description && <p className="text-[11px] text-gray-400 mb-2 truncate" title={lot.description}>{lot.description}</p>}
-
-                <div className="flex items-center gap-3 text-[12px] mb-2 flex-wrap">
-                  <span className="text-gray-500">{lot.price_type === "total" ? "Cost/u:" : "Cost/u:"} <span className="font-medium text-gray-700">{fmtAmount(unitCost(lot))}</span></span>
-                  <span className="text-gray-500">Ask/u: <span className="font-medium text-gray-700">{fmtAmount(unitAsk(lot))}</span></span>
-                  <span className="text-[10px] text-gray-400">{lot.price_type === "total" ? "(total)" : `(${lot.quantity}u)`}</span>
-                  <span className={`font-semibold ${totalProfit(lot) >= 0 ? "text-emerald-600" : "text-red-500"}`}>{margin(lot)}</span>
-                  <span className={`text-[12px] font-semibold ${totalProfit(lot) >= 0 ? "text-emerald-700" : "text-red-600"}`}>{fmtAmount(totalProfit(lot))}</span>
-                </div>
-                <div className="w-full h-1.5 bg-gray-100 rounded-full mb-3 overflow-hidden">
-                  <div className={`h-full rounded-full transition-all ${marginPct(lot) > 40 ? "bg-emerald-500" : marginPct(lot) > 20 ? "bg-lime-500" : marginPct(lot) >= 0 ? "bg-amber-400" : "bg-red-400"}`}
-                    style={{ width: `${Math.min(Math.max(marginPct(lot), 0), 100)}%` }} />
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-[9px] uppercase tracking-wider text-gray-400 font-medium">Profit</div>
+                    <div className={`text-[15px] font-bold tabular-nums mt-0.5 leading-none ${totalProfit(lot) >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtAmount(totalProfit(lot))}</div>
+                  </div>
                 </div>
 
-                {/* Send status — clear text, click to toggle */}
-                <div className="flex items-center gap-1.5 mb-2.5 flex-wrap">
-                  <button onClick={() => toggleSent(lot, "whatsapp")} title="Click to toggle WhatsApp status"
-                    className={`flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full border transition-colors ${lot.sent_whatsapp ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"}`}>
-                    <MessageCircle size={11} /> {lot.sent_whatsapp ? "WhatsApp sent" : "Needs WhatsApp"}
+                {/* Margin bar */}
+                <div className="flex items-center gap-2 mt-2.5">
+                  <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${marginPct(lot) > 40 ? "bg-emerald-500" : marginPct(lot) > 20 ? "bg-emerald-400" : marginPct(lot) >= 0 ? "bg-amber-400" : "bg-red-400"}`}
+                      style={{ width: `${Math.min(Math.max(marginPct(lot), 0), 100)}%` }} />
+                  </div>
+                  <span className="text-[10px] font-semibold tabular-nums text-gray-500 w-9 text-right">{margin(lot)}</span>
+                </div>
+
+                {/* Send status — quiet chips */}
+                <div className="flex items-center gap-1.5 mt-3" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => toggleSent(lot, "whatsapp")} title={lot.sent_whatsapp ? "Sent on WhatsApp" : "Not sent on WhatsApp"}
+                    className={`flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors ${lot.sent_whatsapp ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100"}`}>
+                    <MessageCircle size={11} /> WhatsApp {lot.sent_whatsapp && <Check size={10} />}
                   </button>
-                  <button onClick={() => toggleSent(lot, "email")} title="Click to toggle email status"
-                    className={`flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full border transition-colors ${lot.sent_email ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"}`}>
-                    <Mail size={11} /> {lot.sent_email ? "Emailed" : "Needs email"}
+                  <button onClick={() => toggleSent(lot, "email")} title={lot.sent_email ? "Emailed" : "Not emailed"}
+                    className={`flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors ${lot.sent_email ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100"}`}>
+                    <Mail size={11} /> Email {lot.sent_email && <Check size={10} />}
                   </button>
                 </div>
 
-                {/* Actions — tidy single row; full set lives in the detail panel */}
-                <div className="flex items-center gap-1 flex-wrap mt-auto pt-1 border-t border-gray-50">
-                  <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-gray-500 hover:text-gray-800 px-2 py-1 rounded hover:bg-gray-50">Edit</button>
+                {/* Actions */}
+                <div className="flex items-center gap-0.5 mt-3 pt-2.5 border-t border-gray-100" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-gray-500 hover:text-gray-900 px-2 py-1 rounded-md hover:bg-gray-100 transition-colors">Edit</button>
                   {lot.status !== "sold" && (
-                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded hover:bg-emerald-50 flex items-center gap-1"><DollarSign size={11} /> Sold</button>
+                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-gray-500 hover:text-emerald-700 px-2 py-1 rounded-md hover:bg-emerald-50 transition-colors">Mark Sold</button>
                   )}
                   {lot.status !== "archived" ? (
-                    <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-amber-600 hover:text-amber-700 px-2 py-1 rounded hover:bg-amber-50 flex items-center gap-1"><Ban size={11} /> N/A</button>
+                    <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-gray-500 hover:text-amber-700 px-2 py-1 rounded-md hover:bg-amber-50 transition-colors">Unavailable</button>
                   ) : (
-                    <button onClick={() => setStatus(lot, "available")} className="text-[11px] text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50">Restore</button>
+                    <button onClick={() => setStatus(lot, "available")} className="text-[11px] text-gray-500 hover:text-gray-900 px-2 py-1 rounded-md hover:bg-gray-100 transition-colors">Restore</button>
                   )}
                   <div className="flex-1" />
-                  <button onClick={() => deleteOne(lot)} title="Delete lot" className="text-gray-300 hover:text-red-500 p-1 rounded hover:bg-red-50"><Trash2 size={13} /></button>
+                  <button onClick={() => deleteOne(lot)} title="Delete lot" className="text-gray-300 hover:text-red-500 p-1 rounded-md hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
                 </div>
               </div>
             </div>
@@ -389,6 +394,7 @@ export default function InventoryView() {
             onToggleSent={(c) => toggleSent(detail, c)}
             onLink={() => openLink(detail.id)}
             onDelete={() => deleteOne(detail)}
+            onChanged={load}
           />
         );
       })()}
@@ -614,13 +620,28 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   );
 }
 
-function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete }: {
+function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged }: {
   lot: Lot; mediaBase: string; onClose: () => void; onEdit: () => void;
-  onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void;
+  onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
 }) {
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
   const [big, setBig] = useState(0);
   const [zoom, setZoom] = useState(false);
+  const [mBusy, setMBusy] = useState(false);
+
+  const addManifest = async () => {
+    const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
+    if (typeof f !== "string") return;
+    setMBusy(true);
+    try { await api.attachLotManifest(lot.id, f); onChanged(); } catch (e: any) { alert(e); }
+    setMBusy(false);
+  };
+  const removeManifest = async () => {
+    setMBusy(true);
+    try { await api.removeLotManifest(lot.id); onChanged(); } catch (e: any) { alert(e); }
+    setMBusy(false);
+  };
+  const manifestName = lot.manifest_path ? (lot.manifest_path.split(/[/\\]/).pop() || "manifest") : "";
   const uCost = lot.price_type === "total" && lot.quantity > 0 ? lot.total_cost / lot.quantity : lot.total_cost;
   const uAsk = lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
   const profit = lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
@@ -716,6 +737,25 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
               <p className="text-[13px] text-gray-700 whitespace-pre-wrap">{lot.description}</p>
             </div>
           )}
+
+          {/* Manifest */}
+          <div>
+            <p className="text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1.5">Manifest</p>
+            {lot.manifest_path ? (
+              <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+                <FileText size={15} className="text-gray-400 flex-shrink-0" />
+                <span className="text-[13px] text-gray-700 truncate flex-1" title={manifestName}>{manifestName}</span>
+                <button onClick={addManifest} disabled={mBusy} className="text-[11px] text-gray-500 hover:text-gray-800 px-2 py-1 rounded hover:bg-gray-100">Replace</button>
+                <button onClick={removeManifest} disabled={mBusy} className="text-[11px] text-gray-400 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50">Remove</button>
+              </div>
+            ) : (
+              <button onClick={addManifest} disabled={mBusy}
+                className="flex items-center gap-1.5 text-[12px] text-gray-600 border border-dashed border-gray-300 hover:border-indigo-400 hover:text-indigo-600 px-3 h-9 rounded-lg transition-colors disabled:opacity-50">
+                {mBusy ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={13} />} Add manifest (PDF / CSV)
+              </button>
+            )}
+          </div>
+
           <div className="flex items-center gap-4 text-[11px] text-gray-400">
             <span>Added {lot.created_at.slice(0, 10)}</span>
             <span>Updated {lot.updated_at.slice(0, 10)}</span>
