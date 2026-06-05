@@ -4766,7 +4766,12 @@ pub async fn whatsapp_embed_show(
     let url = "https://web.whatsapp.com"
         .parse()
         .map_err(|e| format!("bad url: {e}"))?;
-    let builder = tauri::webview::WebviewBuilder::new("whatsapp", tauri::WebviewUrl::External(url));
+    // `disable_drag_drop_handler` is essential: otherwise Tauri intercepts OS
+    // file drops on this webview and emits its own event, so the dropped photo
+    // never reaches WhatsApp's web page. Disabling it lets the drop fall through
+    // to WhatsApp's own "drop to attach" handler.
+    let builder = tauri::webview::WebviewBuilder::new("whatsapp", tauri::WebviewUrl::External(url))
+        .disable_drag_drop_handler();
     window
         .add_child(builder, pos, size)
         .map_err(|e| e.to_string())?;

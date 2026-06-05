@@ -352,8 +352,16 @@ export default function InventoryView() {
                   </button>
                 </div>
 
+                {/* Primary action — share this lot to WhatsApp directly */}
+                <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: [lot.id] }))}
+                    className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 h-8 rounded-lg transition-colors">
+                    <Send size={13} /> Send to WhatsApp
+                  </button>
+                </div>
+
                 {/* Actions */}
-                <div className="flex items-center gap-0.5 mt-3 pt-2.5 border-t border-gray-100" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-0.5 mt-2 pt-2.5 border-t border-gray-100" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-gray-500 hover:text-gray-900 px-2 py-1 rounded-md hover:bg-gray-100 transition-colors">Edit</button>
                   {lot.status !== "sold" && (
                     <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-gray-500 hover:text-emerald-700 px-2 py-1 rounded-md hover:bg-emerald-50 transition-colors">Mark Sold</button>
