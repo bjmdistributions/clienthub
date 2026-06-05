@@ -757,6 +757,7 @@ export interface Lot {
   sent_email: boolean;
   supplier: string | null;
   location: string | null;
+  manifest_path: string | null;
 }
 
 export interface FollowUpRule {
@@ -1252,7 +1253,10 @@ export const api = {
   deleteLot: (id: string) => invoke<void>("delete_lot", { id }),
   deleteLots: (ids: string[]) => invoke<number>("delete_lots", { ids }),
   resyncInventory: () => invoke<number>("resync_inventory"),
-  importLotPhotos: (paths: string[]) => invoke<string[]>("import_lot_photos", { paths }),
+  importLotPhotos: (lotId: string, paths: string[]) => invoke<string[]>("import_lot_photos", { lotId, paths }),
+  removeLotPhoto: (lotId: string, photoPath: string) => invoke<string[]>("remove_lot_photo", { lotId, photoPath }),
+  attachLotManifest: (lotId: string, filePath: string) => invoke<string>("attach_lot_manifest", { lotId, filePath }),
+  removeLotManifest: (lotId: string) => invoke<void>("remove_lot_manifest", { lotId }),
   mediaBaseDir: () => invoke<string>("media_base_dir"),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),

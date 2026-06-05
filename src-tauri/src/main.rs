@@ -354,6 +354,9 @@ fn main() {
             delete_lots,
             resync_inventory,
             import_lot_photos,
+            remove_lot_photo,
+            attach_lot_manifest,
+            remove_lot_manifest,
             media_base_dir,
             // Follow-up rules
             list_followup_rules,

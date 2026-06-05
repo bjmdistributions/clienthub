@@ -290,8 +290,11 @@ export default function InventoryView() {
                   <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase shadow-sm ${statusColor(lot.status)}`}>{lot.status}</span>
                   {lot.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/90 text-indigo-600 font-semibold uppercase shadow-sm">{lot.category}</span>}
                 </div>
-                {lotPhotos.length > 1 && (
+                {lotPhotos.length > 0 && (
                   <span className="absolute bottom-2 right-2 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white font-medium flex items-center gap-1"><Image size={9} /> {lotPhotos.length}</span>
+                )}
+                {lot.manifest_path && (
+                  <span className="absolute bottom-2 left-2 text-[9px] px-1.5 py-0.5 rounded-full bg-violet-600/80 text-white font-medium flex items-center gap-1" title={lot.manifest_path}>📄 Manifest</span>
                 )}
               </div>
 
@@ -412,6 +415,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   const [sentWa, setSentWa] = useState(initial?.sent_whatsapp ?? false);
   const [sentEmail, setSentEmail] = useState(initial?.sent_email ?? false);
   const [photos, setPhotos] = useState<string[]>(() => { try { return JSON.parse(initial?.photos_json ?? "[]") ?? []; } catch { return []; } });
+  const [manifestPath, setManifestPath] = useState<string | null>(initial?.manifest_path ?? null);
   const [saving, setSaving] = useState(false);
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null);
 
@@ -516,7 +520,12 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
               {photos.map((p, i) => (
                 <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
                   <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-gray-200 cursor-pointer hover:border-indigo-400 transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
-                  <button onClick={() => setPhotos(photos.filter((_, idx) => idx !== i))} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
+                   <button onClick={async () => {
+                     if (initial) {
+                       try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { alert(e); }
+                     }
+                     setPhotos(photos.filter((_, idx) => idx !== i));
+                   }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
                 </div>
               ))}
               <button onClick={async () => {
@@ -524,8 +533,12 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
                 const picked = Array.isArray(f) ? f : (typeof f === "string" ? [f] : []);
                 if (picked.length === 0) return;
                 try {
-                  const rel = await api.importLotPhotos(picked);   // copy into synced folder → relative paths
-                  setPhotos([...photos, ...rel]);
+                  if (initial) {
+                    const rel = await api.importLotPhotos(initial.id, picked);
+                    setPhotos([...photos, ...rel]);
+                  } else {
+                    setPhotos([...photos, ...picked]);
+                  }
                 } catch (e: any) { alert(e); }
               }} className="w-[72px] h-[72px] border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors group">
                 <Plus size={18} className="text-gray-400 group-hover:text-indigo-500 transition-colors" />
@@ -535,6 +548,30 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
               <Image size={10} /> Photos are copied into your synced folder, so they show on all your devices.
             </p>
           </div>
+
+          {initial && (
+            <div>
+              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Manifest</label>
+              {manifestPath ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px] text-gray-600 truncate max-w-[260px]">{manifestPath.split(/[/\\]/).pop()!.length > 20 ? manifestPath.split(/[/\\]/).pop()!.slice(0, 17) + "..." : manifestPath.split(/[/\\]/).pop()}</span>
+                  <button onClick={async () => {
+                    try { await api.removeLotManifest(initial.id); setManifestPath(null); } catch (e: any) { alert(e); }
+                  }} className="text-[11px] text-red-400 hover:text-red-600">Remove</button>
+                </div>
+              ) : (
+                <button onClick={async () => {
+                  const f = await openDialog({ multiple: false, filters: [{ name: "Documents", extensions: ["pdf", "csv"] }] });
+                  if (typeof f !== "string") return;
+                  try {
+                    const rel = await api.attachLotManifest(initial.id, f);
+                    setManifestPath(rel);
+                  } catch (e: any) { alert(e); }
+                }} className="text-[11px] text-indigo-600 hover:text-indigo-800 font-medium">+ Attach Manifest (PDF or CSV)</button>
+              )}
+            </div>
+          )}
+
         </div>
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="px-4 h-9 text-[13px] text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50">Cancel</button>

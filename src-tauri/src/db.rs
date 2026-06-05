@@ -722,4 +722,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_quotes_status ON quotes(status);
         "#,
     ),
+    (
+        36,
+        r#"
+        ALTER TABLE inventory ADD COLUMN manifest_path TEXT;
+        "#,
+    ),
 ];

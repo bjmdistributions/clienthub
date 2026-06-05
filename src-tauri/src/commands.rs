@@ -4459,40 +4459,114 @@ pub async fn link_lot_to_deal(lot_id: String, deal_id: String) -> Result<(), Str
     Ok(())
 }
 
-/// Directory where synced inventory photos live: <app_data>/sync/media.
-/// It sits inside the Syncthing-shared `sync` folder so the image files
-/// replicate to every device alongside the event log.
-fn media_dir() -> Result<std::path::PathBuf, String> {
-    let dir = crate::db::app_data_dir().join("sync").join("media");
+/// Directory where a specific lot's media lives: <app_data>/sync/media/inventory/<lot_id>/
+fn lot_media_dir(lot_id: &str) -> Result<std::path::PathBuf, String> {
+    let dir = crate::db::app_data_dir().join("sync").join("media").join("inventory").join(lot_id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
-/// Copy picked image files into the synced media folder and return their
-/// device-independent relative paths (e.g. "media/<uuid>.jpg"). Stored in
-/// photos_json so they resolve on any device. Already-relative inputs pass
-/// through unchanged (idempotent on re-save).
+/// Copy image files into the lot's media directory, named photo_001.jpg etc.
+/// Continues numbering from existing photos. Returns relative paths.
 #[tauri::command]
-pub async fn import_lot_photos(paths: Vec<String>) -> Result<Vec<String>, String> {
-    let dir = media_dir()?;
+pub async fn import_lot_photos(lot_id: String, paths: Vec<String>) -> Result<Vec<String>, String> {
+    let dir = lot_media_dir(&lot_id)?;
+    let photo_dir = dir.join("photos");
+    std::fs::create_dir_all(&photo_dir).map_err(|e| e.to_string())?;
+
+    let mut max_n: u32 = 0;
+    if let Ok(entries) = std::fs::read_dir(&photo_dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("photo_") && name.ends_with(".jpg") {
+                if let Some(num_str) = name.strip_prefix("photo_").and_then(|s| s.strip_suffix(".jpg")) {
+                    if let Ok(n) = num_str.parse::<u32>() { max_n = max_n.max(n); }
+                }
+            }
+        }
+    }
+    if max_n == 0 { max_n = 1; } else { max_n += 1; }
+
     let mut out = Vec::new();
-    for p in paths {
+    for (i, p) in paths.iter().enumerate() {
         if p.starts_with("media/") || p.starts_with("media\\") {
             out.push(p.replace('\\', "/"));
             continue;
         }
-        let src = std::path::Path::new(&p);
+        let src = std::path::Path::new(p);
         let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("img").to_lowercase();
-        let fname = format!("{}.{}", uuid::Uuid::new_v4(), ext);
-        let dest = dir.join(&fname);
+        let num = max_n + i as u32;
+        let fname = format!("photo_{:03}.{}", num, ext);
+        let dest = photo_dir.join(&fname);
         std::fs::copy(src, &dest).map_err(|e| format!("Couldn't copy photo: {}", e))?;
-        out.push(format!("media/{}", fname));
+        out.push(format!("media/inventory/{}/photos/{}", lot_id, fname));
     }
     Ok(out)
 }
 
-/// Absolute path of the synced folder that relative photo paths resolve
-/// against on THIS device (frontend joins "<base>/media/<file>").
+/// Remove a single photo — deletes the file from disk and returns updated photo list path.
+#[tauri::command]
+pub async fn remove_lot_photo(lot_id: String, photo_path: String) -> Result<Vec<String>, String> {
+    let full = crate::db::app_data_dir().join("sync").join(&photo_path.replace('\\', "/"));
+    let _ = std::fs::remove_file(&full);
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let photos_str: String = conn.query_row("SELECT photos_json FROM inventory WHERE id=?1", [&lot_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let mut photos: Vec<String> = serde_json::from_str(&photos_str).unwrap_or_default();
+    photos.retain(|p| p != &photo_path.replace('\\', "/"));
+    let new_json = serde_json::to_string(&photos).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute("UPDATE inventory SET photos_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![new_json, now, &lot_id])
+        .map_err(|e| e.to_string())?;
+    Ok(photos)
+}
+
+/// Attach a manifest file (PDF/CSV). Deletes old manifest if one exists.
+#[tauri::command]
+pub async fn attach_lot_manifest(lot_id: String, file_path: String) -> Result<String, String> {
+    let dir = lot_media_dir(&lot_id)?;
+    let src = std::path::Path::new(&file_path);
+    let fname = src.file_name().and_then(|f| f.to_str()).unwrap_or("manifest");
+    let dest = dir.join("manifest");
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let dest_path = if !ext.is_empty() { format!("{}.{}", dest.to_string_lossy(), ext) } else { dest.to_string_lossy().to_string() };
+    let rel_path = format!("media/inventory/{}/manifest.{}", lot_id, ext);
+
+    let old_manifest: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT manifest_path FROM inventory WHERE id=?1", [&lot_id], |r| r.get(0)).ok()
+    };
+    if let Some(ref old) = old_manifest {
+        let old_full = crate::db::app_data_dir().join("sync").join(old.replace('\\', "/"));
+        let _ = std::fs::remove_file(&old_full);
+    }
+
+    std::fs::copy(src, &dest_path).map_err(|e| format!("Couldn't copy manifest: {}", e))?;
+
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE inventory SET manifest_path=?1, updated_at=?2 WHERE id=?3", rusqlite::params![rel_path, now, &lot_id])
+        .map_err(|e| e.to_string())?;
+    Ok(rel_path)
+}
+
+/// Remove attached manifest — deletes file from disk.
+#[tauri::command]
+pub async fn remove_lot_manifest(lot_id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let rel: Option<String> = conn.query_row("SELECT manifest_path FROM inventory WHERE id=?1", [&lot_id], |r| r.get(0)).ok();
+    if let Some(ref p) = rel {
+        let full = crate::db::app_data_dir().join("sync").join(p.replace('\\', "/"));
+        let _ = std::fs::remove_file(&full);
+    }
+    let now = Utc::now().to_rfc3339();
+    conn.execute("UPDATE inventory SET manifest_path=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, &lot_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Absolute path of the synced folder that relative media paths resolve against.
 #[tauri::command]
 pub fn media_base_dir() -> Result<String, String> {
     Ok(crate::db::app_data_dir().join("sync").to_string_lossy().to_string())
@@ -4521,6 +4595,8 @@ pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn delete_lot(id: String) -> Result<(), String> {
+    let media_dir = crate::db::app_data_dir().join("sync").join("media").join("inventory").join(&id);
+    let _ = std::fs::remove_dir_all(&media_dir);
     crate::sync::record_delete("inventory", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM inventory WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
