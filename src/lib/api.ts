@@ -1283,6 +1283,10 @@ export const api = {
   getWhatsappSettings: () => invoke<WhatsappSettings>("get_whatsapp_settings"),
   saveWhatsappSettings: (s: WhatsappSettings) =>
     invoke<void>("save_whatsapp_settings", { template: s.template, lotFormat: s.lot_format, footer: s.footer, phone: s.phone }),
+  openLotFolder: (lotId: string) => invoke<void>("open_lot_folder", { lotId }),
+  whatsappWebReachable: () => invoke<boolean>("whatsapp_web_reachable"),
+  openWhatsappWindow: () => invoke<void>("open_whatsapp_window"),
+  closeWhatsappWindow: () => invoke<void>("close_whatsapp_window"),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 

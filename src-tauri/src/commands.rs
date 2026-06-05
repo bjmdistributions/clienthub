@@ -4678,6 +4678,67 @@ pub async fn save_whatsapp_settings(template: String, lot_format: String, footer
     Ok(())
 }
 
+/// Open a lot's media folder in the OS file manager (Explorer/Finder) so files
+/// can be dragged straight into WhatsApp Web.
+#[tauri::command]
+pub async fn open_lot_folder(app: tauri::AppHandle, lot_id: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+    let dir = lot_media_dir(&lot_id)?;
+    app.shell()
+        .open(dir.to_string_lossy().to_string(), None)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Quick reachability check for WhatsApp Web (TCP connect, no HTTP). Drives the
+/// "no internet" error + retry in the share panel without any third-party API.
+#[tauri::command]
+pub fn whatsapp_web_reachable() -> bool {
+    use std::net::ToSocketAddrs;
+    let addrs = match ("web.whatsapp.com", 443u16).to_socket_addrs() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    for addr in addrs {
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(4)).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Open WhatsApp Web in a dedicated Tauri webview window (WebviewUrl::External).
+/// A real browser engine — required because web.whatsapp.com refuses to be
+/// embedded in an iframe (frame-ancestors). No script injection, no automation;
+/// the persistent login session lives in this window.
+#[tauri::command]
+pub async fn open_whatsapp_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("whatsapp") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url = "https://web.whatsapp.com".parse().map_err(|e| format!("bad url: {e}"))?;
+    tauri::WebviewWindowBuilder::new(&app, "whatsapp", tauri::WebviewUrl::External(url))
+        .title("WhatsApp Web — ClientHub")
+        .inner_size(1100.0, 820.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Destroy the WhatsApp webview window — called when the share panel closes so
+/// there is no lingering webview / memory leak.
+#[tauri::command]
+pub async fn close_whatsapp_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("whatsapp") {
+        let _ = w.close();
+    }
+    Ok(())
+}
+
 fn fmt_money(n: f64) -> String {
     let int = n.trunc() as i64;
     let frac = ((n.fract().abs() * 100.0).round() as i64) % 100;
