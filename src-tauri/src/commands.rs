@@ -4572,6 +4572,127 @@ pub fn media_base_dir() -> Result<String, String> {
     Ok(crate::db::app_data_dir().join("sync").to_string_lossy().to_string())
 }
 
+#[derive(Serialize)]
+pub struct LotMediaFile {
+    pub path: String,
+    pub lot_name: String,
+}
+
+#[derive(Serialize)]
+pub struct LotMediaFiles {
+    pub photos: Vec<LotMediaFile>,
+    pub manifests: Vec<LotMediaFile>,
+}
+
+#[tauri::command]
+pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let company: String = conn.query_row(
+        "SELECT COALESCE(json_extract(value, '$.name'), '') FROM settings WHERE key='company_info'",
+        [], |r| r.get(0),
+    ).unwrap_or_default();
+    let company_name = if company.is_empty() { "BJM Distributions" } else { company.as_str() };
+
+    let footer: String = conn.query_row(
+        "SELECT value FROM settings WHERE key='whatsapp_footer'",
+        [], |r| r.get(0),
+    ).unwrap_or_else(|_| "💬 Reply to claim or for more info".into());
+
+    let phone: String = conn.query_row(
+        "SELECT COALESCE(json_extract(value, '$.phone'), '') FROM settings WHERE key='company_info'",
+        [], |r| r.get(0),
+    ).unwrap_or_default();
+
+    let mut msg = format!("📦 *{} — Available Inventory*\n\n", company_name);
+    let mut idx = 1;
+    for lid in &lot_ids {
+        let (name, qty, ask, cat): (String, i64, f64, Option<String>) = conn.query_row(
+            "SELECT name, quantity, asking_price, category FROM inventory WHERE id=?1",
+            [lid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .map_err(|e| e.to_string())?;
+        msg.push_str(&format!("{}️⃣ *{}*\n", num_emoji(idx), name));
+        msg.push_str(&format!("   📦 {} units · 💰 Asking: {}\n", qty, fmt_money(ask)));
+        if let Some(c) = cat { msg.push_str(&format!("   📂 {}\n", c)); }
+        msg.push('\n');
+        idx += 1;
+    }
+    msg.push_str(&footer);
+    msg.push('\n');
+    if !phone.is_empty() {
+        msg.push_str(&format!("📞 {}", phone));
+        msg.push('\n');
+    }
+    Ok(msg)
+}
+
+fn num_emoji(n: i32) -> String {
+    match n {
+        1 => "1".into(), 2 => "2".into(), 3 => "3".into(), 4 => "4".into(), 5 => "5".into(),
+        6 => "6".into(), 7 => "7".into(), 8 => "8".into(), 9 => "9".into(), 10 => "10".into(),
+        _ => n.to_string(),
+    }
+}
+
+fn fmt_money(n: f64) -> String {
+    let int = n.trunc() as i64;
+    let frac = ((n.fract().abs() * 100.0).round() as i64) % 100;
+    let s = format!("{}", int.abs());
+    let mut out = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { out.push(','); }
+        out.push(c);
+    }
+    let int_str: String = out.chars().rev().collect();
+    let sign = if int < 0 { "-" } else { "" };
+    format!("${}{}.{:02}", sign, int_str, frac)
+}
+
+#[tauri::command]
+pub async fn get_lot_media_files(lot_ids: Vec<String>) -> Result<LotMediaFiles, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let base = crate::db::app_data_dir().join("sync");
+    let mut photos = Vec::new();
+    let mut manifests = Vec::new();
+
+    for lid in &lot_ids {
+        let (name, photos_json, manifest): (String, String, Option<String>) = conn.query_row(
+            "SELECT name, photos_json, manifest_path FROM inventory WHERE id=?1",
+            [lid], |r| Ok((r.get(0)?, r.get::<_,String>(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?;
+
+        let photo_paths: Vec<String> = serde_json::from_str(&photos_json).unwrap_or_default();
+        for pp in &photo_paths {
+            let full = base.join(pp.replace('\\', "/"));
+            if full.exists() {
+                photos.push(LotMediaFile { path: full.to_string_lossy().to_string(), lot_name: name.clone() });
+            }
+        }
+        if let Some(ref mp) = manifest {
+            let full = base.join(mp.replace('\\', "/"));
+            if full.exists() {
+                manifests.push(LotMediaFile { path: full.to_string_lossy().to_string(), lot_name: name.clone() });
+            }
+        }
+    }
+    Ok(LotMediaFiles { photos, manifests })
+}
+
+#[tauri::command]
+pub async fn save_whatsapp_footer(footer: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key, value) VALUES ('whatsapp_footer', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&footer])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_whatsapp_footer() -> Result<String, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let val: String = conn.query_row("SELECT value FROM settings WHERE key='whatsapp_footer'", [], |r| r.get(0))
+        .unwrap_or_else(|_| "💬 Reply to claim or for more info".into());
+    Ok(val)
+}
+
 #[tauri::command]
 pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
     if !["available", "reserved", "sold", "archived"].contains(&status.as_str()) {

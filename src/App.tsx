@@ -30,6 +30,7 @@ import DealsView from "./components/DealsView";
 import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
 import InventoryView from "./components/InventoryView";
+import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import HealthView from "./components/HealthView";
 import BriefView from "./components/BriefView";
@@ -141,6 +142,8 @@ export default function App() {
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [sharePanelIds, setSharePanelIds] = useState<string[] | null>(null);
+  const [shareMediaBase, setShareMediaBase] = useState("");
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<any | null>(undefined);
 
@@ -152,6 +155,19 @@ export default function App() {
     if (onboarded !== true) return;
     api.getCurrentUser().then((u) => setCurrentUser(u)).catch(() => setCurrentUser(null));
   }, [onboarded]);
+
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const ids = (e as CustomEvent).detail as string[];
+      if (ids && ids.length > 0) {
+        const base = await api.mediaBaseDir();
+        setShareMediaBase(base);
+        setSharePanelIds(ids);
+      }
+    };
+    window.addEventListener("share-whatsapp", handler);
+    return () => window.removeEventListener("share-whatsapp", handler);
+  }, []);
 
   // Sliding nav indicator
   const navRef = useRef<HTMLElement>(null);
@@ -487,6 +503,13 @@ export default function App() {
       {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+      {sharePanelIds && (
+        <WhatsAppSharePanel
+          lotIds={sharePanelIds}
+          mediaBase={shareMediaBase}
+          onClose={() => setSharePanelIds(null)}
+        />
+      )}
     </div>
   );
 }

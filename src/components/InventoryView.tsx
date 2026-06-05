@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Lot, Deal, ManifestAnalysis } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, ShieldCheck, Truck, MapPin, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, ShieldCheck, Truck, MapPin, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
@@ -178,6 +178,9 @@ export default function InventoryView() {
           <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-gray-600 border border-gray-200 px-2.5 h-8 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
           <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-gray-600 border border-gray-200 px-2.5 h-8 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
           <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-white bg-red-600 hover:bg-red-700 px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
+          <button onClick={() => {
+            window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: Array.from(selected) }));
+          }} disabled={!selected.size} className="text-[12px] text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
         </div>
       )}
 

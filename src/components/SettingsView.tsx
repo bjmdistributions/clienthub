@@ -593,6 +593,25 @@ function PiSmtpSection({ settings }: { settings: EmailSettings }) {
   );
 }
 
+function WhatsAppFooterField() {
+  const [footer, setFooter] = useState("");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { api.getWhatsappFooter().then(setFooter).catch(() => {}); }, []);
+  const save = async () => { await api.saveWhatsappFooter(footer); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+  return (
+    <div>
+      <label className="block text-[12px] font-medium text-gray-500 mb-1.5">WhatsApp Share Footer</label>
+      <div className="flex gap-2">
+        <input className={inp} value={footer} onChange={e => setFooter(e.target.value)} placeholder="💬 Reply to claim or for more info" />
+        <button onClick={save} className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-10 rounded-lg text-[13px] font-medium flex-shrink-0">
+          {saved ? "Saved" : "Save"}
+        </button>
+      </div>
+      <p className="text-[10px] text-gray-400 mt-1">Appended to every WhatsApp share message.</p>
+    </div>
+  );
+}
+
 function CompanyTab() {
   const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
   const [saved, setSaved] = useState(false);
@@ -698,6 +717,8 @@ function CompanyTab() {
       <Field label="Tax ID / EIN">
         <input className={inp} value={info.tax_id ?? ""} onChange={(e) => setInfo({ ...info, tax_id: e.target.value })} />
       </Field>
+
+      <WhatsAppFooterField />
 
       <button
         onClick={save}

@@ -358,6 +358,10 @@ fn main() {
             attach_lot_manifest,
             remove_lot_manifest,
             media_base_dir,
+            generate_whatsapp_message,
+            get_lot_media_files,
+            save_whatsapp_footer,
+            get_whatsapp_footer,
             // Follow-up rules
             list_followup_rules,
             create_followup_rule,

@@ -839,6 +839,16 @@ export interface ColumnMapping {
   metadata_keys: string[];
 }
 
+export interface LotMediaFile {
+  path: string;
+  lot_name: string;
+}
+
+export interface LotMediaFiles {
+  photos: LotMediaFile[];
+  manifests: LotMediaFile[];
+}
+
 export interface GoogleContact {
   resource_name: string;
   name: string | null;
@@ -1258,6 +1268,10 @@ export const api = {
   attachLotManifest: (lotId: string, filePath: string) => invoke<string>("attach_lot_manifest", { lotId, filePath }),
   removeLotManifest: (lotId: string) => invoke<void>("remove_lot_manifest", { lotId }),
   mediaBaseDir: () => invoke<string>("media_base_dir"),
+  generateWhatsappMessage: (lotIds: string[]) => invoke<string>("generate_whatsapp_message", { lotIds }),
+  getLotMediaFiles: (lotIds: string[]) => invoke<LotMediaFiles>("get_lot_media_files", { lotIds }),
+  saveWhatsappFooter: (footer: string) => invoke<void>("save_whatsapp_footer", { footer }),
+  getWhatsappFooter: () => invoke<string>("get_whatsapp_footer"),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 
