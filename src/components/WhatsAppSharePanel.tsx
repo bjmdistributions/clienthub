@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, Lot } from "../lib/api";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import {
   ArrowLeft, Copy, Check, FileText, RefreshCw, X,
-  FolderOpen, Plus, AlertCircle, MessageCircle, WifiOff,
+  FolderOpen, Plus, AlertCircle, MessageCircle, WifiOff, GripVertical,
 } from "lucide-react";
 
 interface Props {
@@ -25,6 +26,9 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [busyLot, setBusyLot] = useState<string | null>(null);
   const [wa, setWa] = useState<"checking" | "open" | "offline">("checking");
+  const paneRef = useRef<HTMLDivElement>(null);
+  const waRef = useRef(wa);
+  waRef.current = wa;
 
   const copy = async (text: string) => {
     try { await writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2500); } catch {}
@@ -40,28 +44,62 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
     return msg;
   };
 
-  // Open WhatsApp Web in its own webview window (it can't be iframed). Check
-  // reachability first so we can show a clean offline state instead of a blank.
+  // Pin the embedded WhatsApp webview to the right pane (logical/CSS px). When
+  // `hidden`, it's parked off-screen so HTML overlays (the photo lightbox) show.
+  const syncEmbed = (hidden = false) => {
+    const el = paneRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const x = hidden ? -100000 : r.left;
+    api.whatsappEmbedShow(x, r.top, r.width, r.height).catch(() => {});
+  };
+
+  // Embed WhatsApp Web inside the right pane. Check reachability first so we can
+  // show a clean offline state instead of a blank webview.
   const openWhatsApp = async () => {
     setWa("checking");
     try {
       const ok = await api.whatsappWebReachable();
       if (!ok) { setWa("offline"); return; }
-      await api.openWhatsappWindow();
       setWa("open");
+      requestAnimationFrame(() => syncEmbed());
     } catch { setWa("offline"); }
   };
 
   useEffect(() => {
     loadAll().then((msg) => copy(msg));
     openWhatsApp();
-    return () => { api.closeWhatsappWindow().catch(() => {}); };
+    return () => { api.whatsappEmbedClose().catch(() => {}); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const close = () => { api.closeWhatsappWindow().catch(() => {}); onClose(); };
+  // Keep the embedded webview pinned to the pane as the window/layout resizes.
+  useEffect(() => {
+    if (wa !== "open") return;
+    const onResize = () => { if (waRef.current === "open") syncEmbed(!!previewImage); };
+    window.addEventListener("resize", onResize);
+    const ro = new ResizeObserver(onResize);
+    if (paneRef.current) ro.observe(paneRef.current);
+    return () => { window.removeEventListener("resize", onResize); ro.disconnect(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wa]);
+
+  // Park the webview off-screen while the lightbox is up so it isn't covered.
+  useEffect(() => {
+    if (wa === "open") syncEmbed(!!previewImage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewImage]);
+
+  const close = () => { api.whatsappEmbedClose().catch(() => {}); onClose(); };
 
   const regenerate = async () => { const msg = await loadAll(); copy(msg); };
+
+  // Start a native OS file-drag so the file can be dropped straight onto the
+  // embedded WhatsApp chat (which accepts file drops just like a browser).
+  const dragFile = async (e: React.DragEvent, fsPath: string, iconPath?: string) => {
+    e.preventDefault();
+    try { await startDrag({ item: [fsPath], icon: iconPath || fsPath }); } catch {}
+  };
 
   const addPhotos = async (lot: Lot) => {
     const f = await openDialog({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
@@ -138,12 +176,16 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
 
           {/* Files, grouped per lot */}
           <section>
-            <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Files</span>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Files</span>
+              <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--t-tx4)" }}><GripVertical size={11} /> drag into the chat →</span>
+            </div>
             <div className="space-y-2.5 mt-2">
               {lots.map((lot) => {
                 const photos = parsePhotos(lot);
                 const hasManifest = !!lot.manifest_path;
                 const busy = busyLot === lot.id;
+                const firstAbs = photos.length ? resolvePhoto(photos[0], mediaBase) : undefined;
                 return (
                   <div key={lot.id} className="rounded-lg p-3" style={{ background: "var(--t-s2)", border: "1px solid var(--t-b1)" }}>
                     <div className="flex items-center justify-between gap-2 mb-2">
@@ -156,18 +198,23 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                       </button>
                     </div>
 
-                    {/* Thumbnails / files */}
+                    {/* Thumbnails / files — draggable straight into the chat */}
                     {(photos.length > 0 || hasManifest) && (
                       <div className="flex flex-wrap gap-1.5 mb-2">
                         {photos.map((p, i) => (
-                          <button key={i} onClick={() => setPreviewImage(p)} className="w-11 h-11 rounded-md overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--t-b1)" }}>
-                            <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-full h-full object-cover" onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0.2")} />
+                          <button key={i} onClick={() => setPreviewImage(p)} draggable
+                            onDragStart={(e) => dragFile(e, resolvePhoto(p, mediaBase))}
+                            className="w-11 h-11 rounded-md overflow-hidden flex-shrink-0 cursor-grab active:cursor-grabbing" style={{ border: "1px solid var(--t-b1)" }}
+                            title="Click to preview · drag into the chat to attach">
+                            <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-full h-full object-cover pointer-events-none" onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0.2")} />
                           </button>
                         ))}
                         {hasManifest && (
-                          <div className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0" style={{ border: "1px solid var(--t-b1)", background: "var(--t-s1)" }}>
+                          <div draggable onDragStart={(e) => dragFile(e, resolvePhoto(lot.manifest_path || "", mediaBase), firstAbs)}
+                            className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing" style={{ border: "1px solid var(--t-b1)", background: "var(--t-s1)" }}
+                            title="Drag into the chat to attach">
                             <FileText size={13} style={{ color: "var(--t-tx3)" }} />
-                            <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx3)" }} title={lot.manifest_path || ""}>{fileName(lot.manifest_path || "manifest")}</span>
+                            <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx3)" }}>{fileName(lot.manifest_path || "manifest")}</span>
                           </div>
                         )}
                       </div>
@@ -193,46 +240,44 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
             <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>How to send</span>
             <ol className="space-y-1.5 mt-2 text-[12px]" style={{ color: "var(--t-tx3)" }}>
               <li className="flex items-center gap-2"><Check size={12} className="text-emerald-600" /> Message copied to clipboard</li>
-              <li>2. Open your group chat in the WhatsApp Web window</li>
+              <li>2. Open your group chat in the WhatsApp panel →</li>
               <li>3. Paste the message (Ctrl/Cmd + V)</li>
-              <li>4. Open a lot's <span style={{ color: "var(--t-tx2)" }}>Folder</span> and drag the files into the chat</li>
+              <li>4. Drag the photos &amp; manifest above straight into the chat</li>
               <li>5. Send</li>
             </ol>
           </section>
         </div>
 
-        {/* Right — WhatsApp Web status */}
-        <div className="flex-1 min-w-0 flex items-center justify-center p-8" style={{ background: "var(--t-bg)" }}>
+        {/* Right — embedded WhatsApp Web (a native webview is pinned over this pane) */}
+        <div ref={paneRef} className="flex-1 min-w-0 relative" style={{ background: "var(--t-bg)" }}>
           {wa === "checking" && (
-            <div className="text-center">
-              <RefreshCw size={22} className="animate-spin mx-auto mb-3" style={{ color: "var(--t-tx4)" }} />
-              <p className="text-[13px]" style={{ color: "var(--t-tx3)" }}>Opening WhatsApp Web…</p>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-center">
+                <RefreshCw size={22} className="animate-spin mx-auto mb-3" style={{ color: "var(--t-tx4)" }} />
+                <p className="text-[13px]" style={{ color: "var(--t-tx3)" }}>Loading WhatsApp Web…</p>
+              </div>
             </div>
           )}
           {wa === "open" && (
-            <div className="text-center max-w-sm">
-              <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: "var(--t-s2)", border: "1px solid var(--t-b1)" }}>
-                <MessageCircle size={22} style={{ color: "var(--t-tx2)" }} />
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="text-center">
+                <MessageCircle size={22} className="mx-auto mb-2" style={{ color: "var(--t-tx4)" }} />
+                <p className="text-[12px]" style={{ color: "var(--t-tx4)" }}>WhatsApp Web</p>
               </div>
-              <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>WhatsApp Web is open</p>
-              <p className="text-[13px] leading-relaxed mb-4" style={{ color: "var(--t-tx3)" }}>
-                It runs in its own window (web.whatsapp.com can't be embedded). Your login stays signed in there. Paste the message and drag in your files.
-              </p>
-              <button onClick={openWhatsApp} className="text-[12px] font-medium px-4 h-9 rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 transition-colors">
-                Bring window to front
-              </button>
             </div>
           )}
           {wa === "offline" && (
-            <div className="text-center max-w-sm">
-              <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)" }}>
-                <WifiOff size={22} className="text-red-500" />
+            <div className="absolute inset-0 flex items-center justify-center p-8">
+              <div className="text-center max-w-sm">
+                <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)" }}>
+                  <WifiOff size={22} className="text-red-500" />
+                </div>
+                <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>Unable to load WhatsApp Web</p>
+                <p className="text-[13px] mb-4" style={{ color: "var(--t-tx3)" }}>Check your internet connection and try again.</p>
+                <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 transition-colors">
+                  <RefreshCw size={13} /> Retry
+                </button>
               </div>
-              <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>Unable to load WhatsApp Web</p>
-              <p className="text-[13px] mb-4" style={{ color: "var(--t-tx3)" }}>Check your internet connection and try again.</p>
-              <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 transition-colors">
-                <RefreshCw size={13} /> Retry
-              </button>
             </div>
           )}
         </div>

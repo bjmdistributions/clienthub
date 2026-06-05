@@ -35,6 +35,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             db::init(app)?;
             signup_rules::ensure_table()?;
@@ -369,6 +370,8 @@ fn main() {
             whatsapp_web_reachable,
             open_whatsapp_window,
             close_whatsapp_window,
+            whatsapp_embed_show,
+            whatsapp_embed_close,
             // Follow-up rules
             list_followup_rules,
             create_followup_rule,

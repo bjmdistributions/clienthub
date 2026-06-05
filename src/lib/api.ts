@@ -1287,6 +1287,9 @@ export const api = {
   whatsappWebReachable: () => invoke<boolean>("whatsapp_web_reachable"),
   openWhatsappWindow: () => invoke<void>("open_whatsapp_window"),
   closeWhatsappWindow: () => invoke<void>("close_whatsapp_window"),
+  whatsappEmbedShow: (x: number, y: number, width: number, height: number) =>
+    invoke<void>("whatsapp_embed_show", { x, y, width, height }),
+  whatsappEmbedClose: () => invoke<void>("whatsapp_embed_close"),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 

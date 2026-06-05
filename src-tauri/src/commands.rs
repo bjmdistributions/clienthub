@@ -4739,6 +4739,50 @@ pub async fn close_whatsapp_window(app: tauri::AppHandle) -> Result<(), String> 
     Ok(())
 }
 
+/// Embed WhatsApp Web as a second webview *inside* the main window, positioned
+/// over the share panel's right pane (logical/CSS pixels relative to the window).
+/// Creating-or-repositioning is the same call so the frontend can keep it pinned
+/// to the pane on resize. Requires Tauri's `unstable` multi-webview feature.
+/// web.whatsapp.com can't be iframed, so this is the only way to embed it.
+#[tauri::command]
+pub async fn whatsapp_embed_show(
+    app: tauri::AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let pos = tauri::LogicalPosition::new(x, y);
+    let size = tauri::LogicalSize::new(width.max(1.0), height.max(1.0));
+    if let Some(wv) = app.get_webview("whatsapp") {
+        let _ = wv.set_position(pos);
+        let _ = wv.set_size(size);
+        return Ok(());
+    }
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let url = "https://web.whatsapp.com"
+        .parse()
+        .map_err(|e| format!("bad url: {e}"))?;
+    let builder = tauri::webview::WebviewBuilder::new("whatsapp", tauri::WebviewUrl::External(url));
+    window
+        .add_child(builder, pos, size)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Destroy the embedded WhatsApp webview — called when the share panel closes.
+#[tauri::command]
+pub async fn whatsapp_embed_close(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview("whatsapp") {
+        let _ = wv.close();
+    }
+    Ok(())
+}
+
 fn fmt_money(n: f64) -> String {
     let int = n.trunc() as i64;
     let frac = ((n.fract().abs() * 100.0).round() as i64) % 100;
