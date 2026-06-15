@@ -735,6 +735,9 @@ pub struct ClientFilter {
     pub needs_review: Option<bool>,
     pub search: Option<String>,
     pub sort_by: Option<String>,
+    /// Lead-status filter. Exact value (e.g. "inactive") matches that status;
+    /// the special value "active_not_dormant" returns everyone who is NOT dormant.
+    pub lead_status: Option<String>,
 }
 
 #[tauri::command]
@@ -793,6 +796,15 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     }
     if let Some(true) = filter.needs_review {
         conds.push("json_extract(c.metadata, '$.needs_review') = 1".into());
+    }
+    if let Some(ref s) = filter.lead_status {
+        if s == "active_not_dormant" {
+            conds.push("COALESCE(c.lead_status,'') != 'inactive'".into());
+        } else if !s.is_empty() {
+            conds.push(format!("c.lead_status = ?{}", param_idx));
+            params.push(Box::new(s.clone()));
+            param_idx += 1;
+        }
     }
 
     if !conds.is_empty() {

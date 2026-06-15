@@ -56,6 +56,8 @@ export interface ClientFilter {
   needs_review?: boolean;
   search?: string;
   sort_by?: string;
+  /** Exact lead_status, or "active_not_dormant" for everyone who isn't dormant. */
+  lead_status?: string;
 }
 
 export interface MissingInfoReport {

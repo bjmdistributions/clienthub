@@ -507,6 +507,9 @@ function NewsletterTab() {
   const [clientSearch, setClientSearch] = useState("");
   const [excludeAsNeeded, setExcludeAsNeeded] = useState(false);
   const [excludeUnder10k, setExcludeUnder10k] = useState(false);
+  // Dormant clients are excluded from newsletters by default — kept on record,
+  // just not contacted. Untick to include them in a send.
+  const [excludeDormant, setExcludeDormant] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [scheduleInterval, setScheduleInterval] = useState(0);
@@ -565,6 +568,7 @@ function NewsletterTab() {
     : filteredClients;
 
   const metadataFilteredClients = searchedClients.filter((c) => {
+    if (excludeDormant && c.lead_status === "inactive") return false;
     if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
     if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;
     return true;
@@ -794,6 +798,11 @@ function NewsletterTab() {
           {showFilters && (
             <div className="mt-2 space-y-1.5">
               <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={excludeDormant} onChange={(e) => setExcludeDormant(e.target.checked)}
+                  className="accent-indigo-600" />
+                Exclude dormant clients
+              </label>
+              <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
                 <input type="checkbox" checked={excludeAsNeeded} onChange={(e) => setExcludeAsNeeded(e.target.checked)}
                   className="accent-indigo-600" />
                 Exclude "As Needed / One Time"
@@ -835,7 +844,7 @@ function NewsletterTab() {
             );
           })}
           {metadataFilteredClients.length === 0 && (
-            <div className="text-[12px] text-gray-400 text-center py-6">{clientSearch || excludeAsNeeded || excludeUnder10k ? "No clients match your filters" : "No clients match this filter"}</div>
+            <div className="text-[12px] text-gray-400 text-center py-6">{clientSearch || excludeDormant || excludeAsNeeded || excludeUnder10k ? "No clients match your filters" : "No clients match this filter"}</div>
           )}
         </div>
 

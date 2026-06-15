@@ -122,6 +122,10 @@ export default function ClientsView() {
   if (filter.stale_days) chips.push({ label: `Last contact: ${filter.stale_days}+ days`, key: "stale_days" });
   if (filter.missing) chips.push({ label: `Missing: ${filter.missing}`, key: "missing" });
   if (filter.needs_review) chips.push({ label: "Needs review", key: "needs_review" });
+  if (filter.lead_status) {
+    const statusLabels: Record<string, string> = { active_not_dormant: "Active (not dormant)", prospect: "Prospect", hot_lead: "Hot Lead", active_customer: "Active Customer", inactive: "Dormant" };
+    chips.push({ label: `Status: ${statusLabels[filter.lead_status] || filter.lead_status}`, key: "lead_status" });
+  }
 
   const handleSave = async (input: ClientInput) => {
     if (editing) await api.updateClient(editing.id, input);
@@ -441,6 +445,18 @@ export default function ClientsView() {
               className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400" />
           </div>
           <div>
+            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Status</label>
+            <select value={filter.lead_status ?? ""} onChange={(e) => updateFilter({ lead_status: e.target.value || undefined })}
+              className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
+              <option value="">Any status</option>
+              <option value="active_not_dormant">Active (not dormant)</option>
+              <option value="prospect">Prospect</option>
+              <option value="hot_lead">Hot Lead</option>
+              <option value="active_customer">Active Customer</option>
+              <option value="inactive">Dormant only</option>
+            </select>
+          </div>
+          <div>
             <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Last Contact</label>
             <select value={filter.stale_days ?? ""} onChange={(e) => updateFilter({ stale_days: e.target.value ? Number(e.target.value) : undefined })}
               className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
@@ -514,7 +530,7 @@ export default function ClientsView() {
             <option value="prospect">Prospect</option>
             <option value="hot_lead">Hot Lead</option>
             <option value="active_customer">Active Customer</option>
-            <option value="inactive">Inactive</option>
+            <option value="inactive">Dormant</option>
           </select>
           <button onClick={handleBulkEmail} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50">
             <Send size={12} /> Email
@@ -677,7 +693,7 @@ function ClientForm({
               <option value="hot lead">Hot Lead</option>
               <option value="warm">Warm</option>
               <option value="active customer">Active Customer</option>
-              <option value="inactive">Inactive</option>
+              <option value="inactive">Dormant</option>
             </select>
           </Field>
           <Field label="Tags"><input className={inp} placeholder="e.g. vip, new-york" value={form.tags ?? ""} onChange={(e) => set("tags", e.target.value)} /></Field>
