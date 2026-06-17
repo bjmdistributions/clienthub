@@ -2274,7 +2274,7 @@ function SplitsTab() {
         <button
           onClick={handleSave}
           disabled={saving || !valid}
-          className="flex items-center gap-1.5 bg-zinc-900 text-white px-4 h-9 rounded-lg text-[13px] font-medium hover:bg-zinc-800 transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 bg-ink text-surface px-4 h-9 rounded-lg text-[13px] font-medium hover:opacity-90 transition-colors disabled:opacity-50"
         >
           <Save size={14} />
           {saving ? "Saving..." : "Save Profit Split"}

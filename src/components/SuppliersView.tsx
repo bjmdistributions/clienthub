@@ -102,7 +102,7 @@ export default function SuppliersView() {
         </div>
         <button
           onClick={createNew}
-          className="flex items-center gap-1.5 px-3 h-9 bg-[#1A1A1E] hover:bg-[#27272B] text-white rounded-lg text-[13px] font-medium transition-colors"
+          className="flex items-center gap-1.5 px-3 h-9 bg-ink hover:opacity-90 text-surface rounded-lg text-[13px] font-medium transition-colors"
         >
           <Plus size={14} /> New Supplier
         </button>

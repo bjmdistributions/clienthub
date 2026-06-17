@@ -529,7 +529,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
       {/* Edit mode: show dates + tax (no client change) */}
       {initial && (
-        <div className="grid grid-cols-3 gap-4 mb-5 p-4 bg-warning-bg/50 border border-warning rounded-xl">
+        <div className="grid grid-cols-3 gap-4 mb-5 p-4 bg-surface-2 border border-line rounded-xl">
           <div className="col-span-3 text-[11px] text-warning-ink font-medium -mb-1">
             Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice — amounts and dates can be adjusted.
           </div>

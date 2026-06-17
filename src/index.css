@@ -745,7 +745,7 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   padding: 6px 10px;
   white-space: nowrap;
   font-size: 11px;
-  font-family: system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   color: #eef0f6;
   opacity: 0;
   transition: opacity 0.15s;
