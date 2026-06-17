@@ -9,48 +9,56 @@ import {
 } from "recharts";
 import TierBadge from "./TierBadge";
 
-// ─── Palette ─────────────────────────────────────────────────────
-// One primary accent, semantic green/red, nothing competing.
-const CLR = {
-  indigo:  "#6366f1",   // primary — revenue bars, category bars
-  emerald: "#10b981",   // profit positive, paid invoices
-  rose:    "#f43f5e",   // negative / overdue
-  amber:   "#f59e0b",   // warning / outstanding
-  sky:     "#38bdf8",   // sent invoices
-  slate:   "#cbd5e1",   // draft / neutral
-};
+// ─── Theme-aware chart palette ────────────────────────────────────
+// Charts read the same brand tokens as the rest of the app, so they stay
+// cohesive and adapt to light/dark: one accent + semantic green/red + neutral.
+const cssVar = (n: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
 
-const STATUS_CLR: Record<string, string> = {
-  paid:            CLR.emerald,
-  sent:            CLR.sky,
-  overdue:         CLR.rose,
-  draft:           CLR.slate,
-};
-
+// Refined, muted tier swatches — premium metallics, not neon.
 const TIER_CLR: Record<string, string> = {
-  S:        "#0EA5E9",   // diamond — sky blue
-  A:        "#EAB308",   // gold — yellow
-  B:        "#94A3B8",   // silver — slate
-  C:        "#EA580C",   // bronze — orange
-  Prospect: "#6B7280",   // prospect — gray
+  S:        "#6366F1",   // Diamond — brand
+  A:        "#C9A227",   // Gold (muted)
+  B:        "#A6AEBC",   // Silver
+  C:        "#B17F4A",   // Bronze (muted)
+  Prospect: "#9CA3AF",   // Prospect
 };
 
 const TIER_ORDER = ["S", "A", "B", "C", "Prospect"];
 
-const TT = {
-  contentStyle: {
-    background: "#09090B",
-    border: "1px solid rgba(255,255,255,0.07)",
-    borderRadius: 10,
-    color: "#fff",
-    fontSize: 12,
-    padding: "9px 13px",
-    boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
-  },
-  cursor: { fill: "rgba(99,102,241,0.05)" },
-};
-
-const AX = { fontSize: 10, fill: "#9ca3af" };
+// Resolve brand tokens to concrete chart colors; re-render on light/dark flip.
+function usePalette() {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const obs = new MutationObserver(() => force((x) => x + 1));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
+  const accent  = rgbVar("--c-accent");
+  const success = rgbVar("--c-success");
+  const danger  = rgbVar("--c-danger");
+  const warning = rgbVar("--c-warning");
+  const neutral = rgbVar("--c-faint");
+  return {
+    accent, success, danger, warning, neutral,
+    grid: rgbVar("--c-line"),
+    CLR: { indigo: accent, emerald: success, rose: danger, amber: warning, sky: accent, slate: neutral },
+    STATUS: { paid: success, sent: accent, overdue: danger, draft: neutral } as Record<string, string>,
+    TT: {
+      contentStyle: {
+        background: rgbVar("--c-surface"),
+        border: `1px solid ${rgbVar("--c-line")}`,
+        borderRadius: 10,
+        color: rgbVar("--c-ink"),
+        fontSize: 12,
+        padding: "9px 13px",
+        boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
+      },
+      cursor: { fill: `rgb(${cssVar("--c-accent")} / 0.06)` },
+    },
+    AX: { fontSize: 10, fill: `rgb(${cssVar("--c-muted")})` },
+  };
+}
 
 // ─── Count-up hook ────────────────────────────────────────────────
 function useCountUp(target: number, duration = 900) {
@@ -84,7 +92,12 @@ const PRESETS = [
 
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
-  const indigo = CLR.indigo;
+  const P = usePalette();
+  const CLR = P.CLR;
+  const STATUS_CLR = P.STATUS;
+  const TT = P.TT;
+  const AX = P.AX;
+  const indigo = P.accent;
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
@@ -291,7 +304,7 @@ export default function AnalyticsView() {
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={monthly} barCategoryGap="38%" barGap={3}
                       margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="2 4" stroke="#F1F5F9" vertical={false} />
+              <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
               <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
               <YAxis tick={AX} axisLine={false} tickLine={false}
                 tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />

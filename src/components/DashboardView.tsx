@@ -14,9 +14,9 @@ interface Props {
 
 const invStatusStyle = (s: string): React.CSSProperties => {
   const lo = s.toLowerCase();
-  if (lo === "paid")    return { background: "rgba(16,185,129,0.12)",  color: "#34D399", border: "1px solid rgba(16,185,129,0.25)" };
-  if (lo === "sent")    return { background: "rgba(59,130,246,0.12)",  color: "#60A5FA", border: "1px solid rgba(59,130,246,0.25)" };
-  if (lo === "overdue") return { background: "rgba(239,68,68,0.12)",   color: "#F87171", border: "1px solid rgba(239,68,68,0.25)" };
+  if (lo === "paid")    return { background: "rgba(16,185,129,0.12)",  color: "rgb(var(--c-success))", border: "1px solid rgba(16,185,129,0.25)" };
+  if (lo === "sent")    return { background: "rgba(59,130,246,0.12)",  color: "rgb(var(--c-info))", border: "1px solid rgba(59,130,246,0.25)" };
+  if (lo === "overdue") return { background: "rgba(239,68,68,0.12)",   color: "rgb(var(--c-danger))", border: "1px solid rgba(239,68,68,0.25)" };
   return { background: "rgba(107,114,128,0.1)", color: "var(--t-tx3)", border: "1px solid rgba(107,114,128,0.2)" };
 };
 
@@ -149,16 +149,16 @@ export default function DashboardView({ onNavigate }: Props) {
     { label: "Outstanding",      sub: "awaiting payment",     displayValue: <CompactAmount value={stats?.outstanding ?? 0} />,      icon: DollarSign, tab: "invoices",  accent: "kpi-accent-amber",   iconBg: "icon-bg-amber"   },
     { label: "Revenue MTD",      sub: "closed this month",    displayValue: <CompactAmount value={revenueMtd} />,                   icon: TrendingUp, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald" },
     { label: "Profit MTD",       sub: "closed this month",    displayValue: <CompactAmount value={profitMtd} />,                    icon: TrendingUp, tab: "analytics", accent: profitMtd >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: profitMtd >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
-    { label: "All-Time Revenue", sub: "from closed deals",    displayValue: <CompactAmount value={allTimeRev} />,                   icon: DollarSign, tab: "analytics", accent: "kpi-accent-violet",  iconBg: "icon-bg-violet"  },
-    { label: "All-Time Profit",  sub: "from closed deals",    displayValue: <CompactAmount value={allTimeProfit} />,                 icon: TrendingUp, tab: "analytics", accent: allTimeProfit >= 0 ? "kpi-accent-cyan" : "kpi-accent-rose", iconBg: allTimeProfit >= 0 ? "icon-bg-cyan" : "icon-bg-rose" },
+    { label: "All-Time Revenue", sub: "from closed deals",    displayValue: <CompactAmount value={allTimeRev} />,                   icon: DollarSign, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald"  },
+    { label: "All-Time Profit",  sub: "from closed deals",    displayValue: <CompactAmount value={allTimeProfit} />,                 icon: TrendingUp, tab: "analytics", accent: allTimeProfit >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: allTimeProfit >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
     { label: "Deals MTD",        sub: "completed this month", displayValue: <AnimatedStat value={stats?.deals_mtd ?? 0} />,         icon: FileText,   tab: "deals",     accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
-    { label: "Active Deals",     sub: "in pipeline",          displayValue: <AnimatedStat value={stats?.pipeline_count ?? 0} />,    icon: FileText,   tab: "dealflow",  accent: "kpi-accent-violet",  iconBg: "icon-bg-violet"  },
+    { label: "Active Deals",     sub: "in pipeline",          displayValue: <AnimatedStat value={stats?.pipeline_count ?? 0} />,    icon: FileText,   tab: "dealflow",  accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
   ];
 
   const weekStats = [
-    { label: "Revenue",      value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "#059669" },
-    { label: "New Clients",  value: String(stats?.clients_this_week ?? 0),                   color: "#6366F1" },
-    { label: "Interactions", value: String(stats?.interactions_this_week ?? 0),              color: "#7C3AED" },
+    { label: "Revenue",      value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "rgb(var(--c-success))" },
+    { label: "New Clients",  value: String(stats?.clients_this_week ?? 0),                   color: "rgb(var(--c-accent))" },
+    { label: "Interactions", value: String(stats?.interactions_this_week ?? 0),              color: "rgb(var(--c-accent))" },
   ];
 
   const topBuyers = tiers.filter((h) => h.tier === "S" || h.tier === "A").slice(0, 5);
@@ -180,13 +180,13 @@ export default function DashboardView({ onNavigate }: Props) {
         <div className="flex items-center gap-4 flex-wrap justify-end">
           <div className="text-right">
             <p className="text-[10px] uppercase tracking-widest font-semibold mb-0.5" style={{ color: "var(--t-tx4)" }}>Outstanding</p>
-            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: "#D97706" }}>
+            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: "rgb(var(--c-warning))" }}>
               <CompactAmount value={stats?.outstanding ?? 0} />
             </p>
           </div>
           <div className="text-right">
             <p className="text-[10px] uppercase tracking-widest font-semibold mb-0.5" style={{ color: "var(--t-tx4)" }}>Profit MTD</p>
-            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: profitMtd >= 0 ? "#059669" : "#E11D48" }}>
+            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: profitMtd >= 0 ? "rgb(var(--c-success))" : "rgb(var(--c-danger))" }}>
               <CompactAmount value={profitMtd} />
             </p>
           </div>
@@ -240,7 +240,7 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="rounded-xl p-5 animate-fade-up stagger-2" style={{
             background: "var(--t-s1)",
             border: "1px solid var(--t-b1)",
-            borderLeft: "3px solid #8B5CF6",
+            borderLeft: "3px solid rgb(var(--c-accent))",
             boxShadow: "var(--shadow-xs)",
           }}>
             <div className="flex items-center justify-between mb-4">
@@ -252,8 +252,8 @@ export default function DashboardView({ onNavigate }: Props) {
               </div>
               <div className="flex items-center gap-4 text-[12px]">
                 <span style={{ color: "var(--t-tx3)" }}>Actual <span className="font-semibold" style={{ color: "var(--t-tx1)" }}>{fmtAmount(forecast.actual_profit_mtd)}</span></span>
-                <span style={{ color: "var(--t-tx3)" }}>Projected <span className="font-semibold" style={{ color: "#8B5CF6" }}>{fmtAmount(forecast.projected_profit)}</span></span>
-                <span className="px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: "rgba(139,92,246,0.1)", color: "#8B5CF6" }}>{fmtAmount(forecast.total_forecast)}</span>
+                <span style={{ color: "var(--t-tx3)" }}>Projected <span className="font-semibold" style={{ color: "rgb(var(--c-accent))" }}>{fmtAmount(forecast.projected_profit)}</span></span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: "rgb(var(--c-accent) / 0.1)", color: "rgb(var(--c-accent))" }}>{fmtAmount(forecast.total_forecast)}</span>
               </div>
             </div>
 
@@ -267,8 +267,8 @@ export default function DashboardView({ onNavigate }: Props) {
                     const projPct = Math.max(0, (forecast.projected_profit / total) * 100);
                     return (
                       <>
-                        <div style={{ background: "#10B981", height: "100%", width: `${actualPct}%`, float: "left", borderRadius: "4px 0 0 4px" }} />
-                        <div style={{ background: "#8B5CF6", height: "100%", width: `${projPct}%`, float: "left", borderRadius: actualPct === 0 ? "4px 0 0 4px" : "0" }} />
+                        <div style={{ background: "rgb(var(--c-success))", height: "100%", width: `${actualPct}%`, float: "left", borderRadius: "4px 0 0 4px" }} />
+                        <div style={{ background: "rgb(var(--c-accent))", height: "100%", width: `${projPct}%`, float: "left", borderRadius: actualPct === 0 ? "4px 0 0 4px" : "0" }} />
                       </>
                     );
                   })()}
@@ -310,8 +310,8 @@ export default function DashboardView({ onNavigate }: Props) {
                 <LineChart data={dailyProfit} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
                   <defs>
                     <linearGradient id="profitGrad" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#6366F1" />
-                      <stop offset="100%" stopColor="#10B981" />
+                      <stop offset="0%" stopColor="rgb(var(--c-accent))" />
+                      <stop offset="100%" stopColor="rgb(var(--c-success))" />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="2 4" stroke="var(--t-b1)" vertical={false} />
@@ -323,7 +323,7 @@ export default function DashboardView({ onNavigate }: Props) {
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
                   <Line type="monotone" dataKey="profit" stroke="url(#profitGrad)" strokeWidth={2.5} dot={false}
-                    activeDot={{ r: 5, fill: "#6366F1", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(99,102,241,0.4))" } }}
+                    activeDot={{ r: 5, fill: "rgb(var(--c-accent))", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(99,102,241,0.4))" } }}
                     isAnimationActive animationDuration={1000} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>
@@ -351,7 +351,7 @@ export default function DashboardView({ onNavigate }: Props) {
                         <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</div>
                         <div className="text-[10px]" style={{ color: "var(--t-tx4)" }}>{c.margin.toFixed(1)}% margin</div>
                       </div>
-                      <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "#34D399" }}><CompactAmount value={c.total_profit} /></div>
+                      <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "rgb(var(--c-success))" }}><CompactAmount value={c.total_profit} /></div>
                     </div>
                   ))}
                 </div>
@@ -479,7 +479,7 @@ export default function DashboardView({ onNavigate }: Props) {
               <div className="rounded-xl p-4 flex items-center justify-between animate-fade-up stagger-5"
                 style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}>
                 <div className="flex items-center gap-2.5">
-                  <Package size={14} style={{ color: "#D97706" }} className="flex-shrink-0" />
+                  <Package size={14} style={{ color: "rgb(var(--c-warning))" }} className="flex-shrink-0" />
                   <span className="text-[12px]" style={{ color: "var(--t-tx2)" }}>
                     {stats?.incomplete_shipping} invoice{stats?.incomplete_shipping !== 1 ? "s" : ""} need shipping info
                   </span>
@@ -492,10 +492,10 @@ export default function DashboardView({ onNavigate }: Props) {
             {(stats?.loss_deals_this_month ?? 0) > 0 && (
               <div className="rounded-xl p-4 animate-fade-up stagger-5"
                 style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
-                <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#F87171" }}>Loss Deals This Month</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "rgb(var(--c-danger))" }}>Loss Deals This Month</div>
                 <div className="mt-1 flex items-end justify-between">
-                  <div className="text-[22px] font-bold" style={{ color: "#F87171" }}>{stats?.loss_deals_this_month}</div>
-                  <div className="text-[14px] font-semibold" style={{ color: "#F87171" }}><CompactAmount value={stats?.loss_total_this_month ?? 0} /></div>
+                  <div className="text-[22px] font-bold" style={{ color: "rgb(var(--c-danger))" }}>{stats?.loss_deals_this_month}</div>
+                  <div className="text-[14px] font-semibold" style={{ color: "rgb(var(--c-danger))" }}><CompactAmount value={stats?.loss_total_this_month ?? 0} /></div>
                 </div>
               </div>
             )}
@@ -531,7 +531,7 @@ export default function DashboardView({ onNavigate }: Props) {
                 </div>
                 {followups.length > 0 && (
                   <span className="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0"
-                    style={{ background: "rgba(245,158,11,0.15)", color: "#FCD34D" }}>
+                    style={{ background: "rgba(245,158,11,0.15)", color: "rgb(var(--c-warning-ink))" }}>
                     {followups.length}
                   </span>
                 )}
@@ -539,7 +539,7 @@ export default function DashboardView({ onNavigate }: Props) {
 
               {followups.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center py-4 text-center gap-1.5">
-                  <CheckCircle2 size={22} style={{ color: "#34D399" }} />
+                  <CheckCircle2 size={22} style={{ color: "rgb(var(--c-success))" }} />
                   <p className="text-[12px] font-medium" style={{ color: "var(--t-tx2)" }}>All caught up</p>
                   <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>No follow-ups due today</p>
                 </div>
@@ -554,7 +554,7 @@ export default function DashboardView({ onNavigate }: Props) {
                         {c.company && <p className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{c.company}</p>}
                       </div>
                       <span className="ml-2 flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                        style={{ background: "rgba(245,158,11,0.12)", color: "#FCD34D", border: "1px solid rgba(245,158,11,0.2)" }}>
+                        style={{ background: "rgba(245,158,11,0.12)", color: "rgb(var(--c-warning-ink))", border: "1px solid rgba(245,158,11,0.2)" }}>
                         Today
                       </span>
                     </div>
@@ -574,8 +574,8 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-50">
             {[
               { label: "Add Client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "var(--accent-600)", dotBg: "var(--accent-tint)"  },
-              { label: "New Invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "#7C3AED", dotBg: "rgba(124,58,237,0.1)"  },
-              { label: "Scan Inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "#059669", dotBg: "rgba(16,185,129,0.1)"  },
+              { label: "New Invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "rgb(var(--c-accent))", dotBg: "rgb(var(--c-accent) / 0.1)"  },
+              { label: "Scan Inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "rgb(var(--c-success))", dotBg: "rgba(16,185,129,0.1)"  },
             ].map((a) => {
               const Icon = a.icon;
               return (
