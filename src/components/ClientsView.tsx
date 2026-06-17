@@ -19,7 +19,7 @@ const relTime = (d: string | null | undefined): string => {
   return `${Math.floor(months / 12)}y ago`;
 };
 
-const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 export default function ClientsView() {
   const [clients, setClients]               = useState<Client[]>([]);
@@ -237,19 +237,19 @@ export default function ClientsView() {
       {/* Header */}
       <div className="flex justify-between items-center mb-5">
         <div>
-          <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Clients</h2>
-          <p className="text-[12px] text-gray-400 mt-0.5">{summaryStats.total} total</p>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Clients</h2>
+          <p className="text-[12px] text-muted mt-0.5">{summaryStats.total} total</p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={runCleanup}
-            className="text-[12px] px-3 py-2 border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors"
+            className="text-[12px] px-3 py-2 border border-line text-ink-2 rounded-lg hover:bg-surface-2 hover:border-line-3 transition-colors"
           >
             Clean Duplicates
           </button>
           <button
             onClick={() => { setEditing(null); setShowForm(true); }}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
           >
             <Plus size={14} /> New Client
           </button>
@@ -259,13 +259,13 @@ export default function ClientsView() {
       {/* Stats bar */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
-          { label: "Total Clients",    value: summaryStats.total,                      color: "text-gray-900" },
-          { label: "Active Customers", value: summaryStats.active,                     color: "text-emerald-600" },
-          { label: "Hot Leads",        value: summaryStats.hotLeads,                   color: "text-red-600" },
-          { label: "Total Revenue",    value: fmtAmount(summaryStats.revenue),          color: "text-indigo-600" },
+          { label: "Total Clients",    value: summaryStats.total,                      color: "text-ink" },
+          { label: "Active Customers", value: summaryStats.active,                     color: "text-success-ink" },
+          { label: "Hot Leads",        value: summaryStats.hotLeads,                   color: "text-danger-ink" },
+          { label: "Total Revenue",    value: fmtAmount(summaryStats.revenue),          color: "text-accent" },
         ].map((s) => (
-          <div key={s.label} className="bg-white border border-gray-100 rounded-xl px-4 py-3.5">
-            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">{s.label}</p>
+          <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">{s.label}</p>
             <p className={`text-[22px] font-bold tabular-nums ${s.color}`}>{s.value}</p>
           </div>
         ))}
@@ -273,19 +273,19 @@ export default function ClientsView() {
 
       {/* Data Health */}
       {missingInfo && missingInfo.total_incomplete > 0 && (
-        <div className="mb-4 border border-amber-100 rounded-xl overflow-hidden">
+        <div className="mb-4 border border-warning rounded-xl overflow-hidden">
           <button
             onClick={() => setShowHealth(!showHealth)}
-            className="w-full flex items-center justify-between px-4 py-3 bg-amber-50 hover:bg-amber-100/70 transition-colors text-left"
+            className="w-full flex items-center justify-between px-4 py-3 bg-warning-bg hover:bg-warning-bg/70 transition-colors text-left"
           >
-            <span className="flex items-center gap-2 text-[13px] font-medium text-amber-800">
-              <AlertCircle size={14} className="text-amber-500" />
+            <span className="flex items-center gap-2 text-[13px] font-medium text-warning-ink">
+              <AlertCircle size={14} className="text-warning-ink" />
               {missingInfo.total_incomplete} client{missingInfo.total_incomplete !== 1 ? "s" : ""} have incomplete data
             </span>
-            <ChevronDown size={14} className={`text-amber-400 transition-transform ${showHealth ? "rotate-180" : ""}`} />
+            <ChevronDown size={14} className={`text-warning-ink transition-transform ${showHealth ? "rotate-180" : ""}`} />
           </button>
           {showHealth && (
-            <div className="px-4 py-3 space-y-1.5 bg-white">
+            <div className="px-4 py-3 space-y-1.5 bg-surface">
               {[
                 { label: "Missing email",    count: missingInfo.missing_email.length,    icon: Mail,          missing: "email" },
                 { label: "Missing phone",    count: missingInfo.missing_phone.length,    icon: Phone,         missing: "phone" },
@@ -295,10 +295,10 @@ export default function ClientsView() {
                 { label: "Needs review",     count: missingInfo.needs_review.length,     icon: AlertCircle,   needs_review: true },
               ].map((row: any) => (
                 <div key={row.label} className="flex items-center justify-between py-1">
-                  <span className="flex items-center gap-2 text-[12px] text-gray-700">
-                    <row.icon size={13} className="text-gray-400" />
+                  <span className="flex items-center gap-2 text-[12px] text-ink-2">
+                    <row.icon size={13} className="text-muted" />
                     {row.label}
-                    <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-[10px] font-semibold">{row.count}</span>
+                    <span className="bg-surface-3 text-ink-2 px-2 py-0.5 rounded-full text-[10px] font-semibold">{row.count}</span>
                   </span>
                   <button
                     onClick={() => {
@@ -308,7 +308,7 @@ export default function ClientsView() {
                       if (row.needs_review) patch.needs_review = true;
                       updateFilter(patch);
                     }}
-                    className="text-[12px] font-medium text-indigo-600 hover:text-indigo-800 px-2 py-1 rounded-lg hover:bg-indigo-50 transition-colors"
+                    className="text-[12px] font-medium text-accent hover:text-indigo-800 px-2 py-1 rounded-lg hover:bg-accent/10 transition-colors"
                   >
                     View
                   </button>
@@ -321,8 +321,8 @@ export default function ClientsView() {
 
       {/* Duplicates banner */}
       {duplicates.length > 0 && (
-        <div className="mb-4 border border-red-100 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 bg-red-50 text-[13px] font-medium text-red-800 flex items-center justify-between">
+        <div className="mb-4 border border-danger rounded-xl overflow-hidden">
+          <div className="px-4 py-3 bg-danger-bg text-[13px] font-medium text-danger-ink flex items-center justify-between">
             <span className="flex items-center gap-2">
               <AlertCircle size={14} /> {duplicates.reduce((s, g) => s + g.count - 1, 0)} potential duplicates found
             </span>
@@ -338,24 +338,24 @@ export default function ClientsView() {
                   loadMissingInfo();
                 }
               }}
-              className="text-[12px] px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+              className="text-[12px] px-3 py-1.5 bg-danger text-white rounded-md hover:bg-danger transition-colors"
             >
               Auto-Merge All
             </button>
           </div>
-          <div className="px-4 py-2 bg-white space-y-1.5">
+          <div className="px-4 py-2 bg-surface space-y-1.5">
             {duplicates.map((g) => (
               <div key={g.key} className="flex items-center justify-between text-[12px] py-1">
-                <div className="text-gray-600">
+                <div className="text-ink-2">
                   <span className="font-medium">{g.key}</span>
-                  <span className="text-gray-400 ml-1">— {g.names.join(", ")}</span>
+                  <span className="text-muted ml-1">— {g.names.join(", ")}</span>
                 </div>
                 <div className="flex items-center gap-1">
                   {g.client_ids.slice(1).map((id, i) => (
                     <button
                       key={id}
                       onClick={async () => { await api.deleteClient(id); setDuplicates(duplicates.filter((d) => d.key !== g.key)); loadMissingInfo(); }}
-                      className="text-[10px] text-red-500 hover:text-red-700 underline"
+                      className="text-[10px] text-danger-ink hover:text-danger-ink underline"
                     >
                       Delete #{i + 2}
                     </button>
@@ -368,7 +368,7 @@ export default function ClientsView() {
       )}
 
       {missingInfo && missingInfo.total_incomplete === 0 && duplicates.length === 0 && (
-        <div className="mb-4 flex items-center gap-2 text-[12px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2.5">
+        <div className="mb-4 flex items-center gap-2 text-[12px] text-success-ink bg-success-bg border border-success rounded-xl px-4 py-2.5">
           <CheckCircle2 size={13} /> All client data complete
         </div>
       )}
@@ -376,18 +376,18 @@ export default function ClientsView() {
       {/* Search + Filters */}
       <div className="flex items-center gap-2 mb-3">
         <div className="relative flex-1">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <input
             placeholder="Search by name, company, or email..."
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
-            className="border border-gray-200 w-full pl-9 pr-3 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
+            className="border border-line w-full pl-9 pr-3 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
           />
         </div>
         <select
           value={filter.category ?? ""}
           onChange={(e) => updateFilter({ category: e.target.value || undefined })}
-          className="border border-gray-200 h-10 px-3 rounded-lg text-[13px] text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 bg-white min-w-[140px] transition-colors"
+          className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent bg-surface min-w-[140px] transition-colors"
         >
           <option value="">All Categories</option>
           <option value="__none__">No category</option>
@@ -396,15 +396,15 @@ export default function ClientsView() {
         <div className="relative" ref={tierDropdownRef}>
           <button onClick={() => setShowTiers(!showTiers)}
             className={`border h-10 px-3 rounded-lg text-[13px] transition-colors flex items-center gap-1.5 whitespace-nowrap ${
-              (filter.tiers?.length ?? 0) > 0 ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+              (filter.tiers?.length ?? 0) > 0 ? "border-accent bg-accent/10 text-accent-hover" : "border-line text-ink-2 hover:bg-surface-2"
             }`}>
             {(filter.tiers?.length ?? 0) > 0 ? `${filter.tiers!.length} tier${filter.tiers!.length > 1 ? "s" : ""}` : "All Tiers"} <ChevronDown size={12} />
           </button>
           {showTiers && (
-            <div className="absolute top-full mt-1 left-0 bg-white border border-gray-200 rounded-lg shadow-lg z-20 p-1.5 min-w-[160px]">
+            <div className="absolute top-full mt-1 left-0 bg-surface border border-line rounded-lg shadow-lg z-20 p-1.5 min-w-[160px]">
               {(["S","A","B","C","Prospect"] as const).map((t) => (
-                <label key={t} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 rounded text-[13px] text-gray-700 cursor-pointer">
-                  <input type="checkbox" className="accent-indigo-600" checked={(filter.tiers ?? []).includes(t)}
+                <label key={t} className="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-2 rounded text-[13px] text-ink-2 cursor-pointer">
+                  <input type="checkbox" className="accent-accent" checked={(filter.tiers ?? []).includes(t)}
                     onChange={() => {
                       const cur = filter.tiers ?? [];
                       const next = cur.includes(t) ? cur.filter(x => x !== t) : [...cur, t];
@@ -419,13 +419,13 @@ export default function ClientsView() {
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
           className={`flex items-center gap-1.5 h-10 px-3 rounded-lg text-[13px] font-medium border transition-colors ${
-            showAdvanced ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+            showAdvanced ? "border-accent bg-accent/10 text-accent-hover" : "border-line text-ink-2 hover:bg-surface-2"
           }`}
         >
           <SlidersHorizontal size={13} /> Filters
         </button>
         <select value={filter.sort_by ?? ""} onChange={(e) => updateFilter({ sort_by: e.target.value || undefined })}
-          className="border border-gray-200 h-10 px-3 rounded-lg text-[13px] text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
+          className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
           <option value="">Sort: Name A-Z</option>
           <option value="revenue_desc">Revenue Highest</option>
         </select>
@@ -433,21 +433,21 @@ export default function ClientsView() {
 
       {/* Advanced Filters */}
       {showAdvanced && (
-        <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-surface-2 border border-line rounded-xl p-4 mb-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
-            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">State</label>
+            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">State</label>
             <input placeholder="e.g. NY" value={filter.state ?? ""} onChange={(e) => updateFilter({ state: e.target.value || undefined })}
-              className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400" />
+              className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Tag</label>
+            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Tag</label>
             <input placeholder="e.g. vip" value={filter.tag ?? ""} onChange={(e) => updateFilter({ tag: e.target.value || undefined })}
-              className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400" />
+              className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Status</label>
+            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Status</label>
             <select value={filter.lead_status ?? ""} onChange={(e) => updateFilter({ lead_status: e.target.value || undefined })}
-              className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
+              className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any status</option>
               <option value="active_not_dormant">Active (not dormant)</option>
               <option value="prospect">Prospect</option>
@@ -457,9 +457,9 @@ export default function ClientsView() {
             </select>
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Last Contact</label>
+            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Last Contact</label>
             <select value={filter.stale_days ?? ""} onChange={(e) => updateFilter({ stale_days: e.target.value ? Number(e.target.value) : undefined })}
-              className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
+              className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any time</option>
               <option value="30">30+ days</option>
               <option value="60">60+ days</option>
@@ -467,9 +467,9 @@ export default function ClientsView() {
             </select>
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Missing Info</label>
+            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Missing Info</label>
             <select value={filter.missing ?? ""} onChange={(e) => updateFilter({ missing: e.target.value || undefined })}
-              className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white">
+              className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any</option>
               <option value="email">Missing email</option>
               <option value="phone">Missing phone</option>
@@ -478,7 +478,7 @@ export default function ClientsView() {
             </select>
           </div>
           <div className="col-span-2 lg:col-span-4 flex justify-end">
-            <button onClick={clearAll} className="text-[12px] text-gray-400 hover:text-gray-700 transition-colors">
+            <button onClick={clearAll} className="text-[12px] text-muted hover:text-ink-2 transition-colors">
               Clear all filters
             </button>
           </div>
@@ -489,9 +489,9 @@ export default function ClientsView() {
       {chips.length > 0 && (
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           {chips.map((chip) => (
-            <span key={chip.key} className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/70 pl-2.5 pr-1.5 py-1 rounded-full text-[11px] font-medium">
+            <span key={chip.key} className="inline-flex items-center gap-1 bg-accent/10 text-accent-hover ring-1 ring-accent/20 pl-2.5 pr-1.5 py-1 rounded-full text-[11px] font-medium">
               {chip.label}
-              <button onClick={() => updateFilter({ [chip.key]: undefined })} className="hover:bg-indigo-100 rounded-full p-0.5 transition-colors">
+              <button onClick={() => updateFilter({ [chip.key]: undefined })} className="hover:bg-accent/10 rounded-full p-0.5 transition-colors">
                 <X size={11} />
               </button>
             </span>
@@ -500,7 +500,7 @@ export default function ClientsView() {
       )}
 
       {hasAnyFilter && (
-        <div className="text-[12px] text-gray-400 mb-3">
+        <div className="text-[12px] text-muted mb-3">
           Showing {clients.length} of {totalClients} clients
         </div>
       )}
@@ -517,50 +517,50 @@ export default function ClientsView() {
 
       {/* Bulk toolbar */}
       {selectedIds.size > 0 && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
-          <span className="text-[13px] font-medium text-indigo-700">{selectedIds.size} selected</span>
-          <button onClick={() => setSelectedIds(new Set())} className="text-[11px] text-indigo-500 hover:text-indigo-700">Clear</button>
+        <div className="bg-accent/10 border border-accent/20 rounded-xl px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
+          <span className="text-[13px] font-medium text-accent-hover">{selectedIds.size} selected</span>
+          <button onClick={() => setSelectedIds(new Set())} className="text-[11px] text-accent hover:text-accent-hover">Clear</button>
           <div className="flex-1" />
-          <select className="border border-gray-300 h-8 px-2 rounded-md text-[12px] bg-white" value="" onChange={(e) => { if (e.target.value) handleBulkCategory(e.target.value); }}>
+          <select className="border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface" value="" onChange={(e) => { if (e.target.value) handleBulkCategory(e.target.value); }}>
             <option value="">Category...</option>
             {allCategories.map((cat) => <option key={cat.id} value={cat.label}>{cat.label}</option>)}
           </select>
-          <select className="border border-gray-300 h-8 px-2 rounded-md text-[12px] bg-white" value="" onChange={(e) => { if (e.target.value) handleBulkLeadStatus(e.target.value); }}>
+          <select className="border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface" value="" onChange={(e) => { if (e.target.value) handleBulkLeadStatus(e.target.value); }}>
             <option value="">Status...</option>
             <option value="prospect">Prospect</option>
             <option value="hot_lead">Hot Lead</option>
             <option value="active_customer">Active Customer</option>
             <option value="inactive">Dormant</option>
           </select>
-          <button onClick={handleBulkEmail} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50">
+          <button onClick={handleBulkEmail} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-accent/20 text-accent hover:bg-accent/10">
             <Send size={12} /> Email
           </button>
-          <button onClick={handleExportCsv} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-gray-300 hover:bg-gray-50">
+          <button onClick={handleExportCsv} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-line-3 hover:bg-surface-2">
             <Download size={12} /> Export CSV
           </button>
-          <button onClick={handleBulkDelete} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-white border border-red-200 text-red-600 hover:bg-red-50">
+          <button onClick={handleBulkDelete} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-danger text-danger-ink hover:bg-danger-bg">
             <Trash2 size={12} /> Delete
           </button>
         </div>
       )}
 
       {/* Table */}
-      <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
+      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-50">
               <th className="px-3 py-3 w-10">
-                <input type="checkbox" className="accent-indigo-600" checked={selectedIds.size === clients.length && clients.length > 0} onChange={toggleSelectAll} />
+                <input type="checkbox" className="accent-accent" checked={selectedIds.size === clients.length && clients.length > 0} onChange={toggleSelectAll} />
               </th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Name</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Company</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Tier</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Email</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Phone</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Category</th>
-              <th className="text-center px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Inv.</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Last Contact</th>
-              <th className="text-right px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Revenue</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Name</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Company</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Tier</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Email</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Phone</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Category</th>
+              <th className="text-center px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Inv.</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Last Contact</th>
+              <th className="text-right px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Revenue</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
@@ -571,53 +571,53 @@ export default function ClientsView() {
                 <tr
                   key={c.id}
                   onClick={() => setDetailId(c.id)}
-                  className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-indigo-50/50" : ""}`}
+                  className={`border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""}`}
                 >
                   <td className="px-3 py-3 w-10" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" className="accent-indigo-600" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
+                    <input type="checkbox" className="accent-accent" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
                   </td>
-                  <td className="px-4 py-3 text-[13px] font-medium text-gray-900">
+                  <td className="px-4 py-3 text-[13px] font-medium text-ink">
                     <span className="flex items-center gap-1.5">
                       {c.name}
-                      {c.needs_review && <AlertCircle size={13} className="text-amber-400 flex-shrink-0" />}
-                      {!c.email && <Mail size={10} className="text-gray-200 flex-shrink-0" />}
-                      {!c.phone && <Phone size={10} className="text-gray-200 flex-shrink-0" />}
-                      {!c.street_address && <MapPin size={10} className="text-gray-200 flex-shrink-0" />}
-                      {!c.category && <Tag size={10} className="text-gray-200 flex-shrink-0" />}
+                      {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
+                      {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
+                      {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}
+                      {!c.street_address && <MapPin size={10} className="text-faint flex-shrink-0" />}
+                      {!c.category && <Tag size={10} className="text-faint flex-shrink-0" />}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-[13px] text-gray-500">{c.company || "—"}</td>
+                  <td className="px-4 py-3 text-[13px] text-muted">{c.company || "—"}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex flex-col items-start gap-1">
                       <TierBadge tier={bt ? bt.tier : "New"} size="sm" />
                       {bt && <ReliabilityBadge reliability={bt.reliability} pct={bt.reliability_pct} quotesSent={bt.quotes_sent} quotesWon={bt.quotes_won} compact />}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-[12px] text-gray-500">{c.email || "—"}</td>
-                  <td className="px-4 py-3 text-[12px] text-gray-500">{c.phone || "—"}</td>
-                  <td className="px-4 py-3 text-[12px] text-gray-500">{c.category || "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted">{c.email || "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted">{c.phone || "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted">{c.category || "—"}</td>
                   <td className="px-4 py-3 text-center">
-                    <span className="inline-flex items-center gap-1 text-[12px] text-gray-500 tabular-nums">
-                      <ShoppingCart size={11} className="text-gray-300" />
+                    <span className="inline-flex items-center gap-1 text-[12px] text-muted tabular-nums">
+                      <ShoppingCart size={11} className="text-faint" />
                       {c.invoice_count}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1 text-[12px] text-gray-400">
-                      <Clock size={11} className="text-gray-300" />
+                    <span className="inline-flex items-center gap-1 text-[12px] text-muted">
+                      <Clock size={11} className="text-faint" />
                       {relTime(c.last_contact_at)}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right text-[13px] font-semibold text-gray-900 tabular-nums">
+                  <td className="px-4 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
                     {fmtAmount(c.total_revenue || 0)}
                   </td>
                   <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
                     <button onClick={() => { setEditing(c); setShowForm(true); }} title="Edit"
-                      className="text-gray-300 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 transition-colors">
+                      className="text-faint hover:text-ink-2 p-1 rounded-md hover:bg-surface-3 transition-colors">
                       <Edit2 size={13} />
                     </button>
                     <button onClick={() => handleDelete(c.id)} title="Delete"
-                      className="text-gray-300 hover:text-red-500 p-1 rounded-md hover:bg-red-50 transition-colors">
+                      className="text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors">
                       <Trash2 size={13} />
                     </button>
                   </td>
@@ -628,16 +628,16 @@ export default function ClientsView() {
               <tr>
                 <td colSpan={11} className="px-4 py-16 text-center">
                   {hasAnyFilter ? (
-                    <p className="text-[13px] text-gray-400">No clients match the current filters</p>
+                    <p className="text-[13px] text-muted">No clients match the current filters</p>
                   ) : (
                     <div>
-                      <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
-                        <Users size={16} className="text-gray-400" />
+                      <div className="w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+                        <Users size={16} className="text-muted" />
                       </div>
-                      <p className="text-[15px] font-semibold text-gray-800 mb-1">No clients yet</p>
-                      <p className="text-[13px] text-gray-400 mb-4">Add your first client to get started</p>
+                      <p className="text-[15px] font-semibold text-ink mb-1">No clients yet</p>
+                      <p className="text-[13px] text-muted mb-4">Add your first client to get started</p>
                       <button onClick={() => { setEditing(null); setShowForm(true); }}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
+                        className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
                         <Plus size={13} /> Add Client
                       </button>
                     </div>
@@ -668,11 +668,11 @@ function ClientForm({
   const set = (k: keyof ClientInput, v: string | boolean | null) => setForm({ ...form, [k]: v });
 
   return (
-    <div className="bg-white border border-gray-100 rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
-      <h3 className="text-[14px] font-semibold text-gray-900 mb-5">{initial ? "Edit Client" : "New Client"}</h3>
+    <div className="bg-surface border border-line rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
+      <h3 className="text-[14px] font-semibold text-ink mb-5">{initial ? "Edit Client" : "New Client"}</h3>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-3">Basic Info</div>
+        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Basic Info</div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name *"><input className={inp} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field label="Company"><input className={inp} value={form.company ?? ""} onChange={(e) => set("company", e.target.value)} /></Field>
@@ -682,7 +682,7 @@ function ClientForm({
       </div>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-3">Classification</div>
+        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Classification</div>
         <div className="grid grid-cols-3 gap-3">
           <Field label="Category">
             <input className={inp} list="categories" value={form.category ?? ""} onChange={(e) => set("category", e.target.value)} />
@@ -702,7 +702,7 @@ function ClientForm({
       </div>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-3">Address</div>
+        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Address</div>
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
             <Field label="Street Address"><input className={inp} value={form.street_address ?? ""} onChange={(e) => set("street_address", e.target.value)} /></Field>
@@ -716,14 +716,14 @@ function ClientForm({
           <div className="col-span-2 flex items-center gap-2 mt-1">
             <input type="checkbox" id="needs-review" checked={form.needs_review ?? false}
               onChange={(e) => set("needs_review", e.target.checked)}
-              className="rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
-            <label htmlFor="needs-review" className="text-[12px] text-gray-600">Needs more information / review</label>
+              className="rounded border-line-3 text-warning-ink focus:ring-warning" />
+            <label htmlFor="needs-review" className="text-[12px] text-ink-2">Needs more information / review</label>
           </div>
         </div>
       </div>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-3">Notes & Follow-up</div>
+        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Notes & Follow-up</div>
         <Field label="Internal Notes">
           <textarea rows={3} className={inp + " py-2"} placeholder="Private notes about this client"
             value={form.notes ?? ""} onChange={(e) => set("notes", e.target.value)} />
@@ -737,11 +737,11 @@ function ClientForm({
 
       <div className="flex justify-end gap-2 pt-2 border-t border-gray-50">
         <button onClick={onCancel}
-          className="px-4 h-9 text-[13px] text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+          className="px-4 h-9 text-[13px] text-muted hover:text-ink border border-line rounded-lg hover:bg-surface-2 transition-colors">
           Cancel
         </button>
         <button onClick={() => onSave(form)} disabled={!form.name.trim()}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
           Save
         </button>
       </div>
@@ -752,7 +752,7 @@ function ClientForm({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-2">
-      <label className="block text-[11px] font-medium text-gray-500 mb-1.5">{label}</label>
+      <label className="block text-[11px] font-medium text-muted mb-1.5">{label}</label>
       {children}
     </div>
   );

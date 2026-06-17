@@ -305,8 +305,8 @@ export default function App() {
     return (
       <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
         <div className="text-center">
-          <h2 className="text-[18px] font-bold text-gray-900 mb-2">Access Revoked</h2>
-          <p className="text-[13px] text-gray-500">Your access has been removed. Contact your team owner.</p>
+          <h2 className="text-[18px] font-bold text-ink mb-2">Access Revoked</h2>
+          <p className="text-[13px] text-muted">Your access has been removed. Contact your team owner.</p>
         </div>
       </div>
     );
@@ -410,14 +410,14 @@ export default function App() {
             <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
               {aiOnline ? (
                 <span className="pulse-ring flex-shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 relative z-10 flex-shrink-0 block" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-success relative z-10 flex-shrink-0 block" />
                 </span>
               ) : (
-                <span className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
+                <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0" />
               )}
               Ollama
             </span>
-            <span className={`text-[11px] font-medium ${aiOnline ? "text-emerald-400" : "text-red-400"}`}>
+            <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
               {aiOnline ? "online" : "offline"}
             </span>
           </div>
@@ -538,25 +538,25 @@ function UserPicker({ onSetUser }: { onSetUser: (u: any) => void }) {
   const active = users.filter((u) => u.is_active);
   return (
     <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
-      <div className="bg-white border border-gray-100 rounded-2xl shadow-xl p-8 w-full max-w-sm">
-        <h2 className="text-[18px] font-bold text-gray-900 mb-1">Select Profile</h2>
-        <p className="text-[12px] text-gray-400 mb-5">Choose your user profile or enter an invite code.</p>
+      <div className="bg-surface border border-line rounded-2xl shadow-xl p-8 w-full max-w-sm">
+        <h2 className="text-[18px] font-bold text-ink mb-1">Select Profile</h2>
+        <p className="text-[12px] text-muted mb-5">Choose your user profile or enter an invite code.</p>
         <div className="space-y-2 mb-5">
           {active.map((u) => (
-            <button key={u.id} onClick={() => select(u)} className="w-full text-left px-4 py-3 rounded-xl border border-gray-100 hover:border-indigo-200 hover:bg-indigo-50/50 transition-colors">
-              <p className="text-[14px] font-medium text-gray-900">{u.name}</p>
-              <p className="text-[11px] text-gray-400">{u.email} — {u.role}</p>
+            <button key={u.id} onClick={() => select(u)} className="w-full text-left px-4 py-3 rounded-xl border border-line hover:border-accent/20 hover:bg-accent/10 transition-colors">
+              <p className="text-[14px] font-medium text-ink">{u.name}</p>
+              <p className="text-[11px] text-muted">{u.email} — {u.role}</p>
             </button>
           ))}
-          {active.length === 0 && <p className="text-[12px] text-gray-400">No users found. Enter an invite code below.</p>}
+          {active.length === 0 && <p className="text-[12px] text-muted">No users found. Enter an invite code below.</p>}
         </div>
         <div className="border-t border-gray-50 pt-4">
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Invite Code</p>
+          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Invite Code</p>
           <div className="flex gap-2">
-            <input className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] flex-1" placeholder="Enter 6-digit code" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && claim()} />
-            <button onClick={claim} disabled={!inviteCode.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Claim</button>
+            <input className="border border-line px-3 h-9 rounded-lg text-[13px] flex-1" placeholder="Enter 6-digit code" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && claim()} />
+            <button onClick={claim} disabled={!inviteCode.trim()} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Claim</button>
           </div>
-          {error && <p className="text-[11px] text-red-500 mt-2">{error}</p>}
+          {error && <p className="text-[11px] text-danger-ink mt-2">{error}</p>}
         </div>
       </div>
     </div>

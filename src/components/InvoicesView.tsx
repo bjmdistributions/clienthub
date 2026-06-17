@@ -8,11 +8,11 @@ import RecurringView from "./RecurringView";
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
   const lo = s.toLowerCase();
-  if (lo === "paid" && inv.is_complete) return "bg-green-100 text-green-800";
-  if (lo === "paid")                    return "bg-amber-100 text-amber-800";
-  if (lo === "sent" || lo === "deposit_pending") return "bg-blue-100 text-blue-800";
-  if (lo === "overdue")                 return "bg-red-100 text-red-800";
-  return "bg-gray-100 text-gray-700";
+  if (lo === "paid" && inv.is_complete) return "bg-success-bg text-success-ink";
+  if (lo === "paid")                    return "bg-warning-bg text-warning-ink";
+  if (lo === "sent" || lo === "deposit_pending") return "bg-info-bg text-info-ink";
+  if (lo === "overdue")                 return "bg-danger-bg text-danger-ink";
+  return "bg-surface-3 text-ink-2";
 };
 
 const statusLabel = (inv: Invoice): string => {
@@ -33,7 +33,7 @@ const FLOW_LABELS = ["Invoiced", "Payment In", "Supplier Paid", "Complete"];
 
 // 4-dot deal flow progress indicator — red → amber → lime → green gradient
 function FlowDots({ stage }: { stage?: string | null }) {
-  const colors    = ["bg-red-400", "bg-amber-400", "bg-lime-500", "bg-emerald-500"];
+  const colors    = ["bg-danger", "bg-warning", "bg-lime-500", "bg-success"];
   const cur       = flowStageSi(stage ?? null);
   const label     = cur >= 0 ? FLOW_LABELS[cur] : "No flow";
   return (
@@ -46,10 +46,10 @@ function FlowDots({ stage }: { stage?: string | null }) {
           key={i}
           className={`rounded-full transition-all ${
             cur < 0
-              ? "w-1.5 h-1.5 bg-gray-100"           // no flow yet — faint grey
+              ? "w-1.5 h-1.5 bg-surface-3"           // no flow yet — faint grey
               : i <= cur
               ? `w-2 h-2 ${colors[i]}`               // completed step
-              : "w-1.5 h-1.5 bg-gray-200"            // future step
+              : "w-1.5 h-1.5 bg-surface-3"            // future step
           }`}
         />
       ))}
@@ -57,7 +57,7 @@ function FlowDots({ stage }: { stage?: string | null }) {
   );
 }
 
-const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 export default function InvoicesView() {
   const [invoices, setInvoices]         = useState<Invoice[]>([]);
@@ -164,26 +164,26 @@ export default function InvoicesView() {
       {/* Header */}
       <div className="flex justify-between items-center mb-5">
         <div>
-          <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Invoices</h2>
-          <p className="text-[12px] text-gray-400 mt-0.5">{invoices.length} total</p>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Invoices</h2>
+          <p className="text-[12px] text-muted mt-0.5">{invoices.length} total</p>
         </div>
         <button
           onClick={() => { setEditing(null); setShowForm(true); }}
-          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
         >
           <Plus size={14} /> New Invoice
         </button>
         <button onClick={handleExportInvoices}
-          className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+          className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
           <FileDown size={13} /> Export CSV
         </button>
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 mb-5 border-b border-gray-100">
+      <div className="flex items-center gap-1 mb-5 border-b border-line">
         {(["all", "drafts", "sent", "paid", "recurring"] as const).map((t) => (
           <button key={t} onClick={() => setViewTab(t)}
-            className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${viewTab === t ? "border-indigo-600 text-indigo-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+            className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${viewTab === t ? "border-accent text-accent-hover" : "border-transparent text-muted hover:text-ink-2"}`}>
             {t}
           </button>
         ))}
@@ -196,15 +196,15 @@ export default function InvoicesView() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         {[
-          { label: "Total",          value: invoices.length,          color: "text-gray-900" },
-          { label: "Completed",      value: completedCount,           color: completedCount > 0 ? "text-green-700" : "text-gray-400" },
-          { label: "Paid",           value: paidCount - completedCount, color: (paidCount - completedCount) > 0 ? "text-amber-700" : "text-gray-400" },
-          { label: "Sent",           value: sentCount,                color: sentCount > 0 ? "text-blue-700" : "text-gray-400" },
-          { label: "Overdue",        value: overdueCount,             color: overdueCount > 0 ? "text-red-700" : "text-gray-400" },
-          { label: "Total Profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-emerald-700" : "text-red-700" },
+          { label: "Total",          value: invoices.length,          color: "text-ink" },
+          { label: "Completed",      value: completedCount,           color: completedCount > 0 ? "text-success-ink" : "text-muted" },
+          { label: "Paid",           value: paidCount - completedCount, color: (paidCount - completedCount) > 0 ? "text-warning-ink" : "text-muted" },
+          { label: "Sent",           value: sentCount,                color: sentCount > 0 ? "text-info-ink" : "text-muted" },
+          { label: "Overdue",        value: overdueCount,             color: overdueCount > 0 ? "text-danger-ink" : "text-muted" },
+          { label: "Total Profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-success-ink" : "text-danger-ink" },
         ].map((s) => (
-          <div key={s.label} className="bg-white border border-gray-100 rounded-xl px-4 py-3.5">
-            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">{s.label}</p>
+          <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">{s.label}</p>
             <p className={`text-[22px] font-bold tabular-nums ${s.color}`}>{s.value}</p>
           </div>
         ))}
@@ -213,7 +213,7 @@ export default function InvoicesView() {
       {/* Toast */}
       {toast && (
         <div className="fixed bottom-5 right-5 bg-[#1A1A1E] text-white px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 flex items-center gap-2 animate-fade-in">
-          <Check size={12} className="text-emerald-400" /> {toast}
+          <Check size={12} className="text-success-ink" /> {toast}
         </div>
       )}
 
@@ -225,33 +225,33 @@ export default function InvoicesView() {
       {/* Mark paid modal */}
       {payModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setPayModal(null)}>
-          <div className="bg-white rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] animate-fade-up" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] animate-fade-up" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-50">
-              <h3 className="text-[14px] font-semibold text-gray-900">Mark as Paid</h3>
-              <button onClick={() => setPayModal(null)} className="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-gray-100 transition-colors">
+              <h3 className="text-[14px] font-semibold text-ink">Mark as Paid</h3>
+              <button onClick={() => setPayModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
                 <X size={16} />
               </button>
             </div>
             <div className="px-5 py-4 space-y-3.5">
               <div>
-                <label className="block text-[11px] font-medium text-gray-500 mb-1.5">Date</label>
+                <label className="block text-[11px] font-medium text-muted mb-1.5">Date</label>
                 <input type="date" className={inp} value={payDate} onChange={(e) => setPayDate(e.target.value)} />
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-gray-500 mb-1.5">Method</label>
+                <label className="block text-[11px] font-medium text-muted mb-1.5">Method</label>
                 <select className={inp} value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
                   <option value="">— select —</option>
                   {payMethods.map((m) => <option key={m.id} value={m.label}>{m.label}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-gray-500 mb-1.5">Reference (optional)</label>
+                <label className="block text-[11px] font-medium text-muted mb-1.5">Reference (optional)</label>
                 <input className={inp} placeholder="e.g. check #1234" value={payRef} onChange={(e) => setPayRef(e.target.value)} />
               </div>
               <div className="flex justify-end gap-2 pt-1">
-                <button onClick={() => setPayModal(null)} className="px-4 h-9 text-[13px] text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
+                <button onClick={() => setPayModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
                 <button onClick={confirmPay} disabled={busy === payModal}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+                  className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
                   {busy === payModal ? "Saving..." : "Confirm"}
                 </button>
               </div>
@@ -261,17 +261,17 @@ export default function InvoicesView() {
       )}
 
       {/* Table */}
-      <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
+      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-gray-50">
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Number</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Client</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Issue</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Due</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Total</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Profit</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Status</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Number</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Issue</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Due</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Total</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Profit</th>
+              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Status</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
@@ -295,17 +295,17 @@ export default function InvoicesView() {
                 profit = null;
               }
               return (
-                <tr key={inv.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors" onClick={() => openDetail(inv.id)}>
-                  <td className="px-4 py-3 font-mono text-[11px] text-gray-400">{inv.number}</td>
-                  <td className="px-4 py-3 text-[13px] font-medium text-gray-900">{clientName(inv.client_id)}</td>
-                  <td className="px-4 py-3 text-[12px] text-gray-500 tabular-nums">{inv.issue_date.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-[12px] text-gray-500 tabular-nums">{inv.due_date.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-[13px] font-semibold text-gray-900 tabular-nums">{fmtAmount(inv.total)}</td>
-                  <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${profit != null ? (profit >= 0 ? "text-emerald-600" : "text-red-600") : "text-gray-300"}`}>
+                <tr key={inv.id} className="border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors" onClick={() => openDetail(inv.id)}>
+                  <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
+                  <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(inv.client_id)}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.due_date.slice(0, 10)}</td>
+                  <td className="px-4 py-3 text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(inv.total)}</td>
+                  <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${profit != null ? (profit >= 0 ? "text-success-ink" : "text-danger-ink") : "text-faint"}`}>
                     {profit != null ? (
                       <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit — revenue minus costs entered so far" : undefined}>
                         {fmtAmount(profit)}
-                        {projected && <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-wide">proj</span>}
+                        {projected && <span className="text-[9px] font-semibold text-muted uppercase tracking-wide">proj</span>}
                       </span>
                     ) : "—"}
                   </td>
@@ -320,17 +320,17 @@ export default function InvoicesView() {
                   </td>
                   <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
                     <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
-                      className="text-gray-300 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 transition-colors">
+                      className="text-faint hover:text-ink-2 p-1 rounded-md hover:bg-surface-3 transition-colors">
                       <Edit2 size={13} />
                     </button>
                     <button title="Delete" onClick={() => handleDelete(inv.id)}
                       className={confirmDelete === inv.id
-                        ? "text-red-600 font-semibold text-[11px] px-2 py-0.5 rounded-md bg-red-50"
-                        : "text-gray-300 hover:text-red-500 p-1 rounded-md hover:bg-red-50 transition-colors"}>
+                        ? "text-danger-ink font-semibold text-[11px] px-2 py-0.5 rounded-md bg-danger-bg"
+                        : "text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors"}>
                       {confirmDelete === inv.id ? "Sure?" : <Trash2 size={13} />}
                     </button>
                     <button title="Generate PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
-                      className="text-gray-300 hover:text-indigo-500 p-1 rounded-md hover:bg-indigo-50 disabled:opacity-40 transition-colors">
+                      className="text-faint hover:text-accent p-1 rounded-md hover:bg-accent/10 disabled:opacity-40 transition-colors">
                       {busy === inv.id ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
                     </button>
                     {inv.is_complete && inv.deal_flow_id && (
@@ -343,7 +343,7 @@ export default function InvoicesView() {
                             await load();
                           } catch (e: any) { alert(e); }
                         }}
-                        className="text-gray-300 hover:text-amber-500 p-1 rounded-md hover:bg-amber-50 transition-colors"
+                        className="text-faint hover:text-warning-ink p-1 rounded-md hover:bg-warning-bg transition-colors"
                       >
                         <RotateCcw size={13} />
                       </button>
@@ -351,9 +351,9 @@ export default function InvoicesView() {
                     {inv.status.toLowerCase() !== "paid" && (
                       <>
                         <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                          className="text-gray-300 hover:text-blue-500 p-1 rounded-md hover:bg-blue-50 transition-colors"><Send size={13} /></button>
+                          className="text-faint hover:text-info-ink p-1 rounded-md hover:bg-info-bg transition-colors"><Send size={13} /></button>
                         <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                          className="text-gray-300 hover:text-emerald-500 p-1 rounded-md hover:bg-emerald-50 transition-colors"><Check size={13} /></button>
+                          className="text-faint hover:text-success-ink p-1 rounded-md hover:bg-success-bg transition-colors"><Check size={13} /></button>
                       </>
                     )}
                   </td>
@@ -363,13 +363,13 @@ export default function InvoicesView() {
             {invoices.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-4 py-16 text-center">
-                  <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
-                    <FileText size={16} className="text-gray-400" />
+                  <div className="w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+                    <FileText size={16} className="text-muted" />
                   </div>
-                  <p className="text-[15px] font-semibold text-gray-800 mb-1">No invoices yet</p>
-                  <p className="text-[13px] text-gray-400 mb-4">Create your first invoice to send to a client</p>
+                  <p className="text-[15px] font-semibold text-ink mb-1">No invoices yet</p>
+                  <p className="text-[13px] text-muted mb-4">Create your first invoice to send to a client</p>
                   <button onClick={() => { setEditing(null); setShowForm(true); }}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
+                    className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
                     <Plus size={13} /> Create Invoice
                   </button>
                 </td>
@@ -467,10 +467,10 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const filteredClients = clientSearch ? clients.filter((c) => c.name.toLowerCase().includes(clientSearch.toLowerCase())) : clients;
 
   return (
-    <div className="bg-white border border-gray-100 rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
+    <div className="bg-surface border border-line rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
       <div className="flex justify-between items-center mb-5">
-        <h3 className="text-[14px] font-semibold text-gray-900">{initial ? "Edit Invoice" : "New Invoice"}</h3>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-gray-100 transition-colors"><X size={16} /></button>
+        <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit Invoice" : "New Invoice"}</h3>
+        <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
       </div>
 
       {/* New invoice: full header including client picker */}
@@ -479,9 +479,9 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Client">
             {!createNew && !showClientPicker && clientId ? (
               <div className="flex items-center gap-2">
-                <span className="text-[13px] text-gray-800 font-medium">{clients.find((c) => c.id === clientId)?.name ?? "Unknown"}</span>
+                <span className="text-[13px] text-ink font-medium">{clients.find((c) => c.id === clientId)?.name ?? "Unknown"}</span>
                 <button type="button" onClick={() => { setShowClientPicker(true); setClientSearch(""); }}
-                  className="text-[11px] text-indigo-600 hover:text-indigo-800 underline">Change</button>
+                  className="text-[11px] text-accent hover:text-indigo-800 underline">Change</button>
               </div>
             ) : (
               <>
@@ -489,17 +489,17 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
                   onChange={(e) => { setClientSearch(e.target.value); }}
                   onFocus={() => setShowClientPicker(true)} />
                 {showClientPicker && (
-                  <div className="border border-gray-200 rounded-lg mt-1 max-h-[160px] overflow-y-auto bg-white">
+                  <div className="border border-line rounded-lg mt-1 max-h-[160px] overflow-y-auto bg-surface">
                     {filteredClients.map((c) => (
                       <button key={c.id} type="button"
                         onClick={() => { setClientId(c.id); setClientSearch(c.name); setShowClientPicker(false); setCreateNew(false); }}
-                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-indigo-50 border-b border-gray-50 last:border-0 transition-colors">
+                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-accent/10 border-b border-gray-50 last:border-0 transition-colors">
                         {c.name}
                       </button>
                     ))}
                     <button type="button"
                       onClick={() => { setCreateNew(true); setShowClientPicker(false); setClientSearch(""); }}
-                      className="w-full text-left px-3 py-2 text-[13px] text-indigo-600 hover:bg-indigo-50 transition-colors">
+                      className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-accent/10 transition-colors">
                       + Create new client
                     </button>
                   </div>
@@ -507,12 +507,12 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
               </>
             )}
             {createNew && (
-              <div className="mt-2 space-y-2 p-3 bg-gray-50 rounded-lg border border-gray-100">
+              <div className="mt-2 space-y-2 p-3 bg-surface-2 rounded-lg border border-line">
                 <input className={inp} placeholder="Client name" value={newClient.name} onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} />
                 <input className={inp} placeholder="Email (optional)" value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} />
                 <input className={inp} placeholder="Phone (optional)" value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} />
                 <button type="button" onClick={() => { setCreateNew(false); setShowClientPicker(true); }}
-                  className="text-[11px] text-gray-500 hover:text-gray-700 underline">Cancel</button>
+                  className="text-[11px] text-muted hover:text-ink-2 underline">Cancel</button>
               </div>
             )}
           </Field>
@@ -521,7 +521,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Tax %">
             <div className="relative">
               <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">%</span>
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">%</span>
             </div>
           </Field>
         </div>
@@ -529,8 +529,8 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
       {/* Edit mode: show dates + tax (no client change) */}
       {initial && (
-        <div className="grid grid-cols-3 gap-4 mb-5 p-4 bg-amber-50/50 border border-amber-100 rounded-xl">
-          <div className="col-span-3 text-[11px] text-amber-700 font-medium -mb-1">
+        <div className="grid grid-cols-3 gap-4 mb-5 p-4 bg-warning-bg/50 border border-warning rounded-xl">
+          <div className="col-span-3 text-[11px] text-warning-ink font-medium -mb-1">
             Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice — amounts and dates can be adjusted.
           </div>
           <Field label="Due date"><input type="date" className={inp} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
@@ -538,14 +538,14 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Tax %">
             <div className="relative">
               <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">%</span>
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">%</span>
             </div>
           </Field>
         </div>
       )}
 
       {!initial && createNew && (
-        <div className="grid grid-cols-2 gap-4 mb-5 p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl">
+        <div className="grid grid-cols-2 gap-4 mb-5 p-4 bg-accent/10 border border-accent/10 rounded-xl">
           <Field label="Name *"><input className={inp} value={newClient.name} onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} /></Field>
           <Field label="Email"><input className={inp} value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} /></Field>
           <Field label="Phone"><input className={inp} value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} /></Field>
@@ -555,7 +555,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
       {/* Line items */}
       <div className="mb-5">
-        <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2 px-1">
+        <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold text-muted uppercase tracking-widest mb-2 px-1">
           <div className="col-span-6">Description</div>
           <div className="col-span-1">Qty</div>
           <div className="col-span-2">Rate</div>
@@ -564,34 +564,34 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
         </div>
         {items.map((it, i) => (
           <div key={i} className="grid grid-cols-12 gap-2 mb-1.5">
-            <input className="col-span-6 border border-gray-200 px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
+            <input className="col-span-6 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
               value={it.description} onChange={(e) => updateItem(i, "description", e.target.value)} />
-            <input type="number" inputMode="decimal" step="1" className="col-span-1 border border-gray-200 px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+            <input type="number" inputMode="decimal" step="1" className="col-span-1 border border-line px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
               value={it.qty || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateItem(i, "qty", e.target.value === "" ? 0 : isNaN(v) ? 0 : v); }} />
             <div className="col-span-2 relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">$</span>
-              <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
+              <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                 value={it.rate || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateItem(i, "rate", e.target.value === "" ? 0 : isNaN(v) ? 0 : v); }} />
             </div>
-            <input readOnly className="col-span-2 border border-gray-100 bg-gray-50 px-3 h-9 rounded-lg text-[13px] text-right text-gray-500 tabular-nums"
+            <input readOnly className="col-span-2 border border-line bg-surface-2 px-3 h-9 rounded-lg text-[13px] text-right text-muted tabular-nums"
               value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} />
             <button onClick={() => setItems(items.filter((_, j) => j !== i))}
-              className="col-span-1 text-gray-300 hover:text-red-500 flex items-center justify-center transition-colors">
+              className="col-span-1 text-faint hover:text-danger-ink flex items-center justify-center transition-colors">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
         <div className="flex items-center gap-3 mt-2">
           <button onClick={() => setItems([...items, { description: "", qty: 1, rate: 0, amount: 0 }])}
-            className="text-[12px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors">
+            className="text-[12px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1 transition-colors">
             <Plus size={13} /> Add line
           </button>
           {templates.length > 0 && (
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-gray-400">Templates:</span>
+              <span className="text-[11px] text-muted">Templates:</span>
               {templates.map((t) => (
                 <button key={t.id} onClick={() => setItems([...items, { description: t.description, qty: t.qty, rate: t.rate, amount: t.qty * t.rate }])}
-                  className="text-[11px] bg-gray-100 hover:bg-gray-200 px-2.5 py-1 rounded-full text-gray-600 transition-colors">
+                  className="text-[11px] bg-surface-3 hover:bg-surface-3 px-2.5 py-1 rounded-full text-ink-2 transition-colors">
                   {t.description}
                 </button>
               ))}
@@ -604,13 +604,13 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       <div className="mb-5">
         <div className="flex gap-4 items-end">
           <div className="flex-1">
-            <label className="block text-[11px] font-medium text-gray-500 mb-1.5">Notes</label>
-            <textarea rows={3} className="border border-gray-200 px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors"
+            <label className="block text-[11px] font-medium text-muted mb-1.5">Notes</label>
+            <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
               placeholder="Shipping instructions, payment terms..." value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
           <div>
-            <label className="block text-[11px] font-medium text-gray-500 mb-1.5">Recurring</label>
-            <select className="border border-gray-200 px-3 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+            <label className="block text-[11px] font-medium text-muted mb-1.5">Recurring</label>
+            <select className="border border-line px-3 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
               value={recurring} onChange={(e) => setRecurring(e.target.value)}>
               <option value="">One-time</option>
               <option value="monthly">Monthly</option>
@@ -622,7 +622,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       </div>
 
       {/* Totals */}
-      <div className="border-t border-gray-100 pt-4 flex justify-end">
+      <div className="border-t border-line pt-4 flex justify-end">
         <div className="w-60 text-[13px] space-y-1.5">
           <Row label="Subtotal" value={subtotal} />
           <Row label={`Tax (${taxRate}%)`} value={tax} />
@@ -630,13 +630,13 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
         </div>
       </div>
       <div className="flex justify-end gap-2 mt-4">
-        <button onClick={onClose} className="px-4 h-9 text-[13px] text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Cancel</button>
+        <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
         <button onClick={handlePreview} disabled={previewing || items.length === 0}
-          className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors">
+          className="bg-surface-3 hover:bg-surface-3 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors">
           <Eye size={13} /> {previewing ? "Opening..." : "Preview"}
         </button>
         <button onClick={submit} disabled={submitting || (!createNew && !clientId) || items.length === 0}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+          className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
           {submitting ? "Saving..." : initial ? "Save Changes" : "Create Invoice"}
         </button>
       </div>
@@ -668,24 +668,24 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
   };
 
   return (
-    <div className="border border-gray-200 rounded-xl p-5 mb-4">
+    <div className="border border-line rounded-xl p-5 mb-4">
       <div className="grid grid-cols-2 gap-4 mb-4">
         <Field label="Subtotal">
-          <div className="border border-gray-200 px-3 h-9 rounded-lg text-[13px] text-gray-500 bg-gray-50 flex items-center tabular-nums">{fmtAmount(subtotal)}</div>
+          <div className="border border-line px-3 h-9 rounded-lg text-[13px] text-muted bg-surface-2 flex items-center tabular-nums">{fmtAmount(subtotal)}</div>
         </Field>
         <Field label="Tax %">
           <div className="relative">
             <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-[13px]">%</span>
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">%</span>
           </div>
         </Field>
       </div>
 
-      <div className="flex justify-between items-center py-3 border-t border-gray-100 mt-4">
-        <div className="text-[14px] text-gray-500">Total: <span className="font-semibold text-gray-900">{fmtAmount(total)}</span></div>
+      <div className="flex justify-between items-center py-3 border-t border-line mt-4">
+        <div className="text-[14px] text-muted">Total: <span className="font-semibold text-ink">{fmtAmount(total)}</span></div>
         <div className="flex gap-3">
-          <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
-          <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+          <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-muted hover:bg-surface-3 transition-colors">Cancel</button>
+          <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors">
             {saving ? "Saving..." : "Update Tax"}
           </button>
         </div>
@@ -696,7 +696,7 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
 
 function Row({ label, value, bold }: { label: string; value: number; bold?: boolean }) {
   return (
-    <div className={`flex justify-between tabular-nums ${bold ? "font-semibold text-[14px] pt-1.5 border-t border-gray-100" : "text-gray-600"}`}>
+    <div className={`flex justify-between tabular-nums ${bold ? "font-semibold text-[14px] pt-1.5 border-t border-line" : "text-ink-2"}`}>
       <span>{label}</span><span>{fmtAmount(value)}</span>
     </div>
   );
@@ -705,7 +705,7 @@ function Row({ label, value, bold }: { label: string; value: number; bold?: bool
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-[11px] font-medium text-gray-500 mb-1.5">{label}</label>
+      <label className="block text-[11px] font-medium text-muted mb-1.5">{label}</label>
       {children}
     </div>
   );
@@ -725,19 +725,19 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   const [savingShipping, setSavingShipping] = useState(false);
 
   const statCol = (s: string) => {
-    if (s === "paid")    return invoice.is_complete ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800";
-    if (s === "sent")    return "bg-blue-100 text-blue-800";
-    if (s === "overdue") return "bg-red-100 text-red-800";
-    return "bg-gray-100 text-gray-700";
+    if (s === "paid")    return invoice.is_complete ? "bg-success-bg text-success-ink" : "bg-warning-bg text-warning-ink";
+    if (s === "sent")    return "bg-info-bg text-info-ink";
+    if (s === "overdue") return "bg-danger-bg text-danger-ink";
+    return "bg-surface-3 text-ink-2";
   };
 
   return (
     <>
       <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={onClose} />
-      <div className="fixed inset-y-0 right-0 w-[480px] bg-white shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
-        <div className="sticky top-0 bg-white/95 backdrop-blur-sm border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
-          <h3 className="text-[14px] font-semibold text-gray-900 font-mono">{invoice.number}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-gray-100 transition-colors"><X size={16} /></button>
+      <div className="fixed inset-y-0 right-0 w-[480px] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-surface/95 backdrop-blur-sm border-b border-line px-6 py-4 flex items-center justify-between z-10">
+          <h3 className="text-[14px] font-semibold text-ink font-mono">{invoice.number}</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
         </div>
 
         <div className="px-6 py-5 space-y-5">
@@ -746,8 +746,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           </span>
 
           <div>
-            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Client</div>
-            <div className="text-[14px] font-medium text-gray-900 mt-0.5">{clientName}</div>
+            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-0.5">Client</div>
+            <div className="text-[14px] font-medium text-ink mt-0.5">{clientName}</div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -757,30 +757,30 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               ...(invoice.sent_at ? [{ label: "Sent", val: new Date(invoice.sent_at).toLocaleDateString() }] : []),
             ].map((r) => (
               <div key={r.label}>
-                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">{r.label}</div>
-                <div className="text-[13px] text-gray-900 mt-0.5 tabular-nums">{r.val}</div>
+                <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">{r.label}</div>
+                <div className="text-[13px] text-ink mt-0.5 tabular-nums">{r.val}</div>
               </div>
             ))}
           </div>
 
           {/* Line items */}
           <div>
-            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Line Items</div>
+            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line Items</div>
             <table className="w-full text-[13px]">
-              <thead className="bg-gray-50 rounded-lg">
+              <thead className="bg-surface-2 rounded-lg">
                 <tr>
-                  <th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-l-lg">Description</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Qty</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Rate</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-r-lg">Amount</th>
+                  <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Description</th>
+                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Qty</th>
+                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Rate</th>
+                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((it, i) => (
                   <tr key={i} className="border-t border-gray-50">
-                    <td className="px-3 py-2.5 text-gray-700">{it.description}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{it.qty}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmtAmount(it.rate)}</td>
+                    <td className="px-3 py-2.5 text-ink-2">{it.description}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted">{it.qty}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums font-medium">{fmtAmount(it.amount)}</td>
                   </tr>
                 ))}
@@ -789,18 +789,18 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           </div>
 
           {/* Totals */}
-          <div className="border-t border-gray-100 pt-4 space-y-1.5 text-[13px]">
-            <div className="flex justify-between text-gray-600"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(invoice.subtotal)}</span></div>
-            <div className="flex justify-between text-gray-600"><span>Tax</span><span className="tabular-nums">{fmtAmount(invoice.tax)}</span></div>
-            <div className="flex justify-between font-semibold text-[14px] text-gray-900 pt-1.5 border-t border-gray-100">
+          <div className="border-t border-line pt-4 space-y-1.5 text-[13px]">
+            <div className="flex justify-between text-ink-2"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(invoice.subtotal)}</span></div>
+            <div className="flex justify-between text-ink-2"><span>Tax</span><span className="tabular-nums">{fmtAmount(invoice.tax)}</span></div>
+            <div className="flex justify-between font-semibold text-[14px] text-ink pt-1.5 border-t border-line">
               <span>Total</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span>
             </div>
           </div>
 
           {/* Cost & Profit */}
-          <div className="border-t border-gray-100 pt-4">
+          <div className="border-t border-line pt-4">
             <button onClick={() => setEditingCosts(!editingCosts)}
-              className="flex items-center gap-1.5 text-[12px] font-medium text-gray-600 hover:text-gray-900 w-full transition-colors">
+              className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2 hover:text-ink w-full transition-colors">
               <ChevronDown size={13} className={`transition-transform ${editingCosts ? "rotate-180" : ""}`} />
               Cost & Profit
             </button>
@@ -808,9 +808,9 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               invoice.is_complete ? (
                 /* Read-only for completed invoices — managed via Deal Flow */
                 <div className="mt-3 space-y-2">
-                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-100 rounded-lg">
-                    <GitBranch size={11} className="text-amber-500 flex-shrink-0" />
-                    <p className="text-[11px] text-amber-700">
+                  <div className="flex items-center gap-2 px-3 py-2 bg-warning-bg border border-warning rounded-lg">
+                    <GitBranch size={11} className="text-warning-ink flex-shrink-0" />
+                    <p className="text-[11px] text-warning-ink">
                       Cost &amp; profit are set by the Deal Flow workflow and cannot be edited here.
                     </p>
                   </div>
@@ -818,27 +818,27 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     <div className="space-y-1.5 pt-1">
                       {costItems.map((ci, i) => (
                         <div key={i} className="flex justify-between text-[12px]">
-                          <span className="text-gray-500">{ci.description || "Cost item"}</span>
-                          <span className="tabular-nums text-gray-700 font-medium">{fmtAmount(ci.amount)}</span>
+                          <span className="text-muted">{ci.description || "Cost item"}</span>
+                          <span className="tabular-nums text-ink-2 font-medium">{fmtAmount(ci.amount)}</span>
                         </div>
                       ))}
                     </div>
                   )}
-                  <div className="border-t border-gray-100 pt-2 space-y-1 text-[12px]">
-                    <div className="flex justify-between text-gray-500">
+                  <div className="border-t border-line pt-2 space-y-1 text-[12px]">
+                    <div className="flex justify-between text-muted">
                       <span>Revenue</span>
                       <span className="tabular-nums">{fmtAmount(invoice.total)}</span>
                     </div>
-                    <div className="flex justify-between text-gray-500">
+                    <div className="flex justify-between text-muted">
                       <span>Total Cost</span>
                       <span className="tabular-nums">{fmtAmount(invoice.total_cost ?? 0)}</span>
                     </div>
-                    <div className={`flex justify-between font-semibold ${(invoice.profit ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    <div className={`flex justify-between font-semibold ${(invoice.profit ?? 0) >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                       <span>Profit</span>
                       <span className="tabular-nums">{fmtAmount(invoice.profit ?? 0)}</span>
                     </div>
                     {invoice.margin != null && (
-                      <div className="flex justify-between text-gray-400">
+                      <div className="flex justify-between text-muted">
                         <span>Margin</span>
                         <span className="tabular-nums">{invoice.margin.toFixed(1)}%</span>
                       </div>
@@ -848,32 +848,32 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               ) : (
                 /* Editable for non-completed invoices */
                 <div className="mt-3 space-y-2">
-                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Cost Items</div>
+                  <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Cost Items</div>
                   {costs.map((ci, i) => (
                     <div key={i} className="flex items-center gap-2">
-                      <input className="flex-1 border border-gray-200 px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors" placeholder="Description"
+                      <input className="flex-1 border border-line px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors" placeholder="Description"
                         value={ci.description} onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], description: e.target.value }; setCosts(c); }} />
                       <div className="relative w-28">
-                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]">$</span>
-                        <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
+                        <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                           value={ci.amount || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); const c = [...costs]; c[i] = { ...c[i], amount: isNaN(v) ? 0 : v }; setCosts(c); }} />
                       </div>
-                      <button onClick={() => setCosts(costs.filter((_, j) => j !== i))} className="text-gray-300 hover:text-red-500 p-1 transition-colors"><X size={12} /></button>
+                      <button onClick={() => setCosts(costs.filter((_, j) => j !== i))} className="text-faint hover:text-danger-ink p-1 transition-colors"><X size={12} /></button>
                     </div>
                   ))}
                   <button onClick={() => setCosts([...costs, { description: "", amount: 0 }])}
-                    className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors">
+                    className="text-[11px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1 transition-colors">
                     <Plus size={11} /> Add cost item
                   </button>
-                  <div className="border-t border-gray-100 pt-2 space-y-1 text-[12px]">
-                    <div className="flex justify-between text-gray-500"><span>Revenue</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span></div>
-                    <div className="flex justify-between text-gray-500"><span>Cost</span><span className="tabular-nums">{fmtAmount(costs.reduce((s, c) => s + c.amount, 0))}</span></div>
-                    <div className={`flex justify-between font-semibold ${(invoice.total - costs.reduce((s, c) => s + c.amount, 0)) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  <div className="border-t border-line pt-2 space-y-1 text-[12px]">
+                    <div className="flex justify-between text-muted"><span>Revenue</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span></div>
+                    <div className="flex justify-between text-muted"><span>Cost</span><span className="tabular-nums">{fmtAmount(costs.reduce((s, c) => s + c.amount, 0))}</span></div>
+                    <div className={`flex justify-between font-semibold ${(invoice.total - costs.reduce((s, c) => s + c.amount, 0)) >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                       <span>Profit</span><span className="tabular-nums">{fmtAmount(invoice.total - costs.reduce((s, c) => s + c.amount, 0))}</span>
                     </div>
                   </div>
                   <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); } setSavingCosts(false); }}
-                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
+                    className="w-full bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
                     {savingCosts ? "Saving..." : "Save Costs"}
                   </button>
                 </div>
@@ -882,14 +882,14 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           </div>
 
           {/* Shipping */}
-          <div className="border-t border-gray-100 pt-4">
+          <div className="border-t border-line pt-4">
             <button onClick={() => setEditingShipping(!editingShipping)}
-              className="flex items-center gap-1.5 text-[12px] font-medium text-gray-600 hover:text-gray-900 w-full transition-colors">
+              className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2 hover:text-ink w-full transition-colors">
               <Package size={13} />
               <ChevronDown size={13} className={`transition-transform ${editingShipping ? "rotate-180" : ""}`} />
               Shipping
-              {!invoice.is_complete && invoice.status === "paid" && <span className="text-amber-500 text-[11px] ml-1">— needs info</span>}
-              {invoice.is_complete && <span className="text-emerald-500 text-[11px] ml-1">— complete</span>}
+              {!invoice.is_complete && invoice.status === "paid" && <span className="text-warning-ink text-[11px] ml-1">— needs info</span>}
+              {invoice.is_complete && <span className="text-success-ink text-[11px] ml-1">— complete</span>}
             </button>
             {editingShipping && (
               <div className="mt-3 space-y-2">
@@ -900,29 +900,29 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     { label: "Pickup Date", key: "pickup_date" as const, type: "date", placeholder: "" },
                   ].map((f) => (
                     <div key={f.key}>
-                      <label className="text-[10px] font-medium text-gray-400 uppercase tracking-widest">{f.label}</label>
+                      <label className="text-[10px] font-medium text-muted uppercase tracking-widest">{f.label}</label>
                       <input type={f.type} placeholder={f.placeholder}
-                        className="mt-0.5 border border-gray-200 px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                        className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                         value={(shipping[f.key] as string) || ""}
                         onChange={(e) => setShipping({ ...shipping, [f.key]: e.target.value })} />
                     </div>
                   ))}
                   <div>
-                    <label className="text-[10px] font-medium text-gray-400 uppercase tracking-widest">Shipping Charged</label>
+                    <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Shipping Charged</label>
                     <div className="relative mt-0.5">
-                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]">$</span>
-                      <input type="number" inputMode="decimal" step="0.01" className="w-full border border-gray-200 pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
+                      <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                         value={shipping.shipping_charged || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setShipping({ ...shipping, shipping_charged: isNaN(v) ? 0 : v }); }} />
                     </div>
                   </div>
                 </div>
                 <div>
-                  <label className="text-[10px] font-medium text-gray-400 uppercase tracking-widest">Delivery Date</label>
-                  <input type="date" className="mt-0.5 border border-gray-200 px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
+                  <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Delivery Date</label>
+                  <input type="date" className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                     value={shipping.delivery_date || ""} onChange={(e) => setShipping({ ...shipping, delivery_date: e.target.value })} />
                 </div>
                 <button onClick={async () => { setSavingShipping(true); try { await api.saveInvoiceShipping(invoice.id, shipping); } catch (e: any) { alert(e); } setSavingShipping(false); }}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
+                  className="w-full bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
                   {savingShipping ? "Saving..." : "Save Shipping"}
                 </button>
               </div>
@@ -930,21 +930,21 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           </div>
 
           {invoice.notes && (
-            <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl text-[12px] text-gray-600">
+            <div className="bg-surface-2 border border-line px-4 py-3 rounded-xl text-[12px] text-ink-2">
               {invoice.notes}
             </div>
           )}
         </div>
 
-        <div className="sticky bottom-0 bg-white/95 backdrop-blur-sm border-t border-gray-100 px-6 py-4 flex gap-2.5">
-          <button onClick={onPdf} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex-1 transition-colors">Download PDF</button>
-          <button onClick={onResend} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors">Resend</button>
+        <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 flex gap-2.5">
+          <button onClick={onPdf} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex-1 transition-colors">Download PDF</button>
+          <button onClick={onResend} className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors">Resend</button>
           <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { alert(e); } }}
-            className="bg-white border border-indigo-100 hover:bg-indigo-50 text-indigo-600 px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors flex items-center gap-1 justify-center"
+            className="bg-surface border border-accent/10 hover:bg-accent/10 text-accent px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors flex items-center gap-1 justify-center"
             title="Request payment via Stripe">
             <CreditCard size={13} /> Pay
           </button>
-          <button onClick={onDelete} className="bg-white border border-red-100 hover:bg-red-50 text-red-500 px-3 h-9 rounded-lg text-[12px] font-medium transition-colors flex items-center gap-1">
+          <button onClick={onDelete} className="bg-surface border border-danger hover:bg-danger-bg text-danger-ink px-3 h-9 rounded-lg text-[12px] font-medium transition-colors flex items-center gap-1">
             <Trash2 size={12} /> Delete
           </button>
         </div>

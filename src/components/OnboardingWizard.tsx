@@ -111,14 +111,14 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
-        <div className="px-6 pt-6 pb-4 border-b border-gray-100">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
+        <div className="px-6 pt-6 pb-4 border-b border-line">
           <div className="flex items-center justify-center gap-2 mb-4">
             {steps.map((s, i) => (
-              <div key={s} className={`w-2 h-2 rounded-full transition-colors ${i === step ? "bg-indigo-600" : i < step ? "bg-indigo-300" : "bg-gray-200"}`} title={s} />
+              <div key={s} className={`w-2 h-2 rounded-full transition-colors ${i === step ? "bg-accent" : i < step ? "bg-accent" : "bg-surface-3"}`} title={s} />
             ))}
           </div>
-          <h2 className="text-[16px] font-semibold text-gray-900 text-center">{steps[step]}</h2>
+          <h2 className="text-[16px] font-semibold text-ink text-center">{steps[step]}</h2>
         </div>
 
         <div className="px-6 py-5">
@@ -128,8 +128,8 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 20px var(--accent-glow)" }}>
                 <span className="text-white text-[22px] font-bold">C</span>
               </div>
-              <h3 className="text-[18px] font-bold text-gray-900 mb-2">Welcome to ClientHub</h3>
-              <p className="text-[13px] text-gray-500 mb-8">Let's get you set up in 2 minutes.</p>
+              <h3 className="text-[18px] font-bold text-ink mb-2">Welcome to ClientHub</h3>
+              <p className="text-[13px] text-muted mb-8">Let's get you set up in 2 minutes.</p>
             </div>
           )}
 
@@ -152,10 +152,10 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
               </Field>
               <Field label="Logo (optional)">
                 <div className="flex items-center gap-3">
-                  <button onClick={pickLogo} className="bg-gray-50 border border-gray-200 px-3 h-9 rounded-lg text-[12px] text-gray-600 hover:bg-gray-100 flex items-center gap-1.5">
+                  <button onClick={pickLogo} className="bg-surface-2 border border-line px-3 h-9 rounded-lg text-[12px] text-ink-2 hover:bg-surface-3 flex items-center gap-1.5">
                     <Upload size={12} /> {logoPreview ? "Change" : "Upload"}
                   </button>
-                  {logoPreview && <span className="text-[11px] text-gray-400 truncate max-w-[200px]">{logoPreview.split(/[\\/]/).pop()}</span>}
+                  {logoPreview && <span className="text-[11px] text-muted truncate max-w-[200px]">{logoPreview.split(/[\\/]/).pop()}</span>}
                 </div>
               </Field>
             </div>
@@ -166,12 +166,12 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
               <div className="flex gap-2 mb-2">
                 {Object.keys(PRESETS).map((p) => (
                   <button key={p} onClick={() => { setEmailSettings({ ...emailSettings, ...PRESETS[p] }); setEmailSkipped(false); }}
-                    className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${!emailSkipped && emailSettings.smtp_host === PRESETS[p]?.smtp_host ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"}`}>
+                    className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${!emailSkipped && emailSettings.smtp_host === PRESETS[p]?.smtp_host ? "bg-accent text-white border-accent" : "bg-surface text-ink-2 border-line hover:bg-surface-2"}`}>
                     {p}
                   </button>
                 ))}
                 <button onClick={() => setEmailSkipped(true)}
-                  className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${emailSkipped ? "bg-gray-600 text-white border-gray-600" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"}`}>
+                  className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${emailSkipped ? "bg-gray-600 text-white border-gray-600" : "bg-surface text-ink-2 border-line hover:bg-surface-2"}`}>
                   Skip email
                 </button>
               </div>
@@ -185,22 +185,22 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   <Field label="Username / Email"><input className={inp} value={emailSettings.user} onChange={(e) => setEmailSettings({ ...emailSettings, user: e.target.value })} placeholder="you@gmail.com" /></Field>
                   <Field label="Password"><input className={inp} type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="App Password for Gmail" /></Field>
                   {emailSettings.smtp_host.includes("gmail") && (
-                    <p className="text-[11px] text-amber-600 bg-amber-50 px-3 py-2 rounded-lg">Using Gmail? You need an App Password, not your regular password.</p>
+                    <p className="text-[11px] text-warning-ink bg-warning-bg px-3 py-2 rounded-lg">Using Gmail? You need an App Password, not your regular password.</p>
                   )}
                   <div className="flex items-center gap-3 pt-1">
-                    <button onClick={testEmail} disabled={emailTesting} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50 flex items-center gap-1.5">
+                    <button onClick={testEmail} disabled={emailTesting} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50 flex items-center gap-1.5">
                       {emailTesting ? "Testing..." : "Test Connection"}
                     </button>
-                    {emailTested === "ok" && <span className="text-emerald-600 text-[12px] font-medium flex items-center gap-1"><Check size={13} /> Connected</span>}
+                    {emailTested === "ok" && <span className="text-success-ink text-[12px] font-medium flex items-center gap-1"><Check size={13} /> Connected</span>}
                     {emailTested === "fail" && (
-                      <span className="text-amber-600 text-[11px] flex items-center gap-1">
+                      <span className="text-warning-ink text-[11px] flex items-center gap-1">
                         <AlertCircle size={12} /> Connection failed — you can fix this in Settings later
                       </span>
                     )}
                   </div>
                 </>
               ) : (
-                <p className="text-[12px] text-gray-400 py-4">You can set up email later in Settings.</p>
+                <p className="text-[12px] text-muted py-4">You can set up email later in Settings.</p>
               )}
             </div>
           )}
@@ -209,25 +209,25 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
             <div className="space-y-4">
               {!csvPath ? (
                 <div className="text-center py-4">
-                  <p className="text-[13px] text-gray-500 mb-4">Have an existing client list? Import it now.</p>
-                  <button onClick={pickCsv} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-lg text-[13px] flex items-center gap-2 mx-auto mb-3">
+                  <p className="text-[13px] text-muted mb-4">Have an existing client list? Import it now.</p>
+                  <button onClick={pickCsv} className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-2 mx-auto mb-3">
                     <Upload size={13} /> Upload CSV
                   </button>
-                  <button onClick={() => { setCsvSkipped(true); setStep(4); }} className="text-[12px] text-gray-400 hover:text-gray-600">Skip for now</button>
+                  <button onClick={() => { setCsvSkipped(true); setStep(4); }} className="text-[12px] text-muted hover:text-ink-2">Skip for now</button>
                 </div>
               ) : (
                 <>
-                  <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl">
-                    <p className="text-[13px] font-medium text-gray-800">{csvPreview?.total_rows ?? 0} rows</p>
-                    <p className="text-[11px] text-gray-400 font-mono truncate">{csvPath}</p>
+                  <div className="bg-surface-2 border border-line px-4 py-3 rounded-xl">
+                    <p className="text-[13px] font-medium text-ink">{csvPreview?.total_rows ?? 0} rows</p>
+                    <p className="text-[11px] text-muted font-mono truncate">{csvPath}</p>
                   </div>
                   {csvPreview && !importSummary && (
                     <div className="space-y-2">
-                      <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Map Columns</p>
+                      <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Map Columns</p>
                       {FIELDS.map((f) => (
                         <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
-                          <label className="text-[12px] text-gray-600">{f.label}</label>
-                          <select className="col-span-2 border border-gray-200 px-2 h-8 rounded-lg text-[12px]" value={csvMapping[f.key] ?? ""} onChange={(e) => setCsvMapping({ ...csvMapping, [f.key]: e.target.value })}>
+                          <label className="text-[12px] text-ink-2">{f.label}</label>
+                          <select className="col-span-2 border border-line px-2 h-8 rounded-lg text-[12px]" value={csvMapping[f.key] ?? ""} onChange={(e) => setCsvMapping({ ...csvMapping, [f.key]: e.target.value })}>
                             <option value="">— skip —</option>
                             {csvPreview.headers.map((h) => (<option key={h} value={h}>{h}</option>))}
                           </select>
@@ -236,12 +236,12 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     </div>
                   )}
                   {importSummary ? (
-                    <div className="bg-emerald-50 border border-emerald-100 px-4 py-3 rounded-xl text-[12px]">
-                      <p className="font-medium text-emerald-800">{importSummary.imported} imported, {importSummary.skipped} skipped</p>
-                      {importSummary.errors.length > 0 && <p className="text-red-500 mt-1">{importSummary.errors.length} errors</p>}
+                    <div className="bg-success-bg border border-success px-4 py-3 rounded-xl text-[12px]">
+                      <p className="font-medium text-success-ink">{importSummary.imported} imported, {importSummary.skipped} skipped</p>
+                      {importSummary.errors.length > 0 && <p className="text-danger-ink mt-1">{importSummary.errors.length} errors</p>}
                     </div>
                   ) : (
-                    <button onClick={runImport} disabled={importing || !csvMapping.name} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50">
+                    <button onClick={runImport} disabled={importing || !csvMapping.name} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50">
                       {importing ? "Importing..." : `Import ${csvPreview?.total_rows ?? 0} clients`}
                     </button>
                   )}
@@ -252,12 +252,12 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
           {step === 4 && (
             <div className="text-center py-6">
-              <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
-                <Check size={20} className="text-emerald-600" />
+              <div className="w-12 h-12 rounded-full bg-success-bg flex items-center justify-center mx-auto mb-4">
+                <Check size={20} className="text-success-ink" />
               </div>
-              <h3 className="text-[16px] font-bold text-gray-900 mb-2">You're all set!</h3>
-              <p className="text-[13px] text-gray-500 mb-4">ClientHub is ready.</p>
-              <div className="text-[12px] text-gray-400 space-y-1">
+              <h3 className="text-[16px] font-bold text-ink mb-2">You're all set!</h3>
+              <p className="text-[13px] text-muted mb-4">ClientHub is ready.</p>
+              <div className="text-[12px] text-muted space-y-1">
                 {biz.company && <p>Business info saved</p>}
                 {!emailSkipped && emailSettings.user && <p>Email configured</p>}
                 {importSummary && importSummary.imported > 0 && <p>{importSummary.imported} clients imported</p>}
@@ -266,8 +266,8 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
-          <button onClick={() => setStep(step - 1)} className={`text-[13px] text-gray-500 flex items-center gap-1 ${step === 0 ? "invisible" : ""}`}>
+        <div className="px-6 py-4 border-t border-line flex items-center justify-between">
+          <button onClick={() => setStep(step - 1)} className={`text-[13px] text-muted flex items-center gap-1 ${step === 0 ? "invisible" : ""}`}>
             <ArrowLeft size={13} /> Back
           </button>
           <div className="flex gap-2">
@@ -276,12 +276,12 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 if (step === 1) { if (!biz.company.trim()) return; await saveBiz(); }
                 if (step === 2 && !emailSkipped) { if (!emailSettings.user.trim()) return; await saveEmail(); }
                 setStep(step + 1);
-              }} disabled={step === 1 && !biz.company.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 flex items-center gap-1">
+              }} disabled={step === 1 && !biz.company.trim()} className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 flex items-center gap-1">
                 Next <ArrowRight size={13} />
               </button>
             )}
             {step === 4 && (
-              <button onClick={finish} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 h-9 rounded-lg text-[13px] font-medium">
+              <button onClick={finish} className="bg-accent hover:bg-accent-hover text-white px-6 h-9 rounded-lg text-[13px] font-medium">
                 Open ClientHub
               </button>
             )}
@@ -295,10 +295,10 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-[11px] font-medium text-gray-500 mb-1">{label}</label>
+      <label className="block text-[11px] font-medium text-muted mb-1">{label}</label>
       {children}
     </div>
   );
 }
 
-const inp = "border border-gray-200 px-3 h-10 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+const inp = "border border-line px-3 h-10 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";

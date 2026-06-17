@@ -1,10 +1,48 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  darkMode: 'class',
   theme: {
     extend: {
       fontFamily: {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
+      },
+      colors: {
+        // Semantic brand palette — adapts to html.dark via CSS variables.
+        surface:     'rgb(var(--c-surface) / <alpha-value>)',
+        'surface-2': 'rgb(var(--c-surface-2) / <alpha-value>)',
+        'surface-3': 'rgb(var(--c-surface-3) / <alpha-value>)',
+        ink:         'rgb(var(--c-ink) / <alpha-value>)',
+        'ink-2':     'rgb(var(--c-ink-2) / <alpha-value>)',
+        muted:       'rgb(var(--c-muted) / <alpha-value>)',
+        faint:       'rgb(var(--c-faint) / <alpha-value>)',
+        line:        'rgb(var(--c-line) / <alpha-value>)',
+        'line-2':    'rgb(var(--c-line-2) / <alpha-value>)',
+        'line-3':    'rgb(var(--c-line-3) / <alpha-value>)',
+        accent: {
+          DEFAULT: 'rgb(var(--c-accent) / <alpha-value>)',
+          hover:   'rgb(var(--c-accent-hover) / <alpha-value>)',
+        },
+        success: {
+          DEFAULT: 'rgb(var(--c-success) / <alpha-value>)',
+          bg:      'rgb(var(--c-success-bg) / <alpha-value>)',
+          ink:     'rgb(var(--c-success-ink) / <alpha-value>)',
+        },
+        warning: {
+          DEFAULT: 'rgb(var(--c-warning) / <alpha-value>)',
+          bg:      'rgb(var(--c-warning-bg) / <alpha-value>)',
+          ink:     'rgb(var(--c-warning-ink) / <alpha-value>)',
+        },
+        danger: {
+          DEFAULT: 'rgb(var(--c-danger) / <alpha-value>)',
+          bg:      'rgb(var(--c-danger-bg) / <alpha-value>)',
+          ink:     'rgb(var(--c-danger-ink) / <alpha-value>)',
+        },
+        info: {
+          DEFAULT: 'rgb(var(--c-info) / <alpha-value>)',
+          bg:      'rgb(var(--c-info-bg) / <alpha-value>)',
+          ink:     'rgb(var(--c-info-ink) / <alpha-value>)',
+        },
       },
       letterSpacing: {
         tighter: '-0.02em',

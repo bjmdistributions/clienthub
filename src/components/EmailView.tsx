@@ -45,11 +45,11 @@ export default function EmailView() {
     <div>
       {/* Header */}
       <div className="flex justify-between items-center mb-1">
-        <h2 className="text-[18px] font-semibold text-gray-900">Newsletter</h2>
+        <h2 className="text-[18px] font-semibold text-ink">Newsletter</h2>
       </div>
 
       {/* Underline tabs */}
-      <div className="flex gap-0 border-b border-gray-200 mb-5">
+      <div className="flex gap-0 border-b border-line mb-5">
         {(["newsletter", "inbox", "drafts", "compose"] as const).map((m) => {
           const icons = { inbox: Inbox, drafts: FileEdit, compose: Mail, newsletter: Megaphone };
           const labels = { inbox: "Inbox", drafts: "Drafts", compose: "Compose", newsletter: "Newsletter" };
@@ -60,14 +60,14 @@ export default function EmailView() {
               onClick={() => setMode(m)}
               className={`flex items-center gap-1.5 px-4 py-2.5 text-[14px] border-b-2 -mb-px transition-colors ${
                 mode === m
-                  ? "border-indigo-600 text-indigo-700 font-medium"
-                  : "border-transparent text-gray-500 hover:text-gray-800"
+                  ? "border-accent text-accent-hover font-medium"
+                  : "border-transparent text-muted hover:text-ink"
               }`}
             >
               <Icon size={14} />
               {labels[m]}
               {m === "drafts" && draftCount > 0 && (
-                <span className="bg-indigo-600 text-white text-[11px] font-medium rounded-full px-1.5 py-0.5 leading-none ml-0.5">
+                <span className="bg-accent text-white text-[11px] font-medium rounded-full px-1.5 py-0.5 leading-none ml-0.5">
                   {draftCount}
                 </span>
               )}
@@ -79,13 +79,13 @@ export default function EmailView() {
       {mode === "inbox" && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            <p className="text-[13px] text-gray-500">
+            <p className="text-[13px] text-muted">
               Pulls unread emails since the last scan, parses them, and matches against known clients.
             </p>
             <button
               onClick={scan}
               disabled={scanning}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50 transition-colors"
+              className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50 transition-colors"
             >
               <RefreshCw size={14} className={scanning ? "animate-spin" : ""} />
               {scanning ? "Scanning..." : "Scan Inbox"}
@@ -93,7 +93,7 @@ export default function EmailView() {
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-[13px] flex items-center gap-2 mb-4">
+            <div className="bg-danger-bg border border-danger text-danger-ink px-4 py-3 rounded-lg text-[13px] flex items-center gap-2 mb-4">
               <AlertCircle size={14} />
               {error}
             </div>
@@ -101,8 +101,8 @@ export default function EmailView() {
 
           <div className="grid grid-cols-2 gap-5">
             {/* Email list */}
-            <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-100 text-[13px] font-semibold text-gray-700">
+            <div className="bg-surface border border-line rounded-lg overflow-hidden">
+              <div className="px-4 py-3 border-b border-line text-[13px] font-semibold text-ink-2">
                 Recent ({emails.length})
               </div>
               <div className="max-h-[600px] overflow-auto">
@@ -110,21 +110,21 @@ export default function EmailView() {
                   <button
                     key={e.uid}
                     onClick={() => setSelected(e)}
-                    className={`w-full text-left px-4 py-3.5 border-b border-gray-100 transition-colors ${
-                      selected?.uid === e.uid ? "bg-indigo-50" : "hover:bg-gray-50"
+                    className={`w-full text-left px-4 py-3.5 border-b border-line transition-colors ${
+                      selected?.uid === e.uid ? "bg-accent/10" : "hover:bg-surface-2"
                     }`}
                   >
-                    <div className="font-medium text-[13px] text-gray-900 truncate">
+                    <div className="font-medium text-[13px] text-ink truncate">
                       {e.from_name || e.from}
                     </div>
-                    <div className="text-[13px] text-gray-600 truncate mt-0.5">{e.subject}</div>
-                    <div className="text-[12px] text-gray-400 truncate mt-0.5">
+                    <div className="text-[13px] text-ink-2 truncate mt-0.5">{e.subject}</div>
+                    <div className="text-[12px] text-muted truncate mt-0.5">
                       {e.body_text.slice(0, 80)}
                     </div>
                   </button>
                 ))}
                 {emails.length === 0 && !scanning && (
-                  <div className="px-4 py-10 text-center text-[13px] text-gray-400">
+                  <div className="px-4 py-10 text-center text-[13px] text-muted">
                     No emails. Configure SMTP/IMAP in Settings, then scan.
                   </div>
                 )}
@@ -132,11 +132,11 @@ export default function EmailView() {
             </div>
 
             {/* Email detail */}
-            <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <div className="bg-surface border border-line rounded-lg p-5">
               {selected ? (
                 <EmailDetail email={selected} />
               ) : (
-                <div className="h-full flex items-center justify-center text-[14px] text-gray-400">
+                <div className="h-full flex items-center justify-center text-[14px] text-muted">
                   Select an email to view.
                 </div>
               )}
@@ -195,26 +195,26 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
   return (
     <div>
       {/* Metadata */}
-      <div className="border-b border-gray-100 pb-4 mb-4">
+      <div className="border-b border-line pb-4 mb-4">
         <div className="text-[13px]">
-          <span className="text-[12px] font-medium text-gray-500">From: </span>
-          <span className="font-medium text-gray-800">
+          <span className="text-[12px] font-medium text-muted">From: </span>
+          <span className="font-medium text-ink">
             {email.from_name || email.from} &lt;{email.from}&gt;
           </span>
         </div>
         <div className="text-[13px] mt-0.5">
-          <span className="text-[12px] font-medium text-gray-500">Subject: </span>
-          <span className="text-gray-800">{email.subject}</span>
+          <span className="text-[12px] font-medium text-muted">Subject: </span>
+          <span className="text-ink">{email.subject}</span>
         </div>
         {email.date && (
-          <div className="text-[11px] text-gray-400 mt-1">
+          <div className="text-[11px] text-muted mt-1">
             {new Date(email.date).toLocaleString()}
           </div>
         )}
       </div>
 
       {/* Body */}
-      <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-lg text-[13px] text-gray-700 whitespace-pre-wrap max-h-48 overflow-auto mb-4">
+      <div className="bg-surface-2 border border-line px-4 py-3 rounded-lg text-[13px] text-ink-2 whitespace-pre-wrap max-h-48 overflow-auto mb-4">
         {email.body_text}
       </div>
 
@@ -223,7 +223,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
         <select
           value={tone}
           onChange={(e) => { setTone(e.target.value); localStorage.setItem("clienthub_draft_tone", e.target.value); }}
-          className="border border-gray-300 px-3 h-9 rounded-md text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className="border border-line-3 px-3 h-9 rounded-md text-[13px] focus:outline-none focus:ring-2 focus:ring-accent"
         >
           <option value="neutral">Neutral</option>
           <option value="formal">Formal</option>
@@ -232,7 +232,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
         <button
           onClick={handleDraft}
           disabled={loading !== null}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
+          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
         >
           {loading === "draft" ? <RefreshCw size={12} className="animate-spin" /> : <Sparkles size={12} />}
           Draft Reply
@@ -240,7 +240,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
         <button
           onClick={handleExtract}
           disabled={loading !== null}
-          className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-md text-[14px] disabled:opacity-50"
+          className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-md text-[14px] disabled:opacity-50"
         >
           Extract Data
         </button>
@@ -249,17 +249,17 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       {/* Draft reply */}
       {draft && (
         <div className="mb-4">
-          <label className="block text-[12px] font-medium text-gray-600 mb-1">Draft Reply</label>
+          <label className="block text-[12px] font-medium text-ink-2 mb-1">Draft Reply</label>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={8}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            className="w-full border border-line-3 rounded-lg px-3 py-2.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
           />
           <button
             onClick={handleSend}
             disabled={sending}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mt-2"
+            className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mt-2"
           >
             <Send size={12} />
             {sending ? "Sending..." : sent ? "Sent!" : "Send Reply"}
@@ -270,8 +270,8 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       {/* Extracted data */}
       {extracted && (
         <div>
-          <label className="block text-[12px] font-medium text-gray-600 mb-1">Extracted Data</label>
-          <pre className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-lg text-[12px] overflow-auto">
+          <label className="block text-[12px] font-medium text-ink-2 mb-1">Extracted Data</label>
+          <pre className="bg-surface-2 border border-line px-4 py-3 rounded-lg text-[12px] overflow-auto">
             {JSON.stringify(extracted, null, 2)}
           </pre>
         </div>
@@ -334,41 +334,41 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
   return (
     <div>
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-[13px] flex items-center gap-2 mb-4">
+        <div className="bg-danger-bg border border-danger text-danger-ink px-4 py-3 rounded-lg text-[13px] flex items-center gap-2 mb-4">
           <AlertCircle size={14} />
           {error}
         </div>
       )}
 
       {drafts.length === 0 ? (
-        <div className="py-12 text-center text-[14px] text-gray-400">No pending drafts.</div>
+        <div className="py-12 text-center text-[14px] text-muted">No pending drafts.</div>
       ) : (
         <div className="space-y-3">
           {drafts.map((d) => (
-            <div key={d.id} className="bg-white border border-gray-200 rounded-lg p-4">
+            <div key={d.id} className="bg-surface border border-line rounded-lg p-4">
               {editing === d.id ? (
                 <div>
                   <input
                     value={editSubject}
                     onChange={(e) => setEditSubject(e.target.value)}
-                    className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full mb-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="border border-line-3 px-3 h-10 rounded-md text-[14px] w-full mb-2 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                   />
                   <textarea
                     value={editBody}
                     onChange={(e) => setEditBody(e.target.value)}
                     rows={6}
-                    className="border border-gray-300 px-3 py-2.5 rounded-md text-[14px] w-full mb-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="border border-line-3 px-3 py-2.5 rounded-md text-[14px] w-full mb-3 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                   />
                   <div className="flex gap-2">
                     <button
                       onClick={() => handleSave(d.id)}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[14px] font-medium"
+                      className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium"
                     >
                       Save
                     </button>
                     <button
                       onClick={() => setEditing(null)}
-                      className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 h-9 rounded-md text-[14px]"
+                      className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-md text-[14px]"
                     >
                       Cancel
                     </button>
@@ -378,34 +378,34 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
                 <div>
                   <div className="flex items-start justify-between">
                     <div>
-                      <div className="text-[14px] font-medium text-gray-900">{d.subject}</div>
-                      <div className="text-[12px] text-gray-500 mt-0.5">To: {d.to_addr}</div>
+                      <div className="text-[14px] font-medium text-ink">{d.subject}</div>
+                      <div className="text-[12px] text-muted mt-0.5">To: {d.to_addr}</div>
                     </div>
-                    <div className="text-[11px] text-gray-400 tabular-nums">
+                    <div className="text-[11px] text-muted tabular-nums">
                       {new Date(d.created_at).toLocaleString()}
                     </div>
                   </div>
-                  <div className="text-[13px] text-gray-600 mt-2 whitespace-pre-wrap line-clamp-3">
+                  <div className="text-[13px] text-ink-2 mt-2 whitespace-pre-wrap line-clamp-3">
                     {d.body}
                   </div>
                   <div className="flex gap-2 mt-3">
                     <button
                       onClick={() => handleSend(d.id)}
                       disabled={loading === d.id}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-8 rounded-md text-[13px] font-medium flex items-center gap-1 disabled:opacity-50"
+                      className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-md text-[13px] font-medium flex items-center gap-1 disabled:opacity-50"
                     >
                       <Send size={12} />
                       {loading === d.id ? "Sending..." : "Send"}
                     </button>
                     <button
                       onClick={() => handleEdit(d)}
-                      className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 h-8 rounded-md text-[13px] flex items-center gap-1"
+                      className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-3 h-8 rounded-md text-[13px] flex items-center gap-1"
                     >
                       <FileEdit size={12} /> Edit
                     </button>
                     <button
                       onClick={() => handleDiscard(d.id)}
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50 px-3 h-8 rounded-md text-[13px] flex items-center gap-1 border border-transparent hover:border-red-200"
+                      className="text-danger-ink hover:text-danger-ink hover:bg-danger-bg px-3 h-8 rounded-md text-[13px] flex items-center gap-1 border border-transparent hover:border-danger"
                     >
                       <Trash2 size={12} /> Discard
                     </button>
@@ -439,32 +439,32 @@ function ComposeView() {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg max-w-2xl overflow-hidden">
+    <div className="bg-surface border border-line rounded-lg max-w-2xl overflow-hidden">
       <div className="px-5 py-4 space-y-3">
         <div>
-          <label className="block text-[12px] font-medium text-gray-500 mb-1">To</label>
+          <label className="block text-[12px] font-medium text-muted mb-1">To</label>
           <input
             placeholder="recipient@example.com"
-            className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            className="border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
             value={to}
             onChange={(e) => setTo(e.target.value)}
           />
         </div>
         <div>
-          <label className="block text-[12px] font-medium text-gray-500 mb-1">Subject</label>
+          <label className="block text-[12px] font-medium text-muted mb-1">Subject</label>
           <input
             placeholder="Subject"
-            className="border border-gray-300 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            className="border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
           />
         </div>
         <div>
-          <label className="block text-[12px] font-medium text-gray-500 mb-1">Message</label>
+          <label className="block text-[12px] font-medium text-muted mb-1">Message</label>
           <textarea
             placeholder="Write your message..."
             rows={12}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+            className="w-full border border-line rounded-lg px-3 py-2.5 text-[14px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
             value={body}
             onChange={(e) => setBody(e.target.value)}
           />
@@ -472,7 +472,7 @@ function ComposeView() {
         <button
           onClick={send}
           disabled={sending || !to || !subject}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
+          className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
         >
           <Send size={14} />
           {sending ? "Sending..." : sent ? "Sent!" : "Send"}
@@ -762,58 +762,58 @@ function NewsletterTab() {
   return (
     <div className="nl-cols flex flex-col lg:flex-row gap-4" style={{ minHeight: 500 }}>
       {/* Panel A: Recipients */}
-      <div className="nl-pane w-full lg:w-[300px] lg:flex-shrink-0 bg-white border border-gray-200 rounded-lg flex flex-col">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-          <span className="text-[14px] font-semibold text-gray-900">Clients</span>
-          <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{clients.length}</span>
+      <div className="nl-pane w-full lg:w-[300px] lg:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+          <span className="text-[14px] font-semibold text-ink">Clients</span>
+          <span className="bg-accent/10 text-accent-hover text-[11px] font-medium px-2 py-0.5 rounded-full">{clients.length}</span>
         </div>
 
-        <div className="px-3 py-2 border-b border-gray-100">
+        <div className="px-3 py-2 border-b border-line">
           <select
             value={recipientCategoryFilter ?? ""}
             onChange={(e) => setRecipientCategoryFilter(e.target.value || null)}
-            className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
           >
             <option value="">All Categories</option>
             {categoryLabels.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
 
-        <div className="px-3 py-2 border-b border-gray-100">
+        <div className="px-3 py-2 border-b border-line">
           <input
             type="text"
             placeholder="Search clients by name or email..."
             value={clientSearch}
             onChange={(e) => setClientSearch(e.target.value)}
-            className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-accent"
           />
         </div>
 
-        <div className="px-3 py-2 border-b border-gray-100">
+        <div className="px-3 py-2 border-b border-line">
           <button onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-700 w-full">
+            className="flex items-center gap-1 text-[11px] text-muted hover:text-ink-2 w-full">
             <ChevronDown size={11} className={`transition-transform ${showFilters ? "rotate-180" : ""}`} />
             Filter recipients
           </button>
           {showFilters && (
             <div className="mt-2 space-y-1.5">
-              <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
+              <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
                 <input type="checkbox" checked={excludeDormant} onChange={(e) => setExcludeDormant(e.target.checked)}
-                  className="accent-indigo-600" />
+                  className="accent-accent" />
                 Exclude dormant clients
               </label>
-              <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
+              <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
                 <input type="checkbox" checked={excludeAsNeeded} onChange={(e) => setExcludeAsNeeded(e.target.checked)}
-                  className="accent-indigo-600" />
+                  className="accent-accent" />
                 Exclude "As Needed / One Time"
               </label>
-              <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer">
+              <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
                 <input type="checkbox" checked={excludeUnder10k} onChange={(e) => setExcludeUnder10k(e.target.checked)}
-                  className="accent-indigo-600" />
+                  className="accent-accent" />
                 Exclude under $10k annual spend
               </label>
               {excludedByFilter > 0 && (
-                <div className="text-[10px] text-amber-600">{excludedByFilter} client{excludedByFilter !== 1 ? "s" : ""} excluded by filters</div>
+                <div className="text-[10px] text-warning-ink">{excludedByFilter} client{excludedByFilter !== 1 ? "s" : ""} excluded by filters</div>
               )}
             </div>
           )}
@@ -825,62 +825,62 @@ function NewsletterTab() {
             return (
               <button key={c.id}
                 onClick={() => isSelected ? removeRecipient(c.id) : addRecipient(c)}
-                className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors border-b border-gray-50 ${
-                  isSelected ? "bg-indigo-50" : ""
+                className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-surface-2 transition-colors border-b border-gray-50 ${
+                  isSelected ? "bg-accent/10" : ""
                 }`}>
                 <div className="min-w-0">
-                  <div className="text-[12px] font-medium text-gray-800 truncate">{c.name}</div>
+                  <div className="text-[12px] font-medium text-ink truncate">{c.name}</div>
                   <div className="flex items-center gap-1 mt-0.5">
                     {c.category ? (
-                      <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded truncate max-w-[140px]">{c.category}</span>
+                      <span className="text-[10px] text-muted bg-surface-3 px-1.5 py-0.5 rounded truncate max-w-[140px]">{c.category}</span>
                     ) : (
-                      <span className="text-[10px] text-gray-300">—</span>
+                      <span className="text-[10px] text-faint">—</span>
                     )}
-                    {!c.email && <span className="text-[9px] text-red-400">no email</span>}
+                    {!c.email && <span className="text-[9px] text-danger-ink">no email</span>}
                   </div>
                 </div>
-                {isSelected && <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0 ml-2" />}
+                {isSelected && <CheckCircle2 size={14} className="text-success-ink flex-shrink-0 ml-2" />}
               </button>
             );
           })}
           {metadataFilteredClients.length === 0 && (
-            <div className="text-[12px] text-gray-400 text-center py-6">{clientSearch || excludeDormant || excludeAsNeeded || excludeUnder10k ? "No clients match your filters" : "No clients match this filter"}</div>
+            <div className="text-[12px] text-muted text-center py-6">{clientSearch || excludeDormant || excludeAsNeeded || excludeUnder10k ? "No clients match your filters" : "No clients match this filter"}</div>
           )}
         </div>
 
-        <div className="border-t border-gray-200">
-          <div className="px-4 py-2 flex items-center justify-between bg-gray-50 border-b border-gray-100">
-            <span className="text-[12px] font-semibold text-gray-700">Recipients</span>
-            <span className="bg-indigo-50 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-full">{selected.length}</span>
+        <div className="border-t border-line">
+          <div className="px-4 py-2 flex items-center justify-between bg-surface-2 border-b border-line">
+            <span className="text-[12px] font-semibold text-ink-2">Recipients</span>
+            <span className="bg-accent/10 text-accent-hover text-[11px] font-medium px-2 py-0.5 rounded-full">{selected.length}</span>
           </div>
           <div className="overflow-y-auto" style={{ maxHeight: 140 }}>
             {selected.map((c) => (
-              <div key={c.id} className="flex items-center justify-between py-1.5 px-3 hover:bg-gray-50 border-b border-gray-50">
+              <div key={c.id} className="flex items-center justify-between py-1.5 px-3 hover:bg-surface-2 border-b border-gray-50">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-gray-800 truncate">{c.name}</div>
+                  <div className="text-[12px] text-ink truncate">{c.name}</div>
                   {c.email ? (
-                    <div className="text-[10px] text-gray-400 truncate">{c.email}</div>
+                    <div className="text-[10px] text-muted truncate">{c.email}</div>
                   ) : (
-                    <span className="text-[9px] text-red-500 bg-red-50 px-1.5 py-0.5 rounded">No email</span>
+                    <span className="text-[9px] text-danger-ink bg-danger-bg px-1.5 py-0.5 rounded">No email</span>
                   )}
                 </div>
-                <button onClick={() => removeRecipient(c.id)} className="text-gray-400 hover:text-red-500 ml-2 flex-shrink-0 p-0.5">
+                <button onClick={() => removeRecipient(c.id)} className="text-muted hover:text-danger-ink ml-2 flex-shrink-0 p-0.5">
                   <X size={14} />
                 </button>
               </div>
             ))}
             {selected.length === 0 && (
-              <div className="text-[11px] text-gray-400 text-center py-4">Click a client above to add</div>
+              <div className="text-[11px] text-muted text-center py-4">Click a client above to add</div>
             )}
           </div>
         </div>
 
-        <div className="px-3 py-2 border-t border-gray-100 text-[11px] text-gray-500 space-y-1.5">
+        <div className="px-3 py-2 border-t border-line text-[11px] text-muted space-y-1.5">
           <div className="flex items-center justify-between">
-            <span>{selected.length} selected{noEmailCount > 0 && <span className="text-red-500"> ({noEmailCount} skipped)</span>}</span>
+            <span>{selected.length} selected{noEmailCount > 0 && <span className="text-danger-ink"> ({noEmailCount} skipped)</span>}</span>
             <div className="flex items-center gap-2">
-              <button onClick={addAllWithEmail} className="text-indigo-600 hover:text-indigo-800">All w/ email</button>
-              {selected.length > 0 && <button onClick={() => setSelected([])} className="text-gray-400 hover:text-red-500">Clear</button>}
+              <button onClick={addAllWithEmail} className="text-accent hover:text-indigo-800">All w/ email</button>
+              {selected.length > 0 && <button onClick={() => setSelected([])} className="text-muted hover:text-danger-ink">Clear</button>}
             </div>
           </div>
           <div className="flex gap-1.5">
@@ -890,10 +890,10 @@ function NewsletterTab() {
               value={manualEmail}
               onChange={(e) => setManualEmail(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addManualEmail()}
-              className="flex-1 border border-gray-300 h-7 px-2 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="flex-1 border border-line-3 h-7 px-2 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-accent"
             />
             <button onClick={addManualEmail} disabled={!manualEmail.includes("@")}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
+              className="bg-accent hover:bg-accent-hover text-white px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
               Add
             </button>
           </div>
@@ -902,10 +902,10 @@ function NewsletterTab() {
 
       {/* Panel B: Compose */}
       <div className="nl-pane w-full lg:flex-1 flex flex-col gap-3 min-w-0">
-        <div className="bg-white border border-gray-200 rounded-lg flex flex-col flex-1">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-            <Mail size={14} className="text-indigo-500" />
-            <span className="text-[14px] font-semibold text-gray-900">Compose</span>
+        <div className="bg-surface border border-line rounded-lg flex flex-col flex-1">
+          <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+            <Mail size={14} className="text-accent" />
+            <span className="text-[14px] font-semibold text-ink">Compose</span>
           </div>
           <div className="p-4 flex-1 flex flex-col">
             <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -915,7 +915,7 @@ function NewsletterTab() {
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
                 onFocus={() => { lastFocusedRef.current = "subject"; }}
-                className="flex-1 min-w-[200px] border border-gray-300 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className="flex-1 min-w-[200px] border border-line-3 px-3 h-10 rounded-md text-[14px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
               />
               <select
                 value=""
@@ -923,7 +923,7 @@ function NewsletterTab() {
                   const nl = templates.find((t) => t.id === e.target.value);
                   if (nl) loadTemplate(nl);
                 }}
-                className="border border-gray-300 h-10 px-2 rounded-md text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 max-w-[130px]"
+                className="border border-line-3 h-10 px-2 rounded-md text-[12px] bg-surface focus:outline-none focus:ring-1 focus:ring-accent max-w-[130px]"
               >
                 <option value="">Load template</option>
                 {templates.filter((t) => t.status === "draft").map((t) => (
@@ -931,11 +931,11 @@ function NewsletterTab() {
                 ))}
               </select>
               <button onClick={saveTemplate}
-                className="border border-gray-300 h-10 px-2.5 rounded-md text-[12px] text-gray-600 hover:bg-gray-50 whitespace-nowrap">
+                className="border border-line-3 h-10 px-2.5 rounded-md text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">
                 Save
               </button>
               <button onClick={() => { setSubject(defaultSubject); setBody(defaultBody); }}
-                className="text-[11px] text-gray-400 hover:text-gray-600 whitespace-nowrap underline">
+                className="text-[11px] text-muted hover:text-ink-2 whitespace-nowrap underline">
                 Reset default
               </button>
             </div>
@@ -943,7 +943,7 @@ function NewsletterTab() {
             {templates.filter((t) => t.status === "draft").length > 0 && (
               <div className="mb-2">
                 <button onClick={() => setShowTemplates(!showTemplates)}
-                  className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 w-full mb-1">
+                  className="flex items-center gap-1 text-[11px] text-muted hover:text-ink-2 w-full mb-1">
                   <ChevronDown size={11} className={`transition-transform ${showTemplates ? "rotate-180" : ""}`} />
                   Saved Templates ({templates.filter((t) => t.status === "draft").length})
                 </button>
@@ -951,14 +951,14 @@ function NewsletterTab() {
                   <div className="space-y-0.5 max-h-[140px] overflow-y-auto">
                     {templates.filter((t) => t.status === "draft").map((t) => (
                       <div key={t.id}
-                        className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-gray-50 group cursor-pointer transition-colors"
+                        className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-surface-2 group cursor-pointer transition-colors"
                         onClick={() => loadTemplate(t)}>
                         <div className="min-w-0 flex-1">
-                          <div className="text-[12px] font-medium text-gray-800 truncate">{t.subject || "Untitled"}</div>
-                          <div className="text-[10px] text-gray-400">{new Date(t.created_at).toLocaleDateString()}</div>
+                          <div className="text-[12px] font-medium text-ink truncate">{t.subject || "Untitled"}</div>
+                          <div className="text-[10px] text-muted">{new Date(t.created_at).toLocaleDateString()}</div>
                         </div>
                         <button onClick={(e) => { e.stopPropagation(); deleteTemplate(t); }}
-                          className="text-gray-300 hover:text-red-500 p-1 rounded hover:bg-red-50 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex-shrink-0">
+                          className="text-faint hover:text-danger-ink p-1 rounded hover:bg-danger-bg md:opacity-0 md:group-hover:opacity-100 transition-opacity flex-shrink-0">
                           <Trash2 size={12} />
                         </button>
                       </div>
@@ -968,7 +968,7 @@ function NewsletterTab() {
               </div>
             )}
 
-            <div className="flex items-center gap-3 mb-2 text-[12px] text-gray-500">
+            <div className="flex items-center gap-3 mb-2 text-[12px] text-muted">
               <VariablePicker onSelect={insertVariable} />
               <span className="tabular-nums">{charCount} chars</span>
               <span className="tabular-nums">{wordCount} words</span>
@@ -978,7 +978,7 @@ function NewsletterTab() {
               ref={textareaRef}
               placeholder={`Hi {first_name},\n\nWrite your message here...\n\nBest regards,\n[Your name]`}
               rows={12}
-              className="flex-1 w-full border border-gray-200 rounded-md px-3 py-2.5 text-[14px] font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+              className="flex-1 w-full border border-line rounded-md px-3 py-2.5 text-[14px] font-mono focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
               value={body}
               onChange={(e) => setBody(e.target.value)}
               onFocus={() => { lastFocusedRef.current = "body"; }}
@@ -986,13 +986,13 @@ function NewsletterTab() {
 
             <div className="mt-3 flex items-center gap-2">
               <button onClick={pickFile}
-                className="flex items-center gap-1.5 border border-gray-300 h-9 px-3 rounded-md text-[12px] text-gray-600 hover:bg-gray-50 transition-colors">
+                className="flex items-center gap-1.5 border border-line-3 h-9 px-3 rounded-md text-[12px] text-ink-2 hover:bg-surface-2 transition-colors">
                 <Paperclip size={13} /> Attach file
               </button>
               {attachmentPath && (
-                <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-md px-2.5 py-1.5 text-[12px] text-gray-700 flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 bg-surface-2 border border-line rounded-md px-2.5 py-1.5 text-[12px] text-ink-2 flex-1 min-w-0">
                   <span className="truncate">{attachmentPath.split(/[\\/]/).pop()}</span>
-                  <button onClick={() => setAttachmentPath(null)} className="text-gray-400 hover:text-red-500 flex-shrink-0">
+                  <button onClick={() => setAttachmentPath(null)} className="text-muted hover:text-danger-ink flex-shrink-0">
                     <X size={12} />
                   </button>
                 </div>
@@ -1002,32 +1002,32 @@ function NewsletterTab() {
                   placeholder="Or paste file path..."
                   value={attachmentSearch}
                   onChange={(e) => { setAttachmentSearch(e.target.value); if (e.target.value) setAttachmentPath(e.target.value); }}
-                  className="flex-1 border border-gray-300 h-9 px-3 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="flex-1 border border-line-3 h-9 px-3 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-accent"
                 />
               )}
             </div>
 
-            <details className="mt-3 bg-gray-50 rounded-md border border-gray-100">
-              <summary className="px-3 py-2 text-[13px] font-medium text-gray-700 cursor-pointer flex items-center gap-1.5 select-none">
-                <Sparkles size={13} className="text-indigo-500" /> AI Assist
+            <details className="mt-3 bg-surface-2 rounded-md border border-line">
+              <summary className="px-3 py-2 text-[13px] font-medium text-ink-2 cursor-pointer flex items-center gap-1.5 select-none">
+                <Sparkles size={13} className="text-accent" /> AI Assist
               </summary>
               <div className="px-3 pb-3 flex items-center gap-2">
                 <input
                   placeholder="Describe what this newsletter is about..."
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
-                  className="flex-1 border border-gray-300 px-3 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="flex-1 border border-line-3 px-3 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-accent"
                 />
-                <div className="flex rounded-md border border-gray-300 overflow-hidden">
+                <div className="flex rounded-md border border-line-3 overflow-hidden">
                   {["formal", "neutral", "casual"].map((t) => (
                     <button key={t} onClick={() => setAiTone(t)}
-                      className={`px-3 h-9 text-[12px] font-medium transition-colors ${aiTone === t ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+                      className={`px-3 h-9 text-[12px] font-medium transition-colors ${aiTone === t ? "bg-accent text-white" : "bg-surface text-ink-2 hover:bg-surface-2"}`}>
                       {t.charAt(0).toUpperCase() + t.slice(1)}
                     </button>
                   ))}
                 </div>
                 <button onClick={generateAI} disabled={aiLoading || !aiPrompt.trim()}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-md text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap">
+                  className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap">
                   <Sparkles size={13} /> {aiLoading ? "Writing..." : "Generate"}
                 </button>
               </div>
@@ -1038,16 +1038,16 @@ function NewsletterTab() {
 
       {/* Panel C: Preview & Send */}
       <div className="nl-pane w-full lg:w-[320px] lg:flex-shrink-0 flex flex-col gap-3">
-        <div className="bg-white border border-gray-200 rounded-lg flex-1 flex flex-col">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-            <Eye size={14} className="text-indigo-500" />
-            <span className="text-[14px] font-semibold text-gray-900">Preview</span>
+        <div className="bg-surface border border-line rounded-lg flex-1 flex flex-col">
+          <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+            <Eye size={14} className="text-accent" />
+            <span className="text-[14px] font-semibold text-ink">Preview</span>
           </div>
           <div className="p-4 flex-1 flex flex-col">
             <select
               value={previewIdx}
               onChange={(e) => setPreviewIdx(Number(e.target.value))}
-              className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px] mb-3 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] mb-3 bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
             >
               {validRecipients.length === 0 && <option value={0}>Sample recipient</option>}
               {validRecipients.map((c, i) => (
@@ -1055,22 +1055,22 @@ function NewsletterTab() {
               ))}
             </select>
 
-            <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
-              <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 space-y-0.5 text-[12px]">
-                <div className="flex"><span className="text-gray-400 w-10">From:</span><span className="text-gray-700">Your Business</span></div>
-                <div className="flex"><span className="text-gray-400 w-10">To:</span><span className="text-gray-700 truncate">{previewClient ? `${previewClient.name} <${previewClient.email}>` : "Recipient"}</span></div>
-                <div className="flex"><span className="text-gray-400 w-10">Subj:</span><span className="text-gray-900 font-medium">{previewSubject || "No subject"}</span></div>
+            <div className="border border-line rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
+              <div className="bg-surface-2 px-3 py-2 border-b border-line space-y-0.5 text-[12px]">
+                <div className="flex"><span className="text-muted w-10">From:</span><span className="text-ink-2">Your Business</span></div>
+                <div className="flex"><span className="text-muted w-10">To:</span><span className="text-ink-2 truncate">{previewClient ? `${previewClient.name} <${previewClient.email}>` : "Recipient"}</span></div>
+                <div className="flex"><span className="text-muted w-10">Subj:</span><span className="text-ink font-medium">{previewSubject || "No subject"}</span></div>
               </div>
-              <div className="p-3 text-[13px] text-gray-700 whitespace-pre-wrap overflow-y-auto flex-1 bg-white">
+              <div className="p-3 text-[13px] text-ink-2 whitespace-pre-wrap overflow-y-auto flex-1 bg-surface">
                 {previewBody || "Start writing..."}
               </div>
             </div>
           </div>
         </div>
 
-        <div className="bg-white border border-gray-200 rounded-lg p-4">
+        <div className="bg-surface border border-line rounded-lg p-4">
           {noEmailCount > 0 && (
-            <div className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+            <div className="text-[12px] text-warning-ink bg-warning-bg border border-warning rounded-md px-3 py-2 mb-3">
               {noEmailCount} recipient{noEmailCount !== 1 ? "s" : ""} will be skipped (no email)
             </div>
           )}
@@ -1078,7 +1078,7 @@ function NewsletterTab() {
           <button
             onClick={handleSend}
             disabled={sending || validRecipients.length === 0 || !subject.trim() || !body.trim()}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[14px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+            className="w-full bg-accent hover:bg-accent-hover text-white rounded-md text-[14px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
             style={{ height: 44 }}
           >
             <Send size={16} />
@@ -1088,7 +1088,7 @@ function NewsletterTab() {
           <button
             onClick={() => setShowSchedule(!showSchedule)}
             disabled={validRecipients.length === 0 || !subject.trim() || !body.trim()}
-            className="w-full mt-2 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 rounded-md text-[13px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+            className="w-full mt-2 border border-accent text-accent-hover hover:bg-accent/10 rounded-md text-[13px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
             style={{ height: 36 }}
           >
             <Clock size={14} />
@@ -1096,54 +1096,54 @@ function NewsletterTab() {
           </button>
 
           {showSchedule && (
-            <div className="mt-2 border border-gray-200 rounded-md p-3 bg-gray-50 space-y-2">
-              <div className="text-[12px] font-medium text-gray-700 mb-1">When should this send?</div>
+            <div className="mt-2 border border-line rounded-md p-3 bg-surface-2 space-y-2">
+              <div className="text-[12px] font-medium text-ink-2 mb-1">When should this send?</div>
               {[
                 { val: 0, label: "Send now — all " + validRecipients.length + " at once" },
                 { val: 3600, label: "Spread over 1 hour — ~" + Math.ceil(validRecipients.length / 60) + " emails per minute" },
                 { val: 7200, label: "Spread over 2 hours — ~" + Math.ceil(validRecipients.length / 120) + " emails per minute" },
                 { val: 14400, label: "Spread over 4 hours — ~" + Math.ceil(validRecipients.length / 240) + " emails per minute" },
               ].map((opt) => (
-                <label key={opt.val} className="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
-                  <input type="radio" checked={scheduleInterval === opt.val} onChange={() => setScheduleInterval(opt.val)} className="accent-indigo-600" />
+                <label key={opt.val} className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
+                  <input type="radio" checked={scheduleInterval === opt.val} onChange={() => setScheduleInterval(opt.val)} className="accent-accent" />
                   {opt.label}
                 </label>
               ))}
-              <label className="flex items-center gap-2 text-[12px] text-gray-700 cursor-pointer">
-                <input type="radio" checked={scheduleInterval === -1} onChange={() => setScheduleInterval(-1)} className="accent-indigo-600" />
+              <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
+                <input type="radio" checked={scheduleInterval === -1} onChange={() => setScheduleInterval(-1)} className="accent-accent" />
                 Custom
               </label>
               {scheduleInterval === -1 && (
                 <input type="datetime-local" value={scheduleCustomDate} onChange={(e) => setScheduleCustomDate(e.target.value)}
-                  className="w-full border border-gray-300 h-8 px-2 rounded-md text-[12px]" />
+                  className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px]" />
               )}
               <button onClick={handleSchedule} disabled={scheduling}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
+                className="w-full bg-accent hover:bg-accent-hover text-white rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
                 {scheduling ? "Scheduling..." : "Schedule"}
               </button>
             </div>
           )}
 
           {activeScheduled.length > 0 && (
-            <div className="mt-3 border border-gray-200 rounded-md p-3 bg-blue-50 space-y-2">
+            <div className="mt-3 border border-line rounded-md p-3 bg-info-bg space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[12px] font-medium text-blue-800">Scheduled Sends</span>
-                <button onClick={refreshScheduledSends} className="text-[11px] text-blue-600 hover:text-blue-800">Refresh</button>
+                <span className="text-[12px] font-medium text-info-ink">Scheduled Sends</span>
+                <button onClick={refreshScheduledSends} className="text-[11px] text-info-ink hover:text-info-ink">Refresh</button>
               </div>
               {activeScheduled.map((job) => (
-                <div key={job.id} className="bg-white rounded-md p-2 border border-blue-100">
-                  <div className="text-[12px] font-medium text-gray-800 truncate">{job.subject || "Untitled"}</div>
-                  <div className="mt-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${job.total_recipients > 0 ? ((job.sent_count + job.failed_count + job.skipped_count) / job.total_recipients * 100) : 0}%` }} />
+                <div key={job.id} className="bg-surface rounded-md p-2 border border-info">
+                  <div className="text-[12px] font-medium text-ink truncate">{job.subject || "Untitled"}</div>
+                  <div className="mt-1 h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                    <div className="h-full bg-info rounded-full transition-all" style={{ width: `${job.total_recipients > 0 ? ((job.sent_count + job.failed_count + job.skipped_count) / job.total_recipients * 100) : 0}%` }} />
                   </div>
                   <div className="flex items-center justify-between mt-1">
-                    <span className="text-[11px] text-gray-500">
+                    <span className="text-[11px] text-muted">
                       {job.status === "running"
                         ? `${job.sent_count}/${job.total_recipients} sent`
                         : `Pending · ${new Date(job.scheduled_at).toLocaleString()}`}
                     </span>
                     <button onClick={() => handleCancelScheduled(job.id)}
-                      className="text-[11px] text-red-500 hover:text-red-700 font-medium">Cancel</button>
+                      className="text-[11px] text-danger-ink hover:text-danger-ink font-medium">Cancel</button>
                   </div>
                 </div>
               ))}
@@ -1151,20 +1151,20 @@ function NewsletterTab() {
           )}
 
           {sendError && (
-            <div className="mt-3 text-[13px] px-3 py-2 rounded-md bg-red-50 text-red-800 border border-red-200">
+            <div className="mt-3 text-[13px] px-3 py-2 rounded-md bg-danger-bg text-danger-ink border border-danger">
               <div className="flex items-center gap-1.5 font-medium mb-1">
                 <AlertCircle size={14} /> Send failed
               </div>
               <div className="text-[12px] whitespace-pre-wrap">{sendError}</div>
               <button onClick={startNew}
-                className="mt-2 w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-md text-[12px] font-medium py-1.5 transition-colors">
+                className="mt-2 w-full bg-surface border border-line hover:bg-surface-2 text-ink-2 rounded-md text-[12px] font-medium py-1.5 transition-colors">
                 + Compose new
               </button>
             </div>
           )}
 
           {sendResult && (
-            <div className={`mt-3 text-[13px] px-3 py-2 rounded-md ${sendResult.failed > 0 || sendResult.skipped > 0 ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200"}`}>
+            <div className={`mt-3 text-[13px] px-3 py-2 rounded-md ${sendResult.failed > 0 || sendResult.skipped > 0 ? "bg-warning-bg text-warning-ink border border-warning" : "bg-success-bg text-success-ink border border-success"}`}>
               {sendResult.failed === 0 && sendResult.skipped === 0 ? (
                 <div>
                   <div className="flex items-center gap-1.5 font-medium mb-1">
@@ -1186,9 +1186,9 @@ function NewsletterTab() {
                       {showErrors && (
                         <div className="mt-1 space-y-1 max-h-[160px] overflow-y-auto">
                           {sendResult.errors.map((err, i) => (
-                            <div key={i} className="text-[11px] bg-white/60 rounded px-2 py-1 border border-amber-100">
+                            <div key={i} className="text-[11px] bg-surface/60 rounded px-2 py-1 border border-warning">
                               <span className="font-medium">{err.client_name}</span>
-                              <span className="text-amber-600 ml-1">— {err.error}</span>
+                              <span className="text-warning-ink ml-1">— {err.error}</span>
                             </div>
                           ))}
                         </div>
@@ -1198,25 +1198,25 @@ function NewsletterTab() {
                 </div>
               )}
               <button onClick={startNew}
-                className="mt-2 w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-md text-[12px] font-medium py-1.5 transition-colors">
+                className="mt-2 w-full bg-surface border border-line hover:bg-surface-2 text-ink-2 rounded-md text-[12px] font-medium py-1.5 transition-colors">
                 + Compose new
               </button>
             </div>
           )}
 
           {templates.filter((t) => t.status === "sent").length > 0 && (
-            <div className="mt-3 border-t border-gray-100 pt-3">
+            <div className="mt-3 border-t border-line pt-3">
               <button onClick={() => setShowHistory(!showHistory)}
-                className="flex items-center gap-1 text-[12px] text-gray-500 hover:text-gray-700 w-full">
+                className="flex items-center gap-1 text-[12px] text-muted hover:text-ink-2 w-full">
                 <ChevronDown size={12} className={`transition-transform ${showHistory ? "rotate-180" : ""}`} />
                 Send history
               </button>
               {showHistory && (
                 <div className="mt-2 space-y-1.5">
                   {templates.filter((t) => t.status === "sent").slice(0, 5).map((t) => (
-                    <div key={t.id} className="text-[12px] text-gray-600 py-1 border-b border-gray-50 last:border-0">
-                      <div className="font-medium text-gray-800 truncate">{t.subject || "Untitled"}</div>
-                      <div className="text-gray-400">{new Date(t.created_at).toLocaleDateString()} · {t.sent_count} sent</div>
+                    <div key={t.id} className="text-[12px] text-ink-2 py-1 border-b border-gray-50 last:border-0">
+                      <div className="font-medium text-ink truncate">{t.subject || "Untitled"}</div>
+                      <div className="text-muted">{new Date(t.created_at).toLocaleDateString()} · {t.sent_count} sent</div>
                     </div>
                   ))}
                 </div>

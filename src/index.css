@@ -72,6 +72,34 @@
   --t-input-bg:     #FFFFFF;
   --t-input-border: #E5E7EB;
   --t-input-focus:  #FAFAFE;
+
+  /* ── Semantic color tokens (RGB triplets → Tailwind w/ alpha support).
+        Components use bg-surface / text-ink / border-line / bg-accent etc.,
+        which adapt automatically under html.dark. ── */
+  --c-surface:      255 255 255;
+  --c-surface-2:    247 247 251;
+  --c-surface-3:    240 240 244;
+  --c-ink:           15 17 23;
+  --c-ink-2:         55 65 81;
+  --c-muted:        107 114 128;
+  --c-faint:        156 163 175;
+  --c-line:         235 235 239;
+  --c-line-2:       244 244 248;
+  --c-line-3:       229 231 235;
+  --c-accent:        79 70 229;
+  --c-accent-hover:  67 56 202;
+  --c-success:        5 150 105;
+  --c-success-bg:   236 253 245;
+  --c-success-ink:    6 95 70;
+  --c-warning:      217 119 6;
+  --c-warning-bg:   255 251 235;
+  --c-warning-ink:  146 64 14;
+  --c-danger:       220 38 38;
+  --c-danger-bg:    254 242 242;
+  --c-danger-ink:   153 27 27;
+  --c-info:          37 99 235;
+  --c-info-bg:      239 246 255;
+  --c-info-ink:      29 78 216;
 }
 
 /* ── Dark theme tokens — MATTE BLACK (neutral zinc, no blue tint) ─ */
@@ -103,6 +131,32 @@ html.dark {
   --t-input-bg:     #1D1D20;
   --t-input-border: #29292E;
   --t-input-focus:  #242428;
+
+  /* Semantic tokens — matte-black dark values */
+  --c-surface:       22 22 24;
+  --c-surface-2:     29 29 32;
+  --c-surface-3:     36 36 40;
+  --c-ink:          237 237 239;
+  --c-ink-2:        182 182 190;
+  --c-muted:        124 124 132;
+  --c-faint:         86 86 94;
+  --c-line:          41 41 46;
+  --c-line-2:        30 30 34;
+  --c-line-3:        56 56 63;
+  --c-accent:        99 102 241;
+  --c-accent-hover: 129 140 248;
+  --c-success:       52 211 153;
+  --c-success-bg:    19 48 31;
+  --c-success-ink:  110 231 183;
+  --c-warning:      251 191 36;
+  --c-warning-bg:    54 40 10;
+  --c-warning-ink:  253 230 138;
+  --c-danger:       248 113 113;
+  --c-danger-bg:     58 22 22;
+  --c-danger-ink:   252 165 165;
+  --c-info:          96 165 250;
+  --c-info-bg:       23 37 64;
+  --c-info-ink:     147 197 253;
 }
 
 /* ── Smooth theme transition (applied momentarily on toggle) ── */

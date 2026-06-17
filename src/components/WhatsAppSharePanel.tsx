@@ -155,10 +155,10 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
               </button>
             </div>
             <textarea value={message} onChange={(e) => setMessage(e.target.value)} spellCheck={false}
-              className="w-full h-[180px] rounded-lg p-3 text-[13px] font-mono resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+              className="w-full h-[180px] rounded-lg p-3 text-[13px] font-mono resize-none focus:outline-none focus:ring-2 focus:ring-accent/30"
               style={{ background: "var(--t-input-bg)", border: "1px solid var(--t-input-border)", color: "var(--t-tx1)" }} />
             <button onClick={() => copy(message)}
-              className={`flex items-center gap-1.5 mt-2 text-[12px] font-medium px-3 h-8 rounded-md transition-colors ${copied ? "text-emerald-600" : "text-white bg-indigo-600 hover:bg-indigo-700"}`}
+              className={`flex items-center gap-1.5 mt-2 text-[12px] font-medium px-3 h-8 rounded-md transition-colors ${copied ? "text-success-ink" : "text-white bg-accent hover:bg-accent-hover"}`}
               style={copied ? { background: "var(--t-s3)" } : undefined}>
               {copied ? <><Check size={13} /> Copied to clipboard</> : <><Copy size={13} /> Copy message</>}
             </button>
@@ -167,7 +167,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
           {/* Upload media — only surfaces when something is missing */}
           {missingMedia.length > 0 && (
             <section className="rounded-lg px-3 py-2.5 flex items-start gap-2" style={{ background: "var(--t-s2)", border: "1px solid var(--t-b1)" }}>
-              <AlertCircle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
+              <AlertCircle size={14} className="text-warning-ink flex-shrink-0 mt-0.5" />
               <p className="text-[12px]" style={{ color: "var(--t-tx2)" }}>
                 {missingMedia.length} lot{missingMedia.length !== 1 ? "s are" : " is"} missing photos or a manifest. Add them below before sharing.
               </p>
@@ -191,7 +191,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="text-[13px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{lot.name}</span>
-                        {(photos.length === 0 || !hasManifest) && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" title="Missing media" />}
+                        {(photos.length === 0 || !hasManifest) && <span className="w-1.5 h-1.5 rounded-full bg-warning flex-shrink-0" title="Missing media" />}
                       </div>
                       <button onClick={() => openFolder(lot)} className={btnQuiet} style={{ borderColor: "var(--t-b1)" }} title="Open this lot's media folder">
                         <FolderOpen size={12} /> Folder
@@ -239,7 +239,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
           <section>
             <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>How to send</span>
             <ol className="space-y-1.5 mt-2 text-[12px]" style={{ color: "var(--t-tx3)" }}>
-              <li className="flex items-center gap-2"><Check size={12} className="text-emerald-600" /> Message copied to clipboard</li>
+              <li className="flex items-center gap-2"><Check size={12} className="text-success-ink" /> Message copied to clipboard</li>
               <li>2. Open your group chat in the WhatsApp panel →</li>
               <li>3. Paste the message (Ctrl/Cmd + V)</li>
               <li>4. Drag the photos &amp; manifest above straight into the chat</li>
@@ -270,11 +270,11 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
             <div className="absolute inset-0 flex items-center justify-center p-8">
               <div className="text-center max-w-sm">
                 <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)" }}>
-                  <WifiOff size={22} className="text-red-500" />
+                  <WifiOff size={22} className="text-danger-ink" />
                 </div>
                 <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>Unable to load WhatsApp Web</p>
                 <p className="text-[13px] mb-4" style={{ color: "var(--t-tx3)" }}>Check your internet connection and try again.</p>
-                <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 transition-colors">
+                <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-white bg-accent hover:bg-accent-hover transition-colors">
                   <RefreshCw size={13} /> Retry
                 </button>
               </div>

@@ -6,7 +6,17 @@
       "Bash(dd if=\"C:/Users/Jack/Desktop/BUSINESS APP/public/globe.gl.min.js\" bs=1 skip=8280 count=120)",
       "Bash(npm install *)",
       "Bash(npx tsc *)",
-      "Bash(cargo check *)"
+      "Bash(cargo check *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(git push *)",
+      "Bash(curl -s http://localhost:8080/api/health)",
+      "Bash(python -c ' *)",
+      "Bash(cargo build *)",
+      "Bash(grep -nE \"#[0-9a-fA-F]{3,6}|indigo|rgba\\\\\\(|background:#|color:#\" www/staff.html)",
+      "Bash(git commit -q -m 'Brand: rebrand staff portal — Inter, matte zinc palette, ink buttons, light/dark toggle *)",
+      "Bash(rm -f .mig.sed)",
+      "Bash(npm run *)"
     ]
   }
 }

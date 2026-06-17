@@ -146,11 +146,11 @@ export default function AnalyticsView() {
 
   if (loading) return (
     <div className="flex items-center justify-center py-32">
-      <RefreshCw size={15} className="text-gray-200 animate-spin" />
+      <RefreshCw size={15} className="text-faint animate-spin" />
     </div>
   );
   if (!stats) return (
-    <div className="text-center py-32 text-[13px] text-gray-300">No data yet</div>
+    <div className="text-center py-32 text-[13px] text-faint">No data yet</div>
   );
 
   // ── Derived ───────────────────────────────────────────────────
@@ -183,8 +183,8 @@ export default function AnalyticsView() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Analytics</h2>
-          <p className="text-[12px] text-gray-400 mt-0.5">Business performance overview</p>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Analytics</h2>
+          <p className="text-[12px] text-muted mt-0.5">Business performance overview</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Preset pills */}
@@ -194,8 +194,8 @@ export default function AnalyticsView() {
               onClick={() => applyPreset(p)}
               className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
                 preset === p.label
-                  ? "bg-indigo-600 text-white"
-                  : "bg-white border border-gray-200 text-gray-500 hover:border-indigo-400 hover:text-indigo-600"
+                  ? "bg-accent text-white"
+                  : "bg-surface border border-line text-muted hover:border-accent hover:text-accent"
               }`}
             >
               {p.label}
@@ -207,29 +207,29 @@ export default function AnalyticsView() {
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              className="border border-gray-200 h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+              className="border border-line h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
-            <span className="text-[11px] text-gray-400">to</span>
+            <span className="text-[11px] text-muted">to</span>
             <input
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              className="border border-gray-200 h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+              className="border border-line h-8 px-2 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
             <button
               onClick={applyCustomRange}
-              className="px-3 h-8 bg-white border border-gray-200 rounded-lg text-[12px] text-gray-500 hover:border-indigo-400 hover:text-indigo-600 transition-colors"
+              className="px-3 h-8 bg-surface border border-line rounded-lg text-[12px] text-muted hover:border-accent hover:text-accent transition-colors"
             >
               Apply
             </button>
           </div>
           <button onClick={load}
-            className="flex items-center gap-1.5 text-[12px] text-gray-400 hover:text-gray-700
-                       px-2.5 h-8 rounded-lg hover:bg-gray-100 transition-colors border border-gray-200">
+            className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
+                       px-2.5 h-8 rounded-lg hover:bg-surface-3 transition-colors border border-line">
             <RefreshCw size={13} /> Refresh
           </button>
           <button onClick={handleExportAnalytics}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-3 h-8 rounded-lg text-[12px] font-medium transition-colors">
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium transition-colors">
             <FileDown size={13} /> Export
           </button>
         </div>
@@ -242,17 +242,17 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
 
         {/* Revenue hero */}
-        <div className="col-span-2 md:col-span-2 lg:col-span-2 bg-white rounded-xl p-5
-                        border border-gray-100 border-t-[3px] border-t-indigo-500
+        <div className="col-span-2 md:col-span-2 lg:col-span-2 bg-surface rounded-xl p-5
+                        border border-line border-t-[3px] border-t-accent
                         animate-fade-up [animation-fill-mode:backwards]
                         hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-3">
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-3">
             Revenue {preset === "All Time" ? "All Time" : preset}
           </div>
-          <div className="text-[32px] font-bold text-indigo-600 tabular-nums leading-none tracking-tight">
+          <div className="text-[32px] font-bold text-accent tabular-nums leading-none tracking-tight">
             {fmtAmount(aRevenue)}
           </div>
-          <div className="text-[11px] text-gray-400 mt-2">Total closed deal revenue</div>
+          <div className="text-[11px] text-muted mt-2">Total closed deal revenue</div>
         </div>
 
         <StatCard label="Net Profit"   delay={65}
@@ -272,12 +272,12 @@ export default function AnalyticsView() {
           Grouped BarChart — two bars side by side per month.
           No ComposedChart / Line so single-month data still looks fine.
       ─────────────────────────────────────────────────────────── */}
-      <div className="bg-white border border-gray-100 rounded-xl p-5
+      <div className="bg-surface border border-line rounded-xl p-5
                       animate-fade-up [animation-fill-mode:backwards] stagger-2">
         <div className="flex items-start justify-between mb-5">
           <div>
-            <h3 className="text-[13px] font-semibold text-gray-900">Monthly Revenue vs Profit</h3>
-            <p className="text-[11px] text-gray-400 mt-0.5">
+            <h3 className="text-[13px] font-semibold text-ink">Monthly Revenue vs Profit</h3>
+            <p className="text-[11px] text-muted mt-0.5">
               {monthly.length > 0 ? `Last ${monthly.length} month${monthly.length !== 1 ? "s" : ""}` : "No data"}
             </p>
           </div>
@@ -313,10 +313,10 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Invoice Status */}
-        <div className="bg-white border border-gray-100 rounded-xl p-5
+        <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Invoice Status</h3>
-          <p className="text-[11px] text-gray-400 mb-5">{stats.invoices} total invoices</p>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice Status</h3>
+          <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices</p>
 
           {stats.invoice_status_breakdown.length > 0 ? (
             <div className="space-y-4">
@@ -329,16 +329,16 @@ export default function AnalyticsView() {
                       <div className="flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full flex-shrink-0"
                           style={{ backgroundColor: clr }} />
-                        <span className="text-[12px] text-gray-700 capitalize">
+                        <span className="text-[12px] text-ink-2 capitalize">
                           {s.status.replace("_", " ")}
                         </span>
-                        <span className="text-[10px] text-gray-300">({s.count})</span>
+                        <span className="text-[10px] text-faint">({s.count})</span>
                       </div>
-                      <span className="text-[12px] font-semibold text-gray-800 tabular-nums">
+                      <span className="text-[12px] font-semibold text-ink tabular-nums">
                         {fmtAmount(s.total)}
                       </span>
                     </div>
-                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
                       <div className="h-full rounded-full transition-all duration-700 ease-out"
                         style={{
                           width: bars ? `${pct}%` : "0%",
@@ -354,10 +354,10 @@ export default function AnalyticsView() {
         </div>
 
         {/* Top Spenders */}
-        <div className="bg-white border border-gray-100 rounded-xl p-5
+        <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Top Spenders</h3>
-          <p className="text-[11px] text-gray-400 mb-4">By total revenue collected</p>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top Spenders</h3>
+          <p className="text-[11px] text-muted mb-4">By total revenue collected</p>
 
           {stats.top_spenders.length > 0 ? (
             <div className="space-y-1">
@@ -375,22 +375,22 @@ export default function AnalyticsView() {
                   <div className="relative flex items-center gap-3 px-4 py-3.5">
                     <span className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center
                                       justify-center text-[10px] font-bold text-white ${
-                      i === 0 ? "bg-amber-400" :
+                      i === 0 ? "bg-warning" :
                       i === 1 ? "bg-slate-400" :
-                      i === 2 ? "bg-amber-700/70" : "bg-gray-200"
+                      i === 2 ? "bg-warning/70" : "bg-surface-3"
                     }`}>{i + 1}</span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium text-gray-900 truncate">{c.name}</div>
-                      <div className="text-[11px] text-gray-400">
+                      <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
+                      <div className="text-[11px] text-muted">
                         {c.invoice_count} invoice{c.invoice_count !== 1 ? "s" : ""}
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <div className="text-[13px] font-semibold text-gray-900 tabular-nums">
+                      <div className="text-[13px] font-semibold text-ink tabular-nums">
                         {fmtAmount(c.total_spent)}
                       </div>
                       <div className={`text-[10px] tabular-nums ${
-                        c.total_profit >= 0 ? "text-emerald-600" : "text-rose-500"
+                        c.total_profit >= 0 ? "text-success-ink" : "text-danger-ink"
                       }`}>{fmtAmount(c.total_profit)} profit</div>
                     </div>
                   </div>
@@ -405,15 +405,15 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Client Tiers */}
-        <div className="bg-white border border-gray-100 rounded-xl p-5
+        <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Client Tiers</h3>
-          <p className="text-[11px] text-gray-400 mb-5">{totalCl} clients</p>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client Tiers</h3>
+          <p className="text-[11px] text-muted mb-5">{totalCl} clients</p>
 
           {totalCl > 0 ? (
             <>
               {/* Segmented pill */}
-              <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden flex mb-5">
+              <div className="h-2.5 bg-surface-3 rounded-full overflow-hidden flex mb-5">
                 {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t, i, arr) => (
                   <div key={t} className="h-full transition-all duration-700 ease-out"
                     style={{
@@ -433,7 +433,7 @@ export default function AnalyticsView() {
                                              border-b border-gray-50 last:border-0">
                       <TierBadge tier={t} />
                       <div className="flex items-center gap-4">
-                        <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="w-24 h-1.5 bg-surface-3 rounded-full overflow-hidden">
                           <div className="h-full rounded-full transition-all duration-700 ease-out"
                             style={{
                               width: bars ? `${(n / totalCl) * 100}%` : "0%",
@@ -441,10 +441,10 @@ export default function AnalyticsView() {
                               transitionDelay: `${200 + i * 60}ms`,
                             }} />
                         </div>
-                        <span className="text-[11px] text-gray-400 w-9 text-right tabular-nums">
+                        <span className="text-[11px] text-muted w-9 text-right tabular-nums">
                           {((n / totalCl) * 100).toFixed(1)}%
                         </span>
-                        <span className="text-[14px] font-bold text-gray-900 tabular-nums w-5 text-right">
+                        <span className="text-[14px] font-bold text-ink tabular-nums w-5 text-right">
                           {n}
                         </span>
                       </div>
@@ -457,31 +457,31 @@ export default function AnalyticsView() {
         </div>
 
         {/* Category breakdown */}
-        <div className="bg-white border border-gray-100 rounded-xl p-5
+        <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Category Breakdown</h3>
-          <p className="text-[11px] text-gray-400 mb-5">Revenue by client category</p>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category Breakdown</h3>
+          <p className="text-[11px] text-muted mb-5">Revenue by client category</p>
 
           {cats.length > 0 ? (
             <div className="space-y-4 max-h-[280px] overflow-y-auto pr-1">
               {cats.map((c, i) => (
                 <div key={i}>
                   <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[12px] font-medium text-gray-700 truncate max-w-[160px]">
+                    <span className="text-[12px] font-medium text-ink-2 truncate max-w-[160px]">
                       {c.category}
                     </span>
                     <div className="flex items-center gap-2.5 ml-2 flex-shrink-0">
-                      <span className="text-[11px] text-gray-400">
+                      <span className="text-[11px] text-muted">
                         {c.client_count} client{c.client_count !== 1 ? "s" : ""}
                       </span>
                       {c.revenue > 0 && (
-                        <span className="text-[12px] font-semibold text-gray-800 tabular-nums">
+                        <span className="text-[12px] font-semibold text-ink tabular-nums">
                           {fmtAmount(c.revenue)}
                         </span>
                       )}
                     </div>
                   </div>
-                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
                     <div className="h-full rounded-full transition-all duration-700 ease-out"
                       style={{
                         width: c.revenue > 0 && bars ? `${(c.revenue / maxCat) * 100}%` : "0%",
@@ -500,10 +500,10 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Most Profitable */}
-        <div className="bg-white border border-gray-100 rounded-xl p-5
+        <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-gray-900 mb-0.5">Most Profitable</h3>
-          <p className="text-[11px] text-gray-400 mb-5">By net profit margin</p>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Most Profitable</h3>
+          <p className="text-[11px] text-muted mb-5">By net profit margin</p>
 
           {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).length > 0 ? (
             <div>
@@ -511,21 +511,21 @@ export default function AnalyticsView() {
                 <div key={i} className="py-3 border-b border-gray-50 last:border-0">
                   <div className="flex items-start justify-between mb-2">
                     <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-gray-900 truncate">{c.name}</div>
-                      <div className="text-[11px] text-gray-400 mt-0.5 tabular-nums">
+                      <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
+                      <div className="text-[11px] text-muted mt-0.5 tabular-nums">
                         {fmtAmount(c.total_revenue)} revenue
                       </div>
                     </div>
                     <div className="text-right ml-3 flex-shrink-0">
                       <div className={`text-[13px] font-semibold tabular-nums ${
-                        c.total_profit >= 0 ? "text-emerald-600" : "text-rose-500"
+                        c.total_profit >= 0 ? "text-success-ink" : "text-danger-ink"
                       }`}>{fmtAmount(c.total_profit)}</div>
-                      <div className="text-[10px] text-gray-400 mt-0.5">
+                      <div className="text-[10px] text-muted mt-0.5">
                         {c.margin.toFixed(1)}% margin
                       </div>
                     </div>
                   </div>
-                  <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
                     <div className="h-full rounded-full transition-all duration-700 ease-out"
                       style={{
                         width: bars ? `${Math.min(Math.max(c.margin, 0), 100)}%` : "0%",
@@ -540,9 +540,9 @@ export default function AnalyticsView() {
         </div>
 
         {/* Financial snapshot */}
-        <div className="bg-white border border-gray-100 rounded-xl p-5
+        <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-5">
+          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-5">
             Financial Snapshot
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
@@ -556,7 +556,7 @@ export default function AnalyticsView() {
               { label: "Open Closeouts", value: String(stats.incomplete_shipping),  clr: "var(--t-tx1)" },
             ].map((item) => (
               <div key={item.label}>
-                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">
+                <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">
                   {item.label}
                 </div>
                 <div className="text-[20px] font-bold tabular-nums leading-none"
@@ -585,12 +585,12 @@ function StatCard({
 }) {
   return (
     <div
-      className="bg-white border border-gray-100 rounded-xl p-4
+      className="bg-surface border border-line rounded-xl p-4
                  animate-fade-up [animation-fill-mode:backwards]
                  hover:shadow-[0_4px_14px_rgba(0,0,0,0.06)] transition-shadow"
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-2.5">
         {label}
       </div>
       <div
@@ -607,14 +607,14 @@ function Legend({ color, label }: { color: string; label: string }) {
   return (
     <div className="flex items-center gap-1.5">
       <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: color }} />
-      <span className="text-[11px] text-gray-500">{label}</span>
+      <span className="text-[11px] text-muted">{label}</span>
     </div>
   );
 }
 
 function Blank({ h = 160, text = "No data yet" }: { h?: number; text?: string }) {
   return (
-    <div className="flex items-center justify-center text-[12px] text-gray-300"
+    <div className="flex items-center justify-center text-[12px] text-faint"
       style={{ height: h }}>
       {text}
     </div>

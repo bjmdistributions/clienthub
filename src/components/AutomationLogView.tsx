@@ -36,14 +36,14 @@ export default function AutomationLogView() {
     <div>
       <div className="flex items-center gap-3 mb-5 flex-wrap">
         <select value={filterRule} onChange={e => setFilterRule(e.target.value)}
-          className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] text-gray-600 bg-white">
+          className="border border-line h-9 px-3 rounded-lg text-[13px] text-ink-2 bg-surface">
           <option value="">All rules</option>
           {rules.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
         <input placeholder="Search..." value={filterClient} onChange={e => setFilterClient(e.target.value)}
-          className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] w-[180px] focus:outline-none focus:ring-2 focus:ring-indigo-500/40" />
+          className="border border-line h-9 px-3 rounded-lg text-[13px] w-[180px] focus:outline-none focus:ring-2 focus:ring-accent/40" />
         <select value={since} onChange={e => setSince(e.target.value)}
-          className="border border-gray-200 h-9 px-3 rounded-lg text-[13px] text-gray-600 bg-white">
+          className="border border-line h-9 px-3 rounded-lg text-[13px] text-ink-2 bg-surface">
           <option value="7">Last 7 days</option>
           <option value="30">Last 30 days</option>
           <option value="90">Last 90 days</option>
@@ -52,34 +52,34 @@ export default function AutomationLogView() {
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-[13px] text-gray-400"><Clock size={16} className="inline mr-1 animate-spin" /> Loading...</div>
+        <div className="text-center py-12 text-[13px] text-muted"><Clock size={16} className="inline mr-1 animate-spin" /> Loading...</div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-12 text-[13px] text-gray-400">No automation activity yet</div>
+        <div className="text-center py-12 text-[13px] text-muted">No automation activity yet</div>
       ) : (
-        <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
+        <div className="bg-surface border border-line rounded-xl overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="border-b border-gray-50">
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Date</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Rule</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Action</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Result</th>
+                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Date</th>
+                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Rule</th>
+                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Action</th>
+                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Result</th>
               </tr>
             </thead>
             <tbody>
               {filtered.slice(0, 200).map(e => {
                 const ok = !e.details?.includes("failed") && !e.details?.includes("error") && !e.details?.includes("SMTP");
                 return (
-                  <tr key={e.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60">
-                    <td className="px-4 py-2.5 text-[12px] text-gray-500 tabular-nums whitespace-nowrap">
+                  <tr key={e.id} className="border-b border-gray-50 last:border-0 hover:bg-surface-2/60">
+                    <td className="px-4 py-2.5 text-[12px] text-muted tabular-nums whitespace-nowrap">
                       {new Date(e.triggered_at).toLocaleDateString()} {new Date(e.triggered_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </td>
-                    <td className="px-4 py-2.5 text-[13px] font-medium text-gray-900">{ruleName(e.rule_id)}</td>
-                    <td className="px-4 py-2.5 text-[12px] text-gray-600">{e.action_taken}</td>
+                    <td className="px-4 py-2.5 text-[13px] font-medium text-ink">{ruleName(e.rule_id)}</td>
+                    <td className="px-4 py-2.5 text-[12px] text-ink-2">{e.action_taken}</td>
                     <td className="px-4 py-2.5">
                       {ok
-                        ? <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600"><CheckCircle2 size={12} /> {e.details || "OK"}</span>
-                        : <span className="inline-flex items-center gap-1 text-[11px] text-red-500"><AlertCircle size={12} /> {e.details || "Failed"}</span>
+                        ? <span className="inline-flex items-center gap-1 text-[11px] text-success-ink"><CheckCircle2 size={12} /> {e.details || "OK"}</span>
+                        : <span className="inline-flex items-center gap-1 text-[11px] text-danger-ink"><AlertCircle size={12} /> {e.details || "Failed"}</span>
                       }
                     </td>
                   </tr>

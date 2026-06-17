@@ -9,10 +9,10 @@ const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as c
 type StatusFilter = typeof STATUS_FILTERS[number] | "all";
 
 const statusColor = (s: string) => {
-  switch (s) { case "available": return "bg-emerald-100 text-emerald-800"; case "reserved": return "bg-blue-100 text-blue-800"; case "sold": return "bg-gray-100 text-gray-600"; case "archived": return "bg-amber-100 text-amber-800"; default: return "bg-gray-100 text-gray-700"; }
+  switch (s) { case "available": return "bg-success-bg text-success-ink"; case "reserved": return "bg-info-bg text-info-ink"; case "sold": return "bg-surface-3 text-ink-2"; case "archived": return "bg-warning-bg text-warning-ink"; default: return "bg-surface-3 text-ink-2"; }
 };
 
-const inp = "border border-gray-200 px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-colors";
+const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 // Photos are stored as device-independent relative paths ("media/<uuid>.jpg")
 // inside the synced folder. Legacy absolute paths are passed through as-is.
@@ -140,29 +140,29 @@ export default function InventoryView() {
       )}
       <div className="flex flex-wrap justify-between items-center gap-3 mb-5">
         <div>
-          <h2 className="text-[18px] font-semibold text-gray-900 tracking-tight">Inventory</h2>
-          <p className="text-[12px] text-gray-400 mt-0.5">{counts.all} lots · {totalUnits.toLocaleString()} units total</p>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Inventory</h2>
+          <p className="text-[12px] text-muted mt-0.5">{counts.all} lots · {totalUnits.toLocaleString()} units total</p>
         </div>
         <div className="flex items-center gap-2">
           {selectMode ? (
-            <button onClick={exitSelect} className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+            <button onClick={exitSelect} className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
               Cancel
             </button>
           ) : (
             <>
               <button onClick={resync} title="Re-sync all inventory to your other devices"
-                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
                 <RefreshCw size={13} /> Sync
               </button>
               <button onClick={() => setSelectMode(true)}
-                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
                 <CheckSquare size={13} /> Select
               </button>
               <button onClick={handleExportInventory}
-                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50 transition-colors">
+                className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
                 <FileDown size={13} /> Export
               </button>
-              <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
+              <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
                 <Plus size={14} /> Add Lot
               </button>
             </>
@@ -172,32 +172,32 @@ export default function InventoryView() {
 
       {/* Bulk action bar */}
       {selectMode && (
-        <div className="sticky top-0 z-20 mb-4 flex flex-wrap items-center gap-2 bg-white border border-gray-200 rounded-xl px-4 py-2.5 shadow-sm">
-          <span className="text-[13px] font-semibold text-gray-700 mr-1">{selected.size} selected</span>
-          <button onClick={() => setSelected(new Set(filtered.map((l) => l.id)))} className="text-[12px] text-indigo-600 hover:text-indigo-800 px-2 py-1 rounded hover:bg-indigo-50">Select all</button>
+        <div className="sticky top-0 z-20 mb-4 flex flex-wrap items-center gap-2 bg-surface border border-line rounded-xl px-4 py-2.5 shadow-sm">
+          <span className="text-[13px] font-semibold text-ink-2 mr-1">{selected.size} selected</span>
+          <button onClick={() => setSelected(new Set(filtered.map((l) => l.id)))} className="text-[12px] text-accent hover:text-indigo-800 px-2 py-1 rounded hover:bg-accent/10">Select all</button>
           <div className="flex-1" />
-          <button onClick={() => bulkStatus("sold")} disabled={!selected.size} className="text-[12px] text-emerald-700 border border-emerald-200 px-2.5 h-8 rounded-lg hover:bg-emerald-50 disabled:opacity-40 flex items-center gap-1"><DollarSign size={12} /> Sold</button>
-          <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-red-600 border border-red-200 px-2.5 h-8 rounded-lg hover:bg-red-50 disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
-          <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-gray-600 border border-gray-200 px-2.5 h-8 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
-          <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-gray-600 border border-gray-200 px-2.5 h-8 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
-          <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-white bg-red-600 hover:bg-red-700 px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
+          <button onClick={() => bulkStatus("sold")} disabled={!selected.size} className="text-[12px] text-success-ink border border-success px-2.5 h-8 rounded-lg hover:bg-success-bg disabled:opacity-40 flex items-center gap-1"><DollarSign size={12} /> Sold</button>
+          <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-danger-ink border border-danger px-2.5 h-8 rounded-lg hover:bg-danger-bg disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
+          <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
+          <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
+          <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-white bg-danger hover:bg-danger px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
           <button onClick={() => {
             window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: Array.from(selected) }));
-          }} disabled={!selected.size} className="text-[12px] text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
+          }} disabled={!selected.size} className="text-[12px] text-white bg-success hover:bg-success px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
         </div>
       )}
 
-      <div className="mb-5 bg-white border border-gray-100 rounded-xl overflow-hidden">
-        <button onClick={() => setShowManifest(!showManifest)} className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50/50 transition-colors">
+      <div className="mb-5 bg-surface border border-line rounded-xl overflow-hidden">
+        <button onClick={() => setShowManifest(!showManifest)} className="w-full flex items-center justify-between px-5 py-3 hover:bg-surface-2/50 transition-colors">
           <div className="flex items-center gap-2">
-            <BarChart3 size={15} className="text-indigo-500" />
-            <h3 className="text-[13px] font-semibold text-gray-900">Manifest Analyzer</h3>
+            <BarChart3 size={15} className="text-accent" />
+            <h3 className="text-[13px] font-semibold text-ink">Manifest Analyzer</h3>
           </div>
-          <ChevronDown size={13} className={`text-gray-400 transition-transform ${showManifest ? "rotate-180" : ""}`} />
+          <ChevronDown size={13} className={`text-muted transition-transform ${showManifest ? "rotate-180" : ""}`} />
         </button>
         {showManifest && (
           <div className="px-5 pb-4 border-t border-gray-50">
-            <p className="text-[11px] text-gray-400 mt-3 mb-3">Upload a manifest CSV to analyze categories, estimate margins, and calculate a suggested bid.</p>
+            <p className="text-[11px] text-muted mt-3 mb-3">Upload a manifest CSV to analyze categories, estimate margins, and calculate a suggested bid.</p>
             {!manifest && (
               <button onClick={async () => {
                 const f = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
@@ -205,7 +205,7 @@ export default function InventoryView() {
                 setManifestBusy(true);
                 try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { alert(e); }
                 setManifestBusy(false);
-              }} disabled={manifestBusy} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+              }} disabled={manifestBusy} className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
                 <Upload size={12} /> {manifestBusy ? "Analyzing..." : "Upload CSV"}
               </button>
             )}
@@ -218,23 +218,23 @@ export default function InventoryView() {
                     { label: "Avg Margin", value: `${manifest.overall_margin_pct.toFixed(0)}%` },
                     { label: "Suggested Bid", value: fmtAmount(manifest.suggested_bid) },
                   ].map((s) => (
-                    <div key={s.label} className="bg-gray-50 rounded-lg px-3 py-2.5">
-                      <p className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">{s.label}</p>
-                      <p className="text-[15px] font-bold text-gray-900 tabular-nums">{s.value}</p>
+                    <div key={s.label} className="bg-surface-2 rounded-lg px-3 py-2.5">
+                      <p className="text-[9px] font-semibold text-muted uppercase tracking-widest">{s.label}</p>
+                      <p className="text-[15px] font-bold text-ink tabular-nums">{s.value}</p>
                     </div>
                   ))}
                 </div>
-                <p className="text-[10px] text-gray-500 mb-3 bg-amber-50 border border-amber-100 px-3 py-2 rounded-lg">{manifest.formula}</p>
-                {manifest.skipped_rows > 0 && <p className="text-[11px] text-amber-600 mb-3">{manifest.skipped_rows} rows skipped (missing price).</p>}
+                <p className="text-[10px] text-muted mb-3 bg-warning-bg border border-warning px-3 py-2 rounded-lg">{manifest.formula}</p>
+                {manifest.skipped_rows > 0 && <p className="text-[11px] text-warning-ink mb-3">{manifest.skipped_rows} rows skipped (missing price).</p>}
                 <table className="w-full text-[12px] mb-3">
-                  <thead className="bg-gray-50">
-                    <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest rounded-r-lg">Retail</th></tr>
+                  <thead className="bg-surface-2">
+                    <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Retail</th></tr>
                   </thead>
                   <tbody>
                     {manifest.categories.map((c) => (
                       <tr key={c.category} className="border-t border-gray-50">
-                        <td className="px-3 py-2 font-medium text-gray-700">{c.category}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-gray-500">{c.items}</td>
+                        <td className="px-3 py-2 font-medium text-ink-2">{c.category}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted">{c.items}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(c.total_retail)}</td>
                       </tr>
                     ))}
@@ -242,10 +242,10 @@ export default function InventoryView() {
                 </table>
                 <div className="flex gap-2">
                   <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => showToast("Suggested bid copied — paste into your deal."))}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
+                    className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
                     <Clipboard size={11} /> Copy Bid
                   </button>
-                  <button onClick={() => { setManifest(null); }} className="text-[11px] text-gray-500 hover:text-gray-700 px-3 h-8 rounded-lg hover:bg-gray-50">
+                  <button onClick={() => { setManifest(null); }} className="text-[11px] text-muted hover:text-ink-2 px-3 h-8 rounded-lg hover:bg-surface-2">
                     Clear
                   </button>
                 </div>
@@ -258,16 +258,16 @@ export default function InventoryView() {
       <div className="flex gap-5">
         <div className="w-40 flex-shrink-0 space-y-1">
           {STATUS_FILTERS.map((f) => (
-            <button key={f} onClick={() => setFilter(f)} className={`w-full text-left px-3 py-2 rounded-lg text-[13px] capitalize flex justify-between transition-colors ${filter === f ? "bg-indigo-50 text-indigo-700 font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
-              <span>{f}</span><span className="text-gray-400">{counts[f]}</span>
+            <button key={f} onClick={() => setFilter(f)} className={`w-full text-left px-3 py-2 rounded-lg text-[13px] capitalize flex justify-between transition-colors ${filter === f ? "bg-accent/10 text-accent-hover font-medium" : "text-ink-2 hover:bg-surface-2"}`}>
+              <span>{f}</span><span className="text-muted">{counts[f]}</span>
             </button>
           ))}
           {(filter === "all" || filter === "sold" || filter === "archived") && filter === "all" && (
             <div className="pt-3 space-y-1">
-              <button onClick={() => setShowSold(!showSold)} className="text-[11px] text-gray-500 flex items-center gap-1">
+              <button onClick={() => setShowSold(!showSold)} className="text-[11px] text-muted flex items-center gap-1">
                 <ChevronDown size={10} className={`${showSold ? "" : "-rotate-90"} transition-transform`} /> Sold ({counts.sold})
               </button>
-              <button onClick={() => setShowArchived(!showArchived)} className="text-[11px] text-gray-500 flex items-center gap-1">
+              <button onClick={() => setShowArchived(!showArchived)} className="text-[11px] text-muted flex items-center gap-1">
                 <ChevronDown size={10} className={`${showArchived ? "" : "-rotate-90"} transition-transform`} /> Archived ({counts.archived})
               </button>
             </div>
@@ -280,16 +280,16 @@ export default function InventoryView() {
             const isSel = selected.has(lot.id);
             return (
             <div key={lot.id} onClick={() => onCardOpen(lot.id)} title={selectMode ? "Select" : "Open lot"}
-              className={`group bg-white border rounded-xl overflow-hidden transition-all cursor-pointer flex flex-col hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)] ${isSel ? "border-indigo-400 ring-2 ring-indigo-200" : "border-gray-200 hover:border-gray-300"}`}>
+              className={`group bg-surface border rounded-xl overflow-hidden transition-all cursor-pointer flex flex-col hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)] ${isSel ? "border-accent ring-2 ring-accent/20" : "border-line hover:border-line-3"}`}>
               {/* Photo */}
-              <div className="relative w-full h-40 bg-gray-50 flex items-center justify-center overflow-hidden">
+              <div className="relative w-full h-40 bg-surface-2 flex items-center justify-center overflow-hidden">
                 {lotPhotos.length > 0 ? (
                   <img src={convertFileSrc(resolvePhoto(lotPhotos[0], mediaBase))} alt="" className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                 ) : (
-                  <Image size={28} className="text-gray-300" strokeWidth={1.5} />
+                  <Image size={28} className="text-faint" strokeWidth={1.5} />
                 )}
                 {selectMode && (
-                  <span className={`absolute top-2.5 right-2.5 z-10 w-6 h-6 rounded-md flex items-center justify-center border-2 ${isSel ? "bg-indigo-600 border-indigo-600" : "bg-white/95 border-gray-300"}`}>
+                  <span className={`absolute top-2.5 right-2.5 z-10 w-6 h-6 rounded-md flex items-center justify-center border-2 ${isSel ? "bg-accent border-accent" : "bg-surface/95 border-line-3"}`}>
                     {isSel && <Check size={14} className="text-white" />}
                   </span>
                 )}
@@ -307,47 +307,47 @@ export default function InventoryView() {
               {/* Info */}
               <div className="p-3.5 flex flex-col flex-1">
                 <div className="flex items-start justify-between gap-2">
-                  <h3 className="text-[14px] font-semibold text-gray-900 leading-snug line-clamp-1 group-hover:text-indigo-600 transition-colors">{lot.name}</h3>
-                  <span className="text-[11px] text-gray-400 whitespace-nowrap flex-shrink-0 mt-px tabular-nums">{lot.quantity.toLocaleString()} units</span>
+                  <h3 className="text-[14px] font-semibold text-ink leading-snug line-clamp-1 group-hover:text-accent transition-colors">{lot.name}</h3>
+                  <span className="text-[11px] text-muted whitespace-nowrap flex-shrink-0 mt-px tabular-nums">{lot.quantity.toLocaleString()} units</span>
                 </div>
                 {[lot.category, lot.supplier, lot.location].some(Boolean) && (
-                  <p className="text-[11px] text-gray-400 truncate mt-0.5">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
+                  <p className="text-[11px] text-muted truncate mt-0.5">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
                 )}
-                {lot.notes && <p className="text-[11px] text-gray-500 truncate mt-1.5">{lot.notes}</p>}
+                {lot.notes && <p className="text-[11px] text-muted truncate mt-1.5">{lot.notes}</p>}
 
                 {/* Metrics */}
                 <div className="flex items-end justify-between mt-3">
                   <div>
-                    <div className="text-[9px] uppercase tracking-wider text-gray-400 font-medium">Unit cost → ask</div>
-                    <div className="text-[13px] text-gray-700 tabular-nums mt-0.5">
+                    <div className="text-[9px] uppercase tracking-wider text-muted font-medium">Unit cost → ask</div>
+                    <div className="text-[13px] text-ink-2 tabular-nums mt-0.5">
                       <span className="font-semibold">{fmtAmount(unitCost(lot))}</span>
-                      <span className="text-gray-300 mx-1">→</span>
+                      <span className="text-faint mx-1">→</span>
                       <span className="font-semibold">{fmtAmount(unitAsk(lot))}</span>
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="text-[9px] uppercase tracking-wider text-gray-400 font-medium">Profit</div>
-                    <div className={`text-[15px] font-bold tabular-nums mt-0.5 leading-none ${totalProfit(lot) >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtAmount(totalProfit(lot))}</div>
+                    <div className="text-[9px] uppercase tracking-wider text-muted font-medium">Profit</div>
+                    <div className={`text-[15px] font-bold tabular-nums mt-0.5 leading-none ${totalProfit(lot) >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(totalProfit(lot))}</div>
                   </div>
                 </div>
 
                 {/* Margin bar */}
                 <div className="flex items-center gap-2 mt-2.5">
-                  <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full transition-all ${marginPct(lot) > 40 ? "bg-emerald-500" : marginPct(lot) > 20 ? "bg-emerald-400" : marginPct(lot) >= 0 ? "bg-amber-400" : "bg-red-400"}`}
+                  <div className="flex-1 h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${marginPct(lot) > 40 ? "bg-success" : marginPct(lot) > 20 ? "bg-success" : marginPct(lot) >= 0 ? "bg-warning" : "bg-danger"}`}
                       style={{ width: `${Math.min(Math.max(marginPct(lot), 0), 100)}%` }} />
                   </div>
-                  <span className="text-[10px] font-semibold tabular-nums text-gray-500 w-9 text-right">{margin(lot)}</span>
+                  <span className="text-[10px] font-semibold tabular-nums text-muted w-9 text-right">{margin(lot)}</span>
                 </div>
 
                 {/* Send status — quiet chips */}
                 <div className="flex items-center gap-1.5 mt-3" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => toggleSent(lot, "whatsapp")} title={lot.sent_whatsapp ? "Sent on WhatsApp" : "Not sent on WhatsApp"}
-                    className={`flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors ${lot.sent_whatsapp ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100"}`}>
+                    className={`flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors ${lot.sent_whatsapp ? "bg-success-bg text-success-ink border-success" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
                     <MessageCircle size={11} /> WhatsApp {lot.sent_whatsapp && <Check size={10} />}
                   </button>
                   <button onClick={() => toggleSent(lot, "email")} title={lot.sent_email ? "Emailed" : "Not emailed"}
-                    className={`flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors ${lot.sent_email ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100"}`}>
+                    className={`flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md border transition-colors ${lot.sent_email ? "bg-info-bg text-info-ink border-info" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
                     <Mail size={11} /> Email {lot.sent_email && <Check size={10} />}
                   </button>
                 </div>
@@ -355,33 +355,33 @@ export default function InventoryView() {
                 {/* Primary action — share this lot to WhatsApp directly */}
                 <div className="mt-3" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: [lot.id] }))}
-                    className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 h-8 rounded-lg transition-colors">
+                    className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-success-ink border border-success bg-success-bg hover:bg-success-bg h-8 rounded-lg transition-colors">
                     <Send size={13} /> Send to WhatsApp
                   </button>
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-0.5 mt-2 pt-2.5 border-t border-gray-100" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-gray-500 hover:text-gray-900 px-2 py-1 rounded-md hover:bg-gray-100 transition-colors">Edit</button>
+                <div className="flex items-center gap-0.5 mt-2 pt-2.5 border-t border-line" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-muted hover:text-ink px-2 py-1 rounded-md hover:bg-surface-3 transition-colors">Edit</button>
                   {lot.status !== "sold" && (
-                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-gray-500 hover:text-emerald-700 px-2 py-1 rounded-md hover:bg-emerald-50 transition-colors">Mark Sold</button>
+                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-muted hover:text-success-ink px-2 py-1 rounded-md hover:bg-success-bg transition-colors">Mark Sold</button>
                   )}
                   {lot.status !== "archived" ? (
-                    <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-gray-500 hover:text-amber-700 px-2 py-1 rounded-md hover:bg-amber-50 transition-colors">Unavailable</button>
+                    <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-muted hover:text-warning-ink px-2 py-1 rounded-md hover:bg-warning-bg transition-colors">Unavailable</button>
                   ) : (
-                    <button onClick={() => setStatus(lot, "available")} className="text-[11px] text-gray-500 hover:text-gray-900 px-2 py-1 rounded-md hover:bg-gray-100 transition-colors">Restore</button>
+                    <button onClick={() => setStatus(lot, "available")} className="text-[11px] text-muted hover:text-ink px-2 py-1 rounded-md hover:bg-surface-3 transition-colors">Restore</button>
                   )}
                   <div className="flex-1" />
-                  <button onClick={() => deleteOne(lot)} title="Delete lot" className="text-gray-300 hover:text-red-500 p-1 rounded-md hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+                  <button onClick={() => deleteOne(lot)} title="Delete lot" className="text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
                 </div>
               </div>
             </div>
           )})}
           {filtered.length === 0 && (
             <div className="col-span-2 text-center py-12">
-              <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3"><Package size={16} className="text-gray-400" /></div>
-              <p className="text-[14px] font-semibold text-gray-800 mb-1">No lots found</p>
-              <p className="text-[12px] text-gray-400">Add a lot to start tracking inventory</p>
+              <div className="w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3"><Package size={16} className="text-muted" /></div>
+              <p className="text-[14px] font-semibold text-ink mb-1">No lots found</p>
+              <p className="text-[12px] text-muted">Add a lot to start tracking inventory</p>
             </div>
           )}
         </div>
@@ -409,12 +409,12 @@ export default function InventoryView() {
 
       {linkModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-[3px]" onClick={() => setLinkModal(null)}>
-          <div className="bg-white rounded-xl shadow-xl w-80 p-5" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-[14px] font-semibold text-gray-900 mb-3">Link to Deal</h3>
+          <div className="bg-surface rounded-xl shadow-xl w-80 p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-[14px] font-semibold text-ink mb-3">Link to Deal</h3>
             <div className="space-y-1 max-h-60 overflow-y-auto">
               {deals.filter(d => d.stage !== "lost" && d.stage !== "won").map((d) => (
                 <button key={d.id} onClick={async () => { try { await api.linkLotToDeal(linkModal, d.id); setLinkModal(null); load(); } catch (e: any) { alert(e); } }}
-                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-50 text-[13px] text-gray-700">{d.title}</button>
+                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-accent/10 text-[13px] text-ink-2">{d.title}</button>
               ))}
             </div>
           </div>
@@ -496,96 +496,96 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   return (
     <>
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-[440px] p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[440px] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-[14px] font-semibold text-gray-900">{initial ? "Edit Lot" : "New Lot"}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X size={16} /></button>
+          <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit Lot" : "New Lot"}</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
         <div className="space-y-3">
           <div>
-            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Name *</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Name *</label>
             <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="Lot name" />
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Description</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Description</label>
             <input className={inp} value={desc} onChange={(e) => setDesc(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Category</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Category</label>
               <input className={inp} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Electronics" />
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Qty</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Qty</label>
               <input className={inp} type="number" value={qty} onChange={(e) => setQty(parseInt(e.target.value) || 0)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Supplier</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Supplier</label>
               <input className={inp} list="lot-supplier-options" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Type or pick a supplier" />
               <datalist id="lot-supplier-options">
                 {suppliers.map((s) => <option key={s} value={s} />)}
               </datalist>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Location</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Location</label>
               <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A, Shelf 3" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Cost Price</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Cost Price</label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} />
               </div>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Selling Price</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Selling Price</label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[12px]">$</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} />
               </div>
             </div>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Price Type</label>
-            <div className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Price Type</label>
+            <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5">
               {(["per_unit", "total"] as const).map(pt => (
                 <button key={pt} onClick={() => setPriceType(pt)}
-                  className={`flex-1 text-[12px] font-medium py-1.5 rounded-md transition-colors ${priceType === pt ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}>
+                  className={`flex-1 text-[12px] font-medium py-1.5 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
                   {pt === "per_unit" ? "Per Unit" : "Total"}
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Notes</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Notes</label>
             <input className={inp} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Authentic, sealed, minor box damage" />
           </div>
           <div className="flex items-center gap-5 pt-0.5">
-            <label className="flex items-center gap-2 text-[12px] text-gray-600 cursor-pointer select-none">
+            <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
               <input type="checkbox" className="accent-emerald-600" checked={sentWa} onChange={(e) => setSentWa(e.target.checked)} />
-              <MessageCircle size={13} className="text-emerald-600" /> Sent on WhatsApp
+              <MessageCircle size={13} className="text-success-ink" /> Sent on WhatsApp
             </label>
-            <label className="flex items-center gap-2 text-[12px] text-gray-600 cursor-pointer select-none">
+            <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
               <input type="checkbox" className="accent-blue-600" checked={sentEmail} onChange={(e) => setSentEmail(e.target.checked)} />
-              <Mail size={13} className="text-blue-600" /> Emailed
+              <Mail size={13} className="text-info-ink" /> Emailed
             </label>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Photos</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Photos</label>
             <div className="flex flex-wrap gap-2 mb-1">
               {photos.map((p, i) => (
                 <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
-                  <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-gray-200 cursor-pointer hover:border-indigo-400 transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
+                  <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-line cursor-pointer hover:border-accent transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
                    <button onClick={async () => {
                      if (initial) {
                        try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { alert(e); }
                      }
                      setPhotos(photos.filter((_, idx) => idx !== i));
-                   }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
+                   }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-danger text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
                 </div>
               ))}
               <button onClick={async () => {
@@ -600,26 +600,26 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
                     setPhotos([...photos, ...picked]);
                   }
                 } catch (e: any) { alert(e); }
-              }} className="w-[72px] h-[72px] border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors group">
-                <Plus size={18} className="text-gray-400 group-hover:text-indigo-500 transition-colors" />
+              }} className="w-[72px] h-[72px] border-2 border-dashed border-line-3 rounded-lg flex items-center justify-center hover:border-accent hover:bg-accent/10 transition-colors group">
+                <Plus size={18} className="text-muted group-hover:text-accent transition-colors" />
               </button>
             </div>
-            <p className="text-[9px] text-gray-400 flex items-center gap-1">
+            <p className="text-[9px] text-muted flex items-center gap-1">
               <Image size={10} /> Photos are copied into your synced folder, so they show on all your devices.
             </p>
           </div>
 
           <div>
-            <label className="block text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1">Manifest</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Manifest</label>
             {(manifestPath || newManifestFile) ? (
-              <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
-                <FileText size={14} className="text-gray-400 flex-shrink-0" />
-                <span className="text-[12px] text-gray-600 truncate flex-1" title={manifestLabel}>{manifestLabel}</span>
-                <button onClick={clearManifest} className="text-[11px] text-gray-400 hover:text-red-500">Remove</button>
+              <div className="flex items-center gap-2 rounded-lg border border-line px-3 py-2">
+                <FileText size={14} className="text-muted flex-shrink-0" />
+                <span className="text-[12px] text-ink-2 truncate flex-1" title={manifestLabel}>{manifestLabel}</span>
+                <button onClick={clearManifest} className="text-[11px] text-muted hover:text-danger-ink">Remove</button>
               </div>
             ) : (
               <button onClick={pickManifest}
-                className="flex items-center gap-1.5 text-[12px] text-gray-600 border border-dashed border-gray-300 hover:border-indigo-400 hover:text-indigo-600 px-3 h-9 rounded-lg transition-colors">
+                className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
                 <Plus size={13} /> Add manifest (PDF / CSV)
               </button>
             )}
@@ -627,8 +627,8 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
 
         </div>
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="px-4 h-9 text-[13px] text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50">Cancel</button>
-          <button onClick={submit} disabled={saving || !name.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+          <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
+          <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
             {saving ? "Saving..." : initial ? "Save" : "Create Lot"}
           </button>
         </div>
@@ -679,75 +679,75 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
 
   const Row = ({ label, value }: { label: string; value: string }) => (
     <div>
-      <p className="text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-0.5">{label}</p>
-      <p className="text-[13px] text-gray-800 break-words">{value}</p>
+      <p className="text-[10px] font-medium text-muted uppercase tracking-widest mb-0.5">{label}</p>
+      <p className="text-[13px] text-ink break-words">{value}</p>
     </div>
   );
 
   return (
     <>
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-black/30 backdrop-blur-[3px] overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-[560px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[560px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-start justify-between p-5 border-b border-gray-100">
+        <div className="flex items-start justify-between p-5 border-b border-line">
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase ${statusColor(lot.status)}`}>{lot.status}</span>
-              {lot.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 font-semibold uppercase">{lot.category}</span>}
+              {lot.category && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-semibold uppercase">{lot.category}</span>}
             </div>
-            <h3 className="text-[17px] font-semibold text-gray-900 leading-tight">{lot.name}</h3>
+            <h3 className="text-[17px] font-semibold text-ink leading-tight">{lot.name}</h3>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 flex-shrink-0"><X size={18} /></button>
+          <button onClick={onClose} className="text-muted hover:text-ink-2 flex-shrink-0"><X size={18} /></button>
         </div>
 
         <div className="p-5 space-y-5">
           {/* Photos */}
           {photos.length > 0 ? (
             <div>
-              <div className="w-full h-64 bg-gray-50 rounded-xl overflow-hidden flex items-center justify-center cursor-zoom-in" onClick={() => setZoom(true)}>
+              <div className="w-full h-64 bg-surface-2 rounded-xl overflow-hidden flex items-center justify-center cursor-zoom-in" onClick={() => setZoom(true)}>
                 <img src={convertFileSrc(resolvePhoto(photos[big], mediaBase))} alt="" className="w-full h-full object-contain" onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.2"; }} />
               </div>
               {photos.length > 1 && (
                 <div className="flex gap-2 mt-2 flex-wrap">
                   {photos.map((p, i) => (
                     <img key={i} src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" onClick={() => setBig(i)}
-                      className={`w-14 h-14 object-cover rounded-lg border cursor-pointer transition-colors ${i === big ? "border-indigo-400 ring-2 ring-indigo-200" : "border-gray-200 hover:border-gray-300"}`} />
+                      className={`w-14 h-14 object-cover rounded-lg border cursor-pointer transition-colors ${i === big ? "border-accent ring-2 ring-accent/20" : "border-line hover:border-line-3"}`} />
                   ))}
                 </div>
               )}
             </div>
           ) : (
-            <div className="w-full h-40 bg-gray-50 rounded-xl flex items-center justify-center"><Image size={28} className="text-gray-300" /></div>
+            <div className="w-full h-40 bg-surface-2 rounded-xl flex items-center justify-center"><Image size={28} className="text-faint" /></div>
           )}
 
           {/* Sent indicators */}
           <div className="flex items-center gap-2">
-            <button onClick={() => onToggleSent("whatsapp")} className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_whatsapp ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"}`}>
+            <button onClick={() => onToggleSent("whatsapp")} className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_whatsapp ? "bg-success-bg text-success-ink border-success" : "bg-danger-bg text-danger-ink border-danger hover:bg-danger-bg"}`}>
               <MessageCircle size={12} /> {lot.sent_whatsapp ? "WhatsApp sent" : "Needs WhatsApp"}
             </button>
-            <button onClick={() => onToggleSent("email")} className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_email ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"}`}>
+            <button onClick={() => onToggleSent("email")} className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_email ? "bg-info-bg text-info-ink border-info" : "bg-danger-bg text-danger-ink border-danger hover:bg-danger-bg"}`}>
               <Mail size={12} /> {lot.sent_email ? "Emailed" : "Needs email"}
             </button>
           </div>
 
           {/* Financials */}
           <div className="grid grid-cols-4 gap-3">
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost/unit</p><p className="text-[14px] font-bold text-gray-900 tabular-nums">{fmtAmount(uCost)}</p></div>
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask/unit</p><p className="text-[14px] font-bold text-gray-900 tabular-nums">{fmtAmount(uAsk)}</p></div>
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-emerald-600" : "text-red-500"}`}>{marginStr}</p></div>
-            <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Profit Total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-emerald-600" : "text-red-500"}`}>{fmtAmount(profit)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uCost)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uAsk)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{marginStr}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Profit Total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(profit)}</p></div>
           </div>
           {lot.price_type === "total" && lot.quantity > 1 && (
             <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalAskAll)}</p></div>
-              <div className={inp + " text-[11px] text-gray-400 bg-gray-50 flex items-center justify-center rounded-lg"}>×{lot.quantity} units</div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className={inp + " text-[11px] text-muted bg-surface-2 flex items-center justify-center rounded-lg"}>×{lot.quantity} units</div>
             </div>
           )}
           {lot.price_type === "per_unit" && (
             <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Cost Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-gray-50 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-gray-400 font-semibold">Ask Total</p><p className="text-[13px] font-bold text-gray-900 tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
             </div>
           )}
 
@@ -760,51 +760,51 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           </div>
           {lot.description && (
             <div>
-              <p className="text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-0.5">Description</p>
-              <p className="text-[13px] text-gray-700 whitespace-pre-wrap">{lot.description}</p>
+              <p className="text-[10px] font-medium text-muted uppercase tracking-widest mb-0.5">Description</p>
+              <p className="text-[13px] text-ink-2 whitespace-pre-wrap">{lot.description}</p>
             </div>
           )}
 
           {/* Manifest */}
           <div>
-            <p className="text-[10px] font-medium text-gray-400 uppercase tracking-widest mb-1.5">Manifest</p>
+            <p className="text-[10px] font-medium text-muted uppercase tracking-widest mb-1.5">Manifest</p>
             {lot.manifest_path ? (
-              <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
-                <FileText size={15} className="text-gray-400 flex-shrink-0" />
-                <span className="text-[13px] text-gray-700 truncate flex-1" title={manifestName}>{manifestName}</span>
-                <button onClick={addManifest} disabled={mBusy} className="text-[11px] text-gray-500 hover:text-gray-800 px-2 py-1 rounded hover:bg-gray-100">Replace</button>
-                <button onClick={removeManifest} disabled={mBusy} className="text-[11px] text-gray-400 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50">Remove</button>
+              <div className="flex items-center gap-2 rounded-lg border border-line px-3 py-2">
+                <FileText size={15} className="text-muted flex-shrink-0" />
+                <span className="text-[13px] text-ink-2 truncate flex-1" title={manifestName}>{manifestName}</span>
+                <button onClick={addManifest} disabled={mBusy} className="text-[11px] text-muted hover:text-ink px-2 py-1 rounded hover:bg-surface-3">Replace</button>
+                <button onClick={removeManifest} disabled={mBusy} className="text-[11px] text-muted hover:text-danger-ink px-2 py-1 rounded hover:bg-danger-bg">Remove</button>
               </div>
             ) : (
               <button onClick={addManifest} disabled={mBusy}
-                className="flex items-center gap-1.5 text-[12px] text-gray-600 border border-dashed border-gray-300 hover:border-indigo-400 hover:text-indigo-600 px-3 h-9 rounded-lg transition-colors disabled:opacity-50">
+                className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors disabled:opacity-50">
                 {mBusy ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={13} />} Add manifest (PDF / CSV)
               </button>
             )}
           </div>
 
-          <div className="flex items-center gap-4 text-[11px] text-gray-400">
+          <div className="flex items-center gap-4 text-[11px] text-muted">
             <span>Added {lot.created_at.slice(0, 10)}</span>
             <span>Updated {lot.updated_at.slice(0, 10)}</span>
           </div>
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 flex-wrap p-5 border-t border-gray-100">
-          <button onClick={onEdit} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
+        <div className="flex items-center gap-2 flex-wrap p-5 border-t border-line">
+          <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
           {lot.status !== "sold" && lot.status !== "archived" && (
-            <button onClick={onLink} className="flex items-center gap-1 border border-gray-200 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50"><Link2 size={13} /> Link to Deal</button>
+            <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to Deal</button>
           )}
           {lot.status !== "sold" && (
-            <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-emerald-200 text-emerald-700 px-3 h-9 rounded-lg text-[12px] hover:bg-emerald-50"><DollarSign size={13} /> Mark Sold</button>
+            <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><DollarSign size={13} /> Mark Sold</button>
           )}
           {lot.status !== "archived" && (
-            <button onClick={() => onStatus("archived")} className="flex items-center gap-1 border border-red-200 text-red-600 px-3 h-9 rounded-lg text-[12px] hover:bg-red-50"><Ban size={13} /> Not Available</button>
+            <button onClick={() => onStatus("archived")} className="flex items-center gap-1 border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg"><Ban size={13} /> Not Available</button>
           )}
           {(lot.status === "sold" || lot.status === "archived") && (
-            <button onClick={() => onStatus("available")} className="border border-gray-200 text-gray-600 px-3 h-9 rounded-lg text-[12px] hover:bg-gray-50">Restore</button>
+            <button onClick={() => onStatus("available")} className="border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2">Restore</button>
           )}
-          <button onClick={onDelete} className="flex items-center gap-1 border border-red-200 text-red-600 px-3 h-9 rounded-lg text-[12px] hover:bg-red-50 ml-auto"><Trash2 size={13} /> Delete</button>
+          <button onClick={onDelete} className="flex items-center gap-1 border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg ml-auto"><Trash2 size={13} /> Delete</button>
         </div>
       </div>
     </div>

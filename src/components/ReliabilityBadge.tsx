@@ -19,17 +19,17 @@ export default function ReliabilityBadge({
   if (reliability === "unrated") {
     if (quotesSent === 0 || compact) return null;
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-400" title={`${quotesSent} quote(s) sent — need 3 to rate reliability`}>
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted" title={`${quotesSent} quote(s) sent — need 3 to rate reliability`}>
         <MinusCircle size={11} /> Unrated
       </span>
     );
   }
 
   const cfg = {
-    reliable: { cls: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: CheckCircle2, label: compact ? "Reliable" : "Reliable buyer" },
-    mixed:    { cls: "bg-amber-50 text-amber-700 border-amber-200",       icon: AlertTriangle, label: compact ? "Mixed" : "Mixed" },
-    low:      { cls: "bg-red-100 text-red-700 border-red-300",            icon: AlertTriangle, label: compact ? "Low intent" : "Not a serious buyer" },
-  }[reliability] ?? { cls: "bg-gray-50 text-gray-500 border-gray-200", icon: MinusCircle, label: reliability };
+    reliable: { cls: "bg-success-bg text-success-ink border-success", icon: CheckCircle2, label: compact ? "Reliable" : "Reliable buyer" },
+    mixed:    { cls: "bg-warning-bg text-warning-ink border-warning",       icon: AlertTriangle, label: compact ? "Mixed" : "Mixed" },
+    low:      { cls: "bg-danger-bg text-danger-ink border-danger",            icon: AlertTriangle, label: compact ? "Low intent" : "Not a serious buyer" },
+  }[reliability] ?? { cls: "bg-surface-2 text-muted border-line", icon: MinusCircle, label: reliability };
 
   const Icon = cfg.icon;
   const pad = size === "md" ? "px-2.5 py-1 text-[11px]" : "px-2 py-0.5 text-[10px]";
