@@ -201,7 +201,7 @@ export default function SettingsView() {
 
 function AppearanceTab() {
   const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
-  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "indigo");
+  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "blue");
 
   const setAccent = (a: string) => {
     setAccentState(a);
@@ -214,10 +214,13 @@ function AppearanceTab() {
   };
 
   const ACCENTS = [
-    { id: "indigo", label: "Indigo", swatch: "#4F46E5" },
-    { id: "red",    label: "Red",    swatch: "#DC2626" },
-    { id: "green",  label: "Green",  swatch: "#059669" },
-    { id: "black",  label: "Matte Black", swatch: "#27272A" },
+    { id: "blue",    label: "Blue",     swatch: "#2563EB" },
+    { id: "emerald", label: "Emerald",  swatch: "#059669" },
+    { id: "teal",    label: "Teal",     swatch: "#0D9488" },
+    { id: "violet",  label: "Violet",   swatch: "#7C3AED" },
+    { id: "amber",   label: "Amber",    swatch: "#D97706" },
+    { id: "rose",    label: "Rose",     swatch: "#E11D48" },
+    { id: "slate",   label: "Graphite", swatch: "#334155" },
   ];
 
   return (
@@ -1328,7 +1331,7 @@ function GoogleContactsSection() {
               <div className="flex items-center gap-3 mb-3">
                 <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)}
                   className="border border-line h-9 px-3 rounded-lg text-[13px] w-[200px] focus:outline-none focus:ring-2 focus:ring-accent/40" />
-                <button onClick={toggleAll} className="text-[12px] text-accent hover:text-indigo-800">
+                <button onClick={toggleAll} className="text-[12px] text-accent hover:text-accent-hover">
                   {selected.size === filtered.length ? "Deselect All" : "Select All"}
                 </button>
                 <div className="flex-1" />
@@ -2347,7 +2350,7 @@ function BackupTab() {
             <p className="text-[11px] font-semibold text-muted uppercase tracking-widest">Backup location</p>
             <p className="text-[12px] text-ink-2 font-mono mt-0.5">{status?.backup_dir || "—"}</p>
           </div>
-          <button onClick={handleDirChange} className="text-[11px] text-accent hover:text-indigo-800">Change</button>
+          <button onClick={handleDirChange} className="text-[11px] text-accent hover:text-accent-hover">Change</button>
         </div>
         <div>
           <p className="text-[11px] font-semibold text-muted uppercase tracking-widest">Last backup</p>

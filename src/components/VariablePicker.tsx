@@ -34,7 +34,7 @@ export default function VariablePicker({ onSelect }: VariablePickerProps) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="text-accent hover:text-indigo-800 font-medium bg-accent/10 px-2 py-0.5 rounded text-[12px]"
+        className="text-accent hover:text-accent-hover font-medium bg-accent/10 px-2 py-0.5 rounded text-[12px]"
       >
         Variables ▾
       </button>

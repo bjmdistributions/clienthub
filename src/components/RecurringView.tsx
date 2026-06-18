@@ -189,7 +189,7 @@ export default function RecurringView() {
                     </div>
                   ))}
                   <button onClick={() => setItems([...items, { description: "", qty: 1, rate: 0, amount: 0 }])}
-                    className="text-[11px] text-accent hover:text-indigo-800 font-medium">
+                    className="text-[11px] text-accent hover:text-accent-hover font-medium">
                     + Add line item
                   </button>
                 </div>

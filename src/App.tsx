@@ -114,11 +114,15 @@ export default function App() {
   }, [dark]);
 
   // Accent color
-  const [accent, setAccent] = useState(() => localStorage.getItem("clienthub_accent") || "indigo");
+  const [accent, setAccent] = useState(() => {
+    const saved = localStorage.getItem("clienthub_accent");
+    // Migrate retired accent ids to the new default.
+    return saved && !["indigo", "red", "green", "black"].includes(saved) ? saved : "blue";
+  });
   useEffect(() => {
     const html = document.documentElement;
     html.classList.add("theme-transitioning");
-    if (accent === "indigo") html.removeAttribute("data-accent");
+    if (accent === "blue") html.removeAttribute("data-accent");
     else html.setAttribute("data-accent", accent);
     localStorage.setItem("clienthub_accent", accent);
     const t = setTimeout(() => html.classList.remove("theme-transitioning"), 300);

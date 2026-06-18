@@ -481,7 +481,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
               <div className="flex items-center gap-2">
                 <span className="text-[13px] text-ink font-medium">{clients.find((c) => c.id === clientId)?.name ?? "Unknown"}</span>
                 <button type="button" onClick={() => { setShowClientPicker(true); setClientSearch(""); }}
-                  className="text-[11px] text-accent hover:text-indigo-800 underline">Change</button>
+                  className="text-[11px] text-accent hover:text-accent-hover underline">Change</button>
               </div>
             ) : (
               <>
@@ -583,7 +583,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
         ))}
         <div className="flex items-center gap-3 mt-2">
           <button onClick={() => setItems([...items, { description: "", qty: 1, rate: 0, amount: 0 }])}
-            className="text-[12px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1 transition-colors">
+            className="text-[12px] font-medium text-accent hover:text-accent-hover flex items-center gap-1 transition-colors">
             <Plus size={13} /> Add line
           </button>
           {templates.length > 0 && (
@@ -862,7 +862,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     </div>
                   ))}
                   <button onClick={() => setCosts([...costs, { description: "", amount: 0 }])}
-                    className="text-[11px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1 transition-colors">
+                    className="text-[11px] font-medium text-accent hover:text-accent-hover flex items-center gap-1 transition-colors">
                     <Plus size={11} /> Add cost item
                   </button>
                   <div className="border-t border-line pt-2 space-y-1 text-[12px]">

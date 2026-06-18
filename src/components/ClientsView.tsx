@@ -308,7 +308,7 @@ export default function ClientsView() {
                       if (row.needs_review) patch.needs_review = true;
                       updateFilter(patch);
                     }}
-                    className="text-[12px] font-medium text-accent hover:text-indigo-800 px-2 py-1 rounded-lg hover:bg-accent/10 transition-colors"
+                    className="text-[12px] font-medium text-accent hover:text-accent-hover px-2 py-1 rounded-lg hover:bg-accent/10 transition-colors"
                   >
                     View
                   </button>

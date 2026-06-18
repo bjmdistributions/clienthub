@@ -366,7 +366,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
                 </div>
               ))}
             </div>
-            <button onClick={() => setItems([...items, blankItem()])} className="mt-2 text-[12px] text-accent hover:text-indigo-800 flex items-center gap-1"><Plus size={12} /> Add item</button>
+            <button onClick={() => setItems([...items, blankItem()])} className="mt-2 text-[12px] text-accent hover:text-accent-hover flex items-center gap-1"><Plus size={12} /> Add item</button>
           </div>
 
           <div className="grid grid-cols-2 gap-3 items-end">

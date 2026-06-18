@@ -879,7 +879,7 @@ function NewsletterTab() {
           <div className="flex items-center justify-between">
             <span>{selected.length} selected{noEmailCount > 0 && <span className="text-danger-ink"> ({noEmailCount} skipped)</span>}</span>
             <div className="flex items-center gap-2">
-              <button onClick={addAllWithEmail} className="text-accent hover:text-indigo-800">All w/ email</button>
+              <button onClick={addAllWithEmail} className="text-accent hover:text-accent-hover">All w/ email</button>
               {selected.length > 0 && <button onClick={() => setSelected([])} className="text-muted hover:text-danger-ink">Clear</button>}
             </div>
           </div>

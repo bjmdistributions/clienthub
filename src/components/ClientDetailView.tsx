@@ -161,7 +161,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 <div className="flex items-center gap-1.5">
                   <a
                     href={`mailto:${client.email}`}
-                    className="flex items-center gap-1.5 text-[13px] text-accent hover:text-indigo-800"
+                    className="flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"
                   >
                     <Mail size={14} /> {client.email}
                   </a>
@@ -316,7 +316,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
           {/* AI Summary */}
           <div className="bg-accent/10 border border-accent/20 rounded-lg p-4 mb-4">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-[14px] font-semibold text-indigo-900 flex items-center gap-2">
+              <h3 className="text-[14px] font-semibold text-accent-hover flex items-center gap-2">
                 <Sparkles size={14} /> AI Summary
               </h3>
               <button
@@ -347,7 +347,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 </h3>
                 <button
                   onClick={() => setShowNoteForm(true)}
-                  className="text-[12px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1"
+                  className="text-[12px] font-medium text-accent hover:text-accent-hover flex items-center gap-1"
                 >
                   <Plus size={12} /> Add Note
                 </button>

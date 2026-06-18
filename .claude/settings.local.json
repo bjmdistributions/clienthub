@@ -21,7 +21,8 @@
       "Bash(git commit -q -m 'Design: matte de-indigo pass on Analytics + Dashboard, fix tier badge fitment *)",
       "Bash(sed -i -E -f .acc.sed src/index.css)",
       "Bash(rm -f .acc.sed)",
-      "Bash(git commit -q -m 'Brand: replace indigo accent with emerald across the entire platform *)"
+      "Bash(git commit -q -m 'Brand: replace indigo accent with emerald across the entire platform *)",
+      "Bash(git commit *)"
     ]
   }
 }

@@ -6,22 +6,21 @@
 
 /* ── Light theme tokens ───────────────────────────────────── */
 :root {
-  --color-primary:        #059669;
-  --color-primary-hover:  #047857;
-  --color-primary-light:  #ECFDF5;
-  --color-primary-glow:   rgba(16,185,129,0.18);
+  --color-primary:        #2563EB;
+  --color-primary-hover:  #1D4ED8;
+  --color-primary-light:  #EFF6FF;
+  --color-primary-glow:   rgba(37,99,235,0.18);
 
-  /* Accent palette (switched by html[data-accent]) — default: indigo.
-     Used by inline styles, gradients, charts and CSS effects so the
-     accent applies across the WHOLE program, not just utility classes. */
-  --accent-50:   #ECFDF5;
-  --accent-100:  #D1FAE5;
-  --accent-400:  #34D399;
-  --accent-500:  #10B981;
-  --accent-600:  #059669;
-  --accent-700:  #047857;
-  --accent-glow: rgba(16,185,129,0.4);
-  --accent-tint: rgba(16,185,129,0.16);
+  /* Accent palette — default: blue. Switched live by html[data-accent]
+     (Settings → Appearance). Drives inline styles, gradients & effects. */
+  --accent-50:   #EFF6FF;
+  --accent-100:  #DBEAFE;
+  --accent-400:  #60A5FA;
+  --accent-500:  #3B82F6;
+  --accent-600:  #2563EB;
+  --accent-700:  #1D4ED8;
+  --accent-glow: rgba(37,99,235,0.4);
+  --accent-tint: rgba(37,99,235,0.16);
 
   --color-success:        #059669;
   --color-success-bg:     #ECFDF5;
@@ -48,7 +47,7 @@
   --shadow-card:  0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
   --shadow-panel: 0 4px 24px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
   --shadow-modal: 0 32px 80px rgba(0,0,0,0.18), 0 8px 32px rgba(0,0,0,0.10);
-  --shadow-indigo: 0 4px 20px rgba(5,150,105,0.22), 0 1px 4px rgba(5,150,105,0.12);
+  --shadow-indigo: 0 4px 20px rgba(37,99,235,0.22), 0 1px 4px rgba(37,99,235,0.12);
 
   --radius-sm:   6px;
   --radius-md:   8px;
@@ -86,8 +85,8 @@
   --c-line:         235 235 239;
   --c-line-2:       244 244 248;
   --c-line-3:       229 231 235;
-  --c-accent: 5 150 105;
-  --c-accent-hover: 4 120 87;
+  --c-accent: 37 99 235;
+  --c-accent-hover: 29 78 216;
   --c-success:        5 150 105;
   --c-success-bg:   236 253 245;
   --c-success-ink:    6 95 70;
@@ -143,8 +142,8 @@ html.dark {
   --c-line:          41 41 46;
   --c-line-2:        30 30 34;
   --c-line-3:        56 56 63;
-  --c-accent: 16 185 129;
-  --c-accent-hover: 52 211 153;
+  --c-accent: 96 165 250;
+  --c-accent-hover: 147 197 253;
   --c-success:       52 211 153;
   --c-success-bg:    19 48 31;
   --c-success-ink:  110 231 183;
@@ -186,8 +185,8 @@ body {
 /* ── Scrollbar ────────────────────────────────────────────── */
 ::-webkit-scrollbar        { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track  { background: transparent; }
-::-webkit-scrollbar-thumb  { background: linear-gradient(180deg, #6EE7B7, #10B981); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, #34D399, #059669); }
+::-webkit-scrollbar-thumb  { background: linear-gradient(180deg, var(--accent-400), var(--accent-600)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, var(--accent-500), var(--accent-700)); }
 
 ::selection { background: var(--accent-100); color: var(--accent-700); }
 html.dark ::selection { background: var(--accent-glow); color: var(--accent-100); }
@@ -379,48 +378,47 @@ button:not(:disabled):active { opacity: 0.78; transition: opacity 60ms; }
    and muted to sit well on the matte-black dark theme.
    ════════════════════════════════════════════════════════════ */
 
-/* ── RED (deep crimson) ──────────────────────────────────── */
-html[data-accent="red"] {
-  --color-primary: #B91C1C; --color-primary-hover: #991B1B;
-  --color-primary-light: #FEF2F2; --color-primary-glow: rgba(220,38,38,0.18);
-  --shadow-indigo: 0 4px 20px rgba(185,28,28,0.22), 0 1px 4px rgba(185,28,28,0.12);
-  --accent-50: #FEF2F2; --accent-100: #FEE2E2; --accent-400: #F87171;
-  --accent-500: #DC2626; --accent-600: #B91C1C; --accent-700: #991B1B;
-  --accent-glow: rgba(220,38,38,0.38); --accent-tint: rgba(220,38,38,0.16);
-}
+/* ── Accent options (Settings → Appearance) ──────────────────
+   Each sets the new --c-accent token (drives the whole utility-class
+   UI) AND the legacy --accent-* / --color-primary used by inline
+   styles. Default = blue (in :root). Dark variants brighten for the
+   matte-black theme. Semantic + data-viz colours never change. */
 
-/* ── GREEN (deep emerald) ────────────────────────────────── */
-html[data-accent="green"] {
-  --color-primary: #047857; --color-primary-hover: #065F46;
-  --color-primary-light: #ECFDF5; --color-primary-glow: rgba(5,150,105,0.18);
-  --shadow-indigo: 0 4px 20px rgba(4,120,87,0.22), 0 1px 4px rgba(4,120,87,0.12);
-  --accent-50: #ECFDF5; --accent-100: #D1FAE5; --accent-400: #34D399;
-  --accent-500: #059669; --accent-600: #047857; --accent-700: #065F46;
-  --accent-glow: rgba(5,150,105,0.38); --accent-tint: rgba(5,150,105,0.16);
-}
+html[data-accent="emerald"] { --c-accent:5 150 105; --c-accent-hover:4 120 87;
+  --color-primary:#059669; --color-primary-hover:#047857; --color-primary-light:#ECFDF5; --color-primary-glow:rgba(5,150,105,.18);
+  --accent-50:#ECFDF5; --accent-100:#D1FAE5; --accent-400:#34D399; --accent-500:#10B981; --accent-600:#059669; --accent-700:#047857;
+  --accent-glow:rgba(5,150,105,.38); --accent-tint:rgba(5,150,105,.16); --shadow-indigo:0 4px 20px rgba(5,150,105,.22),0 1px 4px rgba(5,150,105,.12); }
+html.dark[data-accent="emerald"] { --c-accent:16 185 129; --c-accent-hover:52 211 153; }
 
-/* ── MATTE BLACK (zinc) ──────────────────────────────────── */
-html[data-accent="black"] {
-  --color-primary: #3F3F46; --color-primary-hover: #52525B;
-  --color-primary-light: #F4F4F5; --color-primary-glow: rgba(82,82,91,0.18);
-  --shadow-indigo: 0 4px 20px rgba(0,0,0,0.3), 0 1px 4px rgba(0,0,0,0.18);
-  --accent-50: #F4F4F5; --accent-100: #E4E4E7; --accent-400: #A1A1AA;
-  --accent-500: #71717A; --accent-600: #52525B; --accent-700: #3F3F46;
-  --accent-glow: rgba(113,113,122,0.4); --accent-tint: rgba(113,113,122,0.22);
-}
+html[data-accent="violet"] { --c-accent:124 58 237; --c-accent-hover:109 40 217;
+  --color-primary:#7C3AED; --color-primary-hover:#6D28D9; --color-primary-light:#F5F3FF; --color-primary-glow:rgba(124,58,237,.18);
+  --accent-50:#F5F3FF; --accent-100:#EDE9FE; --accent-400:#A78BFA; --accent-500:#8B5CF6; --accent-600:#7C3AED; --accent-700:#6D28D9;
+  --accent-glow:rgba(124,58,237,.38); --accent-tint:rgba(124,58,237,.16); --shadow-indigo:0 4px 20px rgba(124,58,237,.22),0 1px 4px rgba(124,58,237,.12); }
+html.dark[data-accent="violet"] { --c-accent:167 139 250; --c-accent-hover:196 181 253; }
 
-/* ── Accent-driven chrome only (sidebar nav, scrollbar, focus).
-      The default indigo versions live in the base rules above; we
-      just swap the gradient/outline colour per accent here.       */
-html[data-accent="red"]   .nav-indicator { background: linear-gradient(180deg, #F87171, #B91C1C); box-shadow: 0 0 8px rgba(220,38,38,0.55); }
-html[data-accent="green"] .nav-indicator { background: linear-gradient(180deg, #34D399, #047857); box-shadow: 0 0 8px rgba(5,150,105,0.55); }
-html[data-accent="black"] .nav-indicator { background: linear-gradient(180deg, #A1A1AA, #3F3F46); box-shadow: 0 0 8px rgba(0,0,0,0.5); }
-html[data-accent="red"]   :focus-visible { outline-color: #B91C1C; }
-html[data-accent="green"] :focus-visible { outline-color: #047857; }
-html[data-accent="black"] :focus-visible { outline-color: #52525B; }
-html[data-accent="red"]   ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #FCA5A5, #B91C1C); }
-html[data-accent="green"] ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #6EE7B7, #047857); }
-html[data-accent="black"] ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #A1A1AA, #3F3F46); }
+html[data-accent="teal"] { --c-accent:13 148 136; --c-accent-hover:15 118 110;
+  --color-primary:#0D9488; --color-primary-hover:#0F766E; --color-primary-light:#ECFDFB; --color-primary-glow:rgba(13,148,136,.18);
+  --accent-50:#ECFDFB; --accent-100:#CCFBF1; --accent-400:#2DD4BF; --accent-500:#14B8A6; --accent-600:#0D9488; --accent-700:#0F766E;
+  --accent-glow:rgba(13,148,136,.38); --accent-tint:rgba(13,148,136,.16); --shadow-indigo:0 4px 20px rgba(13,148,136,.22),0 1px 4px rgba(13,148,136,.12); }
+html.dark[data-accent="teal"] { --c-accent:45 212 191; --c-accent-hover:94 234 212; }
+
+html[data-accent="amber"] { --c-accent:217 119 6; --c-accent-hover:180 83 9;
+  --color-primary:#D97706; --color-primary-hover:#B45309; --color-primary-light:#FFFBEB; --color-primary-glow:rgba(217,119,6,.18);
+  --accent-50:#FFFBEB; --accent-100:#FEF3C7; --accent-400:#FBBF24; --accent-500:#F59E0B; --accent-600:#D97706; --accent-700:#B45309;
+  --accent-glow:rgba(217,119,6,.38); --accent-tint:rgba(217,119,6,.16); --shadow-indigo:0 4px 20px rgba(217,119,6,.22),0 1px 4px rgba(217,119,6,.12); }
+html.dark[data-accent="amber"] { --c-accent:251 191 36; --c-accent-hover:252 211 77; }
+
+html[data-accent="rose"] { --c-accent:225 29 72; --c-accent-hover:190 18 60;
+  --color-primary:#E11D48; --color-primary-hover:#BE123C; --color-primary-light:#FFF1F2; --color-primary-glow:rgba(225,29,72,.18);
+  --accent-50:#FFF1F2; --accent-100:#FFE4E6; --accent-400:#FB7185; --accent-500:#F43F5E; --accent-600:#E11D48; --accent-700:#BE123C;
+  --accent-glow:rgba(225,29,72,.38); --accent-tint:rgba(225,29,72,.16); --shadow-indigo:0 4px 20px rgba(225,29,72,.22),0 1px 4px rgba(225,29,72,.12); }
+html.dark[data-accent="rose"] { --c-accent:251 113 133; --c-accent-hover:253 164 175; }
+
+html[data-accent="slate"] { --c-accent:51 65 85; --c-accent-hover:30 41 59;
+  --color-primary:#334155; --color-primary-hover:#1E293B; --color-primary-light:#F1F5F9; --color-primary-glow:rgba(51,65,85,.18);
+  --accent-50:#F1F5F9; --accent-100:#E2E8F0; --accent-400:#94A3B8; --accent-500:#64748B; --accent-600:#334155; --accent-700:#1E293B;
+  --accent-glow:rgba(51,65,85,.38); --accent-tint:rgba(51,65,85,.16); --shadow-indigo:0 4px 20px rgba(51,65,85,.22),0 1px 4px rgba(51,65,85,.12); }
+html.dark[data-accent="slate"] { --c-accent:203 213 225; --c-accent-hover:226 232 240; }
 
 /* ── Accent-aware active state (Settings nav rail, theme toggle).
       These are app chrome, so they follow the accent. The icon/text

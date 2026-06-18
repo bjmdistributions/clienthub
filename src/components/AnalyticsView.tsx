@@ -17,7 +17,7 @@ const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
 
 // Refined, muted tier swatches — premium metallics, not neon.
 const TIER_CLR: Record<string, string> = {
-  S:        "#6366F1",   // Diamond — brand
+  S:        "#2563EB",   // Diamond — brand
   A:        "#C9A227",   // Gold (muted)
   B:        "#A6AEBC",   // Silver
   C:        "#B17F4A",   // Bronze (muted)

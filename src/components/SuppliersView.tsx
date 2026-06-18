@@ -144,7 +144,7 @@ export default function SuppliersView() {
           </div>
           <p className="text-[14px] font-semibold text-ink-2">No suppliers yet</p>
           <p className="text-[12px] text-muted mt-1">Add your first supplier to get started</p>
-          <button onClick={createNew} className="mt-3 text-[12px] font-medium text-accent hover:text-indigo-800">
+          <button onClick={createNew} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
             + Add supplier
           </button>
         </div>

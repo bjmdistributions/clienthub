@@ -395,7 +395,7 @@ function DealDetailPanel({
                 </div>
               ))}
               <button onClick={() => onChange({ ...input, line_items: [...input.line_items, { description: "", qty: 1, rate: 0, amount: 0 }] })}
-                className="text-[12px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1">
+                className="text-[12px] font-medium text-accent hover:text-accent-hover flex items-center gap-1">
                 <Plus size={12} /> Add line item
               </button>
             </div>
@@ -431,7 +431,7 @@ function DealDetailPanel({
                 </div>
               ))}
               <button onClick={() => onChange({ ...input, supplier_costs: [...input.supplier_costs, { description: "", amount: 0, supplier_name: "" }] })}
-                className="text-[12px] font-medium text-accent hover:text-indigo-800 flex items-center gap-1">
+                className="text-[12px] font-medium text-accent hover:text-accent-hover flex items-center gap-1">
                 <Plus size={12} /> Add supplier cost
               </button>
             </div>
