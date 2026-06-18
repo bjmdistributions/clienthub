@@ -18,7 +18,10 @@
       "Bash(rm -f .mig.sed)",
       "Bash(npm run *)",
       "Bash(xargs -I{} sed -n '{},+4p' src/components/TiersView.tsx)",
-      "Bash(git commit -q -m 'Design: matte de-indigo pass on Analytics + Dashboard, fix tier badge fitment *)"
+      "Bash(git commit -q -m 'Design: matte de-indigo pass on Analytics + Dashboard, fix tier badge fitment *)",
+      "Bash(sed -i -E -f .acc.sed src/index.css)",
+      "Bash(rm -f .acc.sed)",
+      "Bash(git commit -q -m 'Brand: replace indigo accent with emerald across the entire platform *)"
     ]
   }
 }
