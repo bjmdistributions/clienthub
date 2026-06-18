@@ -37,6 +37,8 @@ pub struct Client {
     pub country: Option<String>,
     pub next_follow_up_date: Option<String>,
     pub needs_review: bool,
+    pub is_blacklisted: bool,
+    pub approval_status: String,
 }
 
 fn extract_meta_str(meta: &Option<Value>, key: &str) -> Option<String> {
@@ -69,7 +71,9 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
                     MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                    COALESCE(c.is_blacklisted,0),
+                    COALESCE(c.approval_status,'active')
              FROM clients c
              LEFT JOIN interactions i ON i.client_id = c.id
              GROUP BY c.id
@@ -97,6 +101,8 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                 total_revenue: r.get(13)?,
                 category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
+                is_blacklisted: false,
+                approval_status: "active".into(),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -110,7 +116,9 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
                 MAX(i.created_at),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0),
+                COALESCE(c.is_blacklisted,0),
+                COALESCE(c.approval_status,'active')
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          WHERE c.id=?1
@@ -136,6 +144,8 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 total_revenue: r.get(13)?,
                 category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
+                is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
+                approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
             })
         },
     );
@@ -209,6 +219,8 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
         state: input.state, zip_code: input.zip_code, country: input.country,
         next_follow_up_date: input.next_follow_up_date,
         needs_review: input.needs_review.unwrap_or(false),
+        is_blacklisted: false,
+        approval_status: "active".into(),
     })
 }
 
@@ -270,6 +282,70 @@ pub async fn update_client_status(id: String, status: String) -> Result<(), Stri
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("UPDATE clients SET lead_status=?1 WHERE id=?2", rusqlite::params![status, id]).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_client_blacklist(id: String) -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE clients SET is_blacklisted = CASE WHEN is_blacklisted THEN 0 ELSE 1 END WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    let val: i64 = conn.query_row("SELECT is_blacklisted FROM clients WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("is_blacklisted".into(), Value::Number(serde_json::Number::from(val)));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    Ok(val != 0)
+}
+
+#[tauri::command]
+pub async fn approve_client(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE clients SET approval_status='active', updated_at=?1 WHERE id=?2", rusqlite::params![Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("approval_status".into(), Value::String("active".into()));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reject_client(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE clients SET approval_status='rejected', updated_at=?1 WHERE id=?2", rusqlite::params![Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("approval_status".into(), Value::String("rejected".into()));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
+                NULL,
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                COALESCE(c.is_blacklisted,0),
+                COALESCE(c.approval_status,'active')
+         FROM clients c
+         WHERE c.approval_status = 'pending'
+         ORDER BY c.created_at ASC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
+        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        Ok(Client {
+            id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
+            company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
+            lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
+            metadata: meta,
+            invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
+            total_revenue: r.get(13)?,
+            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
+            needs_review,
+            is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
+            approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+        })
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
@@ -603,6 +679,8 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
                 total_revenue: r.get(13)?,
             category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
+            is_blacklisted: false,
+            approval_status: "active".into(),
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -684,6 +762,8 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
                 total_revenue: r.get(13)?,
             category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
+            is_blacklisted: false,
+            approval_status: "active".into(),
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -718,6 +798,8 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
                 total_revenue: r.get(12)?,
                 category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
+                is_blacklisted: false,
+                approval_status: "active".into(),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -748,7 +830,9 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
                 MAX(i.created_at),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0)
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                COALESCE(c.is_blacklisted,0),
+                COALESCE(c.approval_status,'active')
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id"
     );
@@ -829,17 +913,19 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows: Vec<Client> = stmt.query_map(param_refs.as_slice(), |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
-        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
-        Ok(Client {
-            id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
-            company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
-            lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
-            metadata: meta,
-            invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
-            total_revenue: r.get(13)?,
-            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
-            needs_review,
-        })
+            let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            Ok(Client {
+                id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
+                company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
+                lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
+                metadata: meta,
+                invoice_count: r.get(11)?, last_contact_at: r.get(12)?,
+                total_revenue: r.get(13)?,
+                category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
+                needs_review,
+                is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
+                approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+            })
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     if let Some(ref tiers) = filter.tiers {
@@ -919,9 +1005,11 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
             lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
             metadata: meta, invoice_count: r.get(11)?, last_contact_at: None,
             total_revenue: r.get(12)?,
-            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
-            needs_review,
-        })
+                category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
+                needs_review,
+                is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
+                approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+            })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -937,8 +1025,9 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
         let sql = "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                           (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
                           NULL,
-                          COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0)
-                   FROM clients c
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                COALESCE(c.is_blacklisted,0)
+         FROM clients c
                    LEFT JOIN interactions i ON i.client_id = c.id
                    WHERE i.id IS NULL";
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -953,6 +1042,8 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
                 total_revenue: r.get(12)?,
                 category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
+                is_blacklisted: false,
+                approval_status: "active".into(),
             })
         }).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
@@ -3107,11 +3198,12 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
 }
 
 #[tauri::command]
-pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>) -> Result<Value, String> {
+pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>, payout_included: Option<bool>) -> Result<Value, String> {
     let df = read_df(&id)?;
     if df.stage != "supplier_paid" && df.stage != "payment_received" { return Err("Can only complete after payment is received".into()); }
 
     let split = read_profit_split()?;
+    let include_payout = payout_included.unwrap_or(false);
 
     // Use caller-supplied date (YYYY-MM-DD) if provided; otherwise use now.
     let now = match completed_date.as_deref() {
@@ -3122,13 +3214,17 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     let total_cost = df.total_supplier_cost;
     let net = gross - total_cost;
     let is_loss = net < 0.0;
-    let jack = (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0;
-    let ben = (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0;
-    let business = (net * (split.business_pct / 100.0) * 100.0).round() / 100.0;
+    let (jack, ben, business) = if include_payout {
+        ( (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
+          (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0,
+          (net * (split.business_pct / 100.0) * 100.0).round() / 100.0 )
+    } else {
+        (0.0, 0.0, net)
+    };
 
     let shipping_status = shipping_status.unwrap_or_else(|| "none".into());
     let awaiting_shipping = shipping_status == "awaiting";
-    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status})).map_err(|e| e.to_string())?;
+    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout})).map_err(|e| e.to_string())?;
 
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("complete".into()));
@@ -6027,9 +6123,13 @@ pub struct WeeklyBrief {
 }
 
 #[tauri::command]
-pub async fn generate_weekly_brief(for_date: Option<String>) -> Result<WeeklyBrief, String> {
+pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<String>) -> Result<WeeklyBrief, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now();
+
+    // If rep_name is set, filter deal_flow queries to only include deals where the client has source_rep matching
+    let rep_join = rep_name.as_ref().map(|_| "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id").unwrap_or("");
+    let rep_filter = rep_name.as_ref().map(|r| format!(" AND json_extract(c.metadata,'$.source_rep')='{}'", r)).unwrap_or_default();
 
     // Use caller-supplied date or today to anchor the week
     let anchor: chrono::NaiveDate = match for_date.as_deref() {
@@ -6045,19 +6145,19 @@ pub async fn generate_weekly_brief(for_date: Option<String>) -> Result<WeeklyBri
     let last_week_end = format!("{}", (now_date - chrono::Duration::days(wd + 1)).format("%Y-%m-%d"));
 
     let revenue_this_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &week_end], |r| r.get(0)
     ).unwrap_or(0.0);
     let revenue_last_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_this_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &week_end], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_last_week: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let avg_margin_this_week: f64 = conn.query_row(
@@ -6069,7 +6169,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>) -> Result<WeeklyBri
 
     struct DfProfit { count: u32, net_profit: f64, jack: f64, ben: f64, business: f64, loss_count: u32, loss_total: f64 }
     let df_this_week: DfProfit = conn.query_row(
-        "SELECT COUNT(*) as count, COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), COUNT(CASE WHEN net_profit < 0 THEN 1 END), COALESCE(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COUNT(*) as count, COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), COUNT(CASE WHEN net_profit < 0 THEN 1 END), COALESCE(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &week_end],
         |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: r.get::<_,i64>(5).unwrap_or(0) as u32, loss_total: r.get(6)? })
     ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
@@ -6079,24 +6179,24 @@ pub async fn generate_weekly_brief(for_date: Option<String>) -> Result<WeeklyBri
         [&last_week_start, &week_start], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
     let df_last_week_profit: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let df_mtd: DfProfit = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        &format!("SELECT COUNT(*), COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1{rep_filter}"),
         [&month_start],
         |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: 0, loss_total: 0.0 })
     ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
 
     let df_all_jack: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(profit_jack),0) FROM deal_flows WHERE stage='complete'", [], |r| r.get(0)
+        &format!("SELECT COALESCE(SUM(profit_jack),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
     let df_all_ben: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(profit_ben),0) FROM deal_flows WHERE stage='complete'", [], |r| r.get(0)
+        &format!("SELECT COALESCE(SUM(profit_ben),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
     let df_all_biz: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(profit_business),0) FROM deal_flows WHERE stage='complete'", [], |r| r.get(0)
+        &format!("SELECT COALESCE(SUM(profit_business),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let pipeline_value: f64 = conn.query_row(
@@ -6817,10 +6917,14 @@ pub async fn send_newsletter(
 
     for cid in &client_ids {
         let sid = Uuid::new_v4().to_string();
-        let (name, email): (String, Option<String>) = conn.query_row(
-            "SELECT name, email FROM clients WHERE id=?1", [cid],
+        let client_row: Option<(String, Option<String>)> = conn.query_row(
+            "SELECT name, email FROM clients WHERE id=?1 AND (is_blacklisted IS NULL OR is_blacklisted = 0)", [cid],
             |r| Ok((r.get(0)?, r.get(1)?)),
-        ).map_err(|e| e.to_string())?;
+        ).ok();
+        let (name, email) = match client_row {
+            Some(v) => v,
+            None => { skipped += 1; continue; }
+        };
 
         let subj = crate::template::substitute_variables(&subject_template, cid, &conn);
         let body = crate::template::substitute_variables(&body_template, cid, &conn);

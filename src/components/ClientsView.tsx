@@ -78,6 +78,9 @@ export default function ClientsView() {
       sessionStorage.removeItem("clienthub.clients.filter.missing");
       updateFilter({ missing: preFilter });
     }
+
+    const savedSearch = localStorage.getItem("clienthub_clients_search");
+    if (savedSearch) setSearchText(savedSearch);
   }, []);
 
   useEffect(() => {
@@ -87,7 +90,10 @@ export default function ClientsView() {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      applyFilter({ ...filter, search: searchText.trim() || undefined });
+      const trimmed = searchText.trim();
+      applyFilter({ ...filter, search: trimmed || undefined });
+      if (trimmed) localStorage.setItem("clienthub_clients_search", trimmed);
+      else localStorage.removeItem("clienthub_clients_search");
     }, 300);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [searchText]);
@@ -580,6 +586,8 @@ export default function ClientsView() {
                     <span className="flex items-center gap-1.5">
                       {c.name}
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
+                      {c.is_blacklisted && <span className="text-[8px] font-bold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0" title="Blacklisted — excluded from newsletters">BL</span>}
+                      {c.approval_status === "pending" && <span className="text-[8px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
                       {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
                       {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}
                       {!c.street_address && <MapPin size={10} className="text-faint flex-shrink-0" />}

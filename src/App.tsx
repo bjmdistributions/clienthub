@@ -292,7 +292,7 @@ export default function App() {
           {t === "analytics"  && <AnalyticsView />}
           {t === "health"     && <TiersView />}
           {t === "automation" && <AutomationLogView />}
-          {t === "brief"      && <BriefView />}
+          {t === "brief"      && <BriefView currentUser={currentUser} />}
           {t === "email"      && <EmailView />}
           {t === "settings"   && <SettingsView />}
         </div>

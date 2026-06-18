@@ -13,7 +13,7 @@ function addWeeks(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-export default function BriefView() {
+export default function BriefView({ currentUser }: { currentUser?: any }) {
   const [brief,   setBrief]   = useState<WeeklyBrief | null>(null);
   const [loading, setLoading] = useState(true);
   const [split,   setSplit]   = useState<ProfitSplit | null>(null);
@@ -22,8 +22,9 @@ export default function BriefView() {
   const load = async (date?: string | null) => {
     setLoading(true);
     try {
+      const repName = currentUser?.role === "sales_rep" ? currentUser.name : null;
       const [b, s] = await Promise.all([
-        api.generateWeeklyBrief(date ?? null),
+        api.generateWeeklyBrief(date ?? null, repName),
         api.getProfitSplit(),
       ]);
       setBrief(b);

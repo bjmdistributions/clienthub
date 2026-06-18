@@ -734,4 +734,17 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE inventory ADD COLUMN price_type TEXT NOT NULL DEFAULT 'per_unit' CHECK(price_type IN ('per_unit','total'));
         "#,
     ),
+    (
+        38,
+        r#"
+        ALTER TABLE clients ADD COLUMN is_blacklisted INTEGER NOT NULL DEFAULT 0;
+        "#,
+    ),
+    (
+        39,
+        r#"
+        ALTER TABLE clients ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'active' CHECK(approval_status IN ('active','pending','rejected'));
+        CREATE INDEX IF NOT EXISTS idx_clients_approval ON clients(approval_status);
+        "#,
+    ),
 ];

@@ -131,6 +131,18 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${leadStatusColor(client.lead_status)}`}>
                 {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
               </span>
+              <button onClick={async () => {
+                const val = await api.toggleClientBlacklist(client.id);
+                client.is_blacklisted = val;
+                setClient({ ...client });
+              }}
+                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
+                  client.is_blacklisted
+                    ? "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+                    : "bg-gray-50 text-gray-400 border-gray-200 hover:border-red-200 hover:text-red-500"
+                }`}>
+                {client.is_blacklisted ? "BLACKLISTED" : "Not Blacklisted"}
+              </button>
               {tier && (
                 <>
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-2 ${

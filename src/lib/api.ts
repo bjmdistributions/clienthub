@@ -25,6 +25,8 @@ export interface Client {
   country: string | null;
   next_follow_up_date: string | null;
   needs_review: boolean;
+  is_blacklisted: boolean;
+  approval_status: string;
 }
 
 export interface ClientInput {
@@ -944,6 +946,14 @@ export const api = {
   clientsMissingInfo: () => invoke<MissingInfoReport>("clients_missing_info"),
   updateClientStatus: (id: string, status: string) =>
     invoke<void>("update_client_status", { id, status }),
+  toggleClientBlacklist: (id: string) =>
+    invoke<boolean>("toggle_client_blacklist", { id }),
+  approveClient: (id: string) =>
+    invoke<void>("approve_client", { id }),
+  rejectClient: (id: string) =>
+    invoke<void>("reject_client", { id }),
+  getPendingApprovals: () =>
+    invoke<Client[]>("get_pending_approvals"),
   bulkDeleteClients: (ids: string[]) =>
     invoke<number>("bulk_delete_clients", { ids }),
   bulkUpdateCategory: (ids: string[], category: string) =>
@@ -1066,8 +1076,8 @@ export const api = {
     invoke<void>("mark_supplier_payment_paid", { id, paymentId }),
   unmarkSupplierPaymentPaid: (id: string, paymentId: string) =>
     invoke<void>("unmark_supplier_payment_paid", { id, paymentId }),
-  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null) =>
-    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate }),
+  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean) =>
+    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
   updateDealCompletedAt: (id: string, date: string) =>
     invoke<void>("update_deal_completed_at", { id, date }),
@@ -1101,7 +1111,7 @@ export const api = {
 
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),
-  generateWeeklyBrief: (forDate?: string | null) => invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null }),
+  generateWeeklyBrief: (forDate?: string | null, repName?: string | null) => invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null, repName }),
   pipelineAnalytics: (timeframeDays?: number) => invoke<PipelineAnalytics>("pipeline_analytics", { timeframeDays }),
   detectDuplicateClients: () => invoke<DuplicateGroup[]>("detect_duplicate_clients"),
   cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),

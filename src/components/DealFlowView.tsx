@@ -139,8 +139,8 @@ export default function DealFlowView() {
             {active.length} active deal{active.length !== 1 ? "s" : ""}
             {totalCompleted > 0 ? ` · ${totalCompleted} completed` : ""}
           </p>
-        </div>
-        <button
+          </div>
+          <button
           onClick={load}
           className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-3 transition-colors"
         >
@@ -1105,6 +1105,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   // Backlog date: defaults to today but user can pick any past date
   const todayStr = new Date().toISOString().slice(0, 10);
   const [completedDate, setCompletedDate] = useState(todayStr);
+  const [payoutIncluded, setPayoutIncluded] = useState(false);
 
   useEffect(() => { api.getProfitSplit().then(setSplit).catch(() => {}); }, []);
 
@@ -1118,7 +1119,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const runComplete = async () => {
     setSaving(true);
     try {
-      const result = await api.completeDealFlow(flow.id, "none", completedDate || null);
+      const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
       if (result.is_loss && result.warning) alert(result.warning);
       onReload();
     } catch (e: any) { alert(e); }
@@ -1148,7 +1149,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         delivery_date:    deliveryDate || undefined,
         is_complete:      true,
       });
-      await api.completeDealFlow(flow.id, "none", completedDate || null);
+      await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
       onReload();
     } catch (e: any) { alert(e); }
     setSaving(false);
@@ -1225,6 +1226,10 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
                          focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
             />
           </div>
+          <label className="flex items-center gap-2 text-[12px] text-muted cursor-pointer select-none py-1">
+            <input type="checkbox" className="accent-accent" checked={payoutIncluded} onChange={(e) => setPayoutIncluded(e.target.checked)} />
+            Include in Payout
+          </label>
           <button
             onClick={handleCompleteClick}
             disabled={saving}

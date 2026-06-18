@@ -70,6 +70,7 @@ function AnimatedStat({ value }: { value: number }) {
 export default function DashboardView({ onNavigate }: Props) {
   const [stats, setStats]             = useState<DashboardStats | null>(null);
   const [followups, setFollowups]     = useState<Client[]>([]);
+  const [pendingApprovals, setPending] = useState<Client[]>([]);
   const [recentInvoices, setRecent]   = useState<Invoice[]>([]);
   const [clients, setClients]         = useState<Client[]>([]);
   const [tiers, setTiers]             = useState<BuyerTier[]>([]);
@@ -81,6 +82,7 @@ export default function DashboardView({ onNavigate }: Props) {
     api.dashboardStats().then(setStats).catch(console.error);
     api.getProfitForecast().then(setForecast).catch(() => {});
     api.dueFollowups().then(setFollowups).catch(() => {});
+    api.getPendingApprovals().then(setPending).catch(() => {});
     api.listInvoices().then((inv) => setRecent(inv.slice(0, 50))).catch(() => {});
   };
 
@@ -599,9 +601,49 @@ export default function DashboardView({ onNavigate }: Props) {
               );
             })}
           </div>
-        </div>
+            </div>
 
-      </div>
+            {/* Pending Approvals */}
+            {pendingApprovals.length > 0 && (
+              <div className="rounded-xl p-5 flex flex-col flex-1 animate-fade-up stagger-7" style={cardStyle}>
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Pending Approvals</h3>
+                    <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Sign-ups waiting for review</p>
+                  </div>
+                  <span className="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0"
+                    style={{ background: "rgba(99,102,241,0.15)", color: "rgb(var(--c-accent))" }}>
+                    {pendingApprovals.length}
+                  </span>
+                </div>
+                <div className="space-y-0.5">
+                  {pendingApprovals.map((c) => (
+                    <div key={c.id} className="flex items-center justify-between px-2 py-2 rounded-lg transition-colors"
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</p>
+                        {c.email && <p className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{c.email}</p>}
+                      </div>
+                      <div className="flex items-center gap-1 ml-2">
+                        <button onClick={async () => { await api.approveClient(c.id); setPending(p => p.filter(x => x.id !== c.id)); }}
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                          style={{ background: "rgba(16,185,129,0.12)", color: "rgb(var(--c-success))", border: "1px solid rgba(16,185,129,0.2)" }}>
+                          Approve
+                        </button>
+                        <button onClick={async () => { await api.rejectClient(c.id); setPending(p => p.filter(x => x.id !== c.id)); }}
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                          style={{ background: "rgba(239,68,68,0.12)", color: "rgb(var(--c-error))", border: "1px solid rgba(239,68,68,0.2)" }}>
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
     </div>
   );
 }
