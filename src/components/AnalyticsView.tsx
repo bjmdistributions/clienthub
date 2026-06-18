@@ -38,12 +38,16 @@ function usePalette() {
   const success = rgbVar("--c-success");
   const danger  = rgbVar("--c-danger");
   const warning = rgbVar("--c-warning");
+  const info    = rgbVar("--c-info");
   const neutral = rgbVar("--c-faint");
+  // Data bars are a neutral ink tone (inverts in dark), not the brand accent —
+  // keeps charts matte; colour is reserved for profit (green) / loss (red).
+  const bar     = rgbVar("--c-ink-2");
   return {
-    accent, success, danger, warning, neutral,
+    accent, success, danger, warning, info, neutral, bar,
     grid: rgbVar("--c-line"),
-    CLR: { indigo: accent, emerald: success, rose: danger, amber: warning, sky: accent, slate: neutral },
-    STATUS: { paid: success, sent: accent, overdue: danger, draft: neutral } as Record<string, string>,
+    CLR: { indigo: bar, emerald: success, rose: danger, amber: warning, sky: info, slate: neutral },
+    STATUS: { paid: success, sent: info, overdue: danger, draft: neutral } as Record<string, string>,
     TT: {
       contentStyle: {
         background: rgbVar("--c-surface"),
@@ -97,7 +101,7 @@ export default function AnalyticsView() {
   const STATUS_CLR = P.STATUS;
   const TT = P.TT;
   const AX = P.AX;
-  const indigo = P.accent;
+  const indigo = P.bar;   // revenue / category bars → neutral, not indigo
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);

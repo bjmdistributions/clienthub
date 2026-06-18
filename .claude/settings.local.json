@@ -16,7 +16,9 @@
       "Bash(grep -nE \"#[0-9a-fA-F]{3,6}|indigo|rgba\\\\\\(|background:#|color:#\" www/staff.html)",
       "Bash(git commit -q -m 'Brand: rebrand staff portal — Inter, matte zinc palette, ink buttons, light/dark toggle *)",
       "Bash(rm -f .mig.sed)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(xargs -I{} sed -n '{},+4p' src/components/TiersView.tsx)",
+      "Bash(git commit -q -m 'Design: matte de-indigo pass on Analytics + Dashboard, fix tier badge fitment *)"
     ]
   }
 }

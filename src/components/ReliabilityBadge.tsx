@@ -37,10 +37,10 @@ export default function ReliabilityBadge({
 
   return (
     <span title={tip}
-      className={`inline-flex items-center gap-1 rounded-full border font-semibold ${pad} ${cfg.cls} ${reliability === "low" ? "uppercase tracking-wide" : ""}`}>
+      className={`inline-flex items-center gap-1 rounded-full border font-semibold whitespace-nowrap max-w-full ${pad} ${cfg.cls} ${reliability === "low" ? "tracking-wide" : ""}`}>
       <Icon size={size === "md" ? 13 : 11} className="flex-shrink-0" />
-      {cfg.label}
-      <span className="font-normal opacity-70">· {pct.toFixed(0)}%</span>
+      <span className="truncate">{cfg.label}</span>
+      <span className="font-normal opacity-70 flex-shrink-0">· {pct.toFixed(0)}%</span>
     </span>
   );
 }

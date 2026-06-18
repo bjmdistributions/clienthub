@@ -355,28 +355,16 @@ button:not(:disabled):active { opacity: 0.78; transition: opacity 60ms; }
 /* ── Page transition ──────────────────────────────────────── */
 .page-enter { animation: page-slide-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
-/* ── KPI accent strips ────────────────────────────────────── */
-.kpi-accent-indigo  { box-shadow: inset 0 2px 0 0 #6366F1; }
-.kpi-accent-amber   { box-shadow: inset 0 2px 0 0 #F59E0B; }
-.kpi-accent-emerald { box-shadow: inset 0 2px 0 0 #10B981; }
-.kpi-accent-violet  { box-shadow: inset 0 2px 0 0 #8B5CF6; }
-.kpi-accent-rose    { box-shadow: inset 0 2px 0 0 #F43F5E; }
-.kpi-accent-cyan    { box-shadow: inset 0 2px 0 0 #06B6D4; }
+/* ── KPI cards — matte: drop the decorative colour stripes ──── */
+.kpi-accent-indigo, .kpi-accent-amber, .kpi-accent-emerald,
+.kpi-accent-violet, .kpi-accent-rose, .kpi-accent-cyan { box-shadow: none; }
 
-/* ── Icon glow backgrounds ────────────────────────────────── */
-.icon-bg-indigo  { background: linear-gradient(135deg, #EEF2FF, #E0E7FF); color: #4F46E5; }
-.icon-bg-amber   { background: linear-gradient(135deg, #FFFBEB, #FEF3C7); color: #D97706; }
-.icon-bg-emerald { background: linear-gradient(135deg, #ECFDF5, #D1FAE5); color: #059669; }
-.icon-bg-violet  { background: linear-gradient(135deg, #F5F3FF, #EDE9FE); color: #7C3AED; }
-.icon-bg-rose    { background: linear-gradient(135deg, #FFF1F2, #FFE4E6); color: #E11D48; }
-.icon-bg-cyan    { background: linear-gradient(135deg, #ECFEFF, #CFFAFE); color: #0891B2; }
-
-html.dark .icon-bg-indigo  { background: rgba(99,102,241,0.15);  color: #A5B4FC; }
-html.dark .icon-bg-amber   { background: rgba(245,158,11,0.15);  color: #FCD34D; }
-html.dark .icon-bg-emerald { background: rgba(16,185,129,0.15);  color: #34D399; }
-html.dark .icon-bg-violet  { background: rgba(124,58,237,0.15);  color: #C4B5FD; }
-html.dark .icon-bg-rose    { background: rgba(244,63,94,0.15);   color: #FB7185; }
-html.dark .icon-bg-cyan    { background: rgba(6,182,212,0.15);   color: #22D3EE; }
+/* ── Icon chips — neutral for counts, muted semantic for money/loss.
+      Token-based, so they adapt to light/dark automatically. ── */
+.icon-bg-indigo, .icon-bg-violet, .icon-bg-cyan { background: var(--t-s3); color: var(--t-tx3); }
+.icon-bg-emerald { background: rgb(var(--c-success-bg)); color: rgb(var(--c-success)); }
+.icon-bg-amber   { background: rgb(var(--c-warning-bg)); color: rgb(var(--c-warning)); }
+.icon-bg-rose    { background: rgb(var(--c-danger-bg));  color: rgb(var(--c-danger)); }
 
 /* ════════════════════════════════════════════════════════════
    ACCENT COLOR THEMES
