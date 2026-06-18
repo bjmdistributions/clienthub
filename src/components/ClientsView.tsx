@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, CustomerHealth, DuplicateGroup, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send } from "lucide-react";
+import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
 import TierBadge from "./TierBadge";
@@ -577,7 +577,7 @@ export default function ClientsView() {
                 <tr
                   key={c.id}
                   onClick={() => setDetailId(c.id)}
-                  className={`border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""}`}
+                  className={`border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""} ${c.is_blacklisted ? "bg-red-50/30" : ""}`}
                 >
                   <td className="px-3 py-3 w-10" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" className="accent-accent" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
@@ -620,6 +620,10 @@ export default function ClientsView() {
                     {fmtAmount(c.total_revenue || 0)}
                   </td>
                   <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={async (ev) => { ev.stopPropagation(); const val = await api.toggleClientBlacklist(c.id); const updated = clients.find(x => x.id === c.id); if (updated) updated.is_blacklisted = val; setClients([...clients]); }} title={c.is_blacklisted ? "Unblacklist" : "Blacklist"}
+                      className="text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors">
+                      <Ban size={13} />
+                    </button>
                     <button onClick={() => { setEditing(c); setShowForm(true); }} title="Edit"
                       className="text-faint hover:text-ink-2 p-1 rounded-md hover:bg-surface-3 transition-colors">
                       <Edit2 size={13} />
