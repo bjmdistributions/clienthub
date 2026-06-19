@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ClientHub",
+  "productName": "Brokr",
   "version": "0.14.0",
   "identifier": "com.bjmdistributions.clienthub",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ClientHub",
+        "title": "Brokr",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
