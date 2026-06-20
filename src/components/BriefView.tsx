@@ -118,7 +118,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Header */}
           <div className="text-center pb-6" style={{ borderBottom: "1px solid var(--t-b1)" }}>
-            <h1 className="text-[24px] font-bold text-ink">ClientHub Weekly Brief</h1>
+            <h1 className="text-[24px] font-bold text-ink">Brokr Weekly Brief</h1>
             <p className="text-[14px] text-muted mt-2">{brief.week_start} &mdash; {brief.week_end}</p>
             <p className="text-[11px] text-muted mt-1">
               Generated {new Date(brief.generated_at).toLocaleString()}

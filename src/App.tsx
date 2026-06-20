@@ -332,9 +332,9 @@ export default function App() {
               boxShadow: "0 0 16px var(--accent-glow)",
             }}
           >
-            <span className="text-white text-[11px] font-bold tracking-tight">C</span>
+            <span className="text-white text-[12px] font-extrabold tracking-tight">B</span>
           </div>
-          <h1 className="text-[13px] font-semibold text-white tracking-tight flex-1">ClientHub</h1>
+          <h1 className="text-[13px] font-semibold text-white tracking-tight flex-1">Brokr</h1>
 
           {/* Dark mode toggle */}
           <button
