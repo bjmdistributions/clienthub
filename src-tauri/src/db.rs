@@ -768,7 +768,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
         "#,
     ),
     (
-        40,
+        41,
         r#"
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
