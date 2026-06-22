@@ -325,16 +325,8 @@ export default function App() {
       }}>
         {/* Brand */}
         <div className="h-[54px] px-4 flex items-center gap-2.5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-          <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 animate-glow-pulse"
-            style={{
-              background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))",
-              boxShadow: "0 0 16px var(--accent-glow)",
-            }}
-          >
-            <span className="text-white text-[12px] font-extrabold tracking-tight">B</span>
-          </div>
-          <h1 className="text-[13px] font-semibold text-white tracking-tight flex-1">Brokr</h1>
+          <img src="/brokr-logo.png" alt="Brokr" className="h-6 w-auto flex-shrink-0" />
+          <h1 className="text-[15px] font-bold text-white tracking-tight flex-1">Brokr</h1>
 
           {/* Dark mode toggle */}
           <button
