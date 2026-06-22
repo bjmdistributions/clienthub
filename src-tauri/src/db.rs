@@ -747,4 +747,39 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_clients_approval ON clients(approval_status);
         "#,
     ),
+    (
+        40,
+        r#"
+        CREATE TABLE IF NOT EXISTS newsletter_schedules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            recipient_filter TEXT NOT NULL DEFAULT '{"mode":"all"}',
+            interval_type TEXT NOT NULL DEFAULT 'weekly',
+            interval_value INTEGER NOT NULL DEFAULT 1,
+            send_hour INTEGER NOT NULL DEFAULT 9,
+            next_run_at TEXT NOT NULL,
+            last_run_at TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_newsletter_schedules_active ON newsletter_schedules(active, next_run_at);
+        "#,
+    ),
+    (
+        40,
+        r#"
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            sender_id TEXT NOT NULL,
+            recipient_id TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            read_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender_id);
+        CREATE INDEX IF NOT EXISTS idx_msg_recipient ON messages(recipient_id);
+        "#,
+    ),
 ];

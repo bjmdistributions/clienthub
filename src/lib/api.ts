@@ -133,6 +133,21 @@ export interface ScheduledSendProgress {
   status: string;
 }
 
+export interface NewsletterSchedule {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  recipient_filter: string;
+  interval_type: string;
+  interval_value: number;
+  send_hour: number;
+  next_run_at: string;
+  last_run_at: string | null;
+  active: number;
+  created_at: string;
+}
+
 export interface Category {
   id: string;
   label: string;
@@ -1235,6 +1250,32 @@ export const api = {
     invoke<ScheduledSend[]>("list_scheduled_sends"),
   getScheduledSendProgress: (id: string) =>
     invoke<ScheduledSendProgress>("get_scheduled_send_progress", { id }),
+
+  // Recurring newsletter schedules
+  listNewsletterSchedules: () =>
+    invoke<NewsletterSchedule[]>("list_newsletter_schedules"),
+  createNewsletterSchedule: (
+    name: string,
+    subject: string,
+    body: string,
+    recipientFilter: string,
+    intervalType: string,
+    intervalValue: number,
+    sendHour: number,
+  ) =>
+    invoke<NewsletterSchedule>("create_newsletter_schedule", {
+      name, subject, body, recipientFilter, intervalType, intervalValue, sendHour,
+    }),
+  updateNewsletterSchedule: (
+    id: string,
+    fields: Partial<{
+      name: string; subject: string; body: string; recipientFilter: string;
+      intervalType: string; intervalValue: number; sendHour: number; active: number;
+    }>,
+  ) =>
+    invoke<NewsletterSchedule>("update_newsletter_schedule", { id, ...fields }),
+  deleteNewsletterSchedule: (id: string) =>
+    invoke<void>("delete_newsletter_schedule", { id }),
   saveSmtpSettingsForPi: (settings: Record<string, string>) =>
     invoke<void>("save_smtp_settings_for_pi", { settings }),
   pushDesktopSmtpToPi: (fromName: string) =>

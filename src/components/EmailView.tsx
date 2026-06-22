@@ -2,12 +2,14 @@ import { useEffect, useState, useRef } from "react";
 import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
 import VariablePicker from "./VariablePicker";
+import { NewsletterSchedule } from "../lib/api";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
   Users, X, Search, ChevronDown, Eye, Megaphone, CheckCircle2, Paperclip, Clock,
+  Repeat, Plus, Power,
 } from "lucide-react";
 
-type Mode = "inbox" | "compose" | "drafts" | "newsletter";
+type Mode = "inbox" | "compose" | "drafts" | "newsletter" | "recurring";
 
 export default function EmailView() {
   const [mode, setMode] = useState<Mode>("newsletter");
@@ -50,9 +52,9 @@ export default function EmailView() {
 
       {/* Underline tabs */}
       <div className="flex gap-0 border-b border-line mb-5">
-        {(["newsletter", "inbox", "drafts", "compose"] as const).map((m) => {
-          const icons = { inbox: Inbox, drafts: FileEdit, compose: Mail, newsletter: Megaphone };
-          const labels = { inbox: "Inbox", drafts: "Drafts", compose: "Compose", newsletter: "Newsletter" };
+        {(["newsletter", "recurring", "inbox", "drafts", "compose"] as const).map((m) => {
+          const icons = { inbox: Inbox, drafts: FileEdit, compose: Mail, newsletter: Megaphone, recurring: Repeat };
+          const labels = { inbox: "Inbox", drafts: "Drafts", compose: "Compose", newsletter: "Newsletter", recurring: "Recurring" };
           const Icon = icons[m];
           return (
             <button
@@ -148,6 +150,7 @@ export default function EmailView() {
       {mode === "compose" && <ComposeView />}
       {mode === "drafts" && <DraftsTab onAction={refreshDraftCount} />}
       {mode === "newsletter" && <NewsletterTab />}
+      {mode === "recurring" && <RecurringTab />}
     </div>
   );
 }
@@ -1225,6 +1228,250 @@ function NewsletterTab() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function RecurringTab() {
+  const [schedules, setSchedules] = useState<NewsletterSchedule[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<NewsletterSchedule | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Form fields
+  const [name, setName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [intervalType, setIntervalType] = useState("weekly");
+  const [intervalValue, setIntervalValue] = useState(1);
+  const [sendHour, setSendHour] = useState(9);
+  const [recipientMode, setRecipientMode] = useState<"all" | "category">("all");
+  const [category, setCategory] = useState("");
+
+  const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+  const lbl = "block text-[10px] font-medium text-muted uppercase tracking-widest mb-1";
+
+  const load = () => {
+    api.listNewsletterSchedules().then(setSchedules).catch((e) => setError(e.toString()));
+  };
+  useEffect(() => {
+    load();
+    api.listClients().then(setClients).catch(() => {});
+    api.listCategories().then(setCategories).catch(() => {});
+  }, []);
+
+  const resetForm = () => {
+    setName(""); setSubject(""); setBody("Hi {first_name},\n\n");
+    setIntervalType("weekly"); setIntervalValue(1); setSendHour(9);
+    setRecipientMode("all"); setCategory(""); setEditing(null); setError(null);
+  };
+
+  const openCreate = () => { resetForm(); setShowForm(true); };
+  const openEdit = (s: NewsletterSchedule) => {
+    setEditing(s);
+    setName(s.name); setSubject(s.subject); setBody(s.body);
+    setIntervalType(s.interval_type); setIntervalValue(s.interval_value); setSendHour(s.send_hour);
+    try {
+      const f = JSON.parse(s.recipient_filter || '{"mode":"all"}');
+      if (f.mode === "ids" && f.category) { setRecipientMode("category"); setCategory(f.category); }
+      else { setRecipientMode("all"); setCategory(""); }
+    } catch { setRecipientMode("all"); }
+    setError(null);
+    setShowForm(true);
+  };
+
+  const buildFilter = (): string => {
+    if (recipientMode === "category" && category) {
+      const ids = clients
+        .filter((c) => c.email && c.category?.toLowerCase() === category.toLowerCase())
+        .map((c) => c.id);
+      return JSON.stringify({ mode: "ids", ids, category });
+    }
+    return JSON.stringify({ mode: "all" });
+  };
+
+  const save = async () => {
+    if (!name.trim() || !subject.trim()) { setError("Name and subject are required."); return; }
+    setSaving(true); setError(null);
+    try {
+      const filter = buildFilter();
+      if (editing) {
+        await api.updateNewsletterSchedule(editing.id, {
+          name, subject, body, recipientFilter: filter,
+          intervalType, intervalValue, sendHour,
+        });
+      } else {
+        await api.createNewsletterSchedule(name, subject, body, filter, intervalType, intervalValue, sendHour);
+      }
+      setShowForm(false);
+      resetForm();
+      load();
+    } catch (e: any) {
+      setError(e.toString());
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleActive = async (s: NewsletterSchedule) => {
+    await api.updateNewsletterSchedule(s.id, { active: s.active ? 0 : 1 });
+    load();
+  };
+  const remove = async (s: NewsletterSchedule) => {
+    await api.deleteNewsletterSchedule(s.id);
+    load();
+  };
+
+  const cadenceLabel = (s: NewsletterSchedule) => {
+    const unit = s.interval_type === "daily" ? "day" : s.interval_type === "monthly" ? "month" : "week";
+    const every = s.interval_value > 1 ? `every ${s.interval_value} ${unit}s` : `every ${unit}`;
+    const hr = s.send_hour === 0 ? "12 AM" : s.send_hour < 12 ? `${s.send_hour} AM` : s.send_hour === 12 ? "12 PM" : `${s.send_hour - 12} PM`;
+    return `${every} at ${hr}`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-[13px] text-muted max-w-[520px]">
+          Automatically send a newsletter on a repeating schedule. The server delivers each run even when the desktop app is closed.
+        </p>
+        <button
+          onClick={openCreate}
+          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
+        >
+          <Plus size={14} /> New schedule
+        </button>
+      </div>
+
+      {error && !showForm && (
+        <div className="bg-danger-bg border border-danger text-danger-ink px-4 py-3 rounded-lg text-[13px] flex items-center gap-2 mb-4">
+          <AlertCircle size={14} /> {error}
+        </div>
+      )}
+
+      {schedules.length === 0 ? (
+        <div className="text-center text-muted text-[13px] py-16 border border-dashed border-line rounded-xl">
+          No recurring schedules yet. Click <b>New schedule</b> to create one.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {schedules.map((s) => (
+            <div key={s.id} className="bg-surface border border-line rounded-xl p-4 flex items-center gap-4">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${s.active ? "bg-accent/15 text-accent" : "bg-surface-3 text-faint"}`}>
+                <Repeat size={16} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[14px] font-semibold text-ink truncate">{s.name}</span>
+                  {!s.active && <span className="text-[10px] uppercase tracking-wide text-faint border border-line rounded px-1.5 py-0.5">Paused</span>}
+                </div>
+                <div className="text-[12px] text-muted truncate">{s.subject}</div>
+                <div className="text-[11px] text-faint mt-0.5">
+                  {cadenceLabel(s)} · next run {new Date(s.next_run_at).toLocaleString()}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <button onClick={() => toggleActive(s)} title={s.active ? "Pause" : "Resume"}
+                  className="p-2 rounded-lg text-muted hover:text-ink hover:bg-surface-2 transition-colors">
+                  <Power size={15} />
+                </button>
+                <button onClick={() => openEdit(s)} title="Edit"
+                  className="p-2 rounded-lg text-muted hover:text-ink hover:bg-surface-2 transition-colors">
+                  <FileEdit size={15} />
+                </button>
+                <button onClick={() => remove(s)} title="Delete"
+                  className="p-2 rounded-lg text-muted hover:text-danger-ink hover:bg-danger-bg transition-colors">
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[7vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setShowForm(false)}>
+          <div className="bg-surface rounded-2xl shadow-xl w-[520px] max-h-[82vh] overflow-auto p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-[15px] font-semibold text-ink">{editing ? "Edit schedule" : "New recurring schedule"}</h3>
+              <button onClick={() => setShowForm(false)} className="text-muted hover:text-ink"><X size={16} /></button>
+            </div>
+
+            {error && (
+              <div className="bg-danger-bg border border-danger text-danger-ink px-3 py-2 rounded-lg text-[12px] flex items-center gap-2 mb-3">
+                <AlertCircle size={13} /> {error}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div>
+                <label className={lbl}>Schedule name</label>
+                <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="Weekly client update" />
+              </div>
+              <div>
+                <label className={lbl}>Subject</label>
+                <input className={inp} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Update from Brokr" />
+              </div>
+              <div>
+                <label className={lbl}>Body</label>
+                <textarea className={inp + " h-28 py-2 resize-none"} value={body} onChange={(e) => setBody(e.target.value)} />
+                <div className="text-[11px] text-faint mt-1">Use {"{first_name}"}, {"{company}"} etc. for personalization.</div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className={lbl}>Repeat</label>
+                  <select className={inp} value={intervalType} onChange={(e) => setIntervalType(e.target.value)}>
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={lbl}>Every</label>
+                  <input type="number" min={1} className={inp} value={intervalValue}
+                    onChange={(e) => setIntervalValue(Math.max(1, parseInt(e.target.value) || 1))} />
+                </div>
+                <div>
+                  <label className={lbl}>At hour</label>
+                  <select className={inp} value={sendHour} onChange={(e) => setSendHour(parseInt(e.target.value))}>
+                    {Array.from({ length: 24 }, (_, h) => (
+                      <option key={h} value={h}>{h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className={lbl}>Recipients</label>
+                <div className="flex gap-2">
+                  <select className={inp} value={recipientMode} onChange={(e) => setRecipientMode(e.target.value as any)}>
+                    <option value="all">All clients with email</option>
+                    <option value="category">By category</option>
+                  </select>
+                  {recipientMode === "category" && (
+                    <select className={inp} value={category} onChange={(e) => setCategory(e.target.value)}>
+                      <option value="">Select…</option>
+                      {categories.map((c) => <option key={c.id} value={c.label}>{c.label}</option>)}
+                    </select>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
+              <button onClick={save} disabled={saving}
+                className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+                {saving ? "Saving…" : editing ? "Save changes" : "Create schedule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

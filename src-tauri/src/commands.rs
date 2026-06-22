@@ -7133,6 +7133,166 @@ pub async fn get_scheduled_send_progress(id: String) -> Result<ScheduledSendProg
     ).map_err(|e| e.to_string())
 }
 
+// ---- Recurring newsletter schedules ----
+
+#[derive(serde::Serialize)]
+pub struct NewsletterSchedule {
+    pub id: String,
+    pub name: String,
+    pub subject: String,
+    pub body: String,
+    pub recipient_filter: String,
+    pub interval_type: String,
+    pub interval_value: i64,
+    pub send_hour: i64,
+    pub next_run_at: String,
+    pub last_run_at: Option<String>,
+    pub active: i64,
+    pub created_at: String,
+}
+
+const NL_SCHED_COLS: &str = "id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run_at, last_run_at, active, created_at";
+
+fn map_nl_schedule(r: &rusqlite::Row) -> rusqlite::Result<NewsletterSchedule> {
+    Ok(NewsletterSchedule {
+        id: r.get(0)?, name: r.get(1)?, subject: r.get(2)?, body: r.get(3)?,
+        recipient_filter: r.get(4)?, interval_type: r.get(5)?, interval_value: r.get(6)?,
+        send_hour: r.get(7)?, next_run_at: r.get(8)?, last_run_at: r.get(9)?,
+        active: r.get(10)?, created_at: r.get(11)?,
+    })
+}
+
+/// Next run timestamp after `from`, at the chosen hour, advanced by the cadence.
+fn nl_compute_next_run(from: chrono::DateTime<Utc>, interval_type: &str, interval_value: i64, send_hour: i64) -> String {
+    use chrono::Timelike;
+    let step = interval_value.max(1);
+    let mut next = match interval_type {
+        "daily" => from + chrono::Duration::days(step),
+        "monthly" => from + chrono::Duration::days(30 * step),
+        _ => from + chrono::Duration::weeks(step),
+    };
+    let hour = send_hour.clamp(0, 23) as u32;
+    next = next.with_hour(hour).and_then(|d| d.with_minute(0)).and_then(|d| d.with_second(0)).unwrap_or(next);
+    next.to_rfc3339()
+}
+
+#[tauri::command]
+pub async fn list_newsletter_schedules() -> Result<Vec<NewsletterSchedule>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = format!("SELECT {} FROM newsletter_schedules ORDER BY created_at DESC", NL_SCHED_COLS);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], map_nl_schedule).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_newsletter_schedule(
+    name: String,
+    subject: String,
+    body: String,
+    recipient_filter: String,
+    interval_type: String,
+    interval_value: i64,
+    send_hour: i64,
+) -> Result<NewsletterSchedule, String> {
+    if name.trim().is_empty() || subject.trim().is_empty() {
+        return Err("Name and subject are required.".into());
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    let now_str = now.to_rfc3339();
+    let next_run = nl_compute_next_run(now, &interval_type, interval_value, send_hour);
+
+    conn.execute(
+        "INSERT INTO newsletter_schedules
+            (id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run_at, last_run_at, active, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, 1, ?10)",
+        rusqlite::params![id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run, now_str],
+    ).map_err(|e| e.to_string())?;
+
+    let mut cols = serde_json::Map::new();
+    cols.insert("name".into(), serde_json::Value::String(name.clone()));
+    cols.insert("subject".into(), serde_json::Value::String(subject.clone()));
+    cols.insert("body".into(), serde_json::Value::String(body.clone()));
+    cols.insert("recipient_filter".into(), serde_json::Value::String(recipient_filter.clone()));
+    cols.insert("interval_type".into(), serde_json::Value::String(interval_type.clone()));
+    cols.insert("interval_value".into(), serde_json::json!(interval_value));
+    cols.insert("send_hour".into(), serde_json::json!(send_hour));
+    cols.insert("next_run_at".into(), serde_json::Value::String(next_run.clone()));
+    cols.insert("active".into(), serde_json::json!(1));
+    cols.insert("created_at".into(), serde_json::Value::String(now_str.clone()));
+    crate::sync::record_upsert("newsletter_schedules", &id, cols).map_err(|e| e.to_string())?;
+
+    Ok(NewsletterSchedule {
+        id, name, subject, body, recipient_filter, interval_type, interval_value,
+        send_hour, next_run_at: next_run, last_run_at: None, active: 1, created_at: now_str,
+    })
+}
+
+#[tauri::command]
+pub async fn update_newsletter_schedule(
+    id: String,
+    name: Option<String>,
+    subject: Option<String>,
+    body: Option<String>,
+    recipient_filter: Option<String>,
+    interval_type: Option<String>,
+    interval_value: Option<i64>,
+    send_hour: Option<i64>,
+    active: Option<i64>,
+) -> Result<NewsletterSchedule, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut cols = serde_json::Map::new();
+    if let Some(v) = &name { cols.insert("name".into(), serde_json::Value::String(v.clone())); }
+    if let Some(v) = &subject { cols.insert("subject".into(), serde_json::Value::String(v.clone())); }
+    if let Some(v) = &body { cols.insert("body".into(), serde_json::Value::String(v.clone())); }
+    if let Some(v) = &recipient_filter { cols.insert("recipient_filter".into(), serde_json::Value::String(v.clone())); }
+    if let Some(v) = &interval_type { cols.insert("interval_type".into(), serde_json::Value::String(v.clone())); }
+    if let Some(v) = interval_value { cols.insert("interval_value".into(), serde_json::json!(v)); }
+    if let Some(v) = send_hour { cols.insert("send_hour".into(), serde_json::json!(v)); }
+    if let Some(v) = active { cols.insert("active".into(), serde_json::json!(v)); }
+
+    if interval_type.is_some() || interval_value.is_some() || send_hour.is_some() {
+        let (it, iv, sh): (String, i64, i64) = conn.query_row(
+            "SELECT interval_type, interval_value, send_hour FROM newsletter_schedules WHERE id=?1",
+            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).map_err(|e| e.to_string())?;
+        let it = interval_type.clone().unwrap_or(it);
+        let iv = interval_value.unwrap_or(iv);
+        let sh = send_hour.unwrap_or(sh);
+        let next = nl_compute_next_run(Utc::now(), &it, iv, sh);
+        cols.insert("next_run_at".into(), serde_json::Value::String(next));
+    }
+
+    if cols.is_empty() {
+        return Err("Nothing to update.".into());
+    }
+
+    let sets: Vec<String> = cols.keys().enumerate().map(|(i, k)| format!("{}=?{}", k, i + 1)).collect();
+    let sql = format!("UPDATE newsletter_schedules SET {} WHERE id=?{}", sets.join(", "), cols.len() + 1);
+    let mut params: Vec<rusqlite::types::Value> = cols.values().map(|v| match v {
+        serde_json::Value::String(s) => rusqlite::types::Value::Text(s.clone()),
+        serde_json::Value::Number(n) => rusqlite::types::Value::Integer(n.as_i64().unwrap_or(0)),
+        _ => rusqlite::types::Value::Null,
+    }).collect();
+    params.push(rusqlite::types::Value::Text(id.clone()));
+    conn.execute(&sql, rusqlite::params_from_iter(params.iter())).map_err(|e| e.to_string())?;
+
+    crate::sync::record_upsert("newsletter_schedules", &id, cols).map_err(|e| e.to_string())?;
+
+    let sql = format!("SELECT {} FROM newsletter_schedules WHERE id=?1", NL_SCHED_COLS);
+    conn.query_row(&sql, [&id], map_nl_schedule).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_newsletter_schedule(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM newsletter_schedules WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    crate::sync::record_delete("newsletter_schedules", &id).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn save_smtp_settings_for_pi(settings: serde_json::Value) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

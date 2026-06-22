@@ -74,7 +74,8 @@
       "Bash(grep -qiE 'barChartSVG|composeEmail|error\\\\[|error:|^[0-9]{3}$' C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/0cbb66e3-916a-4ea8-a4c9-09a0576c9981/tasks/b30zxpxe8.output)",
       "Bash(grep -iE \"Finished|started|health ok|^[0-9]{3}$|barChartSVG|composeEmail\")",
       "Bash(grep -iE \"Finished|started|health ok|email send|^[0-9]{3}$|barChartSVG|composeEmail\")",
-      "Bash(curl -s -4 -m8 https://m.brokr-app.com/app.js)"
+      "Bash(curl -s -4 -m8 https://m.brokr-app.com/app.js)",
+      "Bash(git tag *)"
     ]
   }
 }
