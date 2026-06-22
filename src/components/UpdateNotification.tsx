@@ -18,7 +18,7 @@ export default function UpdateNotification() {
           const saved = localStorage.getItem("clienthub_update_dismissed");
           if (saved !== u.version) setUpdate(u);
         }
-      } catch {}
+      } catch (e: any) { console.warn("Update check failed:", e?.message ?? e); }
     }, 2000);
     return () => clearTimeout(timer);
   }, []);
