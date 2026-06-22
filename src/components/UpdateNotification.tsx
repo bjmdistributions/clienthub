@@ -55,7 +55,7 @@ export default function UpdateNotification() {
           <Download size={14} className="text-white" />
         </div>
         <div>
-          <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>Brokr {update.version} is available</p>
+          <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>brokr {update.version} is available</p>
           <p className="text-[11px]" style={{ color: "var(--t-tx3)" }}>
             {installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}MB` : "Update now to get the latest features and fixes"}
           </p>

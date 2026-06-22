@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Archive, Package, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronDown, TrendingUp } from "lucide-react";
 import { api, Supplier, SupplierInput, SupplierPriceEntry } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, fmtPhone } from "../lib/format";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -175,7 +175,7 @@ export default function SuppliersView() {
               </div>
               <div className="flex items-center gap-3 text-[10px] text-muted mb-3 flex-wrap">
                 {s.phone && (
-                  <span className="flex items-center gap-1"><Phone size={9} /> {s.phone}</span>
+                  <span className="flex items-center gap-1"><Phone size={9} /> {fmtPhone(s.phone)}</span>
                 )}
                 {s.email && (
                   <span className="flex items-center gap-1 truncate"><Mail size={9} /> {s.email}</span>

@@ -75,7 +75,17 @@
       "Bash(grep -iE \"Finished|started|health ok|^[0-9]{3}$|barChartSVG|composeEmail\")",
       "Bash(grep -iE \"Finished|started|health ok|email send|^[0-9]{3}$|barChartSVG|composeEmail\")",
       "Bash(curl -s -4 -m8 https://m.brokr-app.com/app.js)",
-      "Bash(git tag *)"
+      "Bash(git tag *)",
+      "Bash(awk 'NR>=6177 && NR<=6400' src-tauri/src/commands.rs)",
+      "Bash(awk 'NR>=6177 && NR<=6420' src-tauri/src/commands.rs)",
+      "Bash(MSYS_NO_PATHCONV=1 /c/Brokr/nssm.exe stop Brokr)",
+      "Bash(MSYS_NO_PATHCONV=1 /c/Windows/System32/taskkill.exe /F /IM clienthub-api.exe)",
+      "Bash(MSYS_NO_PATHCONV=1 /c/Brokr/nssm.exe start Brokr)",
+      "Bash(curl -4 -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/health)",
+      "Bash(echo \"health: $\\(curl -4 -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/health\\)\")",
+      "Bash(curl -4 -s http://localhost:8090/api/org)",
+      "Bash(echo \"org: $\\(curl -4 -s http://localhost:8090/api/org\\)\")",
+      "Bash(curl -4 -s http://localhost:8090/download)"
     ]
   }
 }

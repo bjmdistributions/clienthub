@@ -1107,6 +1107,12 @@ export const api = {
   saveProfitSplit: (businessPct: number, jackPct: number, benPct: number, jackName: string, benName: string) =>
     invoke<void>("save_profit_split", { businessPct, jackPct, benPct, jackName, benName }),
 
+  // Brief frequency + organization name (settings-backed, synced)
+  getBriefFrequency: () => invoke<number>("get_brief_frequency"),
+  setBriefFrequency: (days: number) => invoke<void>("set_brief_frequency", { days }),
+  getOrganizationName: () => invoke<string>("get_organization_name"),
+  setOrganizationName: (name: string) => invoke<void>("set_organization_name", { name }),
+
   // Suppliers
   listSuppliers: () => invoke<Supplier[]>("list_suppliers"),
   getSupplier: (id: string) => invoke<Supplier>("get_supplier", { id }),

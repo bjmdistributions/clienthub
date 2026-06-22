@@ -290,6 +290,10 @@ fn main() {
             // Profit Split
             get_profit_split,
             save_profit_split,
+            get_brief_frequency,
+            set_brief_frequency,
+            get_organization_name,
+            set_organization_name,
             // Suppliers
             list_suppliers,
             get_supplier,

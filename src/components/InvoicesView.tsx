@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, ProfitSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download } from "lucide-react";
 import RecurringView from "./RecurringView";
+import CostProfitPanel from "./CostProfitPanel";
 
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
@@ -723,6 +724,16 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   const [editingShipping, setEditingShipping] = useState(invoice.status === "paid" && !invoice.is_complete);
   const [shipping, setShipping]           = useState<ShippingInfo>({ carrier: invoice.carrier ?? "", tracking_number: invoice.tracking_number ?? "", shipping_charged: invoice.shipping_charged ?? 0, pickup_date: invoice.pickup_date ?? "", delivery_date: invoice.delivery_date ?? "", is_complete: invoice.is_complete ?? false });
   const [savingShipping, setSavingShipping] = useState(false);
+  // Cost & Profit is owned by the linked Deal Flow (single source of truth).
+  // Fetch it so the invoice shows the identical P&L panel as the Deal Flow view.
+  const [dealFlow, setDealFlow] = useState<DealFlow | null>(null);
+  const [split, setSplit] = useState<ProfitSplit | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.getDealFlowByInvoice(invoice.id).then((df) => { if (active) setDealFlow(df); }).catch(() => {});
+    api.getProfitSplit().then((s) => { if (active) setSplit(s); }).catch(() => {});
+    return () => { active = false; };
+  }, [invoice.id]);
 
   const statCol = (s: string) => {
     if (s === "paid")    return invoice.is_complete ? "bg-success-bg text-success-ink" : "bg-warning-bg text-warning-ink";
@@ -805,48 +816,19 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               Cost & Profit
             </button>
             {editingCosts && (
-              invoice.is_complete ? (
-                /* Read-only for completed invoices — managed via Deal Flow */
+              dealFlow ? (
+                /* Linked to a Deal Flow — show the identical, synced P&L panel */
                 <div className="mt-3 space-y-2">
-                  <div className="flex items-center gap-2 px-3 py-2 bg-warning-bg border border-warning rounded-lg">
-                    <GitBranch size={11} className="text-warning-ink flex-shrink-0" />
-                    <p className="text-[11px] text-warning-ink">
-                      Cost &amp; profit are set by the Deal Flow workflow and cannot be edited here.
+                  <CostProfitPanel flow={dealFlow} split={split} />
+                  <div className="flex items-center gap-2 px-3 py-2 bg-info-bg border border-info rounded-lg">
+                    <GitBranch size={11} className="text-info-ink flex-shrink-0" />
+                    <p className="text-[11px] text-info-ink">
+                      Cost &amp; profit are managed in the Deal Flow workflow and stay in sync here.
                     </p>
-                  </div>
-                  {costItems.length > 0 && (
-                    <div className="space-y-1.5 pt-1">
-                      {costItems.map((ci, i) => (
-                        <div key={i} className="flex justify-between text-[12px]">
-                          <span className="text-muted">{ci.description || "Cost item"}</span>
-                          <span className="tabular-nums text-ink-2 font-medium">{fmtAmount(ci.amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="border-t border-line pt-2 space-y-1 text-[12px]">
-                    <div className="flex justify-between text-muted">
-                      <span>Revenue</span>
-                      <span className="tabular-nums">{fmtAmount(invoice.total)}</span>
-                    </div>
-                    <div className="flex justify-between text-muted">
-                      <span>Total Cost</span>
-                      <span className="tabular-nums">{fmtAmount(invoice.total_cost ?? 0)}</span>
-                    </div>
-                    <div className={`flex justify-between font-semibold ${(invoice.profit ?? 0) >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
-                      <span>Profit</span>
-                      <span className="tabular-nums">{fmtAmount(invoice.profit ?? 0)}</span>
-                    </div>
-                    {invoice.margin != null && (
-                      <div className="flex justify-between text-muted">
-                        <span>Margin</span>
-                        <span className="tabular-nums">{invoice.margin.toFixed(1)}%</span>
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (
-                /* Editable for non-completed invoices */
+                /* Editable for invoices not yet in a Deal Flow */
                 <div className="mt-3 space-y-2">
                   <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Cost Items</div>
                   {costs.map((ci, i) => (
@@ -936,17 +918,26 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           )}
         </div>
 
-        <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 flex gap-2.5">
-          <button onClick={onPdf} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex-1 transition-colors">Download PDF</button>
-          <button onClick={onResend} className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors">Resend</button>
-          <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { alert(e); } }}
-            className="bg-surface border border-accent/10 hover:bg-accent/10 text-accent px-4 h-9 rounded-lg text-[13px] flex-1 transition-colors flex items-center gap-1 justify-center"
-            title="Request payment via Stripe">
-            <CreditCard size={13} /> Pay
+        <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">
+          <button onClick={onPdf}
+            className="w-full bg-accent hover:bg-accent-hover text-white h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
+            <Download size={15} /> Download PDF
           </button>
-          <button onClick={onDelete} className="bg-surface border border-danger hover:bg-danger-bg text-danger-ink px-3 h-9 rounded-lg text-[12px] font-medium transition-colors flex items-center gap-1">
-            <Trash2 size={12} /> Delete
-          </button>
+          <div className="flex gap-2.5">
+            <button onClick={onResend}
+              className="flex-1 bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+              <Send size={13} /> Resend
+            </button>
+            <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { alert(e); } }}
+              className="flex-1 bg-surface border border-line hover:bg-accent/10 hover:border-accent/30 text-accent h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5"
+              title="Request payment via Stripe">
+              <CreditCard size={13} /> Pay
+            </button>
+            <button onClick={onDelete}
+              className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+              <Trash2 size={13} /> Delete
+            </button>
+          </div>
         </div>
       </div>
     </>

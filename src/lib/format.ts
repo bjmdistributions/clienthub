@@ -4,6 +4,18 @@ export const fmtAmount = (n: number) =>
 export const fmtFullAmount = (n: number) =>
   "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/** Format a phone number as xxx-xxx-xxxx (US), dropping a leading +1/1 and any
+ *  parentheses/spaces. Non-10-digit input returns the cleaned digits as-is. */
+export function fmtPhone(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length === 10) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return digits;
+}
+
 export function fmtCompactCurrency(n: number): string {
   const abs = Math.abs(n);
   const sign = n < 0 ? "-" : "";

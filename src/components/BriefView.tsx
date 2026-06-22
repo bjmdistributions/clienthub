@@ -7,17 +7,25 @@ import {
   ChevronLeft, ChevronRight,
 } from "lucide-react";
 
-function addWeeks(dateStr: string, n: number): string {
+function addDays(dateStr: string, n: number): string {
   const d = new Date(dateStr + "T12:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n * 7);
+  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
+
+const FREQ_PRESETS: { label: string; days: number }[] = [
+  { label: "Daily", days: 1 },
+  { label: "Weekly", days: 7 },
+  { label: "Biweekly", days: 14 },
+  { label: "Monthly", days: 30 },
+];
 
 export default function BriefView({ currentUser }: { currentUser?: any }) {
   const [brief,   setBrief]   = useState<WeeklyBrief | null>(null);
   const [loading, setLoading] = useState(true);
   const [split,   setSplit]   = useState<ProfitSplit | null>(null);
   const [anchorDate, setAnchorDate] = useState<string | null>(null);
+  const [freq,    setFreq]    = useState(7);
 
   const load = async (date?: string | null) => {
     setLoading(true);
@@ -32,22 +40,34 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
     } catch (e: any) { alert(e); }
     setLoading(false);
   };
-  useEffect(() => { load(null); }, []);
+  useEffect(() => {
+    api.getBriefFrequency().then(setFreq).catch(() => {});
+    load(null);
+  }, []);
+
+  // Persist a new cadence and regenerate the brief immediately.
+  const changeFreq = async (days: number) => {
+    setFreq(days);
+    try { await api.setBriefFrequency(days); } catch (e: any) { alert(e); }
+    load(anchorDate);
+  };
 
   const goToPrevWeek = () => {
     const anchor = anchorDate ?? new Date().toISOString().slice(0, 10);
-    const prev = addWeeks(anchor, -1);
+    const prev = addDays(anchor, -freq);
     setAnchorDate(prev);
     load(prev);
   };
   const goToNextWeek = () => {
     if (!anchorDate) return;
-    const next = addWeeks(anchorDate, 1);
+    const next = addDays(anchorDate, freq);
     const today = new Date().toISOString().slice(0, 10);
     if (next >= today) { setAnchorDate(null); load(null); }
     else { setAnchorDate(next); load(next); }
   };
   const isCurrentWeek = !anchorDate;
+  const periodLabel = FREQ_PRESETS.find((p) => p.days === freq)?.label
+    ?? `${freq}-day`;
 
   const changePct = (pct: number) => {
     if (pct > 0) return <span className="text-success-ink flex items-center gap-0.5"><TrendingUp size={12} /> {pct.toFixed(1)}%</span>;
@@ -64,7 +84,21 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6 print:hidden">
         <div className="flex items-center gap-3">
-          <h2 className="text-[18px] font-semibold text-ink">Weekly Brief</h2>
+          <h2 className="text-[18px] font-semibold text-ink">Brief</h2>
+          <select
+            value={freq}
+            onChange={(e) => changeFreq(parseInt(e.target.value))}
+            className="h-8 px-2 rounded-lg text-[12px] text-ink-2 bg-transparent focus:outline-none focus:ring-2 focus:ring-accent/40"
+            style={{ border: "1px solid var(--t-b1)" }}
+            title="How often you want briefs"
+          >
+            {FREQ_PRESETS.map((p) => (
+              <option key={p.days} value={p.days}>{p.label}</option>
+            ))}
+            {!FREQ_PRESETS.some((p) => p.days === freq) && (
+              <option value={freq}>{freq}-day</option>
+            )}
+          </select>
           <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: "var(--t-s3)" }}>
             <button onClick={goToPrevWeek}
               className="w-7 h-7 flex items-center justify-center rounded-md text-muted hover:text-ink-2 transition-colors"
@@ -73,7 +107,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
               <ChevronLeft size={14} />
             </button>
             <span className="text-[12px] font-medium text-ink-2 px-1 whitespace-nowrap">
-              {isCurrentWeek ? "This Week" : brief ? `${brief.week_start} – ${brief.week_end}` : "Past Week"}
+              {isCurrentWeek ? `Current (${periodLabel})` : brief ? `${brief.week_start} – ${brief.week_end}` : "Previous"}
             </span>
             <button onClick={goToNextWeek} disabled={isCurrentWeek}
               className="w-7 h-7 flex items-center justify-center rounded-md text-muted hover:text-ink-2 transition-colors disabled:opacity-30"
@@ -118,7 +152,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Header */}
           <div className="text-center pb-6" style={{ borderBottom: "1px solid var(--t-b1)" }}>
-            <h1 className="text-[24px] font-bold text-ink">Brokr Weekly Brief</h1>
+            <h1 className="text-[24px] font-bold text-ink">{periodLabel} Brief</h1>
             <p className="text-[14px] text-muted mt-2">{brief.week_start} &mdash; {brief.week_end}</p>
             <p className="text-[11px] text-muted mt-1">
               Generated {new Date(brief.generated_at).toLocaleString()}

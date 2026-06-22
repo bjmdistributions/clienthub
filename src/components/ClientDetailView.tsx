@@ -1,6 +1,6 @@
 import { useEffect, useState, Children } from "react";
 import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, fmtPhone } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
 import {
   ArrowLeft,
@@ -182,7 +182,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               )}
               {client.phone && (
                 <span className="flex items-center gap-1.5 text-[13px] text-ink-2">
-                  <Phone size={14} /> {client.phone}
+                  <Phone size={14} /> {fmtPhone(client.phone)}
                 </span>
               )}
             </div>

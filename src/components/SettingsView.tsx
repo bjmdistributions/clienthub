@@ -739,16 +739,19 @@ function WhatsAppFooterField() {
 
 function CompanyTab() {
   const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
+  const [orgName, setOrgName] = useState("");
   const [saved, setSaved] = useState(false);
   const [logoError, setLogoError] = useState(false);
   const [logoVersion, setLogoVersion] = useState(0);
 
   useEffect(() => {
     api.getCompanyInfo().then((c) => c && setInfo(c)).catch(console.error);
+    api.getOrganizationName().then((n) => setOrgName(n || "")).catch(() => {});
   }, []);
 
   const save = async () => {
     await api.saveCompanyInfo(info);
+    await api.setOrganizationName(orgName);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -829,6 +832,10 @@ function CompanyTab() {
 
       <Field label="Company name">
         <input className={inp} value={info.name}    onChange={(e) => setInfo({ ...info, name: e.target.value })} />
+      </Field>
+      <Field label="Organization name (app header)">
+        <input className={inp} value={orgName} placeholder={info.name || "Your organization"} onChange={(e) => setOrgName(e.target.value)} />
+        <p className="text-[11px] text-muted mt-1">Shown next to the logo in the app, web, and mobile. Leave blank to use your company name.</p>
       </Field>
       <Field label="Address">
         <input className={inp} value={info.address} onChange={(e) => setInfo({ ...info, address: e.target.value })} />
@@ -1038,7 +1045,7 @@ function SyncTab() {
       <div className="border-t border-line pt-5">
         <SectionLabel>How Sync Works</SectionLabel>
         <p className="text-[12px] text-muted mt-2 mb-2">
-          Brokr uses an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
+          brokr uses an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
         </p>
         <code className="block bg-surface-2 border border-line px-4 py-3 rounded-xl text-[11px] font-mono text-muted">
           ~/Library/Application Support/com.bjmdistributions.clienthub/sync/ (macOS)<br />
@@ -2071,7 +2078,7 @@ function SheetsTab() {
   return (
     <div className="max-w-4xl space-y-4">
       <p className="text-[12px] text-muted">
-        Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Brokr syncs new clients automatically every 10 minutes.
+        Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. brokr syncs new clients automatically every 10 minutes.
       </p>
 
       {/* Setup */}

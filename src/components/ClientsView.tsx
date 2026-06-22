@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, CustomerHealth, DuplicateGroup, BuyerTier } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, fmtPhone } from "../lib/format";
 import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
@@ -602,7 +602,7 @@ export default function ClientsView() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-[12px] text-muted">{c.email || "—"}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted">{c.phone || "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted">{c.phone ? fmtPhone(c.phone) : "—"}</td>
                   <td className="px-4 py-3 text-[12px] text-muted">{c.category || "—"}</td>
                   <td className="px-4 py-3 text-center">
                     <span className="inline-flex items-center gap-1 text-[12px] text-muted tabular-nums">

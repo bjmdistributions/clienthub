@@ -150,9 +150,11 @@ export default function App() {
   const [shareMediaBase, setShareMediaBase] = useState("");
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<any | null>(undefined);
+  const [orgName, setOrgName] = useState<string>("");
 
   useEffect(() => {
     api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
+    api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -325,8 +327,8 @@ export default function App() {
       }}>
         {/* Brand */}
         <div className="h-[54px] px-4 flex items-center gap-2.5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-          <img src="/brokr-logo.png" alt="Brokr" className="h-6 w-auto flex-shrink-0" />
-          <h1 className="text-[15px] font-bold text-white tracking-tight flex-1">Brokr</h1>
+          <img src="/brokr-logo.png" alt="brokr" className="h-6 w-auto flex-shrink-0" />
+          <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "brokr"}</h1>
 
           {/* Dark mode toggle */}
           <button
@@ -535,8 +537,14 @@ function UserPicker({ onSetUser }: { onSetUser: (u: any) => void }) {
   return (
     <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
       <div className="bg-surface border border-line rounded-2xl shadow-xl p-8 w-full max-w-sm">
-        <h2 className="text-[18px] font-bold text-ink mb-1">Select Profile</h2>
-        <p className="text-[12px] text-muted mb-5">Choose your user profile or enter an invite code.</p>
+        <div className="flex flex-col items-center text-center mb-6">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3"
+            style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 24px var(--accent-glow)" }}>
+            <img src="/brokr-logo.png" alt="brokr" className="h-7 w-auto" />
+          </div>
+          <h2 className="text-[18px] font-bold text-ink">Welcome back</h2>
+          <p className="text-[12px] text-muted mt-1">Choose your profile, or join your team with an invite code.</p>
+        </div>
         <div className="space-y-2 mb-5">
           {active.map((u) => (
             <button key={u.id} onClick={() => select(u)} className="w-full text-left px-4 py-3 rounded-xl border border-line hover:border-accent/20 hover:bg-accent/10 transition-colors">

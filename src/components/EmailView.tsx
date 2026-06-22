@@ -524,7 +524,7 @@ function NewsletterTab() {
   const subjectRef = useRef<HTMLInputElement>(null);
   const lastFocusedRef = useRef<"subject" | "body">("body");
 
-  const defaultSubject = "Update from Brokr";
+  const defaultSubject = "Update from brokr";
   const defaultBody = "Hi {first_name},\n\nI hope you're doing well. I wanted to reach out and share some updates.\n\n[Your message here]\n\nBest regards,\n[Your name]";
 
   useEffect(() => {
@@ -1413,7 +1413,7 @@ function RecurringTab() {
               </div>
               <div>
                 <label className={lbl}>Subject</label>
-                <input className={inp} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Update from Brokr" />
+                <input className={inp} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Update from brokr" />
               </div>
               <div>
                 <label className={lbl}>Body</label>

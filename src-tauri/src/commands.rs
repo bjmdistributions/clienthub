@@ -3835,6 +3835,57 @@ pub async fn save_profit_split(
     Ok(())
 }
 
+/// Shared helper: persist a single setting locally and emit a sync event so it
+/// propagates to the server. Mirrors the upsert pattern in save_profit_split.
+fn write_setting(key: &str, val: &str) -> Result<(), String> {
+    let mut cols = Map::new();
+    cols.insert("key".into(), Value::String(key.to_string()));
+    cols.insert("value".into(), Value::String(val.to_string()));
+    sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![key, val],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn read_setting(key: &str) -> Option<String> {
+    let conn = pool().get().ok()?;
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0)).ok()
+}
+
+#[tauri::command]
+pub async fn get_brief_frequency() -> Result<i64, String> {
+    Ok(read_setting("brief_frequency_days").and_then(|v| v.parse::<i64>().ok()).unwrap_or(7))
+}
+
+#[tauri::command]
+pub async fn set_brief_frequency(days: i64) -> Result<(), String> {
+    if days < 1 { return Err("Frequency must be at least 1 day".into()); }
+    write_setting("brief_frequency_days", &days.to_string())
+}
+
+#[tauri::command]
+pub async fn get_organization_name() -> Result<String, String> {
+    // Prefer the explicit org-name setting; fall back to the onboarding company name
+    // (stored as JSON under the `company_info` setting key).
+    if let Some(n) = read_setting("organization_name") {
+        if !n.trim().is_empty() { return Ok(n); }
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let name: String = conn.query_row(
+        "SELECT COALESCE(json_extract(value, '$.name'), '') FROM settings WHERE key='company_info'",
+        [], |r| r.get(0),
+    ).unwrap_or_default();
+    Ok(name)
+}
+
+#[tauri::command]
+pub async fn set_organization_name(name: String) -> Result<(), String> {
+    write_setting("organization_name", name.trim())
+}
+
 // ============================================================
 //  Email + AI
 // ============================================================
@@ -6137,16 +6188,26 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         _ => Utc::now().date_naive(),
     };
     let now_date = anchor;
-    let wd = chrono::Datelike::weekday(&now_date).num_days_from_sunday() as i64;
 
-    let week_start = format!("{}", (now_date - chrono::Duration::days(wd)).format("%Y-%m-%d"));
-    let week_end = format!("{}", (now_date + chrono::Duration::days(6 - wd)).format("%Y-%m-%d"));
-    let last_week_start = format!("{}", (now_date - chrono::Duration::days(wd + 7)).format("%Y-%m-%d"));
-    let last_week_end = format!("{}", (now_date - chrono::Duration::days(wd + 1)).format("%Y-%m-%d"));
+    // Brief period length is user-configurable (default weekly). The window is a
+    // rolling `period_days`-day span ending on the anchor day (inclusive).
+    let period_days: i64 = conn
+        .query_row("SELECT value FROM settings WHERE key='brief_frequency_days'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|d| *d >= 1)
+        .unwrap_or(7);
+
+    let week_start = format!("{}", (now_date - chrono::Duration::days(period_days - 1)).format("%Y-%m-%d"));
+    let week_end = format!("{}", now_date.format("%Y-%m-%d")); // inclusive last day (for display)
+    let end_excl = format!("{}", (now_date + chrono::Duration::days(1)).format("%Y-%m-%d")); // exclusive upper bound for queries
+    let last_week_start = format!("{}", (now_date - chrono::Duration::days(2 * period_days - 1)).format("%Y-%m-%d"));
+    let last_week_end = week_start.clone();
+    let _ = &last_week_end;
 
     let revenue_this_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
-        [&week_start, &week_end], |r| r.get(0)
+        [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
     let revenue_last_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
@@ -6154,7 +6215,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     ).unwrap_or(0.0);
     let profit_this_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
-        [&week_start, &week_end], |r| r.get(0)
+        [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_last_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
@@ -6162,7 +6223,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     ).unwrap_or(0.0);
     let avg_margin_this_week: f64 = conn.query_row(
         "SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
-        [&week_start, &week_end], |r| r.get(0)
+        [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let month_start = format!("{}-01", now.format("%Y-%m"));
@@ -6170,7 +6231,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     struct DfProfit { count: u32, net_profit: f64, jack: f64, ben: f64, business: f64, loss_count: u32, loss_total: f64 }
     let df_this_week: DfProfit = conn.query_row(
         &format!("SELECT COUNT(*) as count, COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), COUNT(CASE WHEN net_profit < 0 THEN 1 END), COALESCE(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
-        [&week_start, &week_end],
+        [&week_start, &end_excl],
         |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: r.get::<_,i64>(5).unwrap_or(0) as u32, loss_total: r.get(6)? })
     ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
 
