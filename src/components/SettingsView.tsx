@@ -943,10 +943,43 @@ function SyncTab() {
   const [passphrase,       setPassphrase]       = useState("");
   const [settingPassphrase,setSettingPassphrase]= useState(false);
   const [encryptError,     setEncryptError]     = useState<string | null>(null);
+  // Cloud network sync (Phase 2)
+  const [net,   setNet]   = useState<{ connected: boolean; url: string; pending_push: number; pull_cursor: number } | null>(null);
+  const [nUrl,  setNUrl]  = useState("https://ecliptr.app");
+  const [nEmail,setNEmail]= useState("");
+  const [nPass, setNPass] = useState("");
+  const [nBusy, setNBusy] = useState(false);
+  const [nErr,  setNErr]  = useState<string | null>(null);
+  const [nMsg,  setNMsg]  = useState<string | null>(null);
 
   const refresh       = () => api.syncStatus().then(setStatus);
   const checkEncrypted= () => api.syncIsEncrypted().then(setEncrypted).catch(() => {});
-  useEffect(() => { refresh(); checkEncrypted(); }, []);
+  const refreshNet    = () => api.netsyncStatus().then(setNet).catch(() => {});
+  useEffect(() => { refresh(); checkEncrypted(); refreshNet(); }, []);
+
+  const connectNet = async () => {
+    setNBusy(true); setNErr(null); setNMsg(null);
+    try {
+      await api.netsyncConnect(nUrl.trim(), nEmail.trim(), nPass);
+      setNPass(""); setNMsg("Connected — your workspace is syncing.");
+      await refreshNet();
+    } catch (e: any) { setNErr(e.toString()); }
+    finally { setNBusy(false); }
+  };
+  const disconnectNet = async () => {
+    setNBusy(true);
+    try { await api.netsyncDisconnect(); setNMsg(null); await refreshNet(); }
+    finally { setNBusy(false); }
+  };
+  const syncNow = async () => {
+    setNBusy(true); setNErr(null); setNMsg(null);
+    try {
+      const r = await api.netsyncSyncNow();
+      setNMsg(`Pushed ${r.pushed}, pulled ${r.pulled}.`);
+      await refreshNet();
+    } catch (e: any) { setNErr(e.toString()); }
+    finally { setNBusy(false); }
+  };
 
   const replay = async () => {
     setReplaying(true);
@@ -993,6 +1026,94 @@ function SyncTab() {
         >
           {replaying ? "Replaying..." : "Replay All Events"}
         </button>
+      </div>
+
+      {/* Cloud network sync — connect this desktop to the central server */}
+      <div className="border-t border-line pt-5">
+        <SectionLabel>Cloud Sync</SectionLabel>
+        {net?.connected ? (
+          <div className="mt-2 space-y-3">
+            <div className="bg-surface-2/80 border border-line rounded-xl px-4 py-3 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-success shadow-[0_0_6px_rgba(16,185,129,0.4)]" />
+                <p className="text-[13px] text-success-ink font-medium truncate">Connected to {net.url}</p>
+              </div>
+              <div className="flex justify-between text-[13px]">
+                <span className="text-muted">Pending to push</span>
+                <span className="font-mono text-ink">{net.pending_push}</span>
+              </div>
+              <div className="flex justify-between text-[13px]">
+                <span className="text-muted">Pull position</span>
+                <span className="font-mono text-ink">{net.pull_cursor}</span>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={syncNow}
+                disabled={nBusy}
+                className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+              >
+                {nBusy ? "Syncing…" : "Sync now"}
+              </button>
+              <button
+                onClick={disconnectNet}
+                disabled={nBusy}
+                className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-5 h-9 rounded-lg text-[13px] transition-colors disabled:opacity-50"
+              >
+                Disconnect
+              </button>
+            </div>
+            {nMsg && <p className="text-[12px] text-muted">{nMsg}</p>}
+            {nErr && (
+              <div className="text-danger-ink text-[13px] flex items-center gap-1.5">
+                <AlertCircle size={13} /> {nErr}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mt-2">
+            <p className="text-[12px] text-muted mb-3">
+              Connect this desktop to your Ecliptr workspace to sync over the internet — no shared
+              folder needed. Sign in with your team account.
+            </p>
+            <div className="space-y-2 max-w-sm">
+              <input
+                value={nUrl}
+                onChange={(e) => setNUrl(e.target.value)}
+                placeholder="Server URL"
+                className={inp}
+              />
+              <input
+                value={nEmail}
+                onChange={(e) => setNEmail(e.target.value)}
+                placeholder="Email"
+                autoComplete="username"
+                className={inp}
+              />
+              <input
+                type="password"
+                value={nPass}
+                onChange={(e) => setNPass(e.target.value)}
+                placeholder="Password"
+                autoComplete="current-password"
+                onKeyDown={(e) => { if (e.key === "Enter") connectNet(); }}
+                className={inp}
+              />
+              <button
+                onClick={connectNet}
+                disabled={nBusy || !nUrl.trim() || !nEmail.trim() || !nPass}
+                className="bg-accent hover:bg-accent-hover text-white px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+              >
+                {nBusy ? "Connecting…" : "Connect"}
+              </button>
+            </div>
+            {nErr && (
+              <div className="text-danger-ink text-[13px] mt-2 flex items-center gap-1.5">
+                <AlertCircle size={13} /> {nErr}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Updates */}

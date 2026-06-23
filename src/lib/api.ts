@@ -1253,6 +1253,14 @@ export const api = {
     invoke<void>("sync_set_passphrase", { passphrase }),
   syncIsEncrypted: () => invoke<boolean>("sync_is_encrypted"),
 
+  // Network sync (Phase 2 — central server push/pull)
+  netsyncStatus: () =>
+    invoke<{ connected: boolean; url: string; pending_push: number; pull_cursor: number }>("netsync_status"),
+  netsyncConnect: (url: string, email: string, password: string) =>
+    invoke<void>("netsync_connect", { url, email, password }),
+  netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
+  netsyncSyncNow: () => invoke<{ pushed: number; pulled: number }>("netsync_sync_now"),
+
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
   getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number }[]>("get_monthly_profit", { month }),
