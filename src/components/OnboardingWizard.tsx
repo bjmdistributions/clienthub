@@ -126,9 +126,9 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
             <div className="text-center py-8">
               <div className="w-16 h-16 rounded-2xl mx-auto mb-5 flex items-center justify-center"
                 style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 28px var(--accent-glow)" }}>
-                <img src="/brokr-logo.png" alt="brokr" className="h-8 w-auto" />
+                <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-9 w-9" />
               </div>
-              <h3 className="text-[20px] font-bold text-ink mb-2">Welcome to brokr</h3>
+              <h3 className="text-[20px] font-bold text-ink mb-2">Welcome to Ecliptr</h3>
               <p className="text-[13px] text-muted max-w-[320px] mx-auto leading-relaxed mb-2">
                 Your clients, invoices, deal flow, and newsletters — all in one place.
               </p>
@@ -259,7 +259,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 <Check size={20} className="text-success-ink" />
               </div>
               <h3 className="text-[16px] font-bold text-ink mb-2">You're all set!</h3>
-              <p className="text-[13px] text-muted mb-4">brokr is ready.</p>
+              <p className="text-[13px] text-muted mb-4">Ecliptr is ready.</p>
               <div className="text-[12px] text-muted space-y-1">
                 {biz.company && <p>Business info saved</p>}
                 {!emailSkipped && emailSettings.user && <p>Email configured</p>}
@@ -285,7 +285,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
             )}
             {step === 4 && (
               <button onClick={finish} className="bg-accent hover:bg-accent-hover text-white px-6 h-9 rounded-lg text-[13px] font-medium">
-                Open brokr
+                Open Ecliptr
               </button>
             )}
           </div>

@@ -65,7 +65,7 @@ export default function UpdateNotification() {
           <Download size={14} className="text-white" />
         </div>
         <div>
-          <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>brokr {update.version} is available</p>
+          <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>Ecliptr {update.version} is available</p>
           <p className="text-[11px]" style={{ color: error ? "var(--danger, #ef4444)" : "var(--t-tx3)" }}>
             {error ? `Update failed: ${error}` : installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}%` : "Update now to get the latest features and fixes"}
           </p>

@@ -1048,7 +1048,7 @@ function SyncTab() {
       <div className="border-t border-line pt-5">
         <SectionLabel>How Sync Works</SectionLabel>
         <p className="text-[12px] text-muted mt-2 mb-2">
-          brokr uses an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
+          Ecliptr uses an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
         </p>
         <code className="block bg-surface-2 border border-line px-4 py-3 rounded-xl text-[11px] font-mono text-muted">
           ~/Library/Application Support/com.bjmdistributions.clienthub/sync/ (macOS)<br />
@@ -2081,7 +2081,7 @@ function SheetsTab() {
   return (
     <div className="max-w-4xl space-y-4">
       <p className="text-[12px] text-muted">
-        Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. brokr syncs new clients automatically every 10 minutes.
+        Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr syncs new clients automatically every 10 minutes.
       </p>
 
       {/* Setup */}

@@ -331,8 +331,8 @@ export default function App() {
       }}>
         {/* Brand */}
         <div className="h-[54px] px-4 flex items-center gap-2.5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-          <img src="/brokr-logo.png" alt="brokr" className="h-6 w-auto flex-shrink-0" />
-          <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "brokr"}</h1>
+          <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
+          <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
 
           {/* Dark mode toggle */}
           <button

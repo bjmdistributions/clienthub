@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, Me } from "../lib/api";
 
 /**
- * Full-screen animated brokr auth. Shows "Create owner account" (bootstrap) when
+ * Full-screen animated Ecliptr auth. Shows "Create owner account" (bootstrap) when
  * no accounts exist yet, otherwise a sign-in form. On success it returns the
  * signed-in `Me` to the app.
  */
@@ -53,15 +53,16 @@ export default function AuthView({
       <div className="relative z-10 w-full max-w-[380px] px-6 animate-auth-rise">
         <div className="flex flex-col items-center text-center mb-7">
           <div className="auth-logo-tile mb-4">
-            <img src="/brokr-logo.png" alt="brokr" className="h-9 w-auto" />
+            <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-10 w-10" />
           </div>
+          <p className="text-[16px] font-semibold tracking-tight text-white/90 mb-2">Ecliptr</p>
           <h1 className="text-[26px] font-bold tracking-tight text-white">
             {mode === "bootstrap" ? "Create your account" : "Welcome back"}
           </h1>
           <p className="text-[13px] text-white/55 mt-1.5 max-w-[300px]">
             {mode === "bootstrap"
               ? `Set up the owner account for ${orgName || "your organization"}. This becomes your login on web and mobile too.`
-              : `Sign in to ${orgName || "brokr"}.`}
+              : `Sign in to ${orgName || "Ecliptr"}.`}
           </p>
         </div>
 
@@ -95,7 +96,7 @@ export default function AuthView({
           </button>
         </div>
 
-        <p className="text-center text-[11px] text-white/30 mt-8">brokr</p>
+        <p className="text-center text-[11px] text-white/30 mt-8">Ecliptr</p>
       </div>
 
       <style>{`
