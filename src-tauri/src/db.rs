@@ -113,6 +113,7 @@ fn is_benign_migration_error(e: &rusqlite::Error) -> bool {
     m.contains("duplicate column name")
         || m.contains("already exists")
         || m.contains("duplicate column")
+        || m.contains("no such table")
 }
 
 fn seed_defaults(conn: &rusqlite::Connection) -> Result<()> {
@@ -802,6 +803,38 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender_id);
         CREATE INDEX IF NOT EXISTS idx_msg_recipient ON messages(recipient_id);
+        "#,
+    ),
+    (
+        42,
+        // Multi-tenancy: every business table gains org_id (existing data → the
+        // default org). Statements run individually; benign "duplicate column"
+        // / "no such table" are skipped by run_migrations.
+        r#"
+        ALTER TABLE clients ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE interactions ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE invoices ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE deals ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE deal_flows ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE suppliers ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE supplier_price_history ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE quotes ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE inventory ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE payment_methods ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE payments ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE scheduled_sends ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE newsletters ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE newsletter_sends ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE newsletter_schedules ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE messages ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE categories ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE recurring_invoices ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE settings ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE orgs ADD COLUMN plan TEXT NOT NULL DEFAULT 'free';
+        ALTER TABLE roles ADD COLUMN system_key TEXT;
+        CREATE INDEX IF NOT EXISTS idx_clients_org ON clients(org_id);
+        CREATE INDEX IF NOT EXISTS idx_invoices_org ON invoices(org_id);
+        CREATE INDEX IF NOT EXISTS idx_deal_flows_org ON deal_flows(org_id);
         "#,
     ),
 ];
