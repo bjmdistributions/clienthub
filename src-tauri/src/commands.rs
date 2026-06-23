@@ -6180,7 +6180,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
 
     // If rep_name is set, filter deal_flow queries to only include deals where the client has source_rep matching
     let rep_join = rep_name.as_ref().map(|_| "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id").unwrap_or("");
-    let rep_filter = rep_name.as_ref().map(|r| format!(" AND json_extract(c.metadata,'$.source_rep')='{}'", r)).unwrap_or_default();
+    let rep_filter = rep_name.as_ref().map(|r| { let e = r.replace('\'', "''"); format!(" AND (json_extract(c.metadata,'$.lead_representative')='{e}' OR json_extract(c.metadata,'$.source_rep')='{e}')") }).unwrap_or_default();
 
     // Use caller-supplied date or today to anchor the week
     let anchor: chrono::NaiveDate = match for_date.as_deref() {
