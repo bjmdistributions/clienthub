@@ -1160,6 +1160,7 @@ export const api = {
   listStaff: () => invoke<StaffMember[]>("list_staff"),
   updateStaff: (id: string, fields: Partial<{ roleId: string; status: string; commissionPct: number; hidePayCuts: boolean }>) =>
     invoke<void>("update_staff", { id, ...fields }),
+  deleteStaff: (id: string) => invoke<void>("delete_staff", { id }),
   listRoles: () => invoke<{ roles: RoleDef[]; modules: string[] }>("list_roles"),
   createRole: (name: string) => invoke<RoleDef>("create_role", { name }),
   updateRole: (id: string, permissions: string[]) => invoke<void>("update_role", { id, permissions }),

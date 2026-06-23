@@ -2440,6 +2440,10 @@ function PeoplePanel() {
   const setStatus = async (id: string, status: string) => { await api.updateStaff(id, { status }); load(); };
   const setComm = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
   const setHide = async (id: string, hidePayCuts: boolean) => { await api.updateStaff(id, { hidePayCuts }); };
+  const remove = async (id: string, name: string) => {
+    if (!window.confirm(`Remove ${name} from the team? This permanently deletes their account and unassigns them from any deals. This can't be undone.`)) return;
+    try { await api.deleteStaff(id); load(); } catch (e: any) { window.alert(typeof e === "string" ? e : (e?.message || "Failed to remove")); }
+  };
 
   return (
     <div className="bg-surface border border-line rounded-xl overflow-hidden">
@@ -2476,9 +2480,12 @@ function PeoplePanel() {
               </td>
               <td className="px-4 py-3 text-right">
                 {u.id === me ? <span className="text-[11px] text-muted">You</span>
-                  : u.status === "active"
-                    ? <button onClick={() => setStatus(u.id, "suspended")} className="text-[12px] text-danger-ink font-medium">Suspend</button>
-                    : <button onClick={() => setStatus(u.id, "active")} className="text-[12px] text-accent font-medium">Reactivate</button>}
+                  : <div className="flex items-center gap-3 justify-end">
+                      {u.status === "active"
+                        ? <button onClick={() => setStatus(u.id, "suspended")} className="text-[12px] text-danger-ink font-medium">Suspend</button>
+                        : <button onClick={() => setStatus(u.id, "active")} className="text-[12px] text-accent font-medium">Reactivate</button>}
+                      <button onClick={() => remove(u.id, u.display_name)} className="text-[12px] text-danger-ink font-medium">Remove</button>
+                    </div>}
               </td>
             </tr>
           ))}

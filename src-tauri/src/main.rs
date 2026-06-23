@@ -339,6 +339,7 @@ fn main() {
             employees::employee_login,
             employees::list_staff,
             employees::update_staff,
+            employees::delete_staff,
             employees::list_roles,
             employees::create_role,
             employees::update_role,

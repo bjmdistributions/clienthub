@@ -260,6 +260,35 @@ pub fn update_staff(id: String, role_id: Option<String>, status: Option<String>,
     Ok(())
 }
 
+/// Admin: permanently remove a team member. Can't delete yourself or the last
+/// admin. Unassigns them from deals and syncs the deletion to web + other devices.
+#[tauri::command]
+pub fn delete_staff(id: String) -> Result<(), String> {
+    require_admin()?;
+    if current_staff_id().as_deref() == Some(id.as_str()) {
+        return Err("You can't delete your own account.".into());
+    }
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let exists: i64 = conn.query_row("SELECT COUNT(*) FROM staff_accounts WHERE id=?1", [&id], |r| r.get(0)).unwrap_or(0);
+        if exists == 0 { return Err("User not found.".into()); }
+        let admin_pred = "(r.permissions_json LIKE '%\"*\"%' OR r.permissions_json LIKE '%admin:manage%')";
+        let target_admin: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id WHERE s.id=?1 AND {admin_pred}"),
+            [&id], |r| r.get(0)).unwrap_or(0);
+        if target_admin > 0 {
+            let others: i64 = conn.query_row(
+                &format!("SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id WHERE s.id<>?1 AND s.status='active' AND {admin_pred}"),
+                [&id], |r| r.get(0)).unwrap_or(0);
+            if others == 0 { return Err("Can't remove the last admin.".into()); }
+        }
+        conn.execute("DELETE FROM deal_reps WHERE lead_rep_id=?1", [&id]).ok();
+        conn.execute("DELETE FROM staff_accounts WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    }
+    let _ = sync::record_delete("staff_accounts", &id);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn list_roles() -> Result<Value, String> {
     require_admin()?;
