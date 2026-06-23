@@ -144,12 +144,21 @@ fn sync_upsert(table: &str, row_id: &str, cols: Map<String, Value>) {
 #[derive(Serialize)]
 pub struct AuthStatus { pub has_accounts: bool, pub signed_in: bool }
 
+fn admin_exists() -> bool {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return false };
+    conn.query_row(
+        "SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id
+         WHERE s.status='active' AND (r.permissions_json LIKE '%\"*\"%' OR r.permissions_json LIKE '%admin:manage%')",
+        [], |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0
+}
+
 #[tauri::command]
 pub fn employee_status() -> Result<AuthStatus, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM staff_accounts WHERE status='active'", [], |r| r.get(0)).unwrap_or(0);
+    // `has_accounts` drives login vs bootstrap: we only require login once an
+    // admin exists. Invited non-admin staff must not block owner setup.
     let signed_in = current_staff_id().and_then(|id| load_me(&id)).is_some();
-    Ok(AuthStatus { has_accounts: count > 0, signed_in })
+    Ok(AuthStatus { has_accounts: admin_exists(), signed_in })
 }
 
 #[tauri::command]
@@ -167,10 +176,12 @@ pub fn employee_bootstrap(display_name: String, email: String, password: String)
     }
     let email = email.trim().to_lowercase();
     if email.is_empty() { return Err("Enter an email.".into()); }
+    if admin_exists() { return Err("An owner account already exists. Sign in instead.".into()); }
+    // Block duplicate emails (case-insensitive).
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let has: i64 = conn.query_row("SELECT COUNT(*) FROM staff_accounts", [], |r| r.get(0)).unwrap_or(0);
-        if has > 0 { return Err("An owner account already exists. Sign in instead.".into()); }
+        let dup: i64 = conn.query_row("SELECT COUNT(*) FROM staff_accounts WHERE lower(email)=?1", [&email], |r| r.get(0)).unwrap_or(0);
+        if dup > 0 { return Err("That email is already in use. Sign in instead.".into()); }
     }
     let hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|_| "Could not secure password")?;
     let id = format!("usr_{}", uuid::Uuid::new_v4().simple());
