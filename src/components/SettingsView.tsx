@@ -2573,7 +2573,7 @@ function InvitesPanel() {
   const [roleId, setRoleId] = useState("role_sales");
   const [email, setEmail] = useState("");
   const [created, setCreated] = useState<{ token: string; signup_path: string } | null>(null);
-  const base = "https://brokr-app.com";
+  const base = "https://ecliptr.app";
   const load = () => {
     api.listInvites().then(setInvites).catch(() => {});
     api.listRoles().then((r) => setRoles(r.roles)).catch(() => {});
