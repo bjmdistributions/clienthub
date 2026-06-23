@@ -5,7 +5,7 @@ import {
   Mail,
   Settings as SettingsIcon,
   LayoutDashboard,
-  RefreshCw,
+  RefreshCw, LogOut,
   Briefcase,
   BarChart3,
   Layers,
@@ -43,9 +43,10 @@ import CommandPalette from "./components/CommandPalette";
 import ShortcutsModal from "./components/ShortcutsModal";
 import AutomationLogView from "./components/AutomationLogView";
 import OnboardingWizard from "./components/OnboardingWizard";
+import AuthView from "./components/AuthView";
 import { useAppStore } from "./lib/store";
-import { api, User } from "./lib/api";
-import { canView } from "./lib/permissions";
+import { api, Me } from "./lib/api";
+import { canViewTab } from "./lib/permissions";
 
 type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "settings";
 
@@ -149,7 +150,9 @@ export default function App() {
   const [sharePanelIds, setSharePanelIds] = useState<string[] | null>(null);
   const [shareMediaBase, setShareMediaBase] = useState("");
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
-  const [currentUser, setCurrentUser] = useState<any | null>(undefined);
+  // me: undefined = loading, null = signed out, Me = signed in.
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [hasAccounts, setHasAccounts] = useState<boolean>(true);
   const [orgName, setOrgName] = useState<string>("");
 
   useEffect(() => {
@@ -159,8 +162,19 @@ export default function App() {
 
   useEffect(() => {
     if (onboarded !== true) return;
-    api.getCurrentUser().then((u) => setCurrentUser(u)).catch(() => setCurrentUser(null));
+    api.employeeStatus()
+      .then((s) => {
+        setHasAccounts(s.has_accounts);
+        if (s.signed_in) api.employeeMe().then((u) => setMe(u)).catch(() => setMe(null));
+        else setMe(null);
+      })
+      .catch(() => setMe(null));
   }, [onboarded]);
+
+  const signOut = async () => {
+    try { await api.employeeLogout(); } catch {}
+    setMe(null);
+  };
 
   useEffect(() => {
     const handler = async (e: Event) => {
@@ -271,7 +285,7 @@ export default function App() {
     { id: "globe",     label: "Globe",      icon: Globe },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];
-  const tabs = allTabs.filter((t) => canView(currentUser?.role as any, t.id));
+  const tabs = allTabs.filter((t) => canViewTab(me, t.id as any));
 
   // Background per tab (globe is full-bleed dark); shared by single + split panes.
   const paneBg = (t: Tab) => (t === "globe" ? "#0a0a14" : "var(--t-bg)");
@@ -294,7 +308,7 @@ export default function App() {
           {t === "analytics"  && <AnalyticsView />}
           {t === "health"     && <TiersView />}
           {t === "automation" && <AutomationLogView />}
-          {t === "brief"      && <BriefView currentUser={currentUser} />}
+          {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
           {t === "email"      && <EmailView />}
           {t === "settings"   && <SettingsView />}
         </div>
@@ -305,18 +319,8 @@ export default function App() {
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
   if (onboarded === null) return null;
 
-  if (currentUser === undefined) return null;
-  if (currentUser === null) return <UserPicker onSetUser={(u) => setCurrentUser(u)} />;
-  if (!currentUser.is_active) {
-    return (
-      <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
-        <div className="text-center">
-          <h2 className="text-[18px] font-bold text-ink mb-2">Access Revoked</h2>
-          <p className="text-[13px] text-muted">Your access has been removed. Contact your team owner.</p>
-        </div>
-      </div>
-    );
-  }
+  if (me === undefined) return null; // loading session
+  if (me === null) return <AuthView mode={hasAccounts ? "login" : "bootstrap"} onAuthed={(u) => setMe(u)} />;
 
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
@@ -435,6 +439,28 @@ export default function App() {
               {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
             </span>
           </button>
+
+          {/* Signed-in user + sign out */}
+          <div className="flex items-center gap-2 px-1.5 pt-2 mt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+            <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+              {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
+              <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
+            </div>
+            <button
+              onClick={signOut}
+              title="Sign out"
+              className="p-1.5 rounded-md transition-colors flex-shrink-0"
+              style={{ color: "#7A7A90" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+            >
+              <LogOut size={13} />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -512,57 +538,3 @@ export default function App() {
   );
 }
 
-function UserPicker({ onSetUser }: { onSetUser: (u: any) => void }) {
-  const [users, setUsers] = useState<User[]>([]);
-  const [inviteCode, setInviteCode] = useState("");
-  const [error, setError] = useState("");
-
-  useEffect(() => { api.listUsers().then(setUsers).catch(() => {}); }, []);
-
-  const select = async (u: User) => {
-    await api.setCurrentUser(u.id);
-    onSetUser(u);
-  };
-
-  const claim = async () => {
-    if (!inviteCode.trim()) return;
-    setError("");
-    try {
-      const u = await api.claimInvite(inviteCode.trim());
-      onSetUser(u);
-    } catch (e: any) { setError(e.toString()); }
-  };
-
-  const active = users.filter((u) => u.is_active);
-  return (
-    <div className="flex h-screen items-center justify-center" style={{ background: "var(--t-bg)" }}>
-      <div className="bg-surface border border-line rounded-2xl shadow-xl p-8 w-full max-w-sm">
-        <div className="flex flex-col items-center text-center mb-6">
-          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3"
-            style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 24px var(--accent-glow)" }}>
-            <img src="/brokr-logo.png" alt="brokr" className="h-7 w-auto" />
-          </div>
-          <h2 className="text-[18px] font-bold text-ink">Welcome back</h2>
-          <p className="text-[12px] text-muted mt-1">Choose your profile, or join your team with an invite code.</p>
-        </div>
-        <div className="space-y-2 mb-5">
-          {active.map((u) => (
-            <button key={u.id} onClick={() => select(u)} className="w-full text-left px-4 py-3 rounded-xl border border-line hover:border-accent/20 hover:bg-accent/10 transition-colors">
-              <p className="text-[14px] font-medium text-ink">{u.name}</p>
-              <p className="text-[11px] text-muted">{u.email} — {u.role}</p>
-            </button>
-          ))}
-          {active.length === 0 && <p className="text-[12px] text-muted">No users found. Enter an invite code below.</p>}
-        </div>
-        <div className="border-t border-gray-50 pt-4">
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Invite Code</p>
-          <div className="flex gap-2">
-            <input className="border border-line px-3 h-9 rounded-lg text-[13px] flex-1" placeholder="Enter 6-digit code" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && claim()} />
-            <button onClick={claim} disabled={!inviteCode.trim()} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Claim</button>
-          </div>
-          {error && <p className="text-[11px] text-danger-ink mt-2">{error}</p>}
-        </div>
-      </div>
-    </div>
-  );
-}

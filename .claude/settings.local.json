@@ -91,7 +91,10 @@
       "Bash(node --check www/app.js)",
       "Bash(node --check www/sw.js)",
       "Bash(curl -4 -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/invoices/x/email)",
-      "Bash(echo \"invoice email route \\(expect 401/405 not 404\\): $\\(curl -4 -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/invoices/x/email\\)\")"
+      "Bash(echo \"invoice email route \\(expect 401/405 not 404\\): $\\(curl -4 -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/invoices/x/email\\)\")",
+      "Bash(curl -4 -s \"https://api.github.com/repos/bjmdistributions/clienthub/releases/tags/v0.14.5\")",
+      "Bash(curl -4 -s -o /dev/null -w '%{http_code}' 'http://localhost:8090/api/dashboard/monthly-profit?month=2026-06')",
+      "Bash(echo \"monthly-profit route: $\\(curl -4 -s -o /dev/null -w '%{http_code}' 'http://localhost:8090/api/dashboard/monthly-profit?month=2026-06'\\)\")"
     ]
   }
 }

@@ -359,7 +359,7 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
 
 // ---------- Apply remote events ----------
 
-const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules"];
+const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs"];
 
 fn apply_event(event: &SyncEvent) -> Result<()> {
     if already_applied(&event.id)? {
@@ -392,6 +392,16 @@ fn apply_event(event: &SyncEvent) -> Result<()> {
     Ok(())
 }
 
+/// Primary-key column for a synced table (most use `id`).
+fn primary_key(table: &str) -> &'static str {
+    match table {
+        "settings" => "key",
+        "invites" => "token",
+        "deal_reps" => "deal_flow_id",
+        _ => "id",
+    }
+}
+
 fn apply_upsert(
     table: &str,
     row_id: &str,
@@ -399,6 +409,7 @@ fn apply_upsert(
     hlc: Hlc,
 ) -> Result<()> {
     let conn = pool().get()?;
+    let pk = primary_key(table);
 
     // Per-column LWW: only apply columns whose existing clock is older.
     let mut winning: Vec<(String, serde_json::Value)> = Vec::new();
@@ -420,7 +431,7 @@ fn apply_upsert(
     // Insert sentinel if row doesn't exist.
     let exists: i64 = conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM {} WHERE id=?1", table),
+            &format!("SELECT COUNT(*) FROM {} WHERE {}=?1", table, pk),
             [row_id],
             |r| r.get(0),
         )
@@ -428,7 +439,7 @@ fn apply_upsert(
 
     if exists == 0 {
         // Insert a stub row; required-NOT-NULL columns must be present in `winning`.
-        let cols = std::iter::once("id".to_string())
+        let cols = std::iter::once(pk.to_string())
             .chain(winning.iter().map(|(c, _)| c.clone()))
             .collect::<Vec<_>>();
         let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{}", i)).collect();
@@ -451,9 +462,10 @@ fn apply_upsert(
             .map(|(i, (c, _))| format!("{}=?{}", c, i + 1))
             .collect();
         let sql = format!(
-            "UPDATE {} SET {} WHERE id=?{}",
+            "UPDATE {} SET {} WHERE {}=?{}",
             table,
             set_clause.join(","),
+            pk,
             winning.len() + 1
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = winning.iter().map(|(_, v)| json_to_sql(v)).collect();
@@ -470,7 +482,7 @@ fn apply_delete(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {
     // Tombstone wins iff newer than all existing column clocks.
     write_tombstone(table, row_id, hlc)?;
     let conn = pool().get()?;
-    conn.execute(&format!("DELETE FROM {} WHERE id=?1", table), [row_id])?;
+    conn.execute(&format!("DELETE FROM {} WHERE {}=?1", table, primary_key(table)), [row_id])?;
     Ok(())
 }
 

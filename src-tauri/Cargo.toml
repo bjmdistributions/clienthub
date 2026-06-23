@@ -39,6 +39,7 @@ r2d2_sqlite = "0.25"
 # Time + IDs
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+bcrypt = "0.15"
 
 # HTTP + AI
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }

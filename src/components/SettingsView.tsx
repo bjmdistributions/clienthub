@@ -17,6 +17,9 @@ import {
   SheetSyncLogEntry,
   ProfitSplit,
   User,
+  StaffMember,
+  RoleDef,
+  InviteRow,
   FollowUpRule,
   FollowUpLogEntry,
   StripeConfigStatus,
@@ -2395,100 +2398,226 @@ function BackupTab() {
   );
 }
 
-function TeamTab() {
-  const [users, setUsers] = useState<User[]>([]);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState("sales_rep");
-  const [inviteResult, setInviteResult] = useState<User | null>(null);
-  const [error, setError] = useState<string | null>(null);
+const MODULE_LABELS: Record<string, string> = {
+  clients: "Clients", inventory: "Inventory", deal_flow: "Deals & pay (financial)",
+  quotes: "Quotes", email: "Email", manifests: "Manifests",
+  analytics: "Analytics & reports", settings: "Settings",
+};
+const MATRIX_MODULES = ["clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "settings"];
+const ACTIONS = ["view", "edit", "export"] as const;
 
-  const load = () => { api.listUsers().then(setUsers).catch(() => {}); };
+function TeamTab() {
+  const [sub, setSub] = useState<"people" | "roles" | "invites">("people");
+  return (
+    <div className="max-w-3xl">
+      <div className="flex gap-0 border-b border-line mb-5">
+        {(["people", "roles", "invites"] as const).map((s) => (
+          <button key={s} onClick={() => setSub(s)}
+            className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px transition-colors capitalize ${sub === s ? "border-accent text-accent-hover font-medium" : "border-transparent text-muted hover:text-ink"}`}>
+            {s}
+          </button>
+        ))}
+      </div>
+      {sub === "people" && <PeoplePanel />}
+      {sub === "roles" && <RolesPanel />}
+      {sub === "invites" && <InvitesPanel />}
+    </div>
+  );
+}
+
+function PeoplePanel() {
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [roles, setRoles] = useState<RoleDef[]>([]);
+  const [me, setMe] = useState<string>("");
+  const load = () => {
+    api.listStaff().then(setStaff).catch(() => {});
+    api.listRoles().then((r) => setRoles(r.roles)).catch(() => {});
+    api.employeeMe().then((m) => setMe(m?.id || "")).catch(() => {});
+  };
   useEffect(() => { load(); }, []);
 
-  const handleInvite = async () => {
-    if (!name.trim() || !email.trim()) return;
-    setError(null);
-    try {
-      const u = await api.inviteUser(name.trim(), email.trim(), role);
-      setInviteResult(u);
-      setName(""); setEmail(""); setRole("sales_rep");
-      load();
-    } catch (e: any) { setError(e.toString()); }
-  };
-
-  const handleRemove = async (id: string) => {
-    if (!confirm("Remove this user? They will lose access on next app launch.")) return;
-    await api.removeUser(id);
-    load();
-  };
-
-  const handleRoleChange = async (id: string, newRole: string) => {
-    await api.updateUserRole(id, newRole);
-    load();
-  };
-
-  const roleLabel = (r: string) => r === "sales_rep" ? "Sales Rep" : r === "owner" ? "Owner" : "Viewer";
-  const roleColor = (r: string) => r === "owner" ? "bg-warning-bg text-warning-ink" : r === "sales_rep" ? "bg-info-bg text-info-ink" : "bg-surface-3 text-ink-2";
+  const setRole = async (id: string, roleId: string) => { await api.updateStaff(id, { roleId }); load(); };
+  const setStatus = async (id: string, status: string) => { await api.updateStaff(id, { status }); load(); };
+  const setComm = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
+  const setHide = async (id: string, hidePayCuts: boolean) => { await api.updateStaff(id, { hidePayCuts }); };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Team</h3>
-      <p className="text-[12px] text-muted mb-5">Invite team members and manage their access.</p>
-
-      <div className="space-y-2 mb-5">
-        {users.filter(u => u.is_active).map((u) => (
-          <div key={u.id} className="flex items-center justify-between px-4 py-3 bg-surface-2 rounded-xl">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-accent/10 flex items-center justify-center text-[12px] font-bold text-accent">
-                {u.name.charAt(0).toUpperCase()}
-              </div>
-              <div>
-                <p className="text-[13px] font-medium text-ink">{u.name}</p>
-                <p className="text-[11px] text-muted">{u.email}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {u.role !== "owner" ? (
-                <select value={u.role} onChange={(e) => handleRoleChange(u.id, e.target.value)}
-                  className="border border-line px-2 h-7 rounded-lg text-[11px]">
-                  <option value="sales_rep">Sales Rep</option>
-                  <option value="viewer">Viewer</option>
+    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+      <table className="w-full text-[13px]">
+        <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
+          {["Member", "Role", "Pay cut", "Status", ""].map((h, i) => (
+            <th key={i} className={`text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>
+          ))}
+        </tr></thead>
+        <tbody>
+          {staff.map((u) => (
+            <tr key={u.id} style={{ borderBottom: "1px solid var(--t-b2)" }}>
+              <td className="px-4 py-3"><div className="font-medium text-ink">{u.display_name}</div><div className="text-[11px] text-muted">{u.email}</div></td>
+              <td className="px-4 py-3">
+                <select value={u.role_id} disabled={u.id === me} onChange={(e) => setRole(u.id, e.target.value)}
+                  className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface disabled:opacity-60">
+                  {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
-              ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink font-semibold">OWNER</span>
-              )}
-              {u.role !== "owner" && (
-                <button onClick={() => handleRemove(u.id)} className="text-[11px] text-danger-ink hover:text-danger-ink font-medium">Remove</button>
-              )}
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1.5">
+                  <input type="number" min={0} max={100} defaultValue={u.commission_pct} onBlur={(e) => setComm(u.id, parseFloat(e.target.value) || 0)}
+                    className="w-14 border border-line px-2 h-8 rounded-lg text-[12px]" />
+                  <span className="text-[11px] text-muted">%</span>
+                  <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-1">
+                    <input type="checkbox" defaultChecked={u.hide_pay_cuts} onChange={(e) => setHide(u.id, e.target.checked)} /> hide
+                  </label>
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                {u.status === "active"
+                  ? <span className="text-[10px] px-2 py-0.5 rounded-full bg-success-bg text-success-ink font-semibold">Active</span>
+                  : <span className="text-[10px] px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink font-semibold">Suspended</span>}
+              </td>
+              <td className="px-4 py-3 text-right">
+                {u.id === me ? <span className="text-[11px] text-muted">You</span>
+                  : u.status === "active"
+                    ? <button onClick={() => setStatus(u.id, "suspended")} className="text-[12px] text-danger-ink font-medium">Suspend</button>
+                    : <button onClick={() => setStatus(u.id, "active")} className="text-[12px] text-accent font-medium">Reactivate</button>}
+              </td>
+            </tr>
+          ))}
+          {staff.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-[12px] text-muted">No team members yet. Create an invite under the Invites tab.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RolesPanel() {
+  const [roles, setRoles] = useState<RoleDef[]>([]);
+  const [draft, setDraft] = useState<Record<string, Set<string>>>({});
+  const [newRole, setNewRole] = useState("");
+  const load = () => api.listRoles().then((r) => {
+    setRoles(r.roles);
+    const d: Record<string, Set<string>> = {};
+    r.roles.forEach((role) => { d[role.id] = new Set(role.permissions); });
+    setDraft(d);
+  }).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const toggle = (roleId: string, perm: string) => {
+    setDraft((prev) => {
+      const next = { ...prev };
+      const s = new Set(next[roleId]);
+      s.has(perm) ? s.delete(perm) : s.add(perm);
+      next[roleId] = s;
+      return next;
+    });
+  };
+  const save = async (roleId: string) => { await api.updateRole(roleId, Array.from(draft[roleId] || [])); load(); };
+  const create = async () => { if (!newRole.trim()) return; await api.createRole(newRole.trim()); setNewRole(""); load(); };
+
+  return (
+    <div className="space-y-4">
+      {roles.map((r) => {
+        const full = r.id === "role_admin" || r.permissions.includes("*");
+        const has = (p: string) => draft[r.id]?.has(p);
+        return (
+          <div key={r.id} className="bg-surface border border-line rounded-xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-[14px] font-semibold text-ink">{r.name} {r.is_system && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-muted ml-1">Built-in</span>}</h4>
+              {!full && <button onClick={() => save(r.id)} className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium">Save</button>}
             </div>
+            {full ? (
+              <p className="text-[12px] text-muted">Full access — everything (can't be limited).</p>
+            ) : (
+              <>
+                <label className="flex items-center gap-2 text-[13px] font-medium text-ink-2 mb-3 cursor-pointer">
+                  <input type="checkbox" checked={!!has("admin:manage")} onChange={() => toggle(r.id, "admin:manage")} />
+                  Full admin (manage team, roles &amp; settings)
+                </label>
+                <table className="text-[12px]">
+                  <thead><tr><th></th>{ACTIONS.map((a) => <th key={a} className="px-3 text-[10px] uppercase tracking-wide text-muted">{a}</th>)}</tr></thead>
+                  <tbody>
+                    {MATRIX_MODULES.map((m) => (
+                      <tr key={m}>
+                        <td className="py-1 pr-3 whitespace-nowrap text-ink-2">{MODULE_LABELS[m]}</td>
+                        {ACTIONS.map((a) => (
+                          <td key={a} className="text-center px-3 py-1">
+                            <input type="checkbox" checked={!!has(`${m}:${a}`)} onChange={() => toggle(r.id, `${m}:${a}`)} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
           </div>
-        ))}
-        {users.length === 0 && <p className="text-[12px] text-muted">No team members yet.</p>}
+        );
+      })}
+      <div className="bg-surface border border-line rounded-xl p-4 flex items-center gap-2">
+        <input className={inpSm} placeholder="New role name (e.g. Junior Rep)" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
+        <button onClick={create} disabled={!newRole.trim()} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">Add role</button>
+      </div>
+    </div>
+  );
+}
+
+function InvitesPanel() {
+  const [invites, setInvites] = useState<InviteRow[]>([]);
+  const [roles, setRoles] = useState<RoleDef[]>([]);
+  const [roleId, setRoleId] = useState("role_sales");
+  const [email, setEmail] = useState("");
+  const [created, setCreated] = useState<{ token: string; signup_path: string } | null>(null);
+  const base = "https://brokr-app.com";
+  const load = () => {
+    api.listInvites().then(setInvites).catch(() => {});
+    api.listRoles().then((r) => setRoles(r.roles)).catch(() => {});
+  };
+  useEffect(() => { load(); }, []);
+
+  const create = async () => {
+    const res = await api.createInvite(roleId, email.trim() || null, 7);
+    setCreated(res); setEmail(""); load();
+  };
+  const revoke = async (token: string) => { await api.revokeInvite(token); load(); };
+
+  const status = (i: InviteRow) => i.used_at ? "Used" : (new Date(i.expires_at) < new Date() ? "Expired" : "Pending");
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-surface border border-line rounded-xl p-4">
+        <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Create invite link</p>
+        <div className="flex gap-2">
+          <select value={roleId} onChange={(e) => setRoleId(e.target.value)} className="border border-line px-2 h-9 rounded-lg text-[13px] bg-surface">
+            {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          <input className={inpSm} placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <button onClick={create} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">Create</button>
+        </div>
+        {created && (
+          <div className="mt-3 bg-success-bg border border-success rounded-lg px-3 py-2">
+            <p className="text-[12px] font-medium text-success-ink mb-1">Invite link ready — share it:</p>
+            <code className="text-[12px] text-success-ink break-all select-all">{base}{created.signup_path}</code>
+          </div>
+        )}
       </div>
 
-      {inviteResult && (
-        <div className="bg-success-bg border border-success px-4 py-3 rounded-xl mb-5">
-          <p className="text-[12px] font-medium text-success-ink mb-1">Invitation created for {inviteResult.name}</p>
-          <p className="text-[11px] text-success-ink">Share this invite code: <span className="font-mono font-bold text-[14px]">{inviteResult.invite_code}</span></p>
-          <button onClick={() => setInviteResult(null)} className="text-[10px] text-success-ink mt-1">Dismiss</button>
-        </div>
-      )}
-
-      <div className="border-t border-line pt-4">
-        <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Invite New Member</p>
-        <div className="grid grid-cols-3 gap-2 mb-2">
-          <input className="border border-line px-3 h-9 rounded-lg text-[12px]" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input className="border border-line px-3 h-9 rounded-lg text-[12px]" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <div className="flex gap-2">
-            <select value={role} onChange={(e) => setRole(e.target.value)} className="border border-line px-2 h-9 rounded-lg text-[12px] flex-1">
-              <option value="sales_rep">Sales Rep</option>
-              <option value="viewer">Viewer</option>
-            </select>
-            <button onClick={handleInvite} disabled={!name.trim() || !email.trim()} className="bg-accent hover:bg-accent-hover text-white px-3 h-9 rounded-lg text-[12px] font-medium disabled:opacity-40">Invite</button>
-          </div>
-        </div>
-        {error && <p className="text-[11px] text-danger-ink">{error}</p>}
+      <div className="bg-surface border border-line rounded-xl overflow-hidden">
+        <table className="w-full text-[13px]">
+          <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
+            {["Role", "Email", "Status", "Expires", ""].map((h, i) => <th key={i} className={`text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {invites.map((i) => (
+              <tr key={i.token} style={{ borderBottom: "1px solid var(--t-b2)" }}>
+                <td className="px-4 py-2.5 text-ink">{i.role_name || i.role_id}</td>
+                <td className="px-4 py-2.5 text-muted">{i.email || "—"}</td>
+                <td className="px-4 py-2.5"><span className="text-[11px] text-ink-2">{status(i)}</span></td>
+                <td className="px-4 py-2.5 text-muted text-[12px]">{i.expires_at.slice(0, 10)}</td>
+                <td className="px-4 py-2.5 text-right">{!i.used_at && <button onClick={() => revoke(i.token)} className="text-[12px] text-danger-ink font-medium">Revoke</button>}</td>
+              </tr>
+            ))}
+            {invites.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-[12px] text-muted">No invites yet.</td></tr>}
+          </tbody>
+        </table>
       </div>
     </div>
   );

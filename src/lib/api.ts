@@ -133,6 +133,41 @@ export interface ScheduledSendProgress {
   status: string;
 }
 
+export interface Me {
+  id: string;
+  email: string;
+  display_name: string;
+  role_id: string;
+  role_name: string;
+  permissions: string[];
+  is_admin: boolean;
+}
+export interface StaffMember {
+  id: string;
+  email: string;
+  display_name: string;
+  role_id: string;
+  role_name: string | null;
+  status: string;
+  commission_pct: number;
+  hide_pay_cuts: boolean;
+}
+export interface RoleDef {
+  id: string;
+  name: string;
+  permissions: string[];
+  is_system: boolean;
+}
+export interface InviteRow {
+  token: string;
+  role_id: string;
+  role_name: string | null;
+  email: string | null;
+  expires_at: string;
+  used_at: string | null;
+  created_at: string;
+}
+
 export interface NewsletterSchedule {
   id: string;
   name: string;
@@ -1112,6 +1147,26 @@ export const api = {
   setBriefFrequency: (days: number) => invoke<void>("set_brief_frequency", { days }),
   getOrganizationName: () => invoke<string>("get_organization_name"),
   setOrganizationName: (name: string) => invoke<void>("set_organization_name", { name }),
+
+  // ── Unified accounts + RBAC (synced with web/mobile) ──
+  employeeStatus: () => invoke<{ has_accounts: boolean; signed_in: boolean }>("employee_status"),
+  employeeMe: () => invoke<Me | null>("employee_me"),
+  employeeLogout: () => invoke<void>("employee_logout"),
+  employeeBootstrap: (displayName: string, email: string, password: string) =>
+    invoke<Me>("employee_bootstrap", { displayName, email, password }),
+  employeeLogin: (email: string, password: string) =>
+    invoke<Me>("employee_login", { email, password }),
+  // Team management (admin only)
+  listStaff: () => invoke<StaffMember[]>("list_staff"),
+  updateStaff: (id: string, fields: Partial<{ roleId: string; status: string; commissionPct: number; hidePayCuts: boolean }>) =>
+    invoke<void>("update_staff", { id, ...fields }),
+  listRoles: () => invoke<{ roles: RoleDef[]; modules: string[] }>("list_roles"),
+  createRole: (name: string) => invoke<RoleDef>("create_role", { name }),
+  updateRole: (id: string, permissions: string[]) => invoke<void>("update_role", { id, permissions }),
+  listInvites: () => invoke<InviteRow[]>("list_invites"),
+  createInvite: (roleId: string, email: string | null, expiresDays: number | null) =>
+    invoke<{ token: string; signup_path: string; expires_at: string }>("create_invite", { roleId, email, expiresDays }),
+  revokeInvite: (token: string) => invoke<void>("revoke_invite", { token }),
 
   // Suppliers
   listSuppliers: () => invoke<Supplier[]>("list_suppliers"),

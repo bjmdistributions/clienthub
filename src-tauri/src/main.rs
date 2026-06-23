@@ -5,6 +5,7 @@ mod commands;
 mod csv_import;
 mod db;
 mod email;
+mod employees;
 mod geocode;
 mod google_contacts;
 mod invoice;
@@ -71,6 +72,10 @@ fn main() {
         .setup(|app| {
             db::init(app)?;
             signup_rules::ensure_table()?;
+            // Unified RBAC tables + system roles (synced with the server).
+            if let Err(e) = employees::ensure_rbac() {
+                tracing::warn!("rbac init failed: {}", e);
+            }
 
             {
                 if let Err(e) = geocode::init() {
@@ -326,6 +331,20 @@ fn main() {
             set_brief_frequency,
             get_organization_name,
             set_organization_name,
+            // Unified accounts + team management (RBAC)
+            employees::employee_status,
+            employees::employee_me,
+            employees::employee_logout,
+            employees::employee_bootstrap,
+            employees::employee_login,
+            employees::list_staff,
+            employees::update_staff,
+            employees::list_roles,
+            employees::create_role,
+            employees::update_role,
+            employees::list_invites,
+            employees::create_invite,
+            employees::revoke_invite,
             // Suppliers
             list_suppliers,
             get_supplier,

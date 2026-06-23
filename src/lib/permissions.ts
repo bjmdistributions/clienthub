@@ -1,29 +1,62 @@
-export type Role = "owner" | "sales_rep" | "viewer";
-export type Feature = "dashboard" | "clients" | "invoices" | "quotes" | "deals" | "dealflow" | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings" | "health" | "inventory" | "automation";
+// Unified permission model — module:action strings backed by the synced role
+// (same as web/mobile). A signed-in user carries `permissions`; "*" = full access.
 
-export function canView(role: Role, feature: Feature): boolean {
-  if (role === "owner") return true;
-  if (role === "viewer") return !["analytics", "email", "settings"].includes(feature);
-  if (role === "sales_rep") return !["analytics", "email", "settings"].includes(feature);
-  return false;
+export interface Perms {
+  permissions: string[];
 }
 
-export function canEdit(role: Role, feature: Feature): boolean {
-  if (role === "owner") return true;
-  if (role === "viewer") return false;
-  if (role === "sales_rep") {
-    if (feature === "dealflow") return false;
-    return !["analytics", "email", "settings"].includes(feature);
+export type Feature =
+  | "dashboard" | "clients" | "invoices" | "quotes" | "deals" | "dealflow"
+  | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings"
+  | "health" | "inventory" | "automation";
+
+/** True if the user holds a permission (wildcard "*" grants everything). */
+export function can(me: Perms | null | undefined, perm: string): boolean {
+  if (!me) return false;
+  const p = me.permissions || [];
+  return p.includes("*") || p.includes(perm);
+}
+
+/** Required permission for a tab/feature (null = available to any signed-in user). */
+export function tabPerm(feature: Feature): string | null {
+  switch (feature) {
+    case "dashboard":
+    case "globe":
+    case "automation":
+      return null;
+    case "clients":
+    case "health":      return "clients:view";
+    case "invoices":
+    case "deals":
+    case "dealflow":     return "deal_flow:view";
+    case "quotes":       return "quotes:view";
+    case "suppliers":
+    case "inventory":    return "inventory:view";
+    case "analytics":
+    case "brief":        return "analytics:view";
+    case "email":        return "email:view";
+    case "settings":     return "admin:manage";
+    default:             return null;
   }
-  return false;
 }
 
-export function canDelete(role: Role, feature: Feature): boolean {
-  if (role === "owner") return true;
-  if (role === "sales_rep") return feature === "clients" || feature === "deals";
-  return false;
+export function canViewTab(me: Perms | null | undefined, feature: Feature): boolean {
+  const need = tabPerm(feature);
+  if (need === null) return !!me;
+  return can(me, need);
 }
 
-export function isOwner(role: Role): boolean {
-  return role === "owner";
+/** Edit-capability for a feature's module (view→edit). */
+export function canEditFeature(me: Perms | null | undefined, feature: Feature): boolean {
+  const map: Partial<Record<Feature, string>> = {
+    clients: "clients:edit", invoices: "deal_flow:edit", deals: "deal_flow:edit",
+    dealflow: "deal_flow:edit", quotes: "quotes:edit", suppliers: "inventory:edit",
+    inventory: "inventory:edit", email: "email:edit",
+  };
+  const need = map[feature];
+  return need ? can(me, need) : can(me, "*");
+}
+
+export function isAdmin(me: Perms | null | undefined): boolean {
+  return can(me, "*") || can(me, "admin:manage");
 }
