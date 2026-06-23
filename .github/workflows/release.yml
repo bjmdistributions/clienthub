@@ -33,11 +33,18 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      - name: Ad-hoc sign (macOS) — eliminates "damaged app" warnings
+      # If a Developer ID cert is configured (secrets present), real-sign +
+      # notarize so macOS trusts the app with zero user steps. Otherwise fall
+      # back to ad-hoc signing (free, but shows the unidentified-developer prompt).
+      - name: Detect macOS signing mode
         if: matrix.platform == 'macos-latest'
         run: |
-          # Tauri will pick up an empty signingIdentity = ad-hoc signing
-          echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
+          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+            echo "MAC_SIGN=real" >> $GITHUB_ENV
+          else
+            echo "MAC_SIGN=adhoc" >> $GITHUB_ENV
+            echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
+          fi
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.5
@@ -45,6 +52,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS Developer ID signing + notarization (used only when set).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Brokr ${{ github.ref_name }}'
