@@ -9,6 +9,7 @@ export default function UpdateNotification() {
   const [downloading, setDownloading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(async () => {
@@ -26,18 +27,27 @@ export default function UpdateNotification() {
   if (!update || dismissed) return null;
 
   const handleInstall = async () => {
+    setError(null);
     setDownloading(true);
+    let total = 0, got = 0;
     try {
       await update.downloadAndInstall((e: any) => {
-        if (e.event === "Downloaded") {
-          const pct = Math.round((e.payload.contentLength ?? 0) / 1_000_000);
-          if (pct > 0) setProgress(pct);
+        // Tauri v2 emits Started / Progress / Finished with payload on `e.data`.
+        if (e.event === "Started") total = e.data?.contentLength ?? 0;
+        if (e.event === "Progress") {
+          got += e.data?.chunkLength ?? 0;
+          if (total > 0) setProgress(Math.round((got / total) * 100));
         }
         if (e.event === "Finished") { setDownloading(false); setInstalling(true); }
       });
       await relaunch();
-    } catch {
+    } catch (err: any) {
+      // Never swallow silently — a signing-key mismatch or download failure must
+      // be visible, not look like a no-op click.
       setDownloading(false);
+      setInstalling(false);
+      setError(err?.message ?? String(err));
+      console.error("Update failed:", err);
     }
   };
 
@@ -56,8 +66,8 @@ export default function UpdateNotification() {
         </div>
         <div>
           <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>brokr {update.version} is available</p>
-          <p className="text-[11px]" style={{ color: "var(--t-tx3)" }}>
-            {installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}MB` : "Update now to get the latest features and fixes"}
+          <p className="text-[11px]" style={{ color: error ? "var(--danger, #ef4444)" : "var(--t-tx3)" }}>
+            {error ? `Update failed: ${error}` : installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}%` : "Update now to get the latest features and fixes"}
           </p>
         </div>
       </div>
