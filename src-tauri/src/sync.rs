@@ -213,6 +213,7 @@ pub fn record_upsert(
     update_row_clocks(table, row_id, &columns, event.hlc)?;
     write_event_file(&event)?;
     mark_applied(&event.id)?;
+    crate::netsync::on_local_event(&event); // queue for network push (no-op if not connected)
     Ok(())
 }
 
@@ -228,7 +229,14 @@ pub fn record_delete(table: &str, row_id: &str) -> Result<()> {
     write_tombstone(table, row_id, event.hlc)?;
     write_event_file(&event)?;
     mark_applied(&event.id)?;
+    crate::netsync::on_local_event(&event); // queue for network push (no-op if not connected)
     Ok(())
+}
+
+/// Apply an event received from the central server (network sync). Same idempotent
+/// per-column LWW path as folder-sync replay; safe to call with already-seen ids.
+pub fn apply_remote(event: &SyncEvent) -> Result<()> {
+    apply_event(event)
 }
 
 fn write_event_file(event: &SyncEvent) -> Result<()> {

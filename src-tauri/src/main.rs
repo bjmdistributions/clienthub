@@ -12,6 +12,7 @@ mod invoice;
 mod manifest;
 mod oauth_flow;
 mod signup_rules;
+mod netsync;
 mod sync;
 mod sync_crypto;
 mod template;
@@ -86,6 +87,12 @@ fn main() {
             // Sync folder lives next to the DB. Syncthing/Dropbox can target this.
             let sync_dir = db::app_data_dir().join("sync");
             sync::init(sync_dir)?;
+            // Phase 2 network sync: outbound queue + background push/pull loop.
+            // Inert until a server connection is configured (BJM folder-sync unaffected).
+            if let Err(e) = netsync::ensure_tables() {
+                tracing::warn!("netsync init failed: {}", e);
+            }
+            netsync::spawn_loop();
 
             // AppHandle is Send + Clone — safe to move into async spawns.
             // tauri::App is NOT Send and must never be captured in a spawn.
@@ -217,6 +224,11 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Network sync (Phase 2)
+            netsync::netsync_connect,
+            netsync::netsync_status,
+            netsync::netsync_disconnect,
+            netsync::netsync_sync_now,
             // Clients
             list_clients,
             get_client,
