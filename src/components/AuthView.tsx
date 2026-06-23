@@ -86,7 +86,6 @@ export default function AuthView({
       {/* Animated eclipse / space background */}
       <canvas ref={starRef} className="auth-stars" />
       <div className="auth-aurora" />
-      <div className="auth-grid" />
       <div className="auth-eclipse" />
 
       <div className="relative z-10 w-full max-w-[380px] px-6 animate-auth-rise">
@@ -143,8 +142,9 @@ export default function AuthView({
         .animate-auth-rise { animation: authRise 0.5s cubic-bezier(0.16,1,0.3,1); }
         .auth-logo-tile {
           width: 64px; height: 64px; border-radius: 18px; display: flex; align-items: center; justify-content: center;
-          background: linear-gradient(135deg, #2563EB, #1D4ED8);
-          box-shadow: 0 0 40px rgba(37,99,235,0.45), inset 0 1px 0 rgba(255,255,255,0.2);
+          /* Matches the app icon: eclipse on a dark graded tile (not a blue tile). */
+          background: radial-gradient(circle at 50% 42%, #12162A 0%, #070912 68%, #030305 100%);
+          box-shadow: 0 0 44px rgba(74,141,240,0.32), inset 0 0 0 1px rgba(150,190,255,0.12), inset 0 1px 0 rgba(255,255,255,0.05);
           animation: logoFloat 4s ease-in-out infinite;
         }
         @keyframes logoFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
@@ -171,12 +171,6 @@ export default function AuthView({
         @keyframes auroraDrift {
           0%   { transform: translate3d(0,0,0) rotate(0deg) scale(1); }
           100% { transform: translate3d(2%, -3%, 0) rotate(8deg) scale(1.1); }
-        }
-        .auth-grid {
-          position: absolute; inset: 0; z-index: 0; opacity: 0.05;
-          background-image: linear-gradient(rgba(255,255,255,0.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.6) 1px, transparent 1px);
-          background-size: 44px 44px;
-          mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 30%, transparent 75%);
         }
       `}</style>
     </div>

@@ -253,6 +253,7 @@ export default function GlobeView() {
       style={{ background: "#060610", color: "#eef0f6" }}
       onClick={handleRootClick}
     >
+      <div className="globe-neb" />
       <canvas ref={starCanvasRef} className="globe-starfield" />
       <div ref={containerRef} className="globe-container" />
 
@@ -474,32 +475,81 @@ function initStarfield(
   resize();
   window.addEventListener("resize", resize);
 
-  const stars = Array.from({ length: STAR_COUNT }, () => ({
-    x:           Math.random(),
-    y:           Math.random(),
-    size:        0.4 + Math.random() * 1.4,
-    baseOpacity: 0.2 + Math.random() * 0.7,
-    speed:       0.4 + Math.random() * 1.8,
-  }));
+  const reduceMotion = matchMedia("(prefers-reduced-motion:reduce)").matches;
+  // Subtle blue/white palette so the field reads as deep space, not TV static.
+  const COLORS = ["#ffffff", "#e3edff", "#c2d6ff", "#a9c2ff", "#d7e4ff"];
+  const stars = Array.from({ length: STAR_COUNT }, () => {
+    const bright = Math.random() < 0.06; // a few hero stars get a soft glow
+    return {
+      x: Math.random(),
+      y: Math.random(),
+      size: bright ? 1.3 + Math.random() * 1.0 : 0.4 + Math.random() * 1.1,
+      baseOpacity: bright ? 0.7 + Math.random() * 0.3 : 0.18 + Math.random() * 0.62,
+      speed: 0.4 + Math.random() * 1.8,
+      color: bright ? "#eaf2ff" : COLORS[(Math.random() * COLORS.length) | 0],
+      bright,
+    };
+  });
+
+  // Occasional shooting star — same motif as the website, random cadence.
+  type Shoot = { x: number; y: number; vx: number; vy: number; life: number; max: number };
+  let shoots: Shoot[] = [];
+  let nextShoot = 4 + Math.random() * 6;
+  const spawnShoot = (W: number, H: number) => {
+    const fromLeft = Math.random() < 0.5;
+    const speed = (0.7 + Math.random() * 0.5) * W;
+    const ang = (fromLeft ? 0.22 : 0.78) * Math.PI + (Math.random() - 0.5) * 0.18;
+    shoots.push({
+      x: fromLeft ? Math.random() * W * 0.35 : W * 0.65 + Math.random() * W * 0.35,
+      y: Math.random() * H * 0.4,
+      vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+      life: 0, max: 0.9 + Math.random() * 0.5,
+    });
+  };
 
   let frame = 0;
   let lastDraw = 0;
-  // Cap star redraw at ~30 FPS — twinkle is imperceptibly different from 60
-  // and halves the CPU spent on the background canvas.
+  // Cap redraw at ~30 FPS — twinkle is imperceptibly different from 60 and
+  // halves the CPU spent on the background canvas.
   const FRAME_MS = 1000 / 30;
   const draw = (t: number) => {
     rafRef.current = requestAnimationFrame(draw);
     if (t - lastDraw < FRAME_MS) return;
+    const dt = Math.min(0.06, (t - lastDraw) / 1000 || 0);
     lastDraw = t;
     frame++;
     const { width: w, height: h } = canvas;
     ctx.clearRect(0, 0, w, h);
     for (const s of stars) {
       const opacity = s.baseOpacity * (0.5 + 0.5 * Math.sin(frame * 0.018 * s.speed));
+      if (s.bright) { ctx.shadowBlur = 6; ctx.shadowColor = s.color; } else { ctx.shadowBlur = 0; }
+      ctx.globalAlpha = opacity;
+      ctx.fillStyle = s.color;
       ctx.beginPath();
       ctx.arc(s.x * w, s.y * h, s.size, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${opacity})`;
       ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+
+    if (!reduceMotion) {
+      nextShoot -= dt;
+      if (nextShoot <= 0) { spawnShoot(w, h); nextShoot = 7 + Math.random() * 10; }
+      for (let i = shoots.length - 1; i >= 0; i--) {
+        const sh = shoots[i];
+        sh.life += dt; sh.x += sh.vx * dt; sh.y += sh.vy * dt;
+        if (sh.life >= sh.max || sh.x < -200 || sh.x > w + 200 || sh.y > h + 200) { shoots.splice(i, 1); continue; }
+        const a = Math.sin(Math.min(1, sh.life / sh.max) * Math.PI);
+        const tx = sh.x - sh.vx * 0.07, ty = sh.y - sh.vy * 0.07;
+        const g = ctx.createLinearGradient(sh.x, sh.y, tx, ty);
+        g.addColorStop(0, `rgba(234,242,255,${0.9 * a})`);
+        g.addColorStop(1, "rgba(120,170,255,0)");
+        ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(sh.x, sh.y); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.globalAlpha = a; ctx.fillStyle = "#eaf2ff";
+        ctx.beginPath(); ctx.arc(sh.x, sh.y, 1.6, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
     }
   };
   rafRef.current = requestAnimationFrame(draw);
