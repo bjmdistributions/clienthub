@@ -19,6 +19,30 @@ use commands::*;
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
+/// Append a startup/diagnostic message to a log file the user can send us when
+/// the app fails to launch. Best-effort: tries the OS app-data dir, falls back
+/// to the home dir, and never panics itself.
+fn write_startup_log(msg: &str) {
+    let base = dirs_next_data_dir().unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("com.bjmdistributions.clienthub");
+    let _ = std::fs::create_dir_all(&dir);
+    let line = format!("[{}] {}\n", chrono::Utc::now().to_rfc3339(), msg);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("startup-error.log")) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// Resolve the platform app-data dir without pulling in extra deps.
+fn dirs_next_data_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    { std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support")) }
+    #[cfg(target_os = "windows")]
+    { std::env::var_os("APPDATA").map(std::path::PathBuf::from) }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    { std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")) }
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -26,6 +50,14 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Capture any panic to a log file so a launch crash is diagnosable instead of
+    // a silent SIGABRT. Chains to the default hook so console output is preserved.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        write_startup_log(&format!("PANIC: {}", info));
+        default_hook(info);
+    }));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -467,5 +499,10 @@ fn main() {
             get_sheet_headers,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            // Don't blind-abort: record what actually failed so a launch crash is
+            // diagnosable (startup-error.log), then surface a clear message.
+            write_startup_log(&format!("FATAL: tauri run failed: {}", e));
+            panic!("error while running tauri application: {}", e);
+        });
 }

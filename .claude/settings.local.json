@@ -85,7 +85,13 @@
       "Bash(echo \"health: $\\(curl -4 -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/health\\)\")",
       "Bash(curl -4 -s http://localhost:8090/api/org)",
       "Bash(echo \"org: $\\(curl -4 -s http://localhost:8090/api/org\\)\")",
-      "Bash(curl -4 -s http://localhost:8090/download)"
+      "Bash(curl -4 -s http://localhost:8090/download)",
+      "Bash(echo \"download v0.14.4: $\\(curl -4 -s http://localhost:8090/download)",
+      "Bash(curl -4 -s \"https://api.github.com/repos/bjmdistributions/clienthub/releases/tags/v0.14.4\")",
+      "Bash(node --check www/app.js)",
+      "Bash(node --check www/sw.js)",
+      "Bash(curl -4 -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/invoices/x/email)",
+      "Bash(echo \"invoice email route \\(expect 401/405 not 404\\): $\\(curl -4 -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8090/api/invoices/x/email\\)\")"
     ]
   }
 }

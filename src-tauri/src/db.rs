@@ -83,7 +83,20 @@ fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     for (version, sql) in MIGRATIONS.iter() {
         if (*version as i64) > current {
             tracing::info!("running migration {}", version);
-            conn.execute_batch(sql).with_context(|| format!("migration {}", version))?;
+            // Run each statement individually so a benign, already-applied change
+            // (e.g. a column that exists from a different build lineage) doesn't
+            // abort the whole migration — and, via the old code path, the app.
+            for stmt in sql.split(';') {
+                let trimmed = stmt.trim();
+                if trimmed.is_empty() { continue; }
+                if let Err(e) = conn.execute_batch(trimmed) {
+                    if is_benign_migration_error(&e) {
+                        tracing::warn!("migration {}: skipping benign error: {}", version, e);
+                        continue;
+                    }
+                    return Err(e).with_context(|| format!("migration {}", version));
+                }
+            }
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 rusqlite::params![*version as i64, chrono::Utc::now().to_rfc3339()],
@@ -91,6 +104,15 @@ fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// True for migration errors that mean "this change is already present" — safe
+/// to skip so a machine with a slightly different schema history still launches.
+fn is_benign_migration_error(e: &rusqlite::Error) -> bool {
+    let m = e.to_string().to_lowercase();
+    m.contains("duplicate column name")
+        || m.contains("already exists")
+        || m.contains("duplicate column")
 }
 
 fn seed_defaults(conn: &rusqlite::Connection) -> Result<()> {
