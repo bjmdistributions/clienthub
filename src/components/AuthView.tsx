@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, Me } from "../lib/api";
 
 /**
@@ -19,6 +19,43 @@ export default function AuthView({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const starRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Parallax twinkling starfield behind the eclipse.
+  useEffect(() => {
+    const cv = starRef.current;
+    const ctx = cv?.getContext("2d");
+    if (!cv || !ctx) return;
+    const DPR = Math.min(window.devicePixelRatio || 1, 2);
+    let w = 0, h = 0, stars: { x: number; y: number; z: number; r: number; t: number }[] = [], raf = 0, last = 0;
+    const resize = () => {
+      w = cv.width = cv.offsetWidth * DPR;
+      h = cv.height = cv.offsetHeight * DPR;
+      const n = Math.max(70, Math.min(200, Math.floor((cv.offsetWidth * cv.offsetHeight) / 9000)));
+      stars = Array.from({ length: n }, () => ({ x: Math.random() * w, y: Math.random() * h, z: Math.random() * 0.85 + 0.15, r: Math.random() * 1.3 + 0.2, t: Math.random() * 6.28 }));
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    const frame = (ts: number) => {
+      const dt = Math.min(0.05, (ts - last) / 1000 || 0);
+      last = ts;
+      ctx.clearRect(0, 0, w, h);
+      for (const s of stars) {
+        s.x -= s.z * 9 * dt * DPR;
+        if (s.x < 0) { s.x = w; s.y = Math.random() * h; }
+        s.t += dt * 2.2;
+        ctx.globalAlpha = (0.55 + 0.45 * Math.sin(s.t)) * s.z;
+        ctx.fillStyle = s.z > 0.7 ? "#dfeaff" : "#a9c2ff";
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r * DPR, 0, 6.2832);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+  }, []);
 
   useEffect(() => {
     api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
@@ -46,9 +83,11 @@ export default function AuthView({
 
   return (
     <div className="fixed inset-0 overflow-hidden flex items-center justify-center" style={{ background: "#0A0A0B" }}>
-      {/* Animated gradient aurora background */}
+      {/* Animated eclipse / space background */}
+      <canvas ref={starRef} className="auth-stars" />
       <div className="auth-aurora" />
       <div className="auth-grid" />
+      <div className="auth-eclipse" />
 
       <div className="relative z-10 w-full max-w-[380px] px-6 animate-auth-rise">
         <div className="flex flex-col items-center text-center mb-7">
@@ -109,6 +148,18 @@ export default function AuthView({
           animation: logoFloat 4s ease-in-out infinite;
         }
         @keyframes logoFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+        .auth-stars { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; }
+        .auth-eclipse {
+          position: absolute; top: 38%; left: 50%; z-index: 0; pointer-events: none;
+          width: min(60vmin, 620px); height: min(60vmin, 620px); transform: translate(-50%,-50%);
+          border-radius: 50%;
+          background: radial-gradient(closest-side, transparent 56%, rgba(96,165,250,0.10) 60%, rgba(96,165,250,0.5) 64%, rgba(96,165,250,0.12) 73%, transparent 82%);
+          animation: authEclipsePulse 6.5s ease-in-out infinite;
+        }
+        @keyframes authEclipsePulse {
+          0%,100% { opacity: 0.7; transform: translate(-50%,-50%) scale(1); }
+          50% { opacity: 1; transform: translate(-50%,-50%) scale(1.04); }
+        }
         .auth-aurora {
           position: absolute; inset: -20%; z-index: 0; filter: blur(70px); opacity: 0.55;
           background:
