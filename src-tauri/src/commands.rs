@@ -208,6 +208,24 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
     write_client_row(&id, &input, &now, &now, "active", &metadata_str, &lead_status_val).map_err(|e| e.to_string())?;
 
+    // Non-admin reps create pending clients that an admin must approve.
+    let approval_status = if !crate::employees::session_is_privileged()
+        && crate::employees::approval_required("require_client_add_approval")
+    {
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE clients SET approval_status='pending' WHERE id=?1", rusqlite::params![id])
+                .map_err(|e| e.to_string())?;
+        }
+        let mut acols = Map::new();
+        acols.insert("approval_status".into(), Value::String("pending".into()));
+        sync::record_upsert("clients", &id, acols).map_err(|e| e.to_string())?;
+        queue_client_approval("client_add", &id, &format!("New client: {}", input.name))?;
+        "pending"
+    } else {
+        "active"
+    };
+
     Ok(Client {
         id, name: input.name, email: input.email, phone: input.phone,
         company: input.company, notes: input.notes, billing_status: "active".into(),
@@ -220,7 +238,7 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
         next_follow_up_date: input.next_follow_up_date,
         needs_review: input.needs_review.unwrap_or(false),
         is_blacklisted: false,
-        approval_status: "active".into(),
+        approval_status: approval_status.into(),
     })
 }
 
@@ -348,8 +366,155 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+// ── Admin approval queue (rep client add/delete requests) ───────────────────
+
+#[tauri::command]
+pub async fn list_approval_requests() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,kind,entity_id,summary,requested_by_name,created_at
+         FROM pending_approvals WHERE status='pending' ORDER BY created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?,
+        "kind": r.get::<_, String>(1)?,
+        "entity_id": r.get::<_, Option<String>>(2)?,
+        "summary": r.get::<_, String>(3)?,
+        "requested_by_name": r.get::<_, Option<String>>(4)?,
+        "created_at": r.get::<_, String>(5)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn approval_requests_count() -> Result<i64, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(conn.query_row("SELECT COUNT(*) FROM pending_approvals WHERE status='pending'", [], |r| r.get(0)).unwrap_or(0))
+}
+
+fn delete_client_row(id: &str) -> Result<(), String> {
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
+    }
+    sync::record_delete("clients", id).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Approve or reject a queued request. Approving an add activates the pending
+/// client; approving a delete removes the client; rejecting an add discards the
+/// pending client; rejecting a delete leaves it.
+#[tauri::command]
+pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), String> {
+    let (kind, entity): (String, Option<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT kind, entity_id FROM pending_approvals WHERE id=?1 AND status='pending'",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|_| "request not found".to_string())?
+    };
+    if let Some(eid) = entity.as_deref() {
+        match (kind.as_str(), approve) {
+            ("client_add", true) => {
+                {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    conn.execute("UPDATE clients SET approval_status='active', updated_at=?1 WHERE id=?2",
+                        rusqlite::params![Utc::now().to_rfc3339(), eid]).map_err(|e| e.to_string())?;
+                }
+                let mut cols = Map::new();
+                cols.insert("approval_status".into(), Value::String("active".into()));
+                sync::record_upsert("clients", eid, cols).map_err(|e| e.to_string())?;
+            }
+            ("client_add", false) | ("client_delete", true) => delete_client_row(eid)?,
+            _ => {}
+        }
+    }
+    let status = if approve { "approved" } else { "rejected" };
+    let now = Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE pending_approvals SET status=?1, resolved_at=?2 WHERE id=?3",
+            rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("status".into(), Value::String(status.into()));
+    cols.insert("resolved_at".into(), Value::String(now));
+    sync::record_upsert("pending_approvals", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_approval_policy() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let g = |k: &str| -> bool {
+        conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+    };
+    Ok(json!({
+        "require_client_add_approval": g("require_client_add_approval"),
+        "require_client_delete_approval": g("require_client_delete_approval"),
+    }))
+}
+
+#[tauri::command]
+pub async fn set_approval_policy(require_add: bool, require_delete: bool) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (k, v) in [("require_client_add_approval", require_add), ("require_client_delete_approval", require_delete)] {
+        let val = if v { "1" } else { "0" };
+        conn.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![k, val]).map_err(|e| e.to_string())?;
+        let mut cols = Map::new();
+        cols.insert("value".into(), Value::String(val.into()));
+        sync::record_upsert("settings", k, cols).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Queue an admin approval row (rep add/delete requests). Returns its id.
+fn queue_client_approval(kind: &str, entity_id: &str, summary: &str) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let (rb, rbn) = match crate::employees::session_actor() {
+        Some((i, n)) => (Some(i), Some(n)),
+        None => (None, None),
+    };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO pending_approvals (id,org_id,kind,entity_id,summary,requested_by,requested_by_name,status,created_at)
+             VALUES (?1,'org_default',?2,?3,?4,?5,?6,'pending',?7)",
+            rusqlite::params![id, kind, entity_id, summary, rb, rbn, now],
+        ).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("org_id".into(), Value::String("org_default".into()));
+    cols.insert("kind".into(), Value::String(kind.into()));
+    cols.insert("entity_id".into(), Value::String(entity_id.into()));
+    cols.insert("summary".into(), Value::String(summary.into()));
+    if let Some(ref v) = rb { cols.insert("requested_by".into(), Value::String(v.clone())); }
+    if let Some(ref v) = rbn { cols.insert("requested_by_name".into(), Value::String(v.clone())); }
+    cols.insert("status".into(), Value::String("pending".into()));
+    cols.insert("created_at".into(), Value::String(now));
+    sync::record_upsert("pending_approvals", &id, cols).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 #[tauri::command]
 pub async fn delete_client(id: String) -> Result<(), String> {
+    // Non-admin reps can't delete directly when the org requires approval — queue
+    // it for an admin instead (owner PIN / admins delete immediately).
+    if !crate::employees::session_is_privileged()
+        && crate::employees::approval_required("require_client_delete_approval")
+    {
+        let name: String = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT name FROM clients WHERE id=?1", [&id], |r| r.get(0))
+                .map_err(|_| "Client not found".to_string())?
+        };
+        queue_client_approval("client_delete", &id, &format!("Delete client: {name}"))?;
+        return Ok(());
+    }
     // Delete locally FIRST. The invoices FK (foreign_keys=ON, NO ACTION) blocks
     // deleting a client that still has invoices; if we recorded the sync delete
     // before this, a phantom delete event would broadcast to other devices even

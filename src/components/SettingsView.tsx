@@ -2580,13 +2580,19 @@ const MODULE_LABELS: Record<string, string> = {
 };
 const MATRIX_MODULES = ["clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "settings"];
 const ACTIONS = ["view", "edit", "export"] as const;
+// Sensitive per-role visibility flags (separate from the module×action grid).
+const VIS_TOGGLES: [string, string, string][] = [
+  ["clients:view_revenue", "See exact client spend", "Off: rep sees tier rank only, not dollar amounts"],
+  ["suppliers:view", "See suppliers", "Off: the Suppliers area is hidden"],
+  ["deal_flow:view_numbers", "See deal-flow dollar amounts", "Off: deals stay visible, money is hidden"],
+];
 
 function TeamTab() {
-  const [sub, setSub] = useState<"people" | "roles" | "invites">("people");
+  const [sub, setSub] = useState<"people" | "roles" | "approvals" | "invites">("people");
   return (
     <div className="max-w-3xl">
       <div className="flex gap-0 border-b border-line mb-5">
-        {(["people", "roles", "invites"] as const).map((s) => (
+        {(["people", "roles", "approvals", "invites"] as const).map((s) => (
           <button key={s} onClick={() => setSub(s)}
             className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px transition-colors capitalize ${sub === s ? "border-accent text-accent-hover font-medium" : "border-transparent text-muted hover:text-ink"}`}>
             {s}
@@ -2595,7 +2601,47 @@ function TeamTab() {
       </div>
       {sub === "people" && <PeoplePanel />}
       {sub === "roles" && <RolesPanel />}
+      {sub === "approvals" && <ApprovalPolicyPanel />}
       {sub === "invites" && <InvitesPanel />}
+    </div>
+  );
+}
+
+function ApprovalPolicyPanel() {
+  const [add, setAdd] = useState(false);
+  const [del, setDel] = useState(false);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    api.getApprovalPolicy().then((p) => {
+      setAdd(!!p.require_client_add_approval);
+      setDel(!!p.require_client_delete_approval);
+    }).catch(() => {});
+  }, []);
+  const save = async (nextAdd: boolean, nextDel: boolean) => {
+    setAdd(nextAdd); setDel(nextDel);
+    await api.setApprovalPolicy(nextAdd, nextDel).catch(() => {});
+    setSaved(true); setTimeout(() => setSaved(false), 1500);
+  };
+  const Row = ({ label, hint, on, onToggle }: { label: string; hint: string; on: boolean; onToggle: () => void }) => (
+    <label className="flex items-start justify-between gap-4 py-3 cursor-pointer">
+      <div>
+        <div className="text-[13px] font-medium text-ink">{label}</div>
+        <div className="text-[11px] text-muted mt-0.5">{hint}</div>
+      </div>
+      <input type="checkbox" checked={on} onChange={onToggle} className="mt-1" />
+    </label>
+  );
+  return (
+    <div className="bg-surface border border-line rounded-xl p-5 max-w-xl">
+      <div className="flex items-center justify-between mb-1">
+        <h4 className="text-[14px] font-semibold text-ink">Client approvals</h4>
+        {saved && <span className="text-[11px] text-emerald-500">Saved</span>}
+      </div>
+      <p className="text-[12px] text-muted mb-2">When on, a rep's action is held for an admin to approve from the notification bell. Admins and the owner always act immediately.</p>
+      <div className="divide-y divide-line">
+        <Row label="Require approval to add clients" hint="New clients a rep creates wait for admin approval before going active." on={add} onToggle={() => save(!add, del)} />
+        <Row label="Require approval to delete clients" hint="A rep's delete is sent to an admin instead of removing the client." on={del} onToggle={() => save(add, !del)} />
+      </div>
     </div>
   );
 }
@@ -2729,6 +2775,17 @@ function RolesPanel() {
                     ))}
                   </tbody>
                 </table>
+                <div className="mt-4 pt-3 border-t border-line">
+                  <div className="text-[10px] uppercase tracking-wide text-muted mb-2">Sensitive visibility</div>
+                  <div className="space-y-2">
+                    {VIS_TOGGLES.map(([perm, label, hint]) => (
+                      <label key={perm} className="flex items-start gap-2 text-[12px] text-ink-2 cursor-pointer">
+                        <input type="checkbox" checked={!!has(perm)} onChange={() => toggle(r.id, perm)} className="mt-0.5" />
+                        <span>{label}<span className="block text-[10px] text-muted">{hint}</span></span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               </>
             )}
           </div>

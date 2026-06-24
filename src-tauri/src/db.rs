@@ -888,4 +888,24 @@ const MIGRATIONS: &[(u32, &str)] = &[
         DELETE FROM orgs WHERE id != 'org_default';
         "#,
     ),
+    (
+        46,
+        // Admin approval queue (rep client add/delete requests). Mirrors the
+        // server table so synced events apply; whitelisted for sync.
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            kind TEXT NOT NULL,
+            entity_id TEXT,
+            summary TEXT NOT NULL DEFAULT '',
+            requested_by TEXT,
+            requested_by_name TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            resolved_by TEXT,
+            resolved_at TEXT
+        );
+        "#,
+    ),
 ];

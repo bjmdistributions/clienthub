@@ -20,6 +20,7 @@ import {
   Columns2,
   X,
   FileSignature,
+  Bell,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -39,6 +40,7 @@ import AnalyticsView from "./components/AnalyticsView";
 import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
+import { ApprovalsView } from "./components/ApprovalsView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import CommandPalette from "./components/CommandPalette";
@@ -50,7 +52,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -156,6 +158,18 @@ export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [hasAccounts, setHasAccounts] = useState<boolean>(true);
   const [orgName, setOrgName] = useState<string>("");
+  const [apCount, setApCount] = useState<number>(0);
+
+  // Poll the admin approval queue for the notification badge.
+  useEffect(() => {
+    if (!me?.is_admin) { setApCount(0); return; }
+    const refresh = () => api.approvalRequestsCount().then(setApCount).catch(() => {});
+    refresh();
+    const onChanged = () => refresh();
+    window.addEventListener("approvals-changed", onChanged);
+    const t = setInterval(refresh, 60000);
+    return () => { window.removeEventListener("approvals-changed", onChanged); clearInterval(t); };
+  }, [me?.is_admin]);
 
   useEffect(() => {
     api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
@@ -299,6 +313,7 @@ export default function App() {
     if (t === "dashboard") return <DashboardView onNavigate={setTab} />;
     if (t === "globe") return <GlobeView />;
     if (t === "notes") return <NotesView />;
+    if (t === "approvals") return <ApprovalsView />;
     return (
       <div className="p-7">
         <div className="max-w-[1280px] mx-auto">
@@ -337,6 +352,25 @@ export default function App() {
         <div className="h-[54px] px-4 flex items-center gap-2.5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
           <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
           <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
+
+          {/* Approvals notification bell (admins only) */}
+          {me?.is_admin && (
+            <button
+              onClick={() => setTab("approvals")}
+              title={apCount > 0 ? `${apCount} pending approval${apCount !== 1 ? "s" : ""}` : "Approvals"}
+              className="relative w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+              style={{ color: tab === "approvals" ? "var(--accent-400)" : "#7A7A90" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== "approvals") e.currentTarget.style.color = "var(--accent-400)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === "approvals" ? "var(--accent-400)" : "#7A7A90"; }}
+            >
+              <Bell size={13} strokeWidth={2} />
+              {apCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-[15px] text-center">
+                  {apCount > 9 ? "9+" : apCount}
+                </span>
+              )}
+            </button>
+          )}
 
           {/* Dark mode toggle */}
           <button

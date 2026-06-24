@@ -178,6 +178,14 @@ export interface InviteRow {
   used_at: string | null;
   created_at: string;
 }
+export interface ApprovalRequest {
+  id: string;
+  kind: string;
+  entity_id: string | null;
+  summary: string;
+  requested_by_name: string | null;
+  created_at: string;
+}
 
 export interface NewsletterSchedule {
   id: string;
@@ -1175,6 +1183,12 @@ export const api = {
   listRoles: () => invoke<{ roles: RoleDef[]; modules: string[] }>("list_roles"),
   createRole: (name: string) => invoke<RoleDef>("create_role", { name }),
   updateRole: (id: string, permissions: string[]) => invoke<void>("update_role", { id, permissions }),
+  // Admin approval queue (rep client add/delete requests)
+  listApprovalRequests: () => invoke<ApprovalRequest[]>("list_approval_requests"),
+  approvalRequestsCount: () => invoke<number>("approval_requests_count"),
+  resolveApprovalRequest: (id: string, approve: boolean) => invoke<void>("resolve_approval_request", { id, approve }),
+  getApprovalPolicy: () => invoke<{ require_client_add_approval: boolean; require_client_delete_approval: boolean }>("get_approval_policy"),
+  setApprovalPolicy: (requireAdd: boolean, requireDelete: boolean) => invoke<void>("set_approval_policy", { requireAdd, requireDelete }),
   listInvites: () => invoke<InviteRow[]>("list_invites"),
   createInvite: (roleId: string, email: string | null, expiresDays: number | null) =>
     invoke<{ token: string; signup_path: string; expires_at: string }>("create_invite", { roleId, email, expiresDays }),

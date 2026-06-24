@@ -142,6 +142,28 @@ fn require_admin() -> Result<Me, String> {
     Ok(me)
 }
 
+/// True when the current desktop user may act without approval: the owner (no
+/// staff session = PIN) or an admin. Non-admin reps return false.
+pub fn session_is_privileged() -> bool {
+    match current_staff_id() {
+        None => true,
+        Some(id) => load_me(&id).map(|m| m.is_admin).unwrap_or(true),
+    }
+}
+
+/// (id, display_name) of the signed-in staff member, if any (owner PIN → None).
+pub fn session_actor() -> Option<(String, String)> {
+    let id = current_staff_id()?;
+    load_me(&id).map(|m| (m.id, m.display_name))
+}
+
+/// Whether a per-org approval toggle is on (stored "1"/"true").
+pub fn approval_required(key: &str) -> bool {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return false };
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
 /// Persist a row to staff tables AND emit a sync event so it reaches the server.
 fn sync_upsert(table: &str, row_id: &str, cols: Map<String, Value>) {
     let _ = sync::record_upsert(table, row_id, cols);
@@ -309,8 +331,14 @@ pub fn list_roles() -> Result<Value, String> {
     Ok(json!({"roles": roles, "modules": MODULES}))
 }
 
+/// Granular per-role visibility flags that don't fit the module×action grid:
+/// see exact client spend, see suppliers, see deal-flow dollar figures.
+pub const EXTRA_PERMS: [&str; 3] =
+    ["clients:view_revenue", "suppliers:view", "deal_flow:view_numbers"];
+
 fn is_valid_perm(p: &str) -> bool {
     if p == "admin:manage" { return true; }
+    if EXTRA_PERMS.contains(&p) { return true; }
     match p.split_once(':') { Some((m, a)) => MODULES.contains(&m) && ["view","edit","export"].contains(&a), None => false }
 }
 
