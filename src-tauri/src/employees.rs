@@ -242,9 +242,9 @@ pub fn list_staff() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT s.id, s.email, s.display_name, s.role_id, r.name, s.status, s.commission_pct, s.hide_pay_cuts
-         FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id ORDER BY s.created_at",
+         FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id WHERE s.org_id=?1 ORDER BY s.created_at",
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| Ok(json!({
+    let rows = stmt.query_map([ORG_ID], |r| Ok(json!({
         "id": r.get::<_,String>(0)?, "email": r.get::<_,String>(1)?, "display_name": r.get::<_,String>(2)?,
         "role_id": r.get::<_,String>(3)?, "role_name": r.get::<_,Option<String>>(4)?, "status": r.get::<_,String>(5)?,
         "commission_pct": r.get::<_,f64>(6)?, "hide_pay_cuts": r.get::<_,i64>(7)? != 0,
@@ -301,8 +301,8 @@ pub fn delete_staff(id: String) -> Result<(), String> {
 pub fn list_roles() -> Result<Value, String> {
     require_admin()?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, name, permissions_json, is_system FROM roles ORDER BY is_system DESC, name").map_err(|e| e.to_string())?;
-    let roles: Vec<Value> = stmt.query_map([], |r| {
+    let mut stmt = conn.prepare("SELECT id, name, permissions_json, is_system FROM roles WHERE org_id=?1 ORDER BY is_system DESC, name").map_err(|e| e.to_string())?;
+    let roles: Vec<Value> = stmt.query_map([ORG_ID], |r| {
         let perms: Vec<String> = serde_json::from_str(&r.get::<_,String>(2)?).unwrap_or_default();
         Ok(json!({"id": r.get::<_,String>(0)?, "name": r.get::<_,String>(1)?, "permissions": perms, "is_system": r.get::<_,i64>(3)? != 0}))
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();

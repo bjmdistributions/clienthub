@@ -862,4 +862,30 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE notes ADD COLUMN y REAL NOT NULL DEFAULT 0;
         "#,
     ),
+    (
+        45,
+        // One-time cleanup: this desktop is single-tenant (org_default). Earlier the
+        // server's shared sync folder leaked OTHER workspaces' rows here (test orgs),
+        // which showed up as duplicate roles/staff/clients. Purge any non-default-org
+        // rows. Each runs individually; missing tables/columns are skipped as benign.
+        r#"
+        DELETE FROM clients WHERE org_id != 'org_default';
+        DELETE FROM invoices WHERE org_id != 'org_default';
+        DELETE FROM deal_flows WHERE org_id != 'org_default';
+        DELETE FROM suppliers WHERE org_id != 'org_default';
+        DELETE FROM quotes WHERE org_id != 'org_default';
+        DELETE FROM inventory WHERE org_id != 'org_default';
+        DELETE FROM payment_methods WHERE org_id != 'org_default';
+        DELETE FROM payments WHERE org_id != 'org_default';
+        DELETE FROM interactions WHERE org_id != 'org_default';
+        DELETE FROM messages WHERE org_id != 'org_default';
+        DELETE FROM newsletter_schedules WHERE org_id != 'org_default';
+        DELETE FROM categories WHERE org_id != 'org_default';
+        DELETE FROM notes WHERE org_id != 'org_default';
+        DELETE FROM roles WHERE org_id != 'org_default';
+        DELETE FROM staff_accounts WHERE org_id != 'org_default';
+        DELETE FROM invites WHERE org_id != 'org_default';
+        DELETE FROM orgs WHERE id != 'org_default';
+        "#,
+    ),
 ];
