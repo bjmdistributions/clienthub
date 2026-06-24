@@ -908,4 +908,22 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        47,
+        // Custom lead-capture forms, authored here + synced to the server which
+        // renders the public page (/f/:id) and accepts submissions.
+        r#"
+        CREATE TABLE IF NOT EXISTS forms (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            name TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            intro TEXT NOT NULL DEFAULT '',
+            fields_json TEXT NOT NULL DEFAULT '[]',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    ),
 ];

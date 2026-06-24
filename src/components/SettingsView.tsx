@@ -67,13 +67,14 @@ import {
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import VariablePicker from "./VariablePicker";
+import { FormsPanel } from "./FormsPanel";
 
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 type SettingsTab =
   | "appearance" | "company" | "categories" | "customfields"
-  | "email" | "whatsapp" | "templates" | "automation"
+  | "email" | "whatsapp" | "templates" | "automation" | "forms"
   | "ai" | "sheets" | "import" | "payments" | "billing"
   | "sync" | "splits" | "backup" | "team";
 
@@ -97,6 +98,7 @@ const SETTINGS_GROUPS: {
       { id: "whatsapp",   label: "WhatsApp",    icon: MessageCircle, desc: "Inventory share message template" },
       { id: "templates",  label: "Templates",   icon: FileText,      desc: "Reusable line-item templates" },
       { id: "automation", label: "Automation",  icon: Zap,      desc: "Signup detection & follow-ups" },
+      { id: "forms",      label: "Lead Forms",  icon: FileText, desc: "Custom forms to capture clients" },
     ],
   },
   {
@@ -188,6 +190,7 @@ export default function SettingsView() {
           {tab === "sync"        && <SyncTab />}
           {tab === "import"      && <ImportTab />}
           {tab === "automation"  && <AutomationTab />}
+          {tab === "forms"       && <FormsPanel />}
           {tab === "payments"    && <PaymentsTab />}
           {tab === "templates"   && <TemplatesTab />}
           {tab === "sheets"      && <SheetsTab />}

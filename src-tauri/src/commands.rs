@@ -492,6 +492,66 @@ pub async fn submit_feedback(kind: String, title: String, body: String, name: Op
     Ok(())
 }
 
+// ── Custom lead forms ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_forms() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,name,title,intro,fields_json,active,created_at,updated_at FROM forms ORDER BY created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?,
+        "name": r.get::<_, String>(1)?,
+        "title": r.get::<_, String>(2)?,
+        "intro": r.get::<_, String>(3)?,
+        "fields_json": r.get::<_, String>(4)?,
+        "active": r.get::<_, i64>(5)? != 0,
+        "created_at": r.get::<_, String>(6)?,
+        "updated_at": r.get::<_, String>(7)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn save_form(id: Option<String>, name: String, title: String, intro: String, fields_json: String, active: bool) -> Result<String, String> {
+    let now = Utc::now().to_rfc3339();
+    let fid = id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let act: i64 = if active { 1 } else { 0 };
+    let created = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO forms (id,org_id,name,title,intro,fields_json,active,created_at,updated_at)
+             VALUES (?1,'org_default',?2,?3,?4,?5,?6,?7,?7)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, title=excluded.title, intro=excluded.intro,
+                fields_json=excluded.fields_json, active=excluded.active, updated_at=excluded.updated_at",
+            rusqlite::params![fid, name, title, intro, fields_json, act, now],
+        ).map_err(|e| e.to_string())?;
+        conn.query_row("SELECT created_at FROM forms WHERE id=?1", [&fid], |r| r.get::<_, String>(0)).unwrap_or_else(|_| now.clone())
+    };
+    let mut cols = Map::new();
+    cols.insert("org_id".into(), Value::String("org_default".into()));
+    cols.insert("name".into(), Value::String(name));
+    cols.insert("title".into(), Value::String(title));
+    cols.insert("intro".into(), Value::String(intro));
+    cols.insert("fields_json".into(), Value::String(fields_json));
+    cols.insert("active".into(), Value::from(act));
+    cols.insert("created_at".into(), Value::String(created));
+    cols.insert("updated_at".into(), Value::String(now));
+    sync::record_upsert("forms", &fid, cols).map_err(|e| e.to_string())?;
+    Ok(fid)
+}
+
+#[tauri::command]
+pub async fn delete_form(id: String) -> Result<(), String> {
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM forms WHERE id=?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
+    }
+    sync::record_delete("forms", &id).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Queue an admin approval row (rep add/delete requests). Returns its id.
 fn queue_client_approval(kind: &str, entity_id: &str, summary: &str) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();

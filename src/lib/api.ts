@@ -186,6 +186,24 @@ export interface ApprovalRequest {
   requested_by_name: string | null;
   created_at: string;
 }
+export interface FormField {
+  id: string;
+  type: string; // name | email | phone | company | text | textarea | select | checkbox | date
+  label: string;
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+export interface FormDef {
+  id: string;
+  name: string;
+  title: string;
+  intro: string;
+  fields_json: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface NewsletterSchedule {
   id: string;
@@ -1191,6 +1209,11 @@ export const api = {
   setApprovalPolicy: (requireAdd: boolean, requireDelete: boolean) => invoke<void>("set_approval_policy", { requireAdd, requireDelete }),
   submitFeedback: (kind: string, title: string, body: string, name?: string, email?: string) =>
     invoke<void>("submit_feedback", { kind, title, body, name, email }),
+  // Custom lead forms
+  listForms: () => invoke<FormDef[]>("list_forms"),
+  saveForm: (f: { id?: string; name: string; title: string; intro: string; fields_json: string; active: boolean }) =>
+    invoke<string>("save_form", f),
+  deleteForm: (id: string) => invoke<void>("delete_form", { id }),
   listInvites: () => invoke<InviteRow[]>("list_invites"),
   createInvite: (roleId: string, email: string | null, expiresDays: number | null) =>
     invoke<{ token: string; signup_path: string; expires_at: string }>("create_invite", { roleId, email, expiresDays }),
