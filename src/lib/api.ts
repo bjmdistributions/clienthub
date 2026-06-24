@@ -1,6 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 
 // ===== Types =====
+export interface Note {
+  id: string;
+  body: string;
+  color: string;
+  pinned: boolean;
+  author: string;
+  created_at: string;
+  updated_at: string;
+}
 export interface Client {
   id: string;
   name: string;
@@ -1260,6 +1269,13 @@ export const api = {
     invoke<void>("netsync_connect", { url, email, password }),
   netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
   netsyncSyncNow: () => invoke<{ pushed: number; pulled: number }>("netsync_sync_now"),
+
+  // Sticky notes
+  listNotes: () => invoke<Note[]>("list_notes"),
+  createNote: (body: string, color?: string) => invoke<Note>("create_note", { body, color }),
+  updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean }) =>
+    invoke<void>("update_note", { id, ...patch }),
+  deleteNote: (id: string) => invoke<void>("delete_note", { id }),
 
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),

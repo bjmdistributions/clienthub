@@ -837,4 +837,21 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_deal_flows_org ON deal_flows(org_id);
         "#,
     ),
+    (
+        43,
+        // Sticky notes — workspace-wide timestamped notes, synced like other data.
+        r#"
+        CREATE TABLE IF NOT EXISTS notes (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            body TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT 'yellow',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            author TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notes_org ON notes(org_id);
+        "#,
+    ),
 ];

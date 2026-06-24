@@ -1,10 +1,25 @@
 import { useEffect, useState, useRef } from "react";
-import { api, DashboardStats, Client, Invoice, BuyerTier, ProfitForecast } from "../lib/api";
+import { api, DashboardStats, Client, Invoice, BuyerTier, ProfitForecast, Note } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
   Users, FileText, DollarSign, TrendingUp, Mail,
-  ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Package,
+  ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Package, StickyNote,
 } from "lucide-react";
+
+const NOTE_ACCENT: Record<string, string> = {
+  yellow: "#FACC15", blue: "#60A5FA", green: "#34D399", pink: "#F472B6", purple: "#A78BFA", orange: "#FB923C",
+};
+function relNote(iso: string): string {
+  const d = new Date(iso).getTime();
+  if (!d) return "";
+  const m = Math.floor((Date.now() - d) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  return days === 1 ? "yesterday" : `${days}d ago`;
+}
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import TierBadge from "./TierBadge";
 
@@ -72,6 +87,7 @@ export default function DashboardView({ onNavigate }: Props) {
   const [followups, setFollowups]     = useState<Client[]>([]);
   const [pendingApprovals, setPending] = useState<Client[]>([]);
   const [recentInvoices, setRecent]   = useState<Invoice[]>([]);
+  const [notes, setNotes]             = useState<Note[]>([]);
   const [clients, setClients]         = useState<Client[]>([]);
   const [tiers, setTiers]             = useState<BuyerTier[]>([]);
   const [profitMonth, setProfitMonth] = useState(() => new Date().toISOString().slice(0, 7));
@@ -84,6 +100,7 @@ export default function DashboardView({ onNavigate }: Props) {
     api.dueFollowups().then(setFollowups).catch(() => {});
     api.getPendingApprovals().then(setPending).catch(() => {});
     api.listInvoices().then((inv) => setRecent(inv.slice(0, 50))).catch(() => {});
+    api.listNotes().then(setNotes).catch(() => {});
   };
 
   const loadProfitMonth = async (m: string) => {
@@ -289,6 +306,41 @@ export default function DashboardView({ onNavigate }: Props) {
             ) : (
               <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>No open deals in pipeline — projection equals actual MTD.</p>
             )}
+          </div>
+        )}
+
+        {/* Notes peek */}
+        {notes.length > 0 && (
+          <div className="rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <StickyNote size={14} style={{ color: "rgb(var(--c-accent))" }} />
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Notes</h3>
+              </div>
+              <button onClick={() => onNavigate("notes")}
+                className="text-[11px] font-medium flex items-center gap-1 transition-colors hover:opacity-80"
+                style={{ color: "var(--accent-400)" }}>
+                View all <ArrowRight size={11} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {notes.slice(0, 4).map((n) => {
+                const accent = NOTE_ACCENT[n.color] || NOTE_ACCENT.yellow;
+                return (
+                  <button key={n.id} onClick={() => onNavigate("notes")}
+                    className="text-left rounded-lg p-3 transition-transform hover:-translate-y-0.5"
+                    style={{ background: `${accent}1f`, border: `1px solid ${accent}33` }}>
+                    <p className="text-[12px] leading-snug line-clamp-3" style={{ color: "var(--t-tx1)", minHeight: 30 }}>
+                      {n.body.trim() || <span style={{ color: "var(--t-tx4)" }}>Empty note</span>}
+                    </p>
+                    <div className="mt-2 flex items-center gap-1.5 text-[10px]" style={{ color: "var(--t-tx4)" }}>
+                      <span className="tabular-nums" title={new Date(n.updated_at).toLocaleString()}>{relNote(n.updated_at)}</span>
+                      {n.author && <><span>·</span><span className="truncate">{n.author}</span></>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 

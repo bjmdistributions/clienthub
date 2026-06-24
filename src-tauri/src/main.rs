@@ -229,6 +229,11 @@ fn main() {
             netsync::netsync_status,
             netsync::netsync_disconnect,
             netsync::netsync_sync_now,
+            // Sticky notes
+            list_notes,
+            create_note,
+            update_note,
+            delete_note,
             // Clients
             list_clients,
             get_client,

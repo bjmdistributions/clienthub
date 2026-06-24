@@ -112,6 +112,14 @@ fn load_me(staff_id: &str) -> Option<Me> {
     Some(Me { id, email, display_name: name, role_id, role_name, permissions, is_admin })
 }
 
+/// The signed-in employee's display name (for note authorship etc.), or "".
+pub fn current_display_name() -> String {
+    current_staff_id()
+        .and_then(|id| load_me(&id))
+        .map(|m| m.display_name)
+        .unwrap_or_default()
+}
+
 fn current_staff_id() -> Option<String> {
     let conn = pool().get().ok()?;
     conn.query_row("SELECT value FROM settings WHERE key='current_staff_id'", [], |r| r.get::<_, String>(0)).ok()

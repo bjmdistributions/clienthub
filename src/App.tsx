@@ -14,6 +14,7 @@ import {
   Sun,
   Moon,
   Globe,
+  StickyNote,
   Grid3X3,
   Bot,
   Columns2,
@@ -37,6 +38,7 @@ import BriefView from "./components/BriefView";
 import AnalyticsView from "./components/AnalyticsView";
 import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
+import NotesView from "./components/NotesView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import CommandPalette from "./components/CommandPalette";
@@ -48,7 +50,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -283,6 +285,7 @@ export default function App() {
     { id: "brief",     label: "Brief",      icon: FileText },
     { id: "automation", label: "Automation",  icon: Bot },
     { id: "globe",     label: "Globe",      icon: Globe },
+    { id: "notes",     label: "Notes",      icon: StickyNote },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];
   const tabs = allTabs.filter((t) => canViewTab(me, t.id as any));
@@ -295,6 +298,7 @@ export default function App() {
   const paneContent = (t: Tab) => {
     if (t === "dashboard") return <DashboardView onNavigate={setTab} />;
     if (t === "globe") return <GlobeView />;
+    if (t === "notes") return <NotesView />;
     return (
       <div className="p-7">
         <div className="max-w-[1280px] mx-auto">

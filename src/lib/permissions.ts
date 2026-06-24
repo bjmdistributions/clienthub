@@ -8,7 +8,7 @@ export interface Perms {
 export type Feature =
   | "dashboard" | "clients" | "invoices" | "quotes" | "deals" | "dealflow"
   | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings"
-  | "health" | "inventory" | "automation";
+  | "health" | "inventory" | "automation" | "notes";
 
 /** True if the user holds a permission (wildcard "*" grants everything). */
 export function can(me: Perms | null | undefined, perm: string): boolean {
@@ -23,6 +23,7 @@ export function tabPerm(feature: Feature): string | null {
     case "dashboard":
     case "globe":
     case "automation":
+    case "notes":
       return null;
     case "clients":
     case "health":      return "clients:view";
