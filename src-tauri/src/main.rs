@@ -249,6 +249,7 @@ fn main() {
             resolve_approval_request,
             get_approval_policy,
             set_approval_policy,
+            submit_feedback,
             delete_client,
             bulk_delete_clients,
             bulk_update_category,

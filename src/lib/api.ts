@@ -1189,6 +1189,8 @@ export const api = {
   resolveApprovalRequest: (id: string, approve: boolean) => invoke<void>("resolve_approval_request", { id, approve }),
   getApprovalPolicy: () => invoke<{ require_client_add_approval: boolean; require_client_delete_approval: boolean }>("get_approval_policy"),
   setApprovalPolicy: (requireAdd: boolean, requireDelete: boolean) => invoke<void>("set_approval_policy", { requireAdd, requireDelete }),
+  submitFeedback: (kind: string, title: string, body: string, name?: string, email?: string) =>
+    invoke<void>("submit_feedback", { kind, title, body, name, email }),
   listInvites: () => invoke<InviteRow[]>("list_invites"),
   createInvite: (roleId: string, email: string | null, expiresDays: number | null) =>
     invoke<{ token: string; signup_path: string; expires_at: string }>("create_invite", { roleId, email, expiresDays }),

@@ -1535,6 +1535,10 @@ const PREMADE_AUTOMATIONS: { name: string; desc: string; sender: string | null; 
   { name: "Jotform submissions",
     desc: "New customer from a Jotform submission notification.",
     sender: "(?i)jotform\\.com", subject: null },
+  { name: "Shopify contact form",
+    desc: "New client from a Shopify store contact-form / customer-enquiry email.",
+    sender: "(?i)shopify",
+    subject: "(?i)(new (store )?contact|customer (enquiry|inquiry)|contacted you|new message from)" },
 ];
 
 function AutomationTab() {

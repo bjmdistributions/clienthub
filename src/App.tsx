@@ -21,6 +21,7 @@ import {
   X,
   FileSignature,
   Bell,
+  MessageSquarePlus,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -41,6 +42,7 @@ import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
 import { ApprovalsView } from "./components/ApprovalsView";
+import { FeedbackModal } from "./components/FeedbackModal";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import CommandPalette from "./components/CommandPalette";
@@ -159,6 +161,7 @@ export default function App() {
   const [hasAccounts, setHasAccounts] = useState<boolean>(true);
   const [orgName, setOrgName] = useState<string>("");
   const [apCount, setApCount] = useState<number>(0);
+  const [fbOpen, setFbOpen] = useState<boolean>(false);
 
   // Poll the admin approval queue for the notification badge.
   useEffect(() => {
@@ -489,6 +492,16 @@ export default function App() {
               <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
             </div>
             <button
+              onClick={() => setFbOpen(true)}
+              title="Send feedback"
+              className="p-1.5 rounded-md transition-colors flex-shrink-0"
+              style={{ color: "#7A7A90" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+            >
+              <MessageSquarePlus size={13} />
+            </button>
+            <button
               onClick={signOut}
               title="Sign out"
               className="p-1.5 rounded-md transition-colors flex-shrink-0"
@@ -501,6 +514,8 @@ export default function App() {
           </div>
         </div>
       </aside>
+
+      {fbOpen && <FeedbackModal me={me} onClose={() => setFbOpen(false)} />}
 
       {/* Main */}
       <main className="flex-1 overflow-hidden">

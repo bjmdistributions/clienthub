@@ -471,6 +471,27 @@ pub async fn set_approval_policy(require_add: bool, require_delete: bool) -> Res
     Ok(())
 }
 
+/// Send a product feature request / bug report to the Ecliptr server.
+#[tauri::command]
+pub async fn submit_feedback(kind: String, title: String, body: String, name: Option<String>, email: Option<String>) -> Result<(), String> {
+    let base = crate::netsync::config()
+        .map(|c| c.url.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "https://ecliptr.app".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build().map_err(|e| e.to_string())?;
+    let payload = serde_json::json!({
+        "kind": kind, "title": title, "body": body, "app": "desktop",
+        "name": name.unwrap_or_default(), "email": email.unwrap_or_default(),
+    });
+    let resp = client.post(format!("{base}/api/feedback")).json(&payload)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Queue an admin approval row (rep add/delete requests). Returns its id.
 fn queue_client_approval(kind: &str, entity_id: &str, summary: &str) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
