@@ -399,6 +399,9 @@ fn main() {
             // Email
             send_email,
             scan_inbox,
+            get_email_inboxes,
+            save_email_inbox,
+            delete_email_inbox,
             oauth_start_consent,
             google_contacts_oauth_start,
             google_contacts_list,

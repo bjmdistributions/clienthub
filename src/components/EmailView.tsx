@@ -110,14 +110,15 @@ export default function EmailView() {
               <div className="max-h-[600px] overflow-auto">
                 {emails.map((e) => (
                   <button
-                    key={e.uid}
+                    key={`${e.source}:${e.uid}`}
                     onClick={() => setSelected(e)}
                     className={`w-full text-left px-4 py-3.5 border-b border-line transition-colors ${
-                      selected?.uid === e.uid ? "bg-accent/10" : "hover:bg-surface-2"
+                      selected?.uid === e.uid && selected?.source === e.source ? "bg-accent/10" : "hover:bg-surface-2"
                     }`}
                   >
-                    <div className="font-medium text-[13px] text-ink truncate">
-                      {e.from_name || e.from}
+                    <div className="font-medium text-[13px] text-ink truncate flex items-center gap-1.5">
+                      <span className="truncate">{e.from_name || e.from}</span>
+                      {e.source && <span className="text-[9px] uppercase tracking-wide text-muted bg-surface-3 rounded px-1 py-0.5 flex-shrink-0">{e.source}</span>}
                     </div>
                     <div className="text-[13px] text-ink-2 truncate mt-0.5">{e.subject}</div>
                     <div className="text-[12px] text-muted truncate mt-0.5">

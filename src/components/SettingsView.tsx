@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, createContext, useContext } from "react";
 import {
   api,
   Me,
+  EmailInbox,
   EmailSettings,
   CompanyInfo,
   OllamaModel,
@@ -531,6 +532,57 @@ function WhatsAppTab() {
   );
 }
 
+function InboxesSection() {
+  const [inboxes, setInboxes] = useState<EmailInbox[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
+  const load = () => api.getEmailInboxes().then(setInboxes).catch(() => {});
+  useEffect(() => { load(); }, []);
+  const add = async () => {
+    if (!form.host || !form.user || !form.password) return;
+    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password }).catch(() => {});
+    setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
+    setAdding(false); load();
+  };
+  const remove = async (id: string) => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(id).catch(() => {}); load(); };
+  return (
+    <div className="mt-8 pt-6 border-t border-line">
+      <h3 className="text-[14px] font-semibold text-ink mb-1">Additional inboxes</h3>
+      <p className="text-[12px] text-muted mb-4">Monitor extra mailboxes — their mail loads in your Inbox and feeds automations. Sending always uses the “send from” account above.</p>
+      {inboxes.length > 0 && (
+        <div className="space-y-2 mb-3">
+          {inboxes.map((ib) => (
+            <div key={ib.id} className="flex items-center justify-between bg-surface border border-line rounded-lg px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-[13px] font-medium text-ink truncate">{ib.label}</div>
+                <div className="text-[11px] text-muted truncate">{ib.user} · {ib.host}:{ib.port}</div>
+              </div>
+              <button onClick={() => remove(ib.id)} className="text-faint hover:text-danger-ink p-1 rounded-md"><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      {adding ? (
+        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <input className={inpSm} placeholder="Label (e.g. Support inbox)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
+            <input className={inpSm} placeholder="Email / username" value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} />
+            <input className={inpSm} placeholder="IMAP host" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} />
+            <input className={inpSm} type="number" placeholder="Port" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
+          </div>
+          <input className={inpSm} type="password" placeholder="IMAP password / app password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <div className="flex gap-2">
+            <button onClick={add} disabled={!form.host || !form.user || !form.password} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Add inbox</button>
+            <button onClick={() => setAdding(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} className="border border-line text-ink-2 hover:bg-surface-3 px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> Add inbox</button>
+      )}
+    </div>
+  );
+}
+
 function EmailTab() {
   const [settings, setSettings] = useState<EmailSettings>({
     smtp_host: "smtp.gmail.com",
@@ -679,6 +731,8 @@ function EmailTab() {
         {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved" : "Save Settings"}
       </button>
+
+      <InboxesSection />
 
       <div className="mt-8 pt-6 border-t border-line">
         <h3 className="text-[14px] font-semibold text-ink mb-1">Pi / Mobile Sync</h3>

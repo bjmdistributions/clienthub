@@ -59,6 +59,55 @@ pub struct ParsedEmail {
     pub body_html: Option<String>,
     pub date: Option<String>,
     pub has_attachments: bool,
+    /// Which connected inbox this came from (its label). Empty for legacy single-account scans.
+    #[serde(default)]
+    pub source: String,
+}
+
+/// A monitor-only inbound mailbox (IMAP). Sending always uses the SMTP "send from"
+/// account in EmailSettings — these are watched/loaded only.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EmailInbox {
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+}
+
+/// Configured inbound mailboxes (passwords live in the credential store, keyed
+/// `imap_pass_{id}`).
+pub fn load_inboxes() -> Vec<EmailInbox> {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return vec![] };
+    conn.query_row("SELECT value FROM settings WHERE key='email_inboxes'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_inboxes(list: &[EmailInbox]) -> Result<()> {
+    let conn = pool().get()?;
+    let json = serde_json::to_string(list)?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('email_inboxes',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [json],
+    )?;
+    Ok(())
+}
+
+fn uid_for(key: &str) -> u32 {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return 0 };
+    conn.query_row("SELECT value FROM device_state WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
+fn set_uid_for(key: &str, uid: u32) {
+    if let Ok(conn) = pool().get() {
+        let _ = conn.execute(
+            "INSERT INTO device_state (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![key, uid.to_string()],
+        );
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -195,30 +244,6 @@ pub async fn oauth2_access_token() -> Result<String> {
 
 const SCAN_FOLDER: &str = "INBOX";
 
-fn last_seen_uid() -> Result<u32> {
-    let conn = pool().get()?;
-    let res: rusqlite::Result<String> = conn.query_row(
-        "SELECT value FROM device_state WHERE key='last_seen_uid'",
-        [],
-        |r| r.get(0),
-    );
-    match res {
-        Ok(s) => Ok(s.parse().unwrap_or(0)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn save_last_seen_uid(uid: u32) -> Result<()> {
-    let conn = pool().get()?;
-    conn.execute(
-        "INSERT INTO device_state (key, value) VALUES ('last_seen_uid', ?1)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [uid.to_string()],
-    )?;
-    Ok(())
-}
-
 /// Synchronous IMAP scan — safe to call from spawn_blocking.
 fn scan_blocking(
     imap_host: String,
@@ -308,6 +333,7 @@ fn scan_blocking(
                     body_html,
                     date,
                     has_attachments,
+                    source: String::new(),
                 });
             }
         }
@@ -318,29 +344,45 @@ fn scan_blocking(
 }
 
 pub async fn scan() -> Result<Vec<ParsedEmail>> {
-    let settings = load_settings()?;
-    let last_uid = last_seen_uid()?;
-
-    // Resolve password/token before entering spawn_blocking (async not allowed inside).
-    let password = match settings.auth_method {
-        AuthMethod::Password => cred("imap_pass")?,
-        AuthMethod::Oauth2 => oauth2_access_token().await?,
-    };
-
-    let host = settings.imap_host.clone();
-    let port = settings.imap_port;
-    let user = settings.user.clone();
-
-    let (emails, max_uid) =
-        tokio::task::spawn_blocking(move || scan_blocking(host, port, user, password, last_uid))
-            .await
-            .context("spawn_blocking panicked")??;
-
-    if max_uid > last_uid {
-        save_last_seen_uid(max_uid)?;
+    // Inbound mailboxes to monitor. If none are configured, fall back to the
+    // legacy single account (in EmailSettings) so existing setups keep working.
+    let mut inboxes = load_inboxes();
+    let legacy = load_settings().ok();
+    if inboxes.is_empty() {
+        if let Some(ref s) = legacy {
+            if !s.imap_host.is_empty() {
+                inboxes.push(EmailInbox {
+                    id: "legacy".into(), label: s.user.clone(),
+                    host: s.imap_host.clone(), port: s.imap_port, user: s.user.clone(),
+                });
+            }
+        }
     }
 
-    Ok(emails)
+    let mut all = Vec::new();
+    for ib in inboxes {
+        // The legacy inbox uses the account's configured auth (password or OAuth)
+        // and keeps the original UID cursor key; added inboxes are password-only.
+        let password = if ib.id == "legacy" {
+            match legacy.as_ref().map(|s| &s.auth_method) {
+                Some(AuthMethod::Oauth2) => match oauth2_access_token().await { Ok(t) => t, Err(_) => continue },
+                _ => match cred("imap_pass") { Ok(p) => p, Err(_) => continue },
+            }
+        } else {
+            match cred(&format!("imap_pass_{}", ib.id)) { Ok(p) => p, Err(_) => continue }
+        };
+        let uid_key = if ib.id == "legacy" { "last_seen_uid".to_string() } else { format!("last_seen_uid_{}", ib.id) };
+        let last_uid = uid_for(&uid_key);
+        let (host, port, user, label) = (ib.host.clone(), ib.port, ib.user.clone(), ib.label.clone());
+        let res = tokio::task::spawn_blocking(move || scan_blocking(host, port, user, password, last_uid)).await;
+        if let Ok(Ok((mut emails, max_uid))) = res {
+            for e in &mut emails { e.source = label.clone(); }
+            if max_uid > last_uid { set_uid_for(&uid_key, max_uid); }
+            all.append(&mut emails);
+        }
+        // A single bad inbox shouldn't abort the others — errors are skipped above.
+    }
+    Ok(all)
 }
 
 // ---------- Background periodic scanner ----------
@@ -351,7 +393,8 @@ pub fn spawn_periodic_scan(interval_secs: u64) {
         tick.tick().await; // skip first immediate tick — settings may not be configured yet
         loop {
             tick.tick().await;
-            if cred_opt("imap_pass").is_none() && cred_opt("oauth_refresh_token").is_none() {
+            // Skip only if nothing is configured: no legacy account AND no added inboxes.
+            if cred_opt("imap_pass").is_none() && cred_opt("oauth_refresh_token").is_none() && load_inboxes().is_empty() {
                 continue;
             }
             match scan().await {

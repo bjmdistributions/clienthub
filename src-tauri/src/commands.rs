@@ -4183,6 +4183,39 @@ pub async fn send_email(
 }
 
 #[tauri::command]
+pub async fn get_email_inboxes() -> Result<Vec<crate::email::EmailInbox>, String> {
+    Ok(crate::email::load_inboxes())
+}
+
+/// Add or update a monitor-only inbound mailbox (password stored in the keyring).
+#[tauri::command]
+pub async fn save_email_inbox(id: Option<String>, label: String, host: String, port: u16, user: String, password: Option<String>) -> Result<String, String> {
+    let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let mut list = crate::email::load_inboxes();
+    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user };
+    match list.iter_mut().find(|i| i.id == id) {
+        Some(existing) => *existing = inbox,
+        None => list.push(inbox),
+    }
+    crate::email::save_inboxes(&list).map_err(|e| e.to_string())?;
+    if let Some(pw) = password {
+        if !pw.is_empty() {
+            crate::email::save_cred(&format!("imap_pass_{id}"), &pw).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn delete_email_inbox(id: String) -> Result<(), String> {
+    let mut list = crate::email::load_inboxes();
+    list.retain(|i| i.id != id);
+    crate::email::save_inboxes(&list).map_err(|e| e.to_string())?;
+    let _ = crate::email::delete_cred(&format!("imap_pass_{id}"));
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn scan_inbox() -> Result<Vec<crate::email::ParsedEmail>, String> {
     crate::email::scan().await.map_err(|e| e.to_string())
 }

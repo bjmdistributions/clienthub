@@ -775,6 +775,14 @@ export interface ParsedEmail {
   body_html: string | null;
   date: string | null;
   has_attachments: boolean;
+  source?: string;
+}
+export interface EmailInbox {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  user: string;
 }
 
 export interface EmailSettings {
@@ -1256,6 +1264,10 @@ export const api = {
   sendEmail: (to: string, subject: string, body: string, attachmentPath?: string) =>
     invoke<void>("send_email", { to, subject, body, attachmentPath }),
   scanInbox: () => invoke<ParsedEmail[]>("scan_inbox"),
+  getEmailInboxes: () => invoke<EmailInbox[]>("get_email_inboxes"),
+  saveEmailInbox: (p: { id?: string; label: string; host: string; port: number; user: string; password?: string }) =>
+    invoke<string>("save_email_inbox", p),
+  deleteEmailInbox: (id: string) => invoke<void>("delete_email_inbox", { id }),
    oauthStartConsent: (clientId: string, clientSecret: string) =>
     invoke<void>("oauth_start_consent", { clientId, clientSecret }),
   googleContactsOauthStart: (clientId: string, clientSecret: string) =>
