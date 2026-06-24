@@ -9,6 +9,8 @@ export interface Note {
   author: string;
   created_at: string;
   updated_at: string;
+  x: number;
+  y: number;
 }
 export interface Client {
   id: string;
@@ -1272,8 +1274,8 @@ export const api = {
 
   // Sticky notes
   listNotes: () => invoke<Note[]>("list_notes"),
-  createNote: (body: string, color?: string) => invoke<Note>("create_note", { body, color }),
-  updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean }) =>
+  createNote: (body: string, color?: string, x?: number, y?: number) => invoke<Note>("create_note", { body, color, x, y }),
+  updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean; x?: number; y?: number }) =>
     invoke<void>("update_note", { id, ...patch }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
 

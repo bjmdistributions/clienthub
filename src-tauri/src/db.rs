@@ -854,4 +854,12 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_notes_org ON notes(org_id);
         "#,
     ),
+    (
+        44,
+        // Draggable note board positions.
+        r#"
+        ALTER TABLE notes ADD COLUMN x REAL NOT NULL DEFAULT 0;
+        ALTER TABLE notes ADD COLUMN y REAL NOT NULL DEFAULT 0;
+        "#,
+    ),
 ];

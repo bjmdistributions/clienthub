@@ -8178,6 +8178,8 @@ pub struct Note {
     pub author: String,
     pub created_at: String,
     pub updated_at: String,
+    pub x: f64,
+    pub y: f64,
 }
 
 fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
@@ -8189,10 +8191,12 @@ fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
         author: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
+        x: r.get(7)?,
+        y: r.get(8)?,
     })
 }
 
-const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at";
+const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0)";
 
 #[tauri::command]
 pub async fn list_notes() -> Result<Vec<Note>, String> {
@@ -8205,16 +8209,18 @@ pub async fn list_notes() -> Result<Vec<Note>, String> {
 }
 
 #[tauri::command]
-pub async fn create_note(body: String, color: Option<String>) -> Result<Note, String> {
+pub async fn create_note(body: String, color: Option<String>, x: Option<f64>, y: Option<f64>) -> Result<Note, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let color = color.unwrap_or_else(|| "yellow".into());
     let author = crate::employees::current_display_name();
+    let x = x.unwrap_or(0.0);
+    let y = y.unwrap_or(0.0);
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO notes (id, body, color, pinned, author, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?5,?5)",
-            rusqlite::params![id, body, color, author, now],
+            "INSERT INTO notes (id, body, color, pinned, author, x, y, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?5,?6,?7,?7)",
+            rusqlite::params![id, body, color, author, x, y, now],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -8223,14 +8229,16 @@ pub async fn create_note(body: String, color: Option<String>) -> Result<Note, St
     cols.insert("color".into(), json!(color));
     cols.insert("pinned".into(), json!(0));
     cols.insert("author".into(), json!(author));
+    cols.insert("x".into(), json!(x));
+    cols.insert("y".into(), json!(y));
     cols.insert("created_at".into(), json!(now));
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
-    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now })
+    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now, x, y })
 }
 
 #[tauri::command]
-pub async fn update_note(id: String, body: Option<String>, color: Option<String>, pinned: Option<bool>) -> Result<(), String> {
+pub async fn update_note(id: String, body: Option<String>, color: Option<String>, pinned: Option<bool>, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     let mut cols = Map::new();
     cols.insert("updated_at".into(), json!(now));
@@ -8247,6 +8255,14 @@ pub async fn update_note(id: String, body: Option<String>, color: Option<String>
         if let Some(p) = pinned {
             cols.insert("pinned".into(), json!(if p { 1 } else { 0 }));
             conn.execute("UPDATE notes SET pinned=?1 WHERE id=?2", rusqlite::params![if p {1} else {0}, id]).map_err(|e| e.to_string())?;
+        }
+        if let Some(xv) = x {
+            cols.insert("x".into(), json!(xv));
+            conn.execute("UPDATE notes SET x=?1 WHERE id=?2", rusqlite::params![xv, id]).map_err(|e| e.to_string())?;
+        }
+        if let Some(yv) = y {
+            cols.insert("y".into(), json!(yv));
+            conn.execute("UPDATE notes SET y=?1 WHERE id=?2", rusqlite::params![yv, id]).map_err(|e| e.to_string())?;
         }
         conn.execute("UPDATE notes SET updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     }
