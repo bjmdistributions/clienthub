@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, createContext, useContext } from "react";
 import {
   api,
+  Me,
   EmailSettings,
   CompanyInfo,
   OllamaModel,
@@ -98,7 +99,7 @@ const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:ou
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 type SettingsTab =
-  | "appearance" | "company" | "categories" | "customfields"
+  | "account" | "appearance" | "company" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
   | "ai" | "sheets" | "import" | "payments" | "billing"
   | "sync" | "splits" | "backup" | "team";
@@ -110,6 +111,7 @@ const SETTINGS_GROUPS: {
   {
     group: "Workspace",
     items: [
+      { id: "account",      label: "My Account",     icon: Users,             desc: "Your name, photo & contact info" },
       { id: "appearance",   label: "Appearance",    icon: Palette,           desc: "Theme, accent color & display" },
       { id: "company",      label: "Company",        icon: Building2,         desc: "Business details & invoice logo" },
       { id: "categories",   label: "Categories",     icon: Tag,               desc: "Client & deal categories" },
@@ -218,6 +220,7 @@ export default function SettingsView() {
           </div>
         )}
         <div key={tab} className="page-enter">
+          {tab === "account"     && <AccountTab />}
           {tab === "appearance"  && <AppearanceTab />}
           {tab === "email"       && <EmailTab />}
           {tab === "whatsapp"    && <WhatsAppTab />}
@@ -240,6 +243,65 @@ export default function SettingsView() {
       </div>
     </div>
    </SaveStatusCtx.Provider>
+  );
+}
+
+// Resize an uploaded image to a small square-ish JPEG data URL (avatar).
+function resizePhoto(file: File, max = 128): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = document.createElement("img");
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      cv.getContext("2d")!.drawImage(img, 0, 0, w, h);
+      resolve(cv.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function AccountTab() {
+  const [me, setMe] = useState<Me | null>(null);
+  const [form, setForm] = useState({ display_name: "", title: "", phone: "", avatar: "" });
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    api.employeeMe().then((m) => {
+      if (m) { setMe(m); setForm({ display_name: m.display_name, title: m.title || "", phone: m.phone || "", avatar: m.avatar || "" }); }
+    }).finally(() => setReady(true));
+  }, []);
+  const save = async () => { await api.updateMyAccount(form); };
+  useAutosave(form, save, ready && !!me);
+  const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    try { const url = await resizePhoto(f); setForm((p) => ({ ...p, avatar: url })); } catch { /* ignore */ }
+    e.target.value = "";
+  };
+  if (!me) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
+  const initial = (form.display_name || me.email || "?").trim().charAt(0).toUpperCase();
+  return (
+    <div className="bg-surface border border-line rounded-xl p-6 max-w-xl">
+      <div className="flex items-center gap-4 mb-6">
+        {form.avatar
+          ? <img src={form.avatar} alt="" className="w-20 h-20 rounded-full object-cover border border-line" />
+          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-white" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{initial}</div>}
+        <div>
+          <label className="bg-surface-2 border border-line hover:bg-surface-3 text-ink-2 px-3 h-8 rounded-lg text-[12px] font-medium inline-flex items-center cursor-pointer">
+            Upload photo<input type="file" accept="image/*" className="hidden" onChange={pick} />
+          </label>
+          {form.avatar && <button onClick={() => setForm((p) => ({ ...p, avatar: "" }))} className="ml-2 text-[12px] text-muted hover:text-danger-ink">Remove</button>}
+        </div>
+      </div>
+      <div className="space-y-3">
+        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Name</label><input className={inpSm} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></div>
+        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Title</label><input className={inpSm} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Sales Manager" /></div>
+        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Phone</label><input className={inpSm} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Email</label><input className={inpSm + " opacity-60"} value={me.email} disabled /><p className="text-[10px] text-muted mt-1">Contact an admin to change your email.</p></div>
+        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Role</label><input className={inpSm + " opacity-60"} value={me.role_name} disabled /></div>
+      </div>
+    </div>
   );
 }
 

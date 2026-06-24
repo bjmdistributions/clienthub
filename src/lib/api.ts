@@ -154,6 +154,9 @@ export interface Me {
   role_name: string;
   permissions: string[];
   is_admin: boolean;
+  avatar?: string;
+  title?: string;
+  phone?: string;
 }
 export interface StaffMember {
   id: string;
@@ -1191,6 +1194,8 @@ export const api = {
   // ── Unified accounts + RBAC (synced with web/mobile) ──
   employeeStatus: () => invoke<{ has_accounts: boolean; signed_in: boolean }>("employee_status"),
   employeeMe: () => invoke<Me | null>("employee_me"),
+  updateMyAccount: (p: { display_name?: string; title?: string; phone?: string; avatar?: string }) =>
+    invoke<Me>("update_my_account", p),
   employeeLogout: () => invoke<void>("employee_logout"),
   employeeBootstrap: (displayName: string, email: string, password: string) =>
     invoke<Me>("employee_bootstrap", { displayName, email, password }),

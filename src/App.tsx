@@ -483,10 +483,12 @@ export default function App() {
 
           {/* Signed-in user + sign out */}
           <div className="flex items-center gap-2 px-1.5 pt-2 mt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
-            <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
-              style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
-              {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
-            </div>
+            {me?.avatar
+              ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover flex-shrink-0" />
+              : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+                  style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+                  {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
+                </div>}
             <div className="min-w-0 flex-1">
               <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
               <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>

@@ -95,21 +95,52 @@ pub struct Me {
     pub role_name: String,
     pub permissions: Vec<String>,
     pub is_admin: bool,
+    pub avatar: String,
+    pub title: String,
+    pub phone: String,
 }
 
 fn load_me(staff_id: &str) -> Option<Me> {
     let conn = pool().get().ok()?;
-    let (id, email, name, role_id, status, role_name, perms_json): (String, String, String, String, String, String, String) =
+    let (id, email, name, role_id, status, role_name, perms_json, avatar, title, phone): (String, String, String, String, String, String, String, String, String, String) =
         conn.query_row(
-            "SELECT s.id, s.email, s.display_name, s.role_id, s.status, r.name, r.permissions_json
+            "SELECT s.id, s.email, s.display_name, s.role_id, s.status, r.name, r.permissions_json,
+                    COALESCE(s.avatar,''), COALESCE(s.title,''), COALESCE(s.phone,'')
              FROM staff_accounts s JOIN roles r ON r.id = s.role_id WHERE s.id=?1",
             [staff_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
         ).ok()?;
     if status != "active" { return None; }
     let permissions: Vec<String> = serde_json::from_str(&perms_json).unwrap_or_default();
     let is_admin = permissions.iter().any(|p| p == "*" || p == "admin:manage");
-    Some(Me { id, email, display_name: name, role_id, role_name, permissions, is_admin })
+    Some(Me { id, email, display_name: name, role_id, role_name, permissions, is_admin, avatar, title, phone })
+}
+
+/// Self-service: the signed-in employee updates their own profile.
+#[tauri::command]
+pub fn update_my_account(display_name: Option<String>, title: Option<String>, phone: Option<String>, avatar: Option<String>) -> Result<Me, String> {
+    let id = current_staff_id().ok_or("Not signed in")?;
+    let me = load_me(&id).ok_or("Not signed in")?;
+    let dn = display_name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or(me.display_name);
+    let title = title.unwrap_or(me.title);
+    let phone = phone.unwrap_or(me.phone);
+    let avatar = avatar.unwrap_or(me.avatar);
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE staff_accounts SET display_name=?1, title=?2, phone=?3, avatar=?4, updated_at=?5 WHERE id=?6",
+            rusqlite::params![dn, title, phone, avatar, now, id],
+        ).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("display_name".into(), Value::String(dn));
+    cols.insert("title".into(), Value::String(title));
+    cols.insert("phone".into(), Value::String(phone));
+    cols.insert("avatar".into(), Value::String(avatar));
+    cols.insert("updated_at".into(), Value::String(now));
+    sync_upsert("staff_accounts", &id, cols);
+    load_me(&id).ok_or_else(|| "reload failed".to_string())
 }
 
 /// The signed-in employee's display name (for note authorship etc.), or "".

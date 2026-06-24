@@ -926,4 +926,13 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        48,
+        // Self-service profile fields on staff accounts (synced).
+        r#"
+        ALTER TABLE staff_accounts ADD COLUMN avatar TEXT NOT NULL DEFAULT '';
+        ALTER TABLE staff_accounts ADD COLUMN title TEXT NOT NULL DEFAULT '';
+        ALTER TABLE staff_accounts ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+        "#,
+    ),
 ];
