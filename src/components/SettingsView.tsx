@@ -1542,6 +1542,11 @@ function AutomationTab() {
   const [showForm, setShowForm] = useState(false);
   const [form,     setForm]     = useState({ name: "", sender_pattern: "", subject_pattern: "" });
   const [enabling, setEnabling] = useState<string | null>(null);
+  const [copied,   setCopied]   = useState(false);
+  const leadFormUrl = "https://ecliptr.app/signup";
+  const copyLeadLink = async () => {
+    try { await navigator.clipboard.writeText(leadFormUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+  };
 
   const load = () => api.listSignupRules().then(setRules).catch(console.error);
   useEffect(() => { load(); }, []);
@@ -1652,11 +1657,21 @@ function AutomationTab() {
         <Sparkles size={15} className="text-accent" />
         <h3 className="text-[14px] font-semibold text-ink">Auto-detect Signup Emails</h3>
       </div>
-      <p className="text-[12px] text-muted mb-5">
+      <p className="text-[12px] text-muted mb-4">
         When an incoming email matches a rule, AI extracts client info from the body and
         auto-creates a client record. Patterns are{" "}
         <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a>.
       </p>
+
+      {/* Fastest path — the direct lead form (no email setup needed). */}
+      <div className="border rounded-xl p-3.5 mb-5" style={{ borderColor: "rgba(var(--c-accent-rgb,99,102,241),0.3)", background: "rgba(var(--c-accent-rgb,99,102,241),0.06)" }}>
+        <div className="text-[12.5px] font-semibold text-ink mb-1">Fastest setup — your lead form link</div>
+        <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly — no email setup needed.</p>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-[12px] bg-surface-2 rounded-lg px-2.5 py-1.5 break-all select-all text-ink-2">{leadFormUrl}</code>
+          <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied ✓" : "Copy"}</button>
+        </div>
+      </div>
 
       {/* Premade automations — one-click enable */}
       <div className="mb-6">

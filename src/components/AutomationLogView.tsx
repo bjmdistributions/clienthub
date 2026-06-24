@@ -54,7 +54,15 @@ export default function AutomationLogView() {
       {loading ? (
         <div className="text-center py-12 text-[13px] text-muted"><Clock size={16} className="inline mr-1 animate-spin" /> Loading...</div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-12 text-[13px] text-muted">No automation activity yet</div>
+        <div className="text-center py-12 px-6">
+          <div className="text-[13px] text-muted mb-2">No follow-up activity yet</div>
+          <div className="text-[12px] text-muted max-w-md mx-auto leading-relaxed">
+            This log tracks <span className="text-ink-2">follow-up rules</span> (e.g. "email a client after 30 days of no order").
+            Signup automations work differently — they create <span className="text-ink-2">new client records</span>,
+            which appear in <span className="text-ink-2">Clients</span> flagged for review. Configure both in
+            <span className="text-ink-2"> Settings → Automation</span>.
+          </div>
+        </div>
       ) : (
         <div className="bg-surface border border-line rounded-xl overflow-x-auto">
           <table className="min-w-full text-sm">
