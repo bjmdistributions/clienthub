@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, createContext, useContext } from "react";
 import {
   api,
   EmailSettings,
@@ -69,6 +69,31 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import VariablePicker from "./VariablePicker";
 import { FormsPanel } from "./FormsPanel";
 
+// ── Settings auto-save ──────────────────────────────────────────────────────
+type SaveState = "idle" | "saving" | "saved" | "error";
+const SaveStatusCtx = createContext<(s: SaveState) => void>(() => {});
+
+/// Debounced auto-save: saves `value` ~700ms after it changes (skipping the
+/// initial loaded value), reporting saving/saved into the shared status pill.
+function useAutosave(value: unknown, save: () => Promise<void>, ready: boolean) {
+  const report = useContext(SaveStatusCtx);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const lastSaved = useRef<string | null>(null);
+  const json = JSON.stringify(value);
+  useEffect(() => {
+    if (!ready) { lastSaved.current = json; return; }   // baseline = loaded value
+    if (json === lastSaved.current) return;             // no real change
+    report("saving");
+    clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      try { await save(); lastSaved.current = json; report("saved"); }
+      catch { report("error"); }
+    }, 700);
+    return () => clearTimeout(timer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [json, ready]);
+}
+
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -130,10 +155,12 @@ export default function SettingsView() {
     setTab(t);
     localStorage.setItem("clienthub_settings_tab", t);
   };
+  const [saveState, setSaveState] = useState<SaveState>("idle");
 
   const active = SETTINGS_GROUPS.flatMap((g) => g.items).find((i) => i.id === tab);
 
   return (
+   <SaveStatusCtx.Provider value={setSaveState}>
     <div className="flex gap-8 max-w-[1100px]">
       {/* Left rail */}
       <aside className="w-[232px] shrink-0">
@@ -175,9 +202,19 @@ export default function SettingsView() {
       {/* Content */}
       <div className="flex-1 min-w-0">
         {active && (
-          <div className="mb-5">
-            <h3 className="text-[16px] font-semibold text-ink tracking-tight">{active.label}</h3>
-            <p className="text-[12px] text-muted mt-0.5">{active.desc}</p>
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-[16px] font-semibold text-ink tracking-tight">{active.label}</h3>
+              <p className="text-[12px] text-muted mt-0.5">{active.desc}</p>
+            </div>
+            <div className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 h-7 rounded-full flex-shrink-0 ${
+              saveState === "saving" ? "bg-amber-50 text-amber-600"
+              : saveState === "error" ? "bg-red-50 text-red-600"
+              : "bg-emerald-50 text-emerald-600"}`}>
+              {saveState === "saving" ? "Saving…"
+               : saveState === "error" ? "Couldn’t save"
+               : <><Check size={12} /> All changes saved</>}
+            </div>
           </div>
         )}
         <div key={tab} className="page-enter">
@@ -202,6 +239,7 @@ export default function SettingsView() {
         </div>
       </div>
     </div>
+   </SaveStatusCtx.Provider>
   );
 }
 
@@ -334,8 +372,6 @@ function WhatsAppTab() {
   const [s, setS] = useState<WhatsappSettings>({ template: "", lot_format: "", footer: "", phone: "" });
   const [companyName, setCompanyName] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.getWhatsappSettings().then((v) => { setS(v); setLoaded(true); }).catch(() => setLoaded(true));
@@ -344,12 +380,8 @@ function WhatsAppTab() {
 
   const set = (k: keyof WhatsappSettings, v: string) => setS((prev) => ({ ...prev, [k]: v }));
 
-  const save = async () => {
-    setSaving(true);
-    try { await api.saveWhatsappSettings(s); setSaved(true); setTimeout(() => setSaved(false), 2000); }
-    catch (e: any) { alert(e); }
-    setSaving(false);
-  };
+  const save = async () => { await api.saveWhatsappSettings(s); };
+  useAutosave(s, save, loaded);
 
   // Live preview — substitutes sample lots client-side (same logic as the backend).
   const sub = (str: string, map: Record<string, string>) =>
@@ -423,14 +455,6 @@ function WhatsAppTab() {
         </div>
       </div>
 
-      <button
-        onClick={save}
-        disabled={saving}
-        className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
-      >
-        {saved ? <Check size={13} /> : <Save size={13} />}
-        {saved ? "Saved" : "Save WhatsApp Settings"}
-      </button>
     </div>
   );
 }
@@ -746,21 +770,22 @@ function WhatsAppFooterField() {
 function CompanyTab() {
   const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
   const [orgName, setOrgName] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [ready, setReady] = useState(false);
   const [logoError, setLogoError] = useState(false);
   const [logoVersion, setLogoVersion] = useState(0);
 
   useEffect(() => {
-    api.getCompanyInfo().then((c) => c && setInfo(c)).catch(console.error);
-    api.getOrganizationName().then((n) => setOrgName(n || "")).catch(() => {});
+    Promise.all([
+      api.getCompanyInfo().then((c) => c && setInfo(c)).catch(() => {}),
+      api.getOrganizationName().then((n) => setOrgName(n || "")).catch(() => {}),
+    ]).finally(() => setReady(true));
   }, []);
 
   const save = async () => {
     await api.saveCompanyInfo(info);
     await api.setOrganizationName(orgName);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
   };
+  useAutosave([info, orgName], save, ready);
 
   const pickLogo = async () => {
     const selected = await openDialog({
@@ -857,14 +882,6 @@ function CompanyTab() {
       </Field>
 
       <WhatsAppFooterField />
-
-      <button
-        onClick={save}
-        className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
-      >
-        {saved ? <Check size={13} /> : <Save size={13} />}
-        {saved ? "Saved" : "Save"}
-      </button>
 
       <div className="mt-6 pt-5 border-t border-line">
         <InvoiceNumberingSection />
@@ -2396,30 +2413,20 @@ function SheetsTab() {
 
 function SplitsTab() {
   const [split, setSplit] = useState<ProfitSplit | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.getProfitSplit().then(setSplit).catch(() => {});
   }, []);
 
-  if (!split) return <div className="text-sm text-muted py-8 text-center">Loading...</div>;
-
-  const total = split.jack_pct + split.ben_pct + split.business_pct;
+  const total = (split?.jack_pct ?? 0) + (split?.ben_pct ?? 0) + (split?.business_pct ?? 0);
   const valid = Math.abs(total - 100) < 0.01;
-
-  const handleSave = async () => {
-    setSaving(true);
-    setMsg(null);
-    try {
-      await api.saveProfitSplit(split.business_pct, split.jack_pct, split.ben_pct, split.jack_name, split.ben_name);
-      setMsg("saved");
-    } catch (e: any) {
-      setMsg(e);
-    } finally {
-      setSaving(false);
-    }
+  // Auto-save only when the split is valid (totals 100%).
+  const save = async () => {
+    if (split) await api.saveProfitSplit(split.business_pct, split.jack_pct, split.ben_pct, split.jack_name, split.ben_name);
   };
+  useAutosave(split, save, split !== null && valid);
+
+  if (!split) return <div className="text-sm text-muted py-8 text-center">Loading...</div>;
 
   return (
     <div className="max-w-lg">
@@ -2481,16 +2488,6 @@ function SplitsTab() {
             </div>
           </div>
         </div>
-        <button
-          onClick={handleSave}
-          disabled={saving || !valid}
-          className="flex items-center gap-1.5 bg-ink text-surface px-4 h-9 rounded-lg text-[13px] font-medium hover:opacity-90 transition-colors disabled:opacity-50"
-        >
-          <Save size={14} />
-          {saving ? "Saving..." : "Save Profit Split"}
-        </button>
-        {msg === "saved" && <p className="text-[12px] text-success-ink font-medium">Saved</p>}
-        {msg && msg !== "saved" && <p className="text-[12px] text-danger-ink">{msg}</p>}
       </div>
     </div>
   );
