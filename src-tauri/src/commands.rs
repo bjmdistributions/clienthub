@@ -69,9 +69,9 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
+                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                     MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active')
              FROM clients c
@@ -114,9 +114,9 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let res: rusqlite::Result<Client> = conn.query_row(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
          FROM clients c
@@ -320,9 +320,9 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
          FROM clients c
@@ -443,7 +443,7 @@ pub async fn export_clients_csv(ids: Vec<String>, output_path: String) -> Result
             let cat = meta.as_ref().and_then(|m|m.get("category")).and_then(|v|v.as_str()).unwrap_or("");
 
             let total_rev: f64 = conn.query_row(
-                "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1", [id], |r| r.get(0)
+                "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status='paid'", [id], |r| r.get(0)
             ).unwrap_or(0.0);
 
             let last_contact: Option<String> = conn.query_row(
@@ -658,9 +658,9 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let pattern = format!("%{}%", query.to_lowercase());
     let mut stmt = conn.prepare(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          WHERE LOWER(c.name) LIKE ?1 OR LOWER(c.email) LIKE ?1 OR LOWER(c.company) LIKE ?1 OR LOWER(c.metadata) LIKE ?1
@@ -741,9 +741,9 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let cutoff = format!("-{} days", days);
     let mut stmt = conn.prepare(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          GROUP BY c.id
@@ -775,9 +775,9 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND 1=1),
+                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                     NULL,
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND 1=1), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
              FROM clients c
              WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
              AND json_extract(c.metadata, '$.next_follow_up_date') <= date('now')
@@ -828,9 +828,9 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
 
     let mut sql = String::from(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
          FROM clients c
@@ -989,9 +989,9 @@ pub struct MissingInfoReport {
 fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: &[&dyn rusqlite::types::ToSql]) -> Result<Vec<Client>, String> {
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0)
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
          FROM clients c
          WHERE {}", where_clause
     );
@@ -1023,9 +1023,9 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
     let missing_category = query_clients_where(&conn, "(json_extract(c.metadata, '$.category') IS NULL OR json_extract(c.metadata, '$.category') = '') AND (json_extract(c.metadata, '$.primary_buy_category') IS NULL OR json_extract(c.metadata, '$.primary_buy_category') = '')", &[])?;
     let never_contacted: Vec<Client> = {
         let sql = "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                          (SELECT COUNT(*) FROM invoices WHERE client_id=c.id),
+                          (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                           NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0)
          FROM clients c
                    LEFT JOIN interactions i ON i.client_id = c.id
@@ -6580,7 +6580,7 @@ pub async fn cleanup_clients() -> Result<CleanupResult, String> {
     {
         let mut stmt = conn.prepare(
             "SELECT c.id, c.name, c.email, c.phone, c.company,
-                    CASE WHEN EXISTS(SELECT 1 FROM invoices WHERE client_id=c.id) THEN 1 ELSE 0 END
+                    CASE WHEN EXISTS(SELECT 1 FROM invoices WHERE client_id=c.id AND status='paid') THEN 1 ELSE 0 END
              FROM clients c ORDER BY c.name"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
