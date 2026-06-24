@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, CustomerHealth, DuplicateGroup, BuyerTier } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
-import { Plus, Trash2, Edit2, Search, ShoppingCart, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban } from "lucide-react";
+import { Plus, Trash2, Edit2, Search, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
 import TierBadge from "./TierBadge";
@@ -39,6 +39,9 @@ export default function ClientsView() {
   const [summaryStats, setSummaryStats]     = useState({ total: 0, active: 0, hotLeads: 0, revenue: 0 });
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
   const [showTiers, setShowTiers]           = useState(false);
+  const [sortKey, setSortKey]               = useState<string>("name");
+  const [sortDir, setSortDir]               = useState<1 | -1>(1);
+  const [reps, setReps]                     = useState<string[]>([]);
   const tierDropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -47,7 +50,7 @@ export default function ClientsView() {
   };
 
   const applyFilter = useCallback(async (f: ClientFilter) => {
-    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review;
+    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.rep;
     if (hasFilter) setClients(await api.listClientsFiltered(f));
     else setClients(await api.listClients());
   }, []);
@@ -63,6 +66,7 @@ export default function ClientsView() {
       });
     });
     api.listCategories().then(setAllCategories);
+    api.listClientReps().then(setReps).catch(() => {});
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
     loadMissingInfo();
@@ -117,7 +121,31 @@ export default function ClientsView() {
 
   const clearAll = () => { setFilter({}); setSearchText(""); applyFilter({}); };
 
-  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review;
+  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.rep;
+
+  // Client-side sort by any column.
+  const TIER_RANK: Record<string, number> = { S: 6, A: 5, B: 4, C: 3, D: 2, New: 1, Prospect: 0 };
+  const sortVal = (c: Client, key: string): string | number => {
+    switch (key) {
+      case "company": return (c.company || "").toLowerCase();
+      case "email": return (c.email || "").toLowerCase();
+      case "phone": return c.phone || "";
+      case "revenue": return c.total_revenue || 0;
+      case "last": return c.last_contact_at || "";
+      case "tier": { const bt = buyerTiers.find((t) => t.client_id === c.id); return TIER_RANK[bt?.tier || "New"] ?? 0; }
+      default: return (c.name || "").toLowerCase();
+    }
+  };
+  const sorted = [...clients].sort((a, b) => {
+    const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
+    if (va < vb) return -1 * sortDir;
+    if (va > vb) return 1 * sortDir;
+    return 0;
+  });
+  const toggleSort = (key: string) => {
+    if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
+    else { setSortKey(key); setSortDir(1); }
+  };
 
   const chips: { label: string; key: keyof ClientFilter }[] = [];
   const tierLabels: Record<string, string> = { S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect" };
@@ -128,6 +156,7 @@ export default function ClientsView() {
   if (filter.stale_days) chips.push({ label: `Last contact: ${filter.stale_days}+ days`, key: "stale_days" });
   if (filter.missing) chips.push({ label: `Missing: ${filter.missing}`, key: "missing" });
   if (filter.needs_review) chips.push({ label: "Needs review", key: "needs_review" });
+  if (filter.rep) chips.push({ label: `Rep: ${filter.rep}`, key: "rep" });
   if (filter.lead_status) {
     const statusLabels: Record<string, string> = { active_not_dormant: "Active (not dormant)", prospect: "Prospect", hot_lead: "Hot Lead", active_customer: "Active Customer", inactive: "Dormant" };
     chips.push({ label: `Status: ${statusLabels[filter.lead_status] || filter.lead_status}`, key: "lead_status" });
@@ -399,6 +428,16 @@ export default function ClientsView() {
           <option value="__none__">No category</option>
           {allCategories.map((c) => <option key={c.id} value={c.label}>{c.label}</option>)}
         </select>
+        {reps.length > 0 && (
+          <select
+            value={filter.rep ?? ""}
+            onChange={(e) => updateFilter({ rep: e.target.value || undefined })}
+            className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent bg-surface min-w-[140px] transition-colors"
+          >
+            <option value="">All Reps</option>
+            {reps.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        )}
         <div className="relative" ref={tierDropdownRef}>
           <button onClick={() => setShowTiers(!showTiers)}
             className={`border h-10 px-3 rounded-lg text-[13px] transition-colors flex items-center gap-1.5 whitespace-nowrap ${
@@ -558,20 +597,17 @@ export default function ClientsView() {
               <th className="px-3 py-3 w-10">
                 <input type="checkbox" className="accent-accent" checked={selectedIds.size === clients.length && clients.length > 0} onChange={toggleSelectAll} />
               </th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Name</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Company</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Tier</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Email</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Phone</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Category</th>
-              <th className="text-center px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Inv.</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Last Contact</th>
-              <th className="text-right px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Revenue</th>
+              {([["name", "Name", "left"], ["company", "Company", "left"], ["tier", "Tier", "left"], ["email", "Email", "left"], ["phone", "Phone", "left"], ["last", "Last activity", "left"], ["revenue", "Revenue", "right"]] as const).map(([k, label, align]) => (
+                <th key={k} onClick={() => toggleSort(k)}
+                  className={`text-${align} px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest cursor-pointer select-none hover:text-ink-2`}>
+                  {label}{sortKey === k && <span className="ml-0.5 text-accent">{sortDir === 1 ? "▲" : "▼"}</span>}
+                </th>
+              ))}
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {clients.map((c) => {
+            {sorted.map((c) => {
               const bt = buyerTiers.find((t) => t.client_id === c.id);
               return (
                 <tr
@@ -602,14 +638,7 @@ export default function ClientsView() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-[12px] text-muted">{c.email || "—"}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted">{c.phone ? fmtPhone(c.phone) : "—"}</td>
-                  <td className="px-4 py-3 text-[12px] text-muted">{c.category || "—"}</td>
-                  <td className="px-4 py-3 text-center">
-                    <span className="inline-flex items-center gap-1 text-[12px] text-muted tabular-nums">
-                      <ShoppingCart size={11} className="text-faint" />
-                      {c.invoice_count}
-                    </span>
-                  </td>
+                  <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">{c.phone ? fmtPhone(c.phone) : "—"}</td>
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center gap-1 text-[12px] text-muted">
                       <Clock size={11} className="text-faint" />
@@ -638,7 +667,7 @@ export default function ClientsView() {
             })}
             {clients.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-16 text-center">
+                <td colSpan={9} className="px-4 py-16 text-center">
                   {hasAnyFilter ? (
                     <p className="text-[13px] text-muted">No clients match the current filters</p>
                   ) : (

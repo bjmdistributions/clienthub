@@ -236,6 +236,7 @@ fn main() {
             delete_note,
             // Clients
             list_clients,
+            list_client_reps,
             get_client,
             create_client,
             update_client,

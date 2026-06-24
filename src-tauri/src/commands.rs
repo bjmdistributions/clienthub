@@ -70,13 +70,12 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
         .prepare(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
-                    MAX(i.created_at),
+                    NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
+                               COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),'')),''),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active')
              FROM clients c
-             LEFT JOIN interactions i ON i.client_id = c.id
-             GROUP BY c.id
              ORDER BY c.name",
         )
         .map_err(|e| e.to_string())?;
@@ -109,20 +108,35 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Distinct sales-rep names present on clients (lead_representative / source_rep),
+/// for the clients rep filter.
+#[tauri::command]
+pub async fn list_client_reps() -> Result<Vec<String>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT rep FROM (
+           SELECT json_extract(metadata,'$.lead_representative') AS rep FROM clients
+           UNION
+           SELECT json_extract(metadata,'$.source_rep') FROM clients
+         ) WHERE rep IS NOT NULL AND rep != '' ORDER BY rep COLLATE NOCASE",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 #[tauri::command]
 pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let res: rusqlite::Result<Client> = conn.query_row(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
-                MAX(i.created_at),
+                NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
+                           COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),'')),''),
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
          FROM clients c
-         LEFT JOIN interactions i ON i.client_id = c.id
-         WHERE c.id=?1
-         GROUP BY c.id",
+         WHERE c.id=?1",
         [&id],
         |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
@@ -1063,6 +1077,8 @@ pub struct ClientFilter {
     pub needs_review: Option<bool>,
     pub search: Option<String>,
     pub sort_by: Option<String>,
+    /// Filter to clients whose lead_representative / source_rep matches this name.
+    pub rep: Option<String>,
     /// Lead-status filter. Exact value (e.g. "inactive") matches that status;
     /// the special value "active_not_dormant" returns everyone who is NOT dormant.
     pub lead_status: Option<String>,
@@ -1075,7 +1091,8 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     let mut sql = String::from(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
-                MAX(i.created_at),
+                NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
+                           COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),'')),''),
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
@@ -1126,6 +1143,16 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     }
     if let Some(true) = filter.needs_review {
         conds.push("json_extract(c.metadata, '$.needs_review') = 1".into());
+    }
+    if let Some(ref s) = filter.rep {
+        if !s.is_empty() {
+            conds.push(format!(
+                "(json_extract(c.metadata,'$.lead_representative') = ?{p} OR json_extract(c.metadata,'$.source_rep') = ?{p})",
+                p = param_idx
+            ));
+            params.push(Box::new(s.clone()));
+            param_idx += 1;
+        }
     }
     if let Some(ref s) = filter.lead_status {
         if s == "active_not_dormant" {

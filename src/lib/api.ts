@@ -71,6 +71,8 @@ export interface ClientFilter {
   sort_by?: string;
   /** Exact lead_status, or "active_not_dormant" for everyone who isn't dormant. */
   lead_status?: string;
+  /** Filter to clients whose lead_representative / source_rep matches this name. */
+  rep?: string;
 }
 
 export interface MissingInfoReport {
@@ -1030,6 +1032,7 @@ export const api = {
   globalSearch: (query: string) => invoke<GlobalSearchResults>("global_search", { query }),
   listStaleClients: (days: number) => invoke<Client[]>("list_stale_clients", { days }),
   listClientsFiltered: (filter: ClientFilter) => invoke<Client[]>("list_clients_filtered", { filter }),
+  listClientReps: () => invoke<string[]>("list_client_reps"),
   clientsMissingInfo: () => invoke<MissingInfoReport>("clients_missing_info"),
   updateClientStatus: (id: string, status: string) =>
     invoke<void>("update_client_status", { id, status }),
