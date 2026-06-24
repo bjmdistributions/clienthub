@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-const VARIABLES: { token: string; label: string }[] = [
+export const VARIABLES: { token: string; label: string }[] = [
   { token: "{first_name}", label: "Client's first name" },
   { token: "{full_name}", label: "Client's full name" },
   { token: "{company}", label: "Company name" },
@@ -56,6 +56,32 @@ export default function VariablePicker({ onSelect }: VariablePickerProps) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/// A visible reference of the personalization variables — click any to copy it.
+export function VariableReference() {
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (token: string) => {
+    navigator.clipboard.writeText(token).catch(() => {});
+    setCopied(token);
+    setTimeout(() => setCopied((c) => (c === token ? null : c)), 1200);
+  };
+  return (
+    <div className="border border-line rounded-lg p-3 bg-surface-2/40">
+      <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Variables — click to copy, then paste into your email</div>
+      <div className="grid sm:grid-cols-2 gap-1">
+        {VARIABLES.map((v) => (
+          <button key={v.token} type="button" onClick={() => copy(v.token)}
+            className="flex items-center justify-between gap-2 text-left px-2 py-1.5 rounded-md hover:bg-surface-3 transition-colors">
+            <code className="font-mono text-[12px] text-accent whitespace-nowrap">{v.token}</code>
+            <span className={`text-[11px] truncate ${copied === v.token ? "text-emerald-500 font-medium" : "text-muted"}`}>
+              {copied === v.token ? "Copied!" : v.label}
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

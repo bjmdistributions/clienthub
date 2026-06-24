@@ -935,4 +935,30 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE staff_accounts ADD COLUMN phone TEXT NOT NULL DEFAULT '';
         "#,
     ),
+    (
+        49,
+        // Checkup sessions: guided one-by-one client review (synced).
+        r#"
+        CREATE TABLE IF NOT EXISTS checkup_sessions (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            name TEXT NOT NULL DEFAULT '',
+            owner_id TEXT,
+            owner_name TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS checkup_items (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            session_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            reviewed INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            reviewed_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        "#,
+    ),
 ];

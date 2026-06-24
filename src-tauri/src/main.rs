@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod checkups;
 mod commands;
 mod csv_import;
 mod db;
@@ -250,11 +251,17 @@ fn main() {
             resolve_approval_request,
             get_approval_policy,
             set_approval_policy,
+            set_checkup_visibility,
             submit_feedback,
             open_external,
             list_forms,
             save_form,
             delete_form,
+            checkups::create_checkup,
+            checkups::list_checkups,
+            checkups::get_checkup,
+            checkups::review_checkup_item,
+            checkups::delete_checkup,
             delete_client,
             bulk_delete_clients,
             bulk_update_category,

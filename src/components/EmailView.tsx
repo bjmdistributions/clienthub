@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
-import VariablePicker from "./VariablePicker";
+import VariablePicker, { VariableReference } from "./VariablePicker";
 import { NewsletterSchedule } from "../lib/api";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
@@ -987,6 +987,8 @@ function NewsletterTab() {
               onChange={(e) => setBody(e.target.value)}
               onFocus={() => { lastFocusedRef.current = "body"; }}
             />
+
+            <div className="mt-3"><VariableReference /></div>
 
             <div className="mt-3 flex items-center gap-2">
               <button onClick={pickFile}

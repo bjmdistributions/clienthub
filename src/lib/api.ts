@@ -167,6 +167,8 @@ export interface StaffMember {
   status: string;
   commission_pct: number;
   hide_pay_cuts: boolean;
+  avatar?: string;
+  title?: string;
 }
 export interface RoleDef {
   id: string;
@@ -208,6 +210,31 @@ export interface FormDef {
   active: boolean;
   created_at: string;
   updated_at: string;
+}
+export interface CheckupSession {
+  id: string;
+  name: string;
+  owner_name: string | null;
+  status: string;
+  created_at: string;
+  total: number;
+  done: number;
+}
+export interface CheckupItem {
+  id: string;
+  client_id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  reviewed: boolean;
+  note: string;
+  reviewed_at: string | null;
+}
+export interface CheckupDetail {
+  id: string;
+  name: string;
+  status: string;
+  items: CheckupItem[];
 }
 
 export interface NewsletterSchedule {
@@ -1231,6 +1258,14 @@ export const api = {
   saveForm: (f: { id?: string; name: string; title: string; intro: string; fields_json: string; active: boolean }) =>
     invoke<string>("save_form", f),
   deleteForm: (id: string) => invoke<void>("delete_form", { id }),
+  // Checkup sessions
+  createCheckup: (name?: string, category?: string) => invoke<{ id: string; total: number }>("create_checkup", { name, category }),
+  listCheckups: () => invoke<CheckupSession[]>("list_checkups"),
+  getCheckup: (id: string) => invoke<CheckupDetail>("get_checkup", { id }),
+  reviewCheckupItem: (sessionId: string, itemId: string, reviewed: boolean, note: string) =>
+    invoke<void>("review_checkup_item", { sessionId, itemId, reviewed, note }),
+  deleteCheckup: (id: string) => invoke<void>("delete_checkup", { id }),
+  setCheckupVisibility: (visibility: string) => invoke<void>("set_checkup_visibility", { visibility }),
   listInvites: () => invoke<InviteRow[]>("list_invites"),
   createInvite: (roleId: string, email: string | null, expiresDays: number | null) =>
     invoke<{ token: string; signup_path: string; expires_at: string }>("create_invite", { roleId, email, expiresDays }),

@@ -22,6 +22,7 @@ import {
   FileSignature,
   Bell,
   MessageSquarePlus,
+  ClipboardCheck,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -43,6 +44,7 @@ import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import { FeedbackModal } from "./components/FeedbackModal";
+import CheckupView from "./components/CheckupView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
 import CommandPalette from "./components/CommandPalette";
@@ -54,7 +56,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -290,6 +292,7 @@ export default function App() {
   const allTabs: { id: Tab; label: string; icon: any }[] = [
     { id: "dashboard", label: "Dashboard",  icon: LayoutDashboard },
     { id: "clients",   label: "Clients",    icon: Users },
+    { id: "checkup",   label: "Checkup",    icon: ClipboardCheck },
     { id: "health",    label: "Tiers",      icon: Layers },
     { id: "deals",     label: "Completed",  icon: Briefcase },
     { id: "analytics", label: "Analytics",  icon: BarChart3 },
@@ -317,6 +320,7 @@ export default function App() {
     if (t === "globe") return <GlobeView />;
     if (t === "notes") return <NotesView />;
     if (t === "approvals") return <ApprovalsView />;
+    if (t === "checkup") return <CheckupView />;
     return (
       <div className="p-7">
         <div className="max-w-[1280px] mx-auto">

@@ -628,6 +628,12 @@ function EmailTab() {
         await api.saveCredential("smtp_user", settings.user);
         if (smtpPass) await api.saveCredential("smtp_pass", smtpPass);
         if (imapPass) await api.saveCredential("imap_pass", imapPass);
+        // Same login = same send-from everywhere: push this SMTP account to the
+        // synced per-org settings so mobile/web send from it too. Best-effort.
+        try {
+          const company = await api.getCompanyInfo().catch(() => null);
+          await api.pushDesktopSmtpToPi(company?.name || settings.user || "");
+        } catch { /* ignore — e.g. no password saved yet */ }
       } else {
         if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
         if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
@@ -733,143 +739,6 @@ function EmailTab() {
       </button>
 
       <InboxesSection />
-
-      <div className="mt-8 pt-6 border-t border-line">
-        <h3 className="text-[14px] font-semibold text-ink mb-1">Pi / Mobile Sync</h3>
-        <p className="text-[12px] text-muted mb-4">
-          Enter your SMTP password to enable newsletter sending from your phone and Pi server.
-          This is stored in the database and synced via Syncthing — separate from the keychain above.
-        </p>
-        <PiSmtpSection settings={settings} />
-      </div>
-    </div>
-  );
-}
-
-function PiSmtpSection({ settings }: { settings: EmailSettings }) {
-  const [smtpPassword, setSmtpPassword] = useState("");
-  const [fromName, setFromName] = useState("");
-  const [saved, setSaved] = useState(false);
-  const [pushing, setPushing] = useState(false);
-  const [pushed, setPushed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [existing, setExisting] = useState<Record<string, any> | null>(null);
-
-  const reload = () =>
-    api.getSmtpSettingsForPi().then((s) => {
-      setExisting(s);
-      if (s.smtp_from_name) setFromName(s.smtp_from_name);
-    }).catch(console.error);
-  useEffect(() => { reload(); }, []);
-
-  const passwordSet = !!existing?.smtp_password_set;
-
-  const save = async () => {
-    setError(null);
-    try {
-      await api.saveSmtpSettingsForPi({
-        smtp_host: settings.smtp_host,
-        smtp_port: String(settings.smtp_port),
-        smtp_username: settings.user,
-        smtp_password: smtpPassword,
-        smtp_from_name: fromName,
-        smtp_from_email: settings.user,
-      });
-      setSmtpPassword("");
-      setSaved(true);
-      await reload();
-      setTimeout(() => setSaved(false), 2000);
-    } catch (e: any) { setError(e.toString()); }
-  };
-
-  const pushFromDesktop = async () => {
-    setError(null);
-    setPushing(true);
-    try {
-      await api.pushDesktopSmtpToPi(fromName);
-      setPushed(true);
-      await reload();
-      setTimeout(() => setPushed(false), 2500);
-    } catch (e: any) {
-      setError(e.toString());
-    } finally {
-      setPushing(false);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* Status banner */}
-      <div className={`flex items-start gap-2.5 rounded-lg px-3.5 py-3 border ${
-        passwordSet ? "bg-success-bg border-success" : "bg-warning-bg border-warning"
-      }`}>
-        <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${passwordSet ? "bg-success shadow-[0_0_6px_rgba(16,185,129,0.5)]" : "bg-warning"}`} />
-        <div className="text-[12px] leading-relaxed">
-          {passwordSet ? (
-            <span className="text-success-ink">
-              <span className="font-medium">Password saved.</span> Your Pi & phone can send newsletters using these credentials.
-            </span>
-          ) : (
-            <span className="text-warning-ink">
-              <span className="font-medium">No password set yet.</span> Sending from the Pi or phone won't work until you save one below.
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* One-click: copy the working desktop login */}
-      <button
-        onClick={pushFromDesktop}
-        disabled={pushing}
-        className={`w-full flex items-center justify-center gap-2 h-10 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 ${
-          pushed ? "bg-success text-white" : "bg-accent hover:bg-accent-hover text-white"
-        }`}
-      >
-        {pushing ? <><RefreshCw size={13} className="animate-spin" /> Copying…</>
-          : pushed ? <><Check size={13} /> Copied from desktop</>
-          : <><RefreshCw size={13} /> Use my desktop email login</>}
-      </button>
-      <p className="text-[11px] text-muted -mt-1.5">
-        Copies the SMTP password already saved in your keychain — no need to re-enter it.
-      </p>
-
-      <div className="flex items-center gap-2">
-        <div className="flex-1 h-px bg-surface-3" />
-        <span className="text-[10px] font-semibold text-faint uppercase tracking-widest">or enter manually</span>
-        <div className="flex-1 h-px bg-surface-3" />
-      </div>
-
-      <Field label="From name (shown in emails)">
-        <input className={inp} value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Your Business Name" />
-      </Field>
-      <Field label="SMTP password for Pi/Mobile">
-        <div className="relative">
-          <input
-            type="password"
-            value={smtpPassword}
-            onChange={(e) => setSmtpPassword(e.target.value)}
-            className={inp}
-            placeholder={passwordSet ? "•••••••• (currently set — leave blank to keep)" : "Enter SMTP password"}
-          />
-          {passwordSet && !smtpPassword && (
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] font-medium text-success-ink">
-              <Check size={12} /> Saved
-            </span>
-          )}
-        </div>
-      </Field>
-      {error && (
-        <div className="text-danger-ink text-[12px] flex items-start gap-1.5">
-          <AlertCircle size={13} className="mt-0.5 shrink-0" /> {error}
-        </div>
-      )}
-      <button
-        onClick={save}
-        className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
-      >
-        {saved ? <Check size={13} /> : <Save size={13} />}
-        {saved ? "Saved for Pi" : "Save for Pi"}
-      </button>
     </div>
   );
 }
@@ -2760,13 +2629,16 @@ function TeamTab() {
 function ApprovalPolicyPanel() {
   const [add, setAdd] = useState(false);
   const [del, setDel] = useState(false);
+  const [vis, setVis] = useState("team");
   const [saved, setSaved] = useState(false);
   useEffect(() => {
     api.getApprovalPolicy().then((p) => {
       setAdd(!!p.require_client_add_approval);
       setDel(!!p.require_client_delete_approval);
+      if ((p as any).checkup_visibility) setVis((p as any).checkup_visibility);
     }).catch(() => {});
   }, []);
+  const saveVis = async (v: string) => { setVis(v); await api.setCheckupVisibility(v).catch(() => {}); setSaved(true); setTimeout(() => setSaved(false), 1500); };
   const save = async (nextAdd: boolean, nextDel: boolean) => {
     setAdd(nextAdd); setDel(nextDel);
     await api.setApprovalPolicy(nextAdd, nextDel).catch(() => {});
@@ -2791,6 +2663,19 @@ function ApprovalPolicyPanel() {
       <div className="divide-y divide-line">
         <Row label="Require approval to add clients" hint="New clients a rep creates wait for admin approval before going active." on={add} onToggle={() => save(!add, del)} />
         <Row label="Require approval to delete clients" hint="A rep's delete is sent to an admin instead of removing the client." on={del} onToggle={() => save(add, !del)} />
+      </div>
+
+      <div className="mt-5 pt-4 border-t border-line">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-[13px] font-medium text-ink">Checkup session visibility</div>
+            <div className="text-[11px] text-muted mt-0.5">Who can see each other's checkup sessions. Admins always see all.</div>
+          </div>
+          <select value={vis} onChange={(e) => saveVis(e.target.value)} className="bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink">
+            <option value="team">Whole team</option>
+            <option value="private">Private to each person</option>
+          </select>
+        </div>
       </div>
     </div>
   );
@@ -2827,7 +2712,17 @@ function PeoplePanel() {
         <tbody>
           {staff.map((u) => (
             <tr key={u.id} style={{ borderBottom: "1px solid var(--t-b2)" }}>
-              <td className="px-4 py-3"><div className="font-medium text-ink">{u.display_name}</div><div className="text-[11px] text-muted">{u.email}</div></td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-3">
+                  {u.avatar
+                    ? <img src={u.avatar} alt="" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
+                    : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
+                  <div className="min-w-0">
+                    <div className="font-medium text-ink truncate">{u.display_name}</div>
+                    <div className="text-[11px] text-muted truncate">{u.title ? `${u.title} · ` : ""}{u.email}</div>
+                  </div>
+                </div>
+              </td>
               <td className="px-4 py-3">
                 <select value={u.role_id} disabled={u.id === me} onChange={(e) => setRole(u.id, e.target.value)}
                   className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface disabled:opacity-60">

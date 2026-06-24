@@ -71,7 +71,8 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                     NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
-                               COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),'')),''),
+                               COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active')
@@ -131,7 +132,8 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
-                           COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),'')),''),
+                           COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
@@ -465,10 +467,27 @@ pub async fn get_approval_policy() -> Result<Value, String> {
         conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
     };
+    let vis: String = conn.query_row("SELECT value FROM settings WHERE key='checkup_visibility'", [], |r| r.get(0))
+        .unwrap_or_else(|_| "team".into());
     Ok(json!({
         "require_client_add_approval": g("require_client_add_approval"),
         "require_client_delete_approval": g("require_client_delete_approval"),
+        "checkup_visibility": vis,
     }))
+}
+
+#[tauri::command]
+pub async fn set_checkup_visibility(visibility: String) -> Result<(), String> {
+    let val = if visibility == "private" { "private" } else { "team" };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO settings (key,value) VALUES ('checkup_visibility',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [val]).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("value".into(), Value::String(val.into()));
+    sync::record_upsert("settings", "checkup_visibility", cols).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1099,7 +1118,8 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
-                           COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),'')),''),
+                           COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active')
