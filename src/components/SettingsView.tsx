@@ -1519,13 +1519,42 @@ function GoogleContactsSection() {
   );
 }
 
+// One-click automations — pre-filled signup rules so users don't write regex.
+// Each enables the existing email→AI-extract→create-client pipeline.
+const PREMADE_AUTOMATIONS: { name: string; desc: string; sender: string | null; subject: string | null }[] = [
+  { name: "Form submissions → New clients",
+    desc: "Auto-create a client whenever a website or contact form is submitted — works with most providers.",
+    sender: null,
+    subject: "(?i)(new (form )?(submission|response|signup|lead|inquiry|entry)|form submission|contact (request|form)|you('ve| have)? (got|received) a new)" },
+  { name: "Typeform submissions",
+    desc: "New customer from a Typeform notification email.",
+    sender: "(?i)typeform\\.com", subject: null },
+  { name: "Google Forms responses",
+    desc: "New customer from a Google Forms response notification.",
+    sender: "(?i)google\\.com", subject: "(?i)(new response|google forms)" },
+  { name: "Jotform submissions",
+    desc: "New customer from a Jotform submission notification.",
+    sender: "(?i)jotform\\.com", subject: null },
+];
+
 function AutomationTab() {
   const [rules,    setRules]    = useState<SignupRule[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [form,     setForm]     = useState({ name: "", sender_pattern: "", subject_pattern: "" });
+  const [enabling, setEnabling] = useState<string | null>(null);
 
   const load = () => api.listSignupRules().then(setRules).catch(console.error);
   useEffect(() => { load(); }, []);
+
+  const isEnabled = (name: string) => rules.some((r) => r.name === name);
+  const enablePremade = async (p: (typeof PREMADE_AUTOMATIONS)[number]) => {
+    if (isEnabled(p.name)) return;
+    setEnabling(p.name);
+    try {
+      await api.createSignupRule({ name: p.name, sender_pattern: p.sender, subject_pattern: p.subject, active: true });
+      load();
+    } catch (e: any) { alert(e); } finally { setEnabling(null); }
+  };
 
   const save = async () => {
     if (!form.name.trim()) return;
@@ -1629,8 +1658,33 @@ function AutomationTab() {
         <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a>.
       </p>
 
+      {/* Premade automations — one-click enable */}
+      <div className="mb-6">
+        <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-2.5">One-click automations</label>
+        <div className="grid sm:grid-cols-2 gap-2.5">
+          {PREMADE_AUTOMATIONS.map((p) => {
+            const on = isEnabled(p.name);
+            return (
+              <div key={p.name} className="border border-line rounded-xl p-3.5 flex flex-col bg-surface-2/40">
+                <div className="text-[13px] font-medium text-ink mb-0.5">{p.name}</div>
+                <div className="text-[11.5px] text-muted leading-snug flex-1 mb-3">{p.desc}</div>
+                <button
+                  disabled={on || enabling === p.name}
+                  onClick={() => enablePremade(p)}
+                  className={`h-8 rounded-lg text-[12px] font-medium transition-colors ${on ? "cursor-default" : "bg-accent hover:bg-accent-hover text-white"}`}
+                  style={on ? { background: "rgba(16,185,129,0.12)", color: "rgb(var(--c-success))" } : undefined}
+                >
+                  {on ? "✓ Enabled" : enabling === p.name ? "Enabling…" : "Enable"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-muted mt-2.5">Requires email connected (Settings → Email). Fine-tune or remove any rule below.</p>
+      </div>
+
       <button onClick={() => setShowForm(true)} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors">
-        <Plus size={13} /> Add rule
+        <Plus size={13} /> Add custom rule
       </button>
 
       {showForm && (
