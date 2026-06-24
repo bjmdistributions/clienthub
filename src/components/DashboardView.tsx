@@ -210,7 +210,14 @@ export default function DashboardView({ onNavigate }: Props) {
 
         {/* KPI grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-          {kpis.map((k, i) => {
+          {stats === null ? Array.from({ length: 8 }).map((_, i) => (
+            <div key={`kpi-sk-${i}`} className={`rounded-xl p-4 ${staggerClass(i)}`} style={cardStyle}>
+              <div className="skeleton w-7 h-7 rounded-lg mb-2.5" />
+              <div className="skeleton h-2.5 w-3/4 mb-2.5" />
+              <div className="skeleton h-4 w-1/2 mb-2.5" />
+              <div className="skeleton h-2.5 w-2/3" />
+            </div>
+          )) : kpis.map((k, i) => {
             const Icon = k.icon;
             return (
               <button
