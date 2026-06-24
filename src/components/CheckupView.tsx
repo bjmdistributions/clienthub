@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, CheckupSession, CheckupDetail, CheckupItem, Category } from "../lib/api";
 import { fmtPhone } from "../lib/format";
-import { Plus, ArrowLeft, Trash2, Check, Phone, Mail } from "lucide-react";
+import { Plus, ArrowLeft, Trash2, Check, Phone, Mail, ArrowRight, Undo2 } from "lucide-react";
 
 export default function CheckupView() {
   const [sessions, setSessions] = useState<CheckupSession[]>([]);
@@ -38,7 +38,7 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
         <h2 className="text-[18px] font-semibold text-ink">Checkup</h2>
         <button onClick={() => setCreating(true)} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> New session</button>
       </div>
-      <p className="text-[12px] text-muted mb-5">Work through your clients one by one — call or message each, then mark them reviewed with a note.</p>
+      <p className="text-[12px] text-muted mb-5">Work through your clients in three steps — reach out, note how it went, then mark them done. Move cards back any time.</p>
 
       {creating && (
         <div className="bg-surface border border-line rounded-xl p-4 mb-4 space-y-3">
@@ -55,7 +55,7 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
       )}
 
       {sessions.length === 0 && !creating ? (
-        <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-10 text-center">No sessions yet. Start one to begin reviewing your clients.</div>
+        <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-10 text-center">No sessions yet. Start one to begin reaching out to your clients.</div>
       ) : (
         <div className="space-y-2.5">
           {sessions.map((s) => {
@@ -67,7 +67,7 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
                     <div className="text-[14px] font-medium text-ink truncate">{s.name}</div>
                     <div className="text-[11px] text-muted">{s.owner_name ? `${s.owner_name} · ` : ""}{new Date(s.created_at).toLocaleDateString()}</div>
                   </div>
-                  <div className="text-[12px] text-muted tabular-nums flex-shrink-0">{s.done}/{s.total} reviewed</div>
+                  <div className="text-[12px] text-muted tabular-nums flex-shrink-0">{s.done}/{s.total} done</div>
                 </div>
                 <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden"><div className="h-full bg-accent rounded-full" style={{ width: `${pct}%` }} /></div>
               </button>
@@ -79,82 +79,128 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
   );
 }
 
+// ---- contact row used in every card ----
+function Contact({ it }: { it: CheckupItem }) {
+  return (
+    <div className="mt-2 space-y-1.5 text-[13px]">
+      {it.phone && <a href={`tel:${it.phone}`} className="flex items-center gap-2 text-ink-2 hover:text-accent"><Phone size={13} className="text-muted flex-shrink-0" />{fmtPhone(it.phone)}</a>}
+      {it.email && <a href={`mailto:${it.email}`} className="flex items-center gap-2 text-ink-2 hover:text-accent truncate"><Mail size={13} className="text-muted flex-shrink-0" /><span className="truncate">{it.email}</span></a>}
+      {!it.phone && !it.email && <div className="text-[12px] text-faint">No contact info</div>}
+    </div>
+  );
+}
+
+function Column({ accent, label, count, children }: { accent: string; label: string; count: number; children: React.ReactNode }) {
+  return (
+    <div className="bg-surface-2/50 border border-line rounded-2xl p-3 flex flex-col min-h-[120px]">
+      <div className="flex items-center gap-2 px-1 pb-2.5 mb-1 border-b border-line">
+        <span className="w-2 h-2 rounded-full" style={{ background: accent }} />
+        <span className="text-[12px] font-semibold text-ink">{label}</span>
+        <span className="ml-auto text-[11px] font-medium text-muted tabular-nums bg-surface border border-line rounded-full px-2 py-0.5">{count}</span>
+      </div>
+      <div className="space-y-2.5">{children}</div>
+    </div>
+  );
+}
+
 function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const [data, setData] = useState<CheckupDetail | null>(null);
-  const [selected, setSelected] = useState<CheckupItem | null>(null);
-  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  // Local note drafts for "reached out" cards, keyed by item id (so reloads don't clobber typing).
+  const drafts = useRef<Record<string, string>>({});
   const load = () => api.getCheckup(id).then(setData).catch(() => {});
   useEffect(() => { load(); }, [id]);
 
-  const todo = data?.items.filter((i) => !i.reviewed) ?? [];
-  const done = data?.items.filter((i) => i.reviewed) ?? [];
+  const items = data?.items ?? [];
+  const todo = items.filter((i) => i.stage === 0);
+  const reached = items.filter((i) => i.stage === 1);
+  const done = items.filter((i) => i.stage === 2);
 
-  const select = (it: CheckupItem) => { setSelected(it); setNote(it.note || ""); };
-  const markReviewed = async () => {
-    if (!selected) return;
+  const move = async (it: CheckupItem, stage: number) => {
+    if (busy) return;
     setBusy(true);
-    await api.reviewCheckupItem(id, selected.id, true, note.trim()).catch(() => {});
-    setBusy(false);
+    const note = drafts.current[it.id] ?? it.note ?? "";
+    await api.setCheckupItemStage(id, it.id, stage, note).catch(() => {});
     const d = await api.getCheckup(id).catch(() => null);
     if (d) setData(d);
-    // auto-advance to the next unreviewed
-    const next = d?.items.find((i) => !i.reviewed && i.id !== selected.id) ?? null;
-    setSelected(next); setNote(next?.note || "");
+    setBusy(false);
   };
-  const remove = async () => { if (!window.confirm("Delete this session?")) return; await api.deleteCheckup(id).catch(() => {}); onBack(); };
+  const saveNote = async (it: CheckupItem) => {
+    const note = drafts.current[it.id];
+    if (note === undefined || note === it.note) return;
+    await api.setCheckupItemStage(id, it.id, 1, note).catch(() => {});
+  };
+  const doDelete = async () => { await api.deleteCheckup(id).catch(() => {}); onBack(); };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-3">
         <button onClick={onBack} className="text-[13px] text-muted hover:text-ink inline-flex items-center gap-1"><ArrowLeft size={14} /> Sessions</button>
-        <div className="text-[13px] text-muted tabular-nums">{done.length}/{(data?.items.length ?? 0)} reviewed</div>
-        <button onClick={remove} className="text-faint hover:text-danger-ink p-1.5 rounded-md"><Trash2 size={14} /></button>
+        <div className="text-[13px] text-muted tabular-nums">{done.length}/{items.length} done</div>
+        <button onClick={() => setConfirmDel(true)} className="text-faint hover:text-danger-ink p-1.5 rounded-md"><Trash2 size={14} /></button>
       </div>
-      <h2 className="text-[18px] font-semibold text-ink mb-4">{data?.name}</h2>
+      <h2 className="text-[19px] font-semibold text-ink mb-5">{data?.name}</h2>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* To review */}
-        <div className="space-y-1.5">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-1">To review ({todo.length})</div>
-          {todo.length === 0 ? <div className="text-[12px] text-muted py-4 text-center">All done</div> :
-            todo.map((it) => (
-              <button key={it.id} onClick={() => select(it)} className={`w-full text-left rounded-lg p-2.5 border transition-colors ${selected?.id === it.id ? "border-accent bg-accent/10" : "border-line bg-surface hover:bg-surface-2"}`}>
-                <div className="text-[13px] font-medium text-ink truncate">{it.name}</div>
-                <div className="text-[11px] text-muted truncate">{it.phone ? fmtPhone(it.phone) : it.email || "—"}</div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        {/* 1 — To reach out */}
+        <Column accent="#94a3b8" label="To reach out" count={todo.length}>
+          {todo.length === 0 ? <Empty text="Everyone's been contacted." /> : todo.map((it) => (
+            <div key={it.id} className="bg-surface border border-line rounded-xl p-3.5 shadow-sm">
+              <div className="text-[14px] font-semibold text-ink">{it.name}</div>
+              <Contact it={it} />
+              <button disabled={busy} onClick={() => move(it, 1)} className="mt-3 w-full h-8 rounded-lg bg-accent hover:bg-accent-hover text-white text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-50">
+                Reached out <ArrowRight size={13} />
               </button>
-            ))}
-        </div>
-
-        {/* Review panel */}
-        <div className="bg-surface border border-line rounded-xl p-4">
-          {selected ? (
-            <>
-              <div className="text-[15px] font-semibold text-ink">{selected.name}</div>
-              <div className="mt-2 space-y-1 text-[13px] text-ink-2">
-                {selected.phone && <div className="flex items-center gap-2"><Phone size={13} className="text-muted" /><a href={`tel:${selected.phone}`} className="hover:text-accent">{fmtPhone(selected.phone)}</a></div>}
-                {selected.email && <div className="flex items-center gap-2"><Mail size={13} className="text-muted" /><a href={`mailto:${selected.email}`} className="hover:text-accent truncate">{selected.email}</a></div>}
-              </div>
-              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={5} placeholder="How did the outreach go? (logged on their profile)"
-                className="mt-3 w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink resize-none focus:outline-none focus:ring-2 focus:ring-accent/40" />
-              <button disabled={busy} onClick={markReviewed} className="mt-2 w-full bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[13px] font-medium inline-flex items-center justify-center gap-1.5"><Check size={14} /> Mark reviewed</button>
-            </>
-          ) : (
-            <div className="text-[13px] text-muted text-center py-10">Select a client on the left to review them.</div>
-          )}
-        </div>
-
-        {/* Reviewed */}
-        <div className="space-y-1.5">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-1">Reviewed ({done.length})</div>
-          {done.map((it) => (
-            <button key={it.id} onClick={() => select(it)} className="w-full text-left rounded-lg p-2.5 border border-line bg-surface/60 hover:bg-surface-2">
-              <div className="text-[13px] text-ink-2 truncate flex items-center gap-1.5"><Check size={12} className="text-emerald-500 flex-shrink-0" />{it.name}</div>
-              {it.note && <div className="text-[11px] text-muted truncate mt-0.5 pl-5">{it.note}</div>}
-            </button>
+            </div>
           ))}
-        </div>
+        </Column>
+
+        {/* 2 — Reached out (notes live here) */}
+        <Column accent="#f59e0b" label="Reached out" count={reached.length}>
+          {reached.length === 0 ? <Empty text="Nobody in progress yet." /> : reached.map((it) => (
+            <div key={it.id} className="bg-surface border border-amber-300/60 rounded-xl p-3.5 shadow-sm">
+              <div className="text-[14px] font-semibold text-ink">{it.name}</div>
+              <Contact it={it} />
+              <textarea defaultValue={it.note} onChange={(e) => { drafts.current[it.id] = e.target.value; }} onBlur={() => saveNote(it)} rows={3}
+                placeholder="How did it go? (saved to their profile)"
+                className="mt-2.5 w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[12.5px] text-ink resize-none focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
+              <div className="mt-2 flex gap-2">
+                <button disabled={busy} onClick={() => move(it, 0)} title="Back to to-do" className="h-8 px-2.5 rounded-lg border border-line text-ink-2 hover:bg-surface-2 text-[12px] inline-flex items-center gap-1"><Undo2 size={13} /></button>
+                <button disabled={busy} onClick={() => move(it, 2)} className="flex-1 h-8 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-50"><Check size={14} /> Submit to done</button>
+              </div>
+            </div>
+          ))}
+        </Column>
+
+        {/* 3 — Done */}
+        <Column accent="#10b981" label="Done" count={done.length}>
+          {done.length === 0 ? <Empty text="Submitted clients land here." /> : done.map((it) => (
+            <div key={it.id} className="bg-surface/70 border border-line rounded-xl p-3.5">
+              <div className="text-[14px] font-medium text-ink-2 flex items-center gap-1.5"><Check size={14} className="text-emerald-500 flex-shrink-0" />{it.name}</div>
+              {it.note && <div className="text-[12px] text-muted mt-1.5 whitespace-pre-wrap">{it.note}</div>}
+              <button disabled={busy} onClick={() => move(it, 1)} className="mt-2.5 text-[11.5px] text-muted hover:text-ink inline-flex items-center gap-1"><Undo2 size={12} /> Reopen</button>
+            </div>
+          ))}
+        </Column>
       </div>
+
+      {confirmDel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setConfirmDel(false)}>
+          <div className="bg-surface border border-line rounded-2xl p-5 max-w-sm w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-[15px] font-semibold text-ink">Delete this session?</h3>
+            <p className="text-[13px] text-muted mt-1.5 leading-relaxed">This permanently removes “{data?.name}” and its review progress. This can’t be undone. (Clients already reached out to keep their logged contact.)</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setConfirmDel(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
+              <button onClick={doDelete} className="bg-red-600 hover:bg-red-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium">Delete session</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function Empty({ text }: { text: string }) {
+  return <div className="text-[12px] text-faint text-center py-6">{text}</div>;
 }

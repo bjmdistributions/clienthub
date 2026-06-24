@@ -101,54 +101,81 @@ pub fn get_checkup(id: String) -> Result<Value, String> {
         "SELECT name, status FROM checkup_sessions WHERE id=?1", [&id],
         |r| Ok((r.get(0)?, r.get(1)?))).map_err(|_| "not found".to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT i.id, i.client_id, c.name, c.phone, c.email, i.reviewed, i.note, i.reviewed_at
-         FROM checkup_items i JOIN clients c ON c.id=i.client_id WHERE i.session_id=?1 ORDER BY i.reviewed, c.name",
+        "SELECT i.id, i.client_id, c.name, c.phone, c.email, i.stage, i.note, i.reached_out_at
+         FROM checkup_items i JOIN clients c ON c.id=i.client_id WHERE i.session_id=?1 ORDER BY i.stage, c.name",
     ).map_err(|e| e.to_string())?;
     let items: Vec<Value> = stmt.query_map([&id], |r| Ok(json!({
         "id": r.get::<_, String>(0)?, "client_id": r.get::<_, String>(1)?, "name": r.get::<_, String>(2)?,
         "phone": r.get::<_, Option<String>>(3)?, "email": r.get::<_, Option<String>>(4)?,
-        "reviewed": r.get::<_, i64>(5)? != 0, "note": r.get::<_, String>(6)?, "reviewed_at": r.get::<_, Option<String>>(7)?,
+        "stage": r.get::<_, i64>(5)?, "note": r.get::<_, String>(6)?, "reached_out_at": r.get::<_, Option<String>>(7)?,
     }))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     Ok(json!({ "id": id, "name": name, "status": status, "items": items }))
 }
 
+/// Move an item between the 3 stages (0=to reach out, 1=reached out, 2=done) and
+/// save its note. Stages 1 & 2 keep a single checkup interaction in sync (dated to
+/// when first reached out); stage 0 removes it so Last activity reverts.
 #[tauri::command]
-pub fn review_checkup_item(session_id: String, item_id: String, reviewed: bool, note: String) -> Result<(), String> {
+pub fn set_checkup_item_stage(session_id: String, item_id: String, stage: i64, note: String) -> Result<(), String> {
+    let stage = stage.clamp(0, 2);
     let ts = now();
-    let client_id: Option<String> = {
+    let (client_id, interaction_id, reached_out_at): (Option<String>, Option<String>, Option<String>) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT client_id FROM checkup_items WHERE id=?1 AND session_id=?2",
-            rusqlite::params![item_id, session_id], |r| r.get(0)).ok()
+        conn.query_row("SELECT client_id, interaction_id, reached_out_at FROM checkup_items WHERE id=?1 AND session_id=?2",
+            rusqlite::params![item_id, session_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap_or((None, None, None))
     };
+    let who = crate::employees::session_actor().map(|(_, n)| n).unwrap_or_default();
+    let bodytext = if note.trim().is_empty() { "Reached out in checkup".to_string() } else { note.clone() };
+    let new_reached: Option<String> = if stage >= 1 { Some(reached_out_at.clone().unwrap_or_else(|| ts.clone())) } else { None };
+
+    let mut new_int_id = interaction_id.clone();
+    if stage >= 1 {
+        if let Some(cid) = client_id.clone() {
+            if let Some(iid) = interaction_id.clone() {
+                {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    conn.execute("UPDATE interactions SET body=?1 WHERE id=?2", rusqlite::params![bodytext, iid]).map_err(|e| e.to_string())?;
+                }
+                let mut nc = Map::new(); nc.insert("body".into(), json!(bodytext));
+                sync::record_upsert("interactions", &iid, nc).map_err(|e| e.to_string())?;
+            } else {
+                let iid = uuid::Uuid::new_v4().to_string();
+                let at = new_reached.clone().unwrap_or_else(|| ts.clone());
+                {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    conn.execute("INSERT INTO interactions (id,client_id,kind,subject,body,created_at,user_name) VALUES (?1,?2,'checkup','Checkup',?3,?4,?5)",
+                        rusqlite::params![iid, cid, bodytext, at, who]).map_err(|e| e.to_string())?;
+                }
+                let mut nc = Map::new();
+                nc.insert("client_id".into(), json!(cid)); nc.insert("kind".into(), json!("checkup")); nc.insert("subject".into(), json!("Checkup"));
+                nc.insert("body".into(), json!(bodytext)); nc.insert("created_at".into(), json!(at)); nc.insert("user_name".into(), json!(who));
+                sync::record_upsert("interactions", &iid, nc).map_err(|e| e.to_string())?;
+                new_int_id = Some(iid);
+            }
+        }
+    } else if let Some(iid) = interaction_id.clone() {
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM interactions WHERE id=?1", [&iid]).map_err(|e| e.to_string())?;
+        }
+        sync::record_delete("interactions", &iid).map_err(|e| e.to_string())?;
+        new_int_id = None;
+    }
+
+    let reviewed_at: Option<String> = if stage == 2 { Some(ts.clone()) } else { None };
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute("UPDATE checkup_items SET reviewed=?1, note=?2, reviewed_at=?3 WHERE id=?4",
-            rusqlite::params![reviewed as i64, note, if reviewed { Some(ts.clone()) } else { None }, item_id]).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE checkup_items SET stage=?1, reviewed=?2, note=?3, reached_out_at=?4, reviewed_at=?5, interaction_id=?6 WHERE id=?7",
+            rusqlite::params![stage, (stage == 2) as i64, note, new_reached, reviewed_at, new_int_id, item_id]).map_err(|e| e.to_string())?;
         conn.execute("UPDATE checkup_sessions SET updated_at=?1 WHERE id=?2", rusqlite::params![ts, session_id]).map_err(|e| e.to_string())?;
     }
     let mut ic = Map::new();
-    ic.insert("reviewed".into(), json!(reviewed as i64)); ic.insert("note".into(), json!(note));
-    ic.insert("reviewed_at".into(), json!(if reviewed { Some(ts.clone()) } else { None }));
+    ic.insert("stage".into(), json!(stage)); ic.insert("reviewed".into(), json!((stage == 2) as i64)); ic.insert("note".into(), json!(note));
+    ic.insert("reached_out_at".into(), json!(new_reached)); ic.insert("reviewed_at".into(), json!(reviewed_at)); ic.insert("interaction_id".into(), json!(new_int_id));
     sync::record_upsert("checkup_items", &item_id, ic).map_err(|e| e.to_string())?;
     let mut su = Map::new(); su.insert("updated_at".into(), json!(ts));
     sync::record_upsert("checkup_sessions", &session_id, su).map_err(|e| e.to_string())?;
-
-    if reviewed {
-        if let Some(cid) = client_id {
-            let who = crate::employees::session_actor().map(|(_, n)| n).unwrap_or_default();
-            let iid = uuid::Uuid::new_v4().to_string();
-            let bodytext = if note.trim().is_empty() { "Reviewed in checkup".to_string() } else { note.clone() };
-            {
-                let conn = pool().get().map_err(|e| e.to_string())?;
-                conn.execute("INSERT INTO interactions (id,client_id,kind,subject,body,created_at,user_name) VALUES (?1,?2,'checkup','Checkup',?3,?4,?5)",
-                    rusqlite::params![iid, cid, bodytext, ts, who]).map_err(|e| e.to_string())?;
-            }
-            let mut nc = Map::new();
-            nc.insert("client_id".into(), json!(cid)); nc.insert("kind".into(), json!("checkup")); nc.insert("subject".into(), json!("Checkup"));
-            nc.insert("body".into(), json!(bodytext)); nc.insert("created_at".into(), json!(ts)); nc.insert("user_name".into(), json!(who));
-            sync::record_upsert("interactions", &iid, nc).map_err(|e| e.to_string())?;
-        }
-    }
     Ok(())
 }
 

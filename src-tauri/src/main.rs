@@ -260,7 +260,7 @@ fn main() {
             checkups::create_checkup,
             checkups::list_checkups,
             checkups::get_checkup,
-            checkups::review_checkup_item,
+            checkups::set_checkup_item_stage,
             checkups::delete_checkup,
             delete_client,
             bulk_delete_clients,

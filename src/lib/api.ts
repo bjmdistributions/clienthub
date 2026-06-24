@@ -226,9 +226,10 @@ export interface CheckupItem {
   name: string;
   phone: string | null;
   email: string | null;
-  reviewed: boolean;
+  /** 0 = to reach out, 1 = reached out, 2 = done */
+  stage: number;
   note: string;
-  reviewed_at: string | null;
+  reached_out_at: string | null;
 }
 export interface CheckupDetail {
   id: string;
@@ -1262,8 +1263,8 @@ export const api = {
   createCheckup: (name?: string, category?: string) => invoke<{ id: string; total: number }>("create_checkup", { name, category }),
   listCheckups: () => invoke<CheckupSession[]>("list_checkups"),
   getCheckup: (id: string) => invoke<CheckupDetail>("get_checkup", { id }),
-  reviewCheckupItem: (sessionId: string, itemId: string, reviewed: boolean, note: string) =>
-    invoke<void>("review_checkup_item", { sessionId, itemId, reviewed, note }),
+  setCheckupItemStage: (sessionId: string, itemId: string, stage: number, note: string) =>
+    invoke<void>("set_checkup_item_stage", { sessionId, itemId, stage, note }),
   deleteCheckup: (id: string) => invoke<void>("delete_checkup", { id }),
   setCheckupVisibility: (visibility: string) => invoke<void>("set_checkup_visibility", { visibility }),
   listInvites: () => invoke<InviteRow[]>("list_invites"),

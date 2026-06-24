@@ -961,4 +961,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        50,
+        // Checkup 3-stage workflow: 0=to reach out, 1=reached out, 2=done.
+        // reached_out_at drives Last activity; interaction_id lets undo remove the log.
+        r#"
+        ALTER TABLE checkup_items ADD COLUMN stage INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE checkup_items ADD COLUMN reached_out_at TEXT;
+        ALTER TABLE checkup_items ADD COLUMN interaction_id TEXT;
+        "#,
+    ),
 ];
