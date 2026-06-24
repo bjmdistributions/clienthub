@@ -485,6 +485,13 @@ pub async fn set_approval_policy(require_add: bool, require_delete: bool) -> Res
     Ok(())
 }
 
+/// Open a URL in the user's default browser (used by in-app "Setup guide" links).
+#[tauri::command]
+pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+    app.shell().open(url, None).map_err(|e| e.to_string())
+}
+
 /// Send a product feature request / bug report to the Ecliptr server.
 #[tauri::command]
 pub async fn submit_feedback(kind: String, title: String, body: String, name: Option<String>, email: Option<String>) -> Result<(), String> {

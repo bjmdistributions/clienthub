@@ -1217,6 +1217,7 @@ export const api = {
   setApprovalPolicy: (requireAdd: boolean, requireDelete: boolean) => invoke<void>("set_approval_policy", { requireAdd, requireDelete }),
   submitFeedback: (kind: string, title: string, body: string, name?: string, email?: string) =>
     invoke<void>("submit_feedback", { kind, title, body, name, email }),
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
   // Custom lead forms
   listForms: () => invoke<FormDef[]>("list_forms"),
   saveForm: (f: { id?: string; name: string; title: string; intro: string; fields_json: string; active: boolean }) =>

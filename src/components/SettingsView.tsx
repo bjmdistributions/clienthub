@@ -70,6 +70,16 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import VariablePicker from "./VariablePicker";
 import { FormsPanel } from "./FormsPanel";
 
+// Opens the matching section of the website setup guide in the browser.
+function GuideLink({ section }: { section: string }) {
+  return (
+    <button onClick={() => api.openExternal(`https://ecliptr.app/guide#${section}`)}
+      className="text-[12px] text-accent hover:underline inline-flex items-center gap-1 whitespace-nowrap">
+      📖 Setup guide →
+    </button>
+  );
+}
+
 // ── Settings auto-save ──────────────────────────────────────────────────────
 type SaveState = "idle" | "saving" | "saved" | "error";
 const SaveStatusCtx = createContext<(s: SaveState) => void>(() => {});
@@ -1270,13 +1280,14 @@ function ImportTab() {
   const [subTab, setSubTab] = useState<"csv" | "contacts">("csv");
   return (
     <div>
-      <div className="flex gap-1 mb-5 border-b border-line">
+      <div className="flex items-center gap-1 mb-5 border-b border-line">
         {(["csv", "contacts"] as const).map(t => (
           <button key={t} onClick={() => setSubTab(t)}
             className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${subTab === t ? "border-accent text-accent-hover" : "border-transparent text-muted hover:text-ink-2"}`}>
             {t === "csv" ? "From CSV" : "From Google Contacts"}
           </button>
         ))}
+        <span className="ml-auto pb-2"><GuideLink section="import" /></span>
       </div>
       {subTab === "csv" ? <CsvImportSection /> : <GoogleContactsSection />}
     </div>
@@ -1742,6 +1753,7 @@ function AutomationTab() {
       <div className="flex items-center gap-2 mb-1">
         <Sparkles size={15} className="text-accent" />
         <h3 className="text-[14px] font-semibold text-ink">Auto-detect Signup Emails</h3>
+        <span className="ml-auto"><GuideLink section="automations" /></span>
       </div>
       <p className="text-[12px] text-muted mb-4">
         When an incoming email matches a rule, AI extracts client info from the body and
@@ -2356,9 +2368,12 @@ function SheetsTab() {
 
   return (
     <div className="max-w-4xl space-y-4">
-      <p className="text-[12px] text-muted">
-        Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr syncs new clients automatically every 10 minutes.
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-[12px] text-muted">
+          Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr syncs new clients automatically every 10 minutes.
+        </p>
+        <GuideLink section="sheets" />
+      </div>
 
       {/* Setup */}
       <div className="bg-surface border border-line rounded-xl p-5">

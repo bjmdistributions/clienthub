@@ -110,7 +110,7 @@ export function FormsPanel() {
       <div className="flex justify-between items-center">
         <div>
           <h4 className="text-[14px] font-semibold text-ink">Lead forms</h4>
-          <p className="text-[12px] text-muted">Build a form, share the link — submissions become pending clients.</p>
+          <p className="text-[12px] text-muted">Build a form, share the link — submissions become pending clients. <button onClick={() => api.openExternal("https://ecliptr.app/guide#forms")} className="text-accent hover:underline">Setup guide →</button></p>
         </div>
         <button onClick={() => setEditing(blankForm())} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">+ New form</button>
       </div>

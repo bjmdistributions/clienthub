@@ -251,6 +251,7 @@ fn main() {
             get_approval_policy,
             set_approval_policy,
             submit_feedback,
+            open_external,
             list_forms,
             save_form,
             delete_form,
