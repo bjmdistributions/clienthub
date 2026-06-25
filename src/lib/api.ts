@@ -169,6 +169,8 @@ export interface StaffMember {
   hide_pay_cuts: boolean;
   avatar?: string;
   title?: string;
+  phone?: string;
+  created_at?: string | null;
 }
 export interface RoleDef {
   id: string;

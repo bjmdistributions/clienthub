@@ -2685,6 +2685,7 @@ function PeoplePanel() {
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [roles, setRoles] = useState<RoleDef[]>([]);
   const [me, setMe] = useState<string>("");
+  const [viewing, setViewing] = useState<StaffMember | null>(null);
   const load = () => {
     api.listStaff().then(setStaff).catch(() => {});
     api.listRoles().then((r) => setRoles(r.roles)).catch(() => {});
@@ -2713,15 +2714,15 @@ function PeoplePanel() {
           {staff.map((u) => (
             <tr key={u.id} style={{ borderBottom: "1px solid var(--t-b2)" }}>
               <td className="px-4 py-3">
-                <div className="flex items-center gap-3">
+                <button onClick={() => setViewing(u)} className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity group">
                   {u.avatar
                     ? <img src={u.avatar} alt="" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
                     : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
                   <div className="min-w-0">
-                    <div className="font-medium text-ink truncate">{u.display_name}</div>
+                    <div className="font-medium text-ink truncate group-hover:text-accent">{u.display_name}</div>
                     <div className="text-[11px] text-muted truncate">{u.title ? `${u.title} · ` : ""}{u.email}</div>
                   </div>
-                </div>
+                </button>
               </td>
               <td className="px-4 py-3">
                 <select value={u.role_id} disabled={u.id === me} onChange={(e) => setRole(u.id, e.target.value)}
@@ -2758,6 +2759,44 @@ function PeoplePanel() {
           {staff.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-[12px] text-muted">No team members yet. Create an invite under the Invites tab.</td></tr>}
         </tbody>
       </table>
+      {viewing && <ProfileModal u={viewing} roleName={roles.find((r) => r.id === viewing.role_id)?.name || viewing.role_name || "—"} onClose={() => setViewing(null)} />}
+    </div>
+  );
+}
+
+function ProfileModal({ u, roleName, onClose }: { u: StaffMember; roleName: string; onClose: () => void }) {
+  const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
+    <div className="flex items-start justify-between gap-4 py-2.5 border-b border-line last:border-0">
+      <span className="text-[12px] text-muted">{label}</span>
+      <span className="text-[13px] text-ink text-right">{value}</span>
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl w-full max-w-md shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="p-6 flex flex-col items-center text-center border-b border-line">
+          {u.avatar
+            ? <img src={u.avatar} alt="" className="w-20 h-20 rounded-full object-cover" />
+            : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-white" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
+          <div className="mt-3 text-[17px] font-semibold text-ink">{u.display_name}</div>
+          {u.title && <div className="text-[13px] text-muted">{u.title}</div>}
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold">{roleName}</span>
+            {u.status === "active"
+              ? <span className="text-[10px] px-2 py-0.5 rounded-full bg-success-bg text-success-ink font-semibold">Active</span>
+              : <span className="text-[10px] px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink font-semibold">Suspended</span>}
+          </div>
+        </div>
+        <div className="px-6 py-3">
+          <Row label="Email" value={<a href={`mailto:${u.email}`} className="hover:text-accent">{u.email}</a>} />
+          {u.phone && <Row label="Phone" value={<a href={`tel:${u.phone}`} className="hover:text-accent">{u.phone}</a>} />}
+          <Row label="Pay cut" value={`${u.commission_pct || 0}%`} />
+          {u.created_at && <Row label="Member since" value={new Date(u.created_at).toLocaleDateString()} />}
+        </div>
+        <div className="px-6 py-4 flex justify-end border-t border-line">
+          <button onClick={onClose} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium">Close</button>
+        </div>
+      </div>
     </div>
   );
 }

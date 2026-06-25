@@ -295,7 +295,7 @@ pub fn list_staff() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT s.id, s.email, s.display_name, s.role_id, r.name, s.status, s.commission_pct, s.hide_pay_cuts,
-                COALESCE(s.avatar,''), COALESCE(s.title,'')
+                COALESCE(s.avatar,''), COALESCE(s.title,''), COALESCE(s.phone,''), s.created_at
          FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id WHERE s.org_id=?1 ORDER BY s.created_at",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([ORG_ID], |r| Ok(json!({
@@ -303,6 +303,7 @@ pub fn list_staff() -> Result<Vec<Value>, String> {
         "role_id": r.get::<_,String>(3)?, "role_name": r.get::<_,Option<String>>(4)?, "status": r.get::<_,String>(5)?,
         "commission_pct": r.get::<_,f64>(6)?, "hide_pay_cuts": r.get::<_,i64>(7)? != 0,
         "avatar": r.get::<_,String>(8)?, "title": r.get::<_,String>(9)?,
+        "phone": r.get::<_,String>(10)?, "created_at": r.get::<_,Option<String>>(11)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
