@@ -596,8 +596,8 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
   const [saving,   setSaving]   = useState(false);
   // Actual dollars received — defaults to the invoice total but the user can
   // enter a different amount (e.g. a slight underpayment they'll eat).
-  const [receivedAmount, setReceivedAmount] = useState<string>(String(flow.invoice_total || ""));
-  useEffect(() => { setReceivedAmount(String(flow.invoice_total || "")); }, [flow.invoice_total]);
+  const [receivedAmount, setReceivedAmount] = useState<string>((flow.invoice_total ? flow.invoice_total.toFixed(2) : ""));
+  useEffect(() => { setReceivedAmount((flow.invoice_total ? flow.invoice_total.toFixed(2) : "")); }, [flow.invoice_total]);
 
   const isDone = si(flow.stage) > si("invoiced");
 
