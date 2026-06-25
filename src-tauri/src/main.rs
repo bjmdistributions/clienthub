@@ -382,6 +382,7 @@ fn main() {
             employees::list_invites,
             employees::create_invite,
             employees::revoke_invite,
+            employees::reopen_invite,
             // Suppliers
             list_suppliers,
             get_supplier,
