@@ -2903,6 +2903,7 @@ function InvitesPanel() {
     setCreated(res); setEmail(""); load();
   };
   const revoke = async (token: string) => { await api.revokeInvite(token); load(); };
+  const reopen = async (token: string) => { await api.reopenInvite(token); load(); };
 
   const status = (i: InviteRow) => i.used_at ? "Used" : (new Date(i.expires_at) < new Date() ? "Expired" : "Pending");
 
@@ -2937,7 +2938,10 @@ function InvitesPanel() {
                 <td className="px-4 py-2.5 text-muted">{i.email || "—"}</td>
                 <td className="px-4 py-2.5"><span className="text-[11px] text-ink-2">{status(i)}</span></td>
                 <td className="px-4 py-2.5 text-muted text-[12px]">{i.expires_at.slice(0, 10)}</td>
-                <td className="px-4 py-2.5 text-right">{!i.used_at && <button onClick={() => revoke(i.token)} className="text-[12px] text-danger-ink font-medium">Revoke</button>}</td>
+                <td className="px-4 py-2.5 text-right">
+                  {(i.used_at || new Date(i.expires_at) < new Date()) && <button onClick={() => reopen(i.token)} className="text-[12px] text-accent font-medium mr-3">Reopen</button>}
+                  <button onClick={() => revoke(i.token)} className="text-[12px] text-danger-ink font-medium">Delete</button>
+                </td>
               </tr>
             ))}
             {invites.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-[12px] text-muted">No invites yet.</td></tr>}

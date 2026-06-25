@@ -466,8 +466,29 @@ pub fn revoke_invite(token: String) -> Result<(), String> {
     require_admin()?;
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM invites WHERE token=?1 AND used_at IS NULL", [&token]).map_err(|e| e.to_string())?;
+        // Allow deleting any invite (used/expired/active), not just unused.
+        conn.execute("DELETE FROM invites WHERE token=?1", [&token]).map_err(|e| e.to_string())?;
     }
     let _ = sync::record_delete("invites", &token);
     Ok(())
+}
+
+#[tauri::command]
+pub fn reopen_invite(token: String) -> Result<Value, String> {
+    require_admin()?;
+    let new_exp = (chrono::Utc::now() + chrono::Duration::days(14)).to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let n = conn.execute(
+            "UPDATE invites SET used_at=NULL, expires_at=?1 WHERE token=?2",
+            rusqlite::params![new_exp, token],
+        ).map_err(|e| e.to_string())?;
+        if n == 0 { return Err("Invite not found".into()); }
+    }
+    // Sync the reopened state (cleared used_at + new expiry) to peers.
+    let mut cols = Map::new();
+    cols.insert("expires_at".into(), json!(new_exp));
+    cols.insert("used_at".into(), Value::Null);
+    sync_upsert("invites", &token, cols);
+    Ok(json!({"token": token, "expires_at": new_exp}))
 }
