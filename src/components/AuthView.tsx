@@ -17,6 +17,7 @@ export default function AuthView({
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const starRef = useRef<HTMLCanvasElement | null>(null);
@@ -100,7 +101,7 @@ export default function AuthView({
           <p className="text-[13px] text-white/55 mt-1.5 max-w-[300px]">
             {mode === "bootstrap"
               ? `Set up the owner account for ${orgName || "your organization"}. This becomes your login on web and mobile too.`
-              : `Sign in to ${orgName || "Ecliptr"}.`}
+              : "Sign in to Ecliptr."}
           </p>
         </div>
 
@@ -109,14 +110,24 @@ export default function AuthView({
             <input className={inp} placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
           )}
           <input className={inp} type="email" autoCapitalize="off" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input
-            className={inp}
-            type="password"
-            placeholder={mode === "bootstrap" ? "Create a password (8+ chars)" : "Password"}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !busy) submit(); }}
-          />
+          <div className="relative">
+            <input
+              className={inp}
+              type={showPw ? "text" : "password"}
+              placeholder={mode === "bootstrap" ? "Create a password (8+ chars)" : "Password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !busy) submit(); }}
+              style={{ paddingRight: 56 }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPw(!showPw)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[13px] font-semibold text-white/50 hover:text-white/80 px-2 py-1"
+            >
+              {showPw ? "Hide" : "Show"}
+            </button>
+          </div>
 
           {error && (
             <div className="text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
