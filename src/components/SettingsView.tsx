@@ -258,7 +258,7 @@ export default function SettingsView() {
 }
 
 // Resize an uploaded image to a small square-ish JPEG data URL (avatar).
-function resizePhoto(file: File, max = 128): Promise<string> {
+function resizePhoto(file: File, max = 256): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = document.createElement("img");
     img.onload = () => {
@@ -266,8 +266,10 @@ function resizePhoto(file: File, max = 128): Promise<string> {
       const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
       const cv = document.createElement("canvas");
       cv.width = w; cv.height = h;
-      cv.getContext("2d")!.drawImage(img, 0, 0, w, h);
-      resolve(cv.toDataURL("image/jpeg", 0.85));
+      const ctx = cv.getContext("2d")!;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(cv.toDataURL("image/jpeg", 0.9));
     };
     img.onerror = reject;
     img.src = URL.createObjectURL(file);
