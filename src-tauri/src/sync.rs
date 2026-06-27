@@ -190,6 +190,12 @@ fn ensure_meta_tables() -> Result<()> {
             hlc_node BLOB NOT NULL,
             PRIMARY KEY (tbl, row_id)
         );
+        -- Folder-sync event files we've already replayed, tracked individually by
+        -- name so out-of-order peer arrivals are never skipped. (The old single
+        -- high-water-mark cursor dropped any file that synced in "in the past".)
+        CREATE TABLE IF NOT EXISTS replayed_files (
+            name TEXT PRIMARY KEY
+        );
         "#,
     )?;
     Ok(())
@@ -281,6 +287,26 @@ fn already_applied(event_id: &str) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(n > 0)
+}
+
+/// Whether a folder-sync event file (by exact name) has already been replayed.
+fn file_replayed(name: &str) -> Result<bool> {
+    let conn = pool().get()?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM replayed_files WHERE name=?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+fn mark_file_replayed(name: &str) -> Result<()> {
+    let conn = pool().get()?;
+    conn.execute(
+        "INSERT OR IGNORE INTO replayed_files (name) VALUES (?1)",
+        [name],
+    )?;
+    Ok(())
 }
 
 // ---------- Conflict resolution ----------
@@ -547,50 +573,44 @@ async fn read_event_file_async(path: &Path) -> Result<SyncEvent> {
 pub async fn replay_all() -> Result<usize> {
     let dir = sync_dir();
 
-    let cursor = {
+    // Retire the old high-water-mark cursor. It permanently skipped any event
+    // file whose name sorted at-or-below the mark — which happens routinely when
+    // a peer's file (earlier wall-clock / HLC timestamp) is delivered by the
+    // folder-sync layer AFTER we've already advanced past that time. Those events
+    // were dropped forever. We now track replayed files individually by name, so
+    // dropping the cursor here also triggers a one-time recovery rescan.
+    {
         let conn = pool().get()?;
-        conn.query_row(
-            "SELECT value FROM device_state WHERE key='last_replay_cursor'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
-        .unwrap_or_default()
-    };
+        let _ = conn.execute("DELETE FROM device_state WHERE key='last_replay_cursor'", []);
+    }
 
-    let mut count = 0;
     let mut entries: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |x| x == "json"))
         .collect();
+    // Apply in filename order (≈ HLC order) so causally-earlier events tend to
+    // land first; correctness never depends on order (already_applied + LWW).
     entries.sort_by_key(|e| e.file_name());
 
-    let mut last_name = String::new();
+    let mut count = 0;
     for entry in entries {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !cursor.is_empty() && name <= cursor {
+        // Skip only files we have already replayed, by exact name — never by
+        // timestamp ordering, so out-of-order arrivals are always applied.
+        if file_replayed(&name).unwrap_or(false) {
             continue;
         }
         match read_event_file(&entry.path()) {
-            Ok(event) => {
-                if let Err(e) = apply_event(&event) {
-                    tracing::warn!("apply_event failed for {:?}: {}", entry.path(), e);
-                } else {
+            Ok(event) => match apply_event(&event) {
+                Ok(()) => {
                     count += 1;
+                    let _ = mark_file_replayed(&name);
                 }
-            }
+                Err(e) => tracing::warn!("apply_event failed for {:?}: {}", entry.path(), e),
+            },
+            // Likely a partially-synced file; leave it unrecorded so we retry.
             Err(e) => tracing::warn!("read/parse failed {:?}: {}", entry.path(), e),
         }
-        last_name = name;
-    }
-
-    if !last_name.is_empty() {
-        let conn = pool().get()?;
-        let _ = conn.execute(
-            "INSERT INTO device_state (key, value) VALUES ('last_replay_cursor', ?1)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [&last_name],
-        );
     }
 
     Ok(count)
@@ -620,11 +640,14 @@ pub fn start_watcher() -> Result<()> {
         while let Some(path) = rx.recv().await {
             if path.extension().map_or(false, |x| x == "json") {
                 match read_event_file_async(&path).await {
-                    Ok(event) => {
-                        if let Err(e) = apply_event(&event) {
-                            tracing::warn!("watcher apply failed {:?}: {}", path, e);
+                    Ok(event) => match apply_event(&event) {
+                        Ok(()) => {
+                            if let Some(n) = path.file_name().and_then(|x| x.to_str()) {
+                                let _ = mark_file_replayed(n);
+                            }
                         }
-                    }
+                        Err(e) => tracing::warn!("watcher apply failed {:?}: {}", path, e),
+                    },
                     Err(e) => tracing::warn!("watcher read failed {:?}: {}", path, e),
                 }
             }
