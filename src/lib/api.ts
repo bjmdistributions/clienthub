@@ -1239,6 +1239,10 @@ export const api = {
     invoke<Me>("employee_bootstrap", { displayName, email, password }),
   employeeLogin: (email: string, password: string) =>
     invoke<Me>("employee_login", { email, password }),
+  // Unified sign-in: local-first, then server-hub sync (falls back to server auth
+  // for a website-created account on a fresh device). See employees::login.
+  login: (email: string, password: string) =>
+    invoke<Me>("login", { email, password }),
   // Team management (admin only)
   listStaff: () => invoke<StaffMember[]>("list_staff"),
   updateStaff: (id: string, fields: Partial<{ roleId: string; status: string; commissionPct: number; hidePayCuts: boolean }>) =>

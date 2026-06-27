@@ -250,7 +250,12 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<()> {
     let token = body.token.context("server did not return a token")?;
     state_set("netsync_url", &base);
     state_set("netsync_token", &token);
-    state_set("netsync_pull_cursor", "0"); // bootstrap from the beginning
+    // Only reset the cursor on the very first connect (full bootstrap). On a
+    // re-login (token refresh) keep the cursor so we pull incrementally rather
+    // than re-downloading the whole org history every sign-in.
+    if state_get("netsync_pull_cursor").is_none() {
+        state_set("netsync_pull_cursor", "0");
+    }
     pull_apply().await?;
     push_pending().await.ok(); // flush anything queued before connecting
     Ok(())

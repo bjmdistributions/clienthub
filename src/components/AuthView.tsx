@@ -72,7 +72,7 @@ export default function AuthView({
     try {
       const me = mode === "bootstrap"
         ? await api.employeeBootstrap(name.trim(), email.trim(), password)
-        : await api.employeeLogin(email.trim(), password);
+        : await api.login(email.trim(), password);
       onAuthed(me);
     } catch (e: any) {
       setError(typeof e === "string" ? e : (e?.message || "Something went wrong"));

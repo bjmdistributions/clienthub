@@ -373,6 +373,7 @@ fn main() {
             employees::employee_logout,
             employees::employee_bootstrap,
             employees::employee_login,
+            employees::login,
             employees::list_staff,
             employees::update_staff,
             employees::delete_staff,

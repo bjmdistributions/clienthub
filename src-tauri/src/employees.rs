@@ -287,6 +287,44 @@ pub fn employee_login(email: String, password: String) -> Result<Me, String> {
     load_me(&id).ok_or_else(|| "Could not load account".into())
 }
 
+/// Production server base URL for hosted auth + sync.
+const SERVER_URL: &str = "https://ecliptr.app";
+
+/// Unified sign-in for the SaaS world. Local-first so the existing/offline owner
+/// always gets in instantly with no internet, and so a bad network never locks
+/// anyone out: on a successful local login we just activate server-hub sync in
+/// the background. Only when no local account matches do we authenticate against
+/// the server and pull the org down — that's a website-created account signing in
+/// on a fresh device. The server (not Syncthing) becomes the sync hub either way.
+#[tauri::command]
+pub async fn login(email: String, password: String) -> Result<Me, String> {
+    // 1. Local-first: instant + offline-safe for accounts already on this device.
+    if let Ok(me) = employee_login(email.clone(), password.clone()) {
+        let (e, p) = (email.clone(), password.clone());
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = crate::netsync::connect(SERVER_URL, &e, &p).await {
+                tracing::warn!("netsync connect after local login: {}", err);
+            }
+        });
+        return Ok(me);
+    }
+    // 2. No local match → authenticate against the server, pull the org down,
+    //    then complete the login locally against the freshly-synced account.
+    match crate::netsync::connect(SERVER_URL, &email, &password).await {
+        Ok(()) => employee_login(email, password),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("HTTP") {
+                // Server answered but rejected the credentials.
+                Err("Invalid email or password.".into())
+            } else {
+                // Couldn't reach the server and nothing local matched.
+                Err("Couldn't reach the server, and no local account matches. Check your connection and try again.".into())
+            }
+        }
+    }
+}
+
 // ──────────────────────── Team management (admin) ────────────────────────
 
 #[tauri::command]
