@@ -42,6 +42,8 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
   const enabled: boolean = !!payout.rep_payouts_enabled;
   const splits: { name: string; amount: number }[] = payout.splits || [];
   const repCut: number = payout.rep_cut || 0;
+  const unmatched: boolean = !!payout.rep_unmatched;
+  const unmatchedName: string = payout.unmatched_rep_name || "";
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setErr(null);
@@ -96,6 +98,15 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
               </span>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Unmatched rep — the client's rep isn't an employee in the system */}
+      {enabled && unmatched && (
+        <div className="flex items-start gap-2 bg-warning-bg border border-warning rounded-lg px-3 py-2">
+          <span className="text-[12px] text-warning-ink leading-snug">
+            Rep <strong>“{unmatchedName}”</strong> on this client isn't an employee — no payout is calculated for them. Fix the spelling on the client, or add/invite them under <strong>Settings → Team</strong>.
+          </span>
         </div>
       )}
 

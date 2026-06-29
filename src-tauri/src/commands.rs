@@ -3746,10 +3746,31 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     let (net, gross, refund_owed): (f64, f64, f64) = conn.query_row(
         "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0) FROM deal_flows WHERE id=?1",
         [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|_| "Deal not found".to_string())?;
-    let (rep_id, rep_name, pct, pay_type, hide): (Option<String>, String, f64, String, i64) = conn.query_row(
+    // Resolve the rep: a manual per-deal override (deal_reps) wins; otherwise the
+    // deal earns for its CLIENT's assigned rep (client.metadata.lead_representative),
+    // matched to an active employee by name. If the client has a rep name that isn't
+    // an employee, flag it (rep_unmatched) so the UI can prompt to fix/invite.
+    let override_rep: Option<(String, String, f64, String, i64)> = conn.query_row(
         "SELECT dr.lead_rep_id, COALESCE(u.display_name,''), COALESCE(u.commission_pct,0), COALESCE(u.pay_type,'profit_pct'), COALESCE(u.hide_pay_cuts,0)
-         FROM deal_reps dr LEFT JOIN staff_accounts u ON u.id=dr.lead_rep_id WHERE dr.deal_flow_id=?1",
-        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap_or((None, String::new(), 0.0, "profit_pct".into(), 0));
+         FROM deal_reps dr JOIN staff_accounts u ON u.id=dr.lead_rep_id WHERE dr.deal_flow_id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).ok();
+    let client_rep_name: Option<String> = conn.query_row(
+        "SELECT json_extract(c.metadata,'$.lead_representative') FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id WHERE df.id=?1",
+        [&deal_flow_id], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|s| !s.trim().is_empty());
+    let (rep_id, rep_name, pct, pay_type, hide, rep_unmatched): (Option<String>, String, f64, String, i64, bool) =
+        if let Some((id, name, p, pt, h)) = override_rep {
+            (Some(id), name, p, pt, h, false)
+        } else if let Some(rn) = client_rep_name.clone() {
+            match conn.query_row(
+                "SELECT id, COALESCE(commission_pct,0), COALESCE(pay_type,'profit_pct'), COALESCE(hide_pay_cuts,0) FROM staff_accounts WHERE display_name=?1 AND status='active' LIMIT 1",
+                [&rn], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))) {
+                Ok((id, p, pt, h)) => (Some(id), rn, p, pt, h, false),
+                Err(_) => (None, rn, 0.0, "profit_pct".into(), 0, true),
+            }
+        } else {
+            (None, String::new(), 0.0, "profit_pct".into(), 0, false)
+        };
+    let unmatched_name = if rep_unmatched { client_rep_name.clone() } else { None };
     let (refunded, keep): (f64, i64) = conn.query_row(
         "SELECT COALESCE(SUM(amount),0), COALESCE(MAX(keep_rep_cut),0) FROM refunds WHERE deal_flow_id=?1",
         [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0.0, 0));
@@ -3764,6 +3785,8 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         "net_profit": net, "refunded": r2(refunded), "effective_net": r2(eff_net),
         "refund_owed": r2(refund_owed), "owed_remaining": r2((refund_owed - refunded).max(0.0)),
         "keep_rep_cut": keep != 0,
+        "rep_unmatched": rep_unmatched,
+        "unmatched_rep_name": unmatched_name,
         "rep_cut": if has_cut { r2(cut) } else { 0.0 },
         "remaining_profit": r2(remaining),
         "splits": [
@@ -3842,23 +3865,54 @@ pub async fn list_rep_payouts(start: Option<String>, end: Option<String>) -> Res
     let start = start.unwrap_or_default();
     let end = end.unwrap_or_else(|| "9999-12-31".into());
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT dr.lead_rep_id, COALESCE(u.display_name,''), COALESCE(u.commission_pct,0), COALESCE(u.pay_type,'profit_pct'), COALESCE(u.hide_pay_cuts,0),
-                COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0),
-                (SELECT COALESCE(SUM(rf.amount),0) FROM refunds rf WHERE rf.deal_flow_id=df.id),
-                (SELECT COALESCE(MAX(rf.keep_rep_cut),0) FROM refunds rf WHERE rf.deal_flow_id=df.id)
-         FROM deal_flows df JOIN deal_reps dr ON dr.deal_flow_id=df.id LEFT JOIN staff_accounts u ON u.id=dr.lead_rep_id
-         WHERE df.stage='complete' AND COALESCE(df.completed_at,'') >= ?1 AND COALESCE(df.completed_at,'') < ?2").map_err(|e| e.to_string())?;
-    let rows: Vec<(Option<String>, String, f64, String, i64, f64, f64, f64, i64)> = stmt.query_map(rusqlite::params![start, end], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
-    let mut map: std::collections::HashMap<String, (String, f64, i64, i64)> = std::collections::HashMap::new();
-    for (rep, name, pct, pt, hide, net, gross, refunded, keep) in rows {
-        let rid = match rep { Some(r) if !r.is_empty() => r, _ => continue };
-        if hide != 0 { continue; }
-        let eff_net = net - refunded; let eff_gross = gross - refunded;
-        let cut = if keep != 0 { rep_cut(&pt, pct, gross, net) } else { rep_cut_after_refund(&pt, pct, eff_gross, eff_net) };
-        let e = map.entry(rid).or_insert((name, 0.0, 0, 0)); e.1 += cut; e.2 += 1; if refunded > 0.0 { e.3 += 1; }
+
+    // Every active employee shows — $0 until a deal closes for one of their clients.
+    let mut staff: std::collections::HashMap<String, (String, f64, String)> = std::collections::HashMap::new(); // id -> (name, pct, pay_type)
+    let mut by_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();               // display_name -> id
+    {
+        let mut s = conn.prepare("SELECT id, display_name, COALESCE(commission_pct,0), COALESCE(pay_type,'profit_pct') FROM staff_accounts WHERE status='active' AND COALESCE(hide_pay_cuts,0)=0").map_err(|e| e.to_string())?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?))).map_err(|e| e.to_string())?;
+        for (id, name, pct, pt) in rows.flatten() {
+            by_name.insert(name.clone(), id.clone());
+            staff.insert(id, (name, pct, pt));
+        }
     }
-    let payouts: Vec<Value> = map.into_iter().map(|(rid, (name, owed, deals, rf))| json!({ "rep_id": rid, "name": name, "owed": r2(owed), "deals": deals, "refunded_deals": rf })).collect();
+
+    // Completed deals in the period: override rep (deal_reps) + the client's rep name + figures.
+    let mut totals: std::collections::HashMap<String, (f64, i64, i64)> = std::collections::HashMap::new(); // rep_id -> (owed, deals, refunded_deals)
+    {
+        let mut s = conn.prepare(
+            "SELECT dr.lead_rep_id, json_extract(c.metadata,'$.lead_representative'),
+                    COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0),
+                    (SELECT COALESCE(SUM(amount),0) FROM refunds rf WHERE rf.deal_flow_id=df.id),
+                    (SELECT COALESCE(MAX(keep_rep_cut),0) FROM refunds rf WHERE rf.deal_flow_id=df.id)
+             FROM deal_flows df
+             LEFT JOIN deal_reps dr ON dr.deal_flow_id=df.id
+             LEFT JOIN invoices i ON i.id=df.invoice_id
+             LEFT JOIN clients c ON c.id=i.client_id
+             WHERE df.stage='complete' AND COALESCE(df.completed_at,'') >= ?1 AND COALESCE(df.completed_at,'') < ?2",
+        ).map_err(|e| e.to_string())?;
+        let rows = s.query_map(rusqlite::params![start, end], |r| Ok((
+            r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
+            r.get::<_, f64>(2)?, r.get::<_, f64>(3)?, r.get::<_, f64>(4)?, r.get::<_, i64>(5)?,
+        ))).map_err(|e| e.to_string())?;
+        for (override_id, client_rep, net, gross, refunded, keep) in rows.flatten() {
+            let rid = override_id.filter(|s| !s.is_empty())
+                .or_else(|| client_rep.and_then(|n| if n.trim().is_empty() { None } else { by_name.get(&n).cloned() }));
+            let rid = match rid { Some(r) => r, None => continue };
+            if let Some((_, pct, pt)) = staff.get(&rid) {
+                let cut = if keep != 0 { rep_cut(pt, *pct, gross, net) } else { rep_cut_after_refund(pt, *pct, gross - refunded, net - refunded) };
+                let e = totals.entry(rid).or_insert((0.0, 0, 0));
+                e.0 += cut; e.1 += 1; if refunded > 0.0 { e.2 += 1; }
+            }
+        }
+    }
+
+    let mut payouts: Vec<Value> = staff.into_iter().map(|(id, (name, _, _))| {
+        let (owed, deals, rf) = totals.get(&id).cloned().unwrap_or((0.0, 0, 0));
+        json!({ "rep_id": id, "name": name, "owed": r2(owed), "deals": deals, "refunded_deals": rf })
+    }).collect();
+    payouts.sort_by(|a, b| b["owed"].as_f64().unwrap_or(0.0).partial_cmp(&a["owed"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
     Ok(json!({ "enabled": true, "start": start, "end": end, "payouts": payouts }))
 }
 
