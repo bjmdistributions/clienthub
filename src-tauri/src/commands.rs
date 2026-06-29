@@ -8671,7 +8671,9 @@ pub async fn sync_from_sheet() -> Result<SheetSyncResult, String> {
                         let idx = col_index(col_letter);
                         let val = record.get(idx).unwrap_or("").trim().to_string();
                         if !val.is_empty() {
-                            meta[field_name] = Value::String(val);
+                            // "cf:<key>" → metadata keyed by the custom field's key (matches forms/intake/CSV).
+                            let key = field_name.strip_prefix("cf:").unwrap_or(field_name);
+                            meta[key] = Value::String(val);
                         }
                     }
                 }

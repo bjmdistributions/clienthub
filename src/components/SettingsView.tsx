@@ -1239,6 +1239,8 @@ function CsvImportSection() {
   const [importing, setImporting] = useState(false);
   const [summary,   setSummary]   = useState<ImportSummary | null>(null);
   const [error,     setError]     = useState<string | null>(null);
+  const [customFields, setCustomFields] = useState<{ value: string; label: string }[]>([]);
+  useEffect(() => { api.getIntakeFields().then((fs) => setCustomFields(fs.filter((f) => f.value.startsWith("cf:")))).catch(() => {}); }, []);
 
   const CORE_FIELDS = [
     { key: "first_name", label: "First Name *" },
@@ -1329,6 +1331,27 @@ function CsvImportSection() {
               </div>
             ))}
           </div>
+
+          {customFields.length > 0 && (
+            <>
+              <SectionLabel>Custom Fields</SectionLabel>
+              <div className="space-y-2 mt-2 mb-5">
+                {customFields.map((f) => (
+                  <div key={f.value} className="grid grid-cols-3 gap-2 items-center">
+                    <label className="text-[13px] text-ink-2">{f.label}</label>
+                    <select
+                      className="col-span-2 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+                      value={mapping[f.value] ?? ""}
+                      onChange={(e) => setMapping({ ...mapping, [f.value]: e.target.value })}
+                    >
+                      <option value="">— skip —</option>
+                      {preview.headers.map((h) => (<option key={h} value={h}>{h}</option>))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           <SectionLabel>Extra Fields → Metadata ({metaKeys.length} selected)</SectionLabel>
           <div className="flex flex-wrap gap-2 mt-2 mb-5">
@@ -2442,10 +2465,12 @@ function SheetsTab() {
   const [syncing, setSyncing] = useState(false);
   const [result,  setResult]  = useState<SheetSyncResult | null>(null);
   const [log,     setLog]     = useState<SheetSyncLogEntry[]>([]);
+  const [customFields, setCustomFields] = useState<{ value: string; label: string }[]>([]);
 
   useEffect(() => {
     api.getSheetSyncConfig().then(setConfig).catch(() => {});
     api.getSheetSyncLog().then(setLog).catch(() => {});
+    api.getIntakeFields().then((fs) => setCustomFields(fs.filter((f) => f.value.startsWith("cf:")))).catch(() => {});
   }, []);
 
   const save = async () => {
@@ -2464,6 +2489,23 @@ function SheetsTab() {
       api.getSheetSyncLog().then(setLog).catch(() => {});
     } catch (e: any) { alert(e); }
     setSyncing(false);
+  };
+
+  // field_mapping_json is { columnLetter: target }; invert to { target: column } for the pickers.
+  const fieldToCol: Record<string, string> = {};
+  try {
+    const m = JSON.parse(config.field_mapping_json || "{}");
+    for (const [col, target] of Object.entries(m)) if (typeof target === "string") fieldToCol[target] = col;
+  } catch { /* ignore */ }
+  const setCustomFieldCol = (cfValue: string, col: string) => {
+    const next: Record<string, string> = {};
+    try {
+      const m = JSON.parse(config.field_mapping_json || "{}");
+      for (const [c, t] of Object.entries(m)) if (typeof t === "string" && !t.startsWith("cf:")) next[c] = t; // preserve non-custom mappings
+    } catch { /* ignore */ }
+    const updated: Record<string, string> = { ...fieldToCol, [cfValue]: col };
+    for (const [t, c] of Object.entries(updated)) if (t.startsWith("cf:") && c) next[c] = t;
+    setConfig({ ...config, field_mapping_json: JSON.stringify(next) });
   };
 
   const columns = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map((c) => `A${c}`)];
@@ -2523,6 +2565,26 @@ function SheetsTab() {
               </div>
             ))}
           </div>
+          {customFields.length > 0 && (
+            <div>
+              <label className="block text-[10px] font-medium text-muted mb-1.5">Custom fields — pick the column each lives in</label>
+              <div className="grid grid-cols-5 gap-3">
+                {customFields.map((f) => (
+                  <div key={f.value}>
+                    <label className="block text-[10px] font-medium text-muted mb-1 truncate" title={f.label}>{f.label}</label>
+                    <select
+                      value={fieldToCol[f.value] ?? ""}
+                      onChange={(e) => setCustomFieldCol(f.value, e.target.value)}
+                      className={colSelect}
+                    >
+                      <option value="">—</option>
+                      {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="w-32">
             <label className="block text-[10px] font-medium text-muted mb-1">Skip header rows</label>
             <input type="number" min={0} value={config.skip_header_rows} onChange={(e) => setConfig({ ...config, skip_header_rows: Number(e.target.value) })} className={inpSm} />

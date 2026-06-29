@@ -162,6 +162,20 @@ pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
         if let Some(v) = state_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { metadata.insert("state".into(), serde_json::Value::String(v)); }
         if let Some(v) = zip_code_idx.and_then(|i| record.get(i)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { metadata.insert("zip_code".into(), serde_json::Value::String(v)); }
 
+        // Custom-field targets ("cf:<key>") map a column into metadata keyed by the
+        // custom field's key — same convention as forms/intake, so the data lines up.
+        for (target, col) in &mapping.fields {
+            if let Some(key) = target.strip_prefix("cf:") {
+                if let Some(v) = header_idx.get(col.as_str())
+                    .and_then(|&i| record.get(i))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    metadata.insert(key.to_string(), serde_json::Value::String(v));
+                }
+            }
+        }
+
         if let Some(em) = &email {
             let exists: i64 = conn
                 .query_row(
