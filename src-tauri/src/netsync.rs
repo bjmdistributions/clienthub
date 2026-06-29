@@ -325,3 +325,26 @@ pub async fn get_my_plan() -> Result<serde_json::Value, String> {
     }
     resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
+
+/// Platform-owner (superadmin) signups overview: every workspace with owner email,
+/// plan, signup date and usage. Server gates this to the org_default owner.
+#[tauri::command]
+pub async fn get_platform_signups() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .get(format!("{}/api/admin/sync-health", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
