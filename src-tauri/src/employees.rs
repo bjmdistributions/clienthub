@@ -70,6 +70,7 @@ pub fn ensure_rbac() -> anyhow::Result<()> {
     for stmt in [
         "ALTER TABLE staff_accounts ADD COLUMN commission_pct REAL NOT NULL DEFAULT 0",
         "ALTER TABLE staff_accounts ADD COLUMN hide_pay_cuts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE staff_accounts ADD COLUMN pay_type TEXT NOT NULL DEFAULT 'profit_pct'",
     ] { let _ = conn.execute(stmt, []); }
 
     let now = now_rfc3339();
@@ -333,7 +334,7 @@ pub fn list_staff() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT s.id, s.email, s.display_name, s.role_id, r.name, s.status, s.commission_pct, s.hide_pay_cuts,
-                COALESCE(s.avatar,''), COALESCE(s.title,''), COALESCE(s.phone,''), s.created_at
+                COALESCE(s.avatar,''), COALESCE(s.title,''), COALESCE(s.phone,''), s.created_at, COALESCE(s.pay_type,'profit_pct')
          FROM staff_accounts s LEFT JOIN roles r ON r.id=s.role_id WHERE s.org_id=?1 ORDER BY s.created_at",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([ORG_ID], |r| Ok(json!({
@@ -342,12 +343,13 @@ pub fn list_staff() -> Result<Vec<Value>, String> {
         "commission_pct": r.get::<_,f64>(6)?, "hide_pay_cuts": r.get::<_,i64>(7)? != 0,
         "avatar": r.get::<_,String>(8)?, "title": r.get::<_,String>(9)?,
         "phone": r.get::<_,String>(10)?, "created_at": r.get::<_,Option<String>>(11)?,
+        "pay_type": r.get::<_,String>(12)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
-pub fn update_staff(id: String, role_id: Option<String>, status: Option<String>, commission_pct: Option<f64>, hide_pay_cuts: Option<bool>) -> Result<(), String> {
+pub fn update_staff(id: String, role_id: Option<String>, status: Option<String>, commission_pct: Option<f64>, hide_pay_cuts: Option<bool>, pay_type: Option<String>) -> Result<(), String> {
     require_admin()?;
     let now = now_rfc3339();
     let mut cols = Map::new();
@@ -357,6 +359,7 @@ pub fn update_staff(id: String, role_id: Option<String>, status: Option<String>,
         if let Some(v) = &status { conn.execute("UPDATE staff_accounts SET status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("status".into(), json!(v)); }
         if let Some(v) = commission_pct { conn.execute("UPDATE staff_accounts SET commission_pct=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("commission_pct".into(), json!(v)); }
         if let Some(v) = hide_pay_cuts { conn.execute("UPDATE staff_accounts SET hide_pay_cuts=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v as i64, now, id]).map_err(|e| e.to_string())?; cols.insert("hide_pay_cuts".into(), json!(v as i64)); }
+        if let Some(v) = &pay_type { let v = match v.as_str() { "gross_pct" | "fixed" => v.as_str(), _ => "profit_pct" }; conn.execute("UPDATE staff_accounts SET pay_type=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("pay_type".into(), json!(v)); }
     }
     if !cols.is_empty() { cols.insert("updated_at".into(), json!(now)); sync_upsert("staff_accounts", &id, cols); }
     Ok(())

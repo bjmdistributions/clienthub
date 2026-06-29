@@ -9,6 +9,7 @@ import {
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import CostProfitPanel from "./CostProfitPanel";
+import RefundPanel from "./RefundPanel";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -1408,28 +1409,8 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
         </div>
       )}
 
-      {/* Profit split */}
-      {split && flow.net_profit > 0 && (
-        <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">
-            Profit Split
-          </div>
-          <div className="grid grid-cols-3 gap-4 text-center">
-            {[
-              { name: split.jack_name, val: flow.profit_jack     },
-              { name: split.ben_name,  val: flow.profit_ben      },
-              { name: "Business",      val: flow.profit_business  },
-            ].map((item) => (
-              <div key={item.name}>
-                <div className="text-[12px] text-muted">{item.name}</div>
-                <div className="text-[18px] font-bold text-success-ink tabular-nums mt-0.5">
-                  {fmtAmount(item.val)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Payout, lead rep & refunds (refund-aware owner split) */}
+      <RefundPanel dealFlowId={flow.id} />
 
       {/* Actions */}
       <div className="flex items-center gap-3 pt-1">

@@ -2609,11 +2609,11 @@ const VIS_TOGGLES: [string, string, string][] = [
 ];
 
 function TeamTab() {
-  const [sub, setSub] = useState<"people" | "roles" | "approvals" | "invites">("people");
+  const [sub, setSub] = useState<"people" | "roles" | "approvals" | "invites" | "payouts">("people");
   return (
     <div className="max-w-3xl">
       <div className="flex gap-0 border-b border-line mb-5">
-        {(["people", "roles", "approvals", "invites"] as const).map((s) => (
+        {(["people", "roles", "approvals", "invites", "payouts"] as const).map((s) => (
           <button key={s} onClick={() => setSub(s)}
             className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px transition-colors capitalize ${sub === s ? "border-accent text-accent-hover font-medium" : "border-transparent text-muted hover:text-ink"}`}>
             {s}
@@ -2624,6 +2624,66 @@ function TeamTab() {
       {sub === "roles" && <RolesPanel />}
       {sub === "approvals" && <ApprovalPolicyPanel />}
       {sub === "invites" && <InvitesPanel />}
+      {sub === "payouts" && <PayoutsPanel />}
+    </div>
+  );
+}
+
+function PayoutsPanel() {
+  const monthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10); };
+  const monthEnd = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().slice(0, 10); };
+  const [start, setStart] = useState(monthStart());
+  const [end, setEnd] = useState(monthEnd());
+  const [data, setData] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () => {
+    setErr(null);
+    api.listRepPayouts(start, end).then(setData).catch((e: any) => setErr(typeof e === "string" ? e : e?.message || "Failed to load"));
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const markPaid = (repId: string, owed: number) => {
+    setBusy(true);
+    api.markRepPayoutPaid(repId, start, end, owed).then(() => load()).catch((e: any) => setErr(typeof e === "string" ? e : e?.message || "Failed")).finally(() => setBusy(false));
+  };
+
+  const payouts: any[] = (data && data.payouts) || [];
+  return (
+    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
+      {data && !data.enabled && (
+        <div className="text-[12.5px] text-muted">Rep payouts are off. Turn them on under <strong>People</strong> first.</div>
+      )}
+      <div className="flex items-center gap-2 text-[12px] flex-wrap">
+        <span className="text-muted">Period</span>
+        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface" />
+        <span className="text-muted">to</span>
+        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface" />
+        <button onClick={load} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2">Show</button>
+      </div>
+      {payouts.length === 0 ? (
+        <div className="text-[12.5px] text-muted">No rep payouts for completed deals in this period.</div>
+      ) : (
+        <table className="w-full text-[13px]">
+          <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
+            {["Rep", "Deals", "Owed", ""].map((h, i) => <th key={i} className={`text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted ${i === 3 ? "text-right" : ""}`}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {payouts.map((p) => (
+              <tr key={p.rep_id} style={{ borderBottom: "1px solid var(--t-b2)" }}>
+                <td className="px-3 py-2.5 text-ink">{p.name}</td>
+                <td className="px-3 py-2.5 text-muted">{p.deals}{p.refunded_deals > 0 ? ` · ${p.refunded_deals} refunded` : ""}</td>
+                <td className="px-3 py-2.5 tabular-nums font-semibold text-ink">{fmtAmount(p.owed)}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <button disabled={busy} onClick={() => markPaid(p.rep_id, p.owed)} className="px-2.5 h-7 border border-line rounded-lg text-[11.5px] hover:bg-surface-2">Mark paid</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {err && <div className="text-[11.5px] text-danger-ink">{err}</div>}
     </div>
   );
 }
@@ -2694,11 +2754,15 @@ function PeoplePanel() {
     api.employeeMe().then((m) => setMe(m?.id || "")).catch(() => {});
   };
   useEffect(() => { load(); }, []);
+  const [rp, setRp] = useState<any>(null);
+  useEffect(() => { api.getRepPayoutSettings().then(setRp).catch(() => {}); }, []);
+  const saveRp = (fields: any) => { setRp((p: any) => ({ ...(p || {}), ...fields })); api.setRepPayoutSettings(fields).catch(() => {}); };
 
   const setRole = async (id: string, roleId: string) => { await api.updateStaff(id, { roleId }); load(); };
   const setStatus = async (id: string, status: string) => { await api.updateStaff(id, { status }); load(); };
   const setComm = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
   const setHide = async (id: string, hidePayCuts: boolean) => { await api.updateStaff(id, { hidePayCuts }); };
+  const setPayType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); load(); };
   const remove = async (id: string, name: string) => {
     if (!window.confirm(`Remove ${name} from the team? This permanently deletes their account and unassigns them from any deals. This can't be undone.`)) return;
     try { await api.deleteStaff(id); load(); } catch (e: any) { window.alert(typeof e === "string" ? e : (e?.message || "Failed to remove")); }
@@ -2706,6 +2770,34 @@ function PeoplePanel() {
 
   return (
     <div className="bg-surface border border-line rounded-xl overflow-hidden">
+      {rp && (
+        <div className="px-4 py-3 border-b border-line space-y-3">
+          <label className="flex items-center justify-between cursor-pointer gap-3">
+            <div>
+              <div className="font-medium text-ink text-[13px]">Rep payouts</div>
+              <div className="text-[11.5px] text-muted">Pay reps a cut of completed deals; owners split the rest.</div>
+            </div>
+            <input type="checkbox" checked={!!rp.enabled} onChange={(e) => saveRp({ enabled: e.target.checked })} />
+          </label>
+          {rp.enabled && (
+            <div className="flex items-center gap-3 text-[12px] border-t border-line pt-3">
+              <span className="text-muted">Pay out every</span>
+              <select value={rp.period || "monthly"} onChange={(e) => saveRp({ period: e.target.value })}
+                className="border border-line px-2 h-8 rounded-lg bg-surface text-[12px]">
+                <option value="weekly">Week</option>
+                <option value="biweekly">2 weeks</option>
+                <option value="monthly">Month</option>
+                <option value="custom">Custom</option>
+              </select>
+              {rp.period === "custom" && (
+                <input type="number" min={1} defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseInt(e.target.value) || 14 })}
+                  className="w-16 border border-line px-2 h-8 rounded-lg text-[12px]" />
+              )}
+              <span className="text-muted ml-auto text-[11px]">Completed deals only.</span>
+            </div>
+          )}
+        </div>
+      )}
       <table className="w-full text-[13px]">
         <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
           {["Member", "Role", "Pay cut", "Status", ""].map((h, i) => (
@@ -2733,10 +2825,16 @@ function PeoplePanel() {
                 </select>
               </td>
               <td className="px-4 py-3">
-                <div className="flex items-center gap-1.5">
-                  <input type="number" min={0} max={100} defaultValue={u.commission_pct} onBlur={(e) => setComm(u.id, parseFloat(e.target.value) || 0)}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <select defaultValue={(u as any).pay_type || "profit_pct"} onChange={(e) => setPayType(u.id, e.target.value)}
+                    className="border border-line px-1.5 h-8 rounded-lg text-[11.5px] bg-surface">
+                    <option value="profit_pct">% profit</option>
+                    <option value="gross_pct">% gross</option>
+                    <option value="fixed">fixed $</option>
+                  </select>
+                  <input type="number" min={0} defaultValue={u.commission_pct} onBlur={(e) => setComm(u.id, parseFloat(e.target.value) || 0)}
                     className="w-14 border border-line px-2 h-8 rounded-lg text-[12px]" />
-                  <span className="text-[11px] text-muted">%</span>
+                  <span className="text-[11px] text-muted">{((u as any).pay_type === "fixed") ? "$" : "%"}</span>
                   <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-1">
                     <input type="checkbox" defaultChecked={u.hide_pay_cuts} onChange={(e) => setHide(u.id, e.target.checked)} /> hide
                   </label>

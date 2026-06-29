@@ -971,4 +971,60 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE checkup_items ADD COLUMN interaction_id TEXT;
         "#,
     ),
+    (
+        51,
+        // Refunds + customer credits + rep payout statements (all synced).
+        //   deal_flows.refund_owed = amount still owed back on a deal; refunds pay it down.
+        //   refunds.keep_rep_cut   = rep already paid, so the refund comes out of the owners'
+        //                            share and the rep keeps their full original cut.
+        //   client_credits         = per-customer ledger (+issued / -applied); balance = SUM(amount).
+        //   rep_payouts            = a rep's owed/paid statement for one payout period.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN refund_owed REAL NOT NULL DEFAULT 0;
+        CREATE TABLE IF NOT EXISTS refunds (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            deal_flow_id TEXT NOT NULL,
+            client_id TEXT,
+            amount REAL NOT NULL DEFAULT 0,
+            method TEXT,
+            source TEXT,
+            source_supplier_ref TEXT,
+            keep_rep_cut INTEGER NOT NULL DEFAULT 0,
+            reason TEXT,
+            refunded_at TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_refunds_deal ON refunds(deal_flow_id);
+        CREATE INDEX IF NOT EXISTS idx_refunds_client ON refunds(client_id);
+        CREATE TABLE IF NOT EXISTS client_credits (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            client_id TEXT NOT NULL,
+            amount REAL NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'issued',
+            source_deal_flow_id TEXT,
+            applied_deal_flow_id TEXT,
+            note TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_credits_client ON client_credits(client_id);
+        CREATE TABLE IF NOT EXISTS rep_payouts (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            rep_id TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            amount REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            paid_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rep_payouts_rep ON rep_payouts(rep_id);
+        "#,
+    ),
 ];

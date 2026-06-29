@@ -250,6 +250,25 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 </div>
               )}
 
+              {/* Refunded deals — happened but fell through */}
+              {brief.refunded_deals_this_week > 0 && (
+                <div className="flex items-center gap-2 bg-warning-bg border border-warning rounded-lg px-4 py-2.5">
+                  <AlertCircle size={14} className="text-warning-ink flex-shrink-0" />
+                  <span className="text-[12px] text-warning-ink">
+                    {brief.refunded_deals_this_week} deal{brief.refunded_deals_this_week !== 1 ? "s" : ""} refunded this period — happened but fell through:{" "}
+                    <span className="font-semibold">{fmtAmount(brief.refunded_total_this_week)}</span> returned
+                  </span>
+                </div>
+              )}
+
+              {/* Rep's own earnings (shown when viewing a single rep's brief) */}
+              {brief.rep_earnings_this_week > 0 && (
+                <div className="flex items-center justify-between bg-surface border border-line rounded-lg px-4 py-2.5">
+                  <span className="text-[12px] text-muted">Your earnings this period (after any refunds)</span>
+                  <span className="text-[15px] font-bold text-success-ink tabular-nums">{fmtAmount(brief.rep_earnings_this_week)}</span>
+                </div>
+              )}
+
               <div className="text-[10px] text-muted italic">
                 Profit calculated from completed deal flows only
               </div>

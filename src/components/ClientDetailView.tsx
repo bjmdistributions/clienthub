@@ -2,6 +2,7 @@ import { useEffect, useState, Children } from "react";
 import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
+import CreditPanel from "./CreditPanel";
 import {
   ArrowLeft,
   Mail,
@@ -294,6 +295,8 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               </div>
             )}
           </MetadataCard>
+
+          <CreditPanel clientId={client.id} />
 
           {customFields.length > 0 && (
             <MetadataCard title="Custom Fields" icon={<Tag size={14} />}>

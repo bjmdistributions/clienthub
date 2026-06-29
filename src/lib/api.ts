@@ -770,6 +770,9 @@ export interface WeeklyBrief {
   profit_business_this_month: number;
   loss_deals_this_week: number;
   loss_total_this_week: number;
+  refunded_deals_this_week: number;
+  refunded_total_this_week: number;
+  rep_earnings_this_week: number;
 }
 
 export interface PipelineAnalytics {
@@ -1245,8 +1248,27 @@ export const api = {
     invoke<Me>("login", { email, password }),
   // Team management (admin only)
   listStaff: () => invoke<StaffMember[]>("list_staff"),
-  updateStaff: (id: string, fields: Partial<{ roleId: string; status: string; commissionPct: number; hidePayCuts: boolean }>) =>
+  updateStaff: (id: string, fields: Partial<{ roleId: string; status: string; commissionPct: number; hidePayCuts: boolean; payType: string }>) =>
     invoke<void>("update_staff", { id, ...fields }),
+
+  // Refunds, customer credits, rep payouts
+  createRefund: (dealFlowId: string, amount: number, opts?: { method?: string; source?: string; sourceSupplierRef?: string; keepRepCut?: boolean; reason?: string }) =>
+    invoke<string>("create_refund", { dealFlowId, amount, ...(opts || {}) }),
+  listRefunds: (dealFlowId: string) => invoke<any[]>("list_refunds", { dealFlowId }),
+  setRefundOwed: (dealFlowId: string, amount: number) => invoke<void>("set_refund_owed", { dealFlowId, amount }),
+  deleteRefund: (id: string) => invoke<void>("delete_refund", { id }),
+  dealFlowPayout: (dealFlowId: string) => invoke<any>("deal_flow_payout", { dealFlowId }),
+  listDealReps: () => invoke<{ id: string; display_name: string }[]>("list_deal_reps"),
+  setDealLeadRep: (dealFlowId: string, leadRepId: string | null) => invoke<void>("set_deal_lead_rep", { dealFlowId, leadRepId }),
+  addClientCredit: (clientId: string, amount: number, opts?: { kind?: string; note?: string; sourceDealFlowId?: string; appliedDealFlowId?: string }) =>
+    invoke<string>("add_client_credit", { clientId, amount, ...(opts || {}) }),
+  getClientCredit: (clientId: string) => invoke<any>("get_client_credit", { clientId }),
+  listRepPayouts: (start?: string, end?: string) => invoke<any>("list_rep_payouts", { start, end }),
+  markRepPayoutPaid: (repId: string, periodStart: string, periodEnd: string, amount: number) =>
+    invoke<string>("mark_rep_payout_paid", { repId, periodStart, periodEnd, amount }),
+  getRepPayoutSettings: () => invoke<any>("get_rep_payout_settings"),
+  setRepPayoutSettings: (fields: Partial<{ enabled: boolean; period: string; anchor: string; customDays: number }>) =>
+    invoke<void>("set_rep_payout_settings", { ...fields }),
   deleteStaff: (id: string) => invoke<void>("delete_staff", { id }),
   listRoles: () => invoke<{ roles: RoleDef[]; modules: string[] }>("list_roles"),
   createRole: (name: string) => invoke<RoleDef>("create_role", { name }),

@@ -3654,6 +3654,264 @@ pub async fn update_deal_flow_name(id: String, name: Option<String>) -> Result<(
     Ok(())
 }
 
+// ──────────────────────── Refunds, customer credits, rep payouts ────────────────────────
+
+fn r2(x: f64) -> f64 { (x * 100.0).round() / 100.0 }
+
+/// Lead rep's cut: gross_pct = % of sale, profit_pct = % of profit, fixed = flat $.
+fn rep_cut(pay_type: &str, value: f64, gross: f64, net: f64) -> f64 {
+    r2(match pay_type { "gross_pct" => gross * value / 100.0, "fixed" => value, _ => net * value / 100.0 })
+}
+/// Cut after a refund ("only what's left"): % on the reduced figures; fixed capped
+/// at the profit that remains.
+fn rep_cut_after_refund(pay_type: &str, value: f64, eff_gross: f64, eff_net: f64) -> f64 {
+    r2(match pay_type { "gross_pct" => eff_gross.max(0.0) * value / 100.0, "fixed" => value.min(eff_net.max(0.0)), _ => eff_net.max(0.0) * value / 100.0 })
+}
+fn setting_bool(key: &str) -> bool {
+    pool().get().ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0)).ok())
+        .map(|v| v == "1" || v == "true").unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<String>, source: Option<String>, source_supplier_ref: Option<String>, keep_rep_cut: Option<bool>, reason: Option<String>) -> Result<String, String> {
+    if !(amount > 0.0) { return Err("Refund amount must be positive".into()); }
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let keep: i64 = if keep_rep_cut.unwrap_or(false) { 1 } else { 0 };
+    let amt = r2(amount);
+    let client_id: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT i.client_id FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id WHERE df.id=?1", [&deal_flow_id], |r| r.get::<_, Option<String>>(0)).map_err(|_| "Deal not found".to_string())?
+    };
+    let mut cols = Map::new();
+    cols.insert("deal_flow_id".into(), Value::String(deal_flow_id.clone()));
+    cols.insert("client_id".into(), to_value(client_id.clone()));
+    cols.insert("amount".into(), json!(amt));
+    cols.insert("method".into(), to_value(method.clone()));
+    cols.insert("source".into(), to_value(source.clone()));
+    cols.insert("source_supplier_ref".into(), to_value(source_supplier_ref.clone()));
+    cols.insert("keep_rep_cut".into(), json!(keep));
+    cols.insert("reason".into(), to_value(reason.clone()));
+    cols.insert("refunded_at".into(), Value::String(now.clone()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("refunds", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO refunds (id,deal_flow_id,client_id,amount,method,source,source_supplier_ref,keep_rep_cut,reason,refunded_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?10)",
+        rusqlite::params![id, deal_flow_id, client_id, amt, method, source, source_supplier_ref, keep, reason, now]).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn list_refunds(deal_flow_id: String) -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, amount, COALESCE(method,''), COALESCE(source,''), COALESCE(source_supplier_ref,''), keep_rep_cut, COALESCE(reason,''), COALESCE(refunded_at,'') FROM refunds WHERE deal_flow_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&deal_flow_id], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?, "amount": r.get::<_, f64>(1)?, "method": r.get::<_, String>(2)?,
+        "source": r.get::<_, String>(3)?, "source_supplier_ref": r.get::<_, String>(4)?,
+        "keep_rep_cut": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, String>(6)?, "refunded_at": r.get::<_, String>(7)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn set_refund_owed(deal_flow_id: String, amount: f64) -> Result<(), String> {
+    let owed = r2(amount.max(0.0));
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("refund_owed".into(), json!(owed));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &deal_flow_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deal_flows SET refund_owed=?1, updated_at=?2 WHERE id=?3", rusqlite::params![owed, now, deal_flow_id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_refund(id: String) -> Result<(), String> {
+    sync::record_delete("refunds", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM refunds WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The full pay breakdown for one deal flow (refund-aware): lead rep, cut, owner
+/// splits of the remaining effective net, refunded total, and owed-back.
+#[tauri::command]
+pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
+    let split = read_profit_split()?;
+    let enabled = setting_bool("rep_payouts_enabled");
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (net, gross, refund_owed): (f64, f64, f64) = conn.query_row(
+        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0) FROM deal_flows WHERE id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|_| "Deal not found".to_string())?;
+    let (rep_id, rep_name, pct, pay_type, hide): (Option<String>, String, f64, String, i64) = conn.query_row(
+        "SELECT dr.lead_rep_id, COALESCE(u.display_name,''), COALESCE(u.commission_pct,0), COALESCE(u.pay_type,'profit_pct'), COALESCE(u.hide_pay_cuts,0)
+         FROM deal_reps dr LEFT JOIN staff_accounts u ON u.id=dr.lead_rep_id WHERE dr.deal_flow_id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap_or((None, String::new(), 0.0, "profit_pct".into(), 0));
+    let (refunded, keep): (f64, i64) = conn.query_row(
+        "SELECT COALESCE(SUM(amount),0), COALESCE(MAX(keep_rep_cut),0) FROM refunds WHERE deal_flow_id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0.0, 0));
+    let eff_net = net - refunded;
+    let eff_gross = gross - refunded;
+    let has_cut = enabled && rep_id.is_some() && hide == 0;
+    let cut = if !has_cut { 0.0 } else if keep != 0 { rep_cut(&pay_type, pct, gross, net) } else { rep_cut_after_refund(&pay_type, pct, eff_gross, eff_net) };
+    let remaining = eff_net - cut;
+    Ok(json!({
+        "rep_payouts_enabled": enabled,
+        "lead_rep_id": rep_id, "lead_rep_name": rep_name, "commission_pct": pct, "pay_type": pay_type, "hide_pay_cuts": hide != 0,
+        "net_profit": net, "refunded": r2(refunded), "effective_net": r2(eff_net),
+        "refund_owed": r2(refund_owed), "owed_remaining": r2((refund_owed - refunded).max(0.0)),
+        "keep_rep_cut": keep != 0,
+        "rep_cut": if has_cut { r2(cut) } else { 0.0 },
+        "remaining_profit": r2(remaining),
+        "splits": [
+            { "name": split.jack_name, "amount": r2(remaining * split.jack_pct / 100.0) },
+            { "name": split.ben_name, "amount": r2(remaining * split.ben_pct / 100.0) },
+            { "name": "Business", "amount": r2(remaining * split.business_pct / 100.0) },
+        ],
+    }))
+}
+
+#[tauri::command]
+pub fn list_deal_reps() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, display_name FROM staff_accounts WHERE status='active' ORDER BY display_name").map_err(|e| e.to_string())?;
+    let reps: Vec<Value> = stmt.query_map([], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "display_name": r.get::<_, String>(1)? }))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+    Ok(reps)
+}
+
+#[tauri::command]
+pub async fn set_deal_lead_rep(deal_flow_id: String, lead_rep_id: Option<String>) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    if let Some(rep) = lead_rep_id {
+        let mut cols = Map::new();
+        cols.insert("lead_rep_id".into(), Value::String(rep.clone()));
+        cols.insert("assigned_at".into(), Value::String(now.clone()));
+        sync::record_upsert("deal_reps", &deal_flow_id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO deal_reps (deal_flow_id,lead_rep_id,assigned_at) VALUES (?1,?2,?3) ON CONFLICT(deal_flow_id) DO UPDATE SET lead_rep_id=excluded.lead_rep_id, assigned_at=excluded.assigned_at",
+            rusqlite::params![deal_flow_id, rep, now]).map_err(|e| e.to_string())?;
+    } else {
+        sync::record_delete("deal_reps", &deal_flow_id).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM deal_reps WHERE deal_flow_id=?1", [&deal_flow_id]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn add_client_credit(client_id: String, amount: f64, kind: Option<String>, note: Option<String>, source_deal_flow_id: Option<String>, applied_deal_flow_id: Option<String>) -> Result<String, String> {
+    if amount < 0.0 {
+        let bal: f64 = { let conn = pool().get().map_err(|e| e.to_string())?; conn.query_row("SELECT COALESCE(SUM(amount),0) FROM client_credits WHERE client_id=?1", [&client_id], |r| r.get(0)).unwrap_or(0.0) };
+        if -amount > bal + 0.001 { return Err("Not enough credit balance".into()); }
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let amt = r2(amount);
+    let k = match kind.as_deref() { Some("adjustment") => "adjustment", Some("applied") => "applied", _ => if amount < 0.0 { "applied" } else { "issued" } };
+    let mut cols = Map::new();
+    cols.insert("client_id".into(), Value::String(client_id.clone()));
+    cols.insert("amount".into(), json!(amt));
+    cols.insert("kind".into(), Value::String(k.into()));
+    cols.insert("source_deal_flow_id".into(), to_value(source_deal_flow_id.clone()));
+    cols.insert("applied_deal_flow_id".into(), to_value(applied_deal_flow_id.clone()));
+    cols.insert("note".into(), to_value(note.clone()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    sync::record_upsert("client_credits", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO client_credits (id,client_id,amount,kind,source_deal_flow_id,applied_deal_flow_id,note,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![id, client_id, amt, k, source_deal_flow_id, applied_deal_flow_id, note, now]).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn get_client_credit(client_id: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let balance: f64 = conn.query_row("SELECT COALESCE(SUM(amount),0) FROM client_credits WHERE client_id=?1", [&client_id], |r| r.get(0)).unwrap_or(0.0);
+    let mut stmt = conn.prepare("SELECT id, amount, kind, COALESCE(note,''), COALESCE(created_at,'') FROM client_credits WHERE client_id=?1 ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+    let entries: Vec<Value> = stmt.query_map([&client_id], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "amount": r.get::<_, f64>(1)?, "kind": r.get::<_, String>(2)?, "note": r.get::<_, String>(3)?, "created_at": r.get::<_, String>(4)? }))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+    Ok(json!({ "balance": r2(balance), "entries": entries }))
+}
+
+#[tauri::command]
+pub async fn list_rep_payouts(start: Option<String>, end: Option<String>) -> Result<Value, String> {
+    let enabled = setting_bool("rep_payouts_enabled");
+    if !enabled { return Ok(json!({ "enabled": false, "payouts": [] })); }
+    let start = start.unwrap_or_default();
+    let end = end.unwrap_or_else(|| "9999-12-31".into());
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT dr.lead_rep_id, COALESCE(u.display_name,''), COALESCE(u.commission_pct,0), COALESCE(u.pay_type,'profit_pct'), COALESCE(u.hide_pay_cuts,0),
+                COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0),
+                (SELECT COALESCE(SUM(rf.amount),0) FROM refunds rf WHERE rf.deal_flow_id=df.id),
+                (SELECT COALESCE(MAX(rf.keep_rep_cut),0) FROM refunds rf WHERE rf.deal_flow_id=df.id)
+         FROM deal_flows df JOIN deal_reps dr ON dr.deal_flow_id=df.id LEFT JOIN staff_accounts u ON u.id=dr.lead_rep_id
+         WHERE df.stage='complete' AND COALESCE(df.completed_at,'') >= ?1 AND COALESCE(df.completed_at,'') < ?2").map_err(|e| e.to_string())?;
+    let rows: Vec<(Option<String>, String, f64, String, i64, f64, f64, f64, i64)> = stmt.query_map(rusqlite::params![start, end], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+    let mut map: std::collections::HashMap<String, (String, f64, i64, i64)> = std::collections::HashMap::new();
+    for (rep, name, pct, pt, hide, net, gross, refunded, keep) in rows {
+        let rid = match rep { Some(r) if !r.is_empty() => r, _ => continue };
+        if hide != 0 { continue; }
+        let eff_net = net - refunded; let eff_gross = gross - refunded;
+        let cut = if keep != 0 { rep_cut(&pt, pct, gross, net) } else { rep_cut_after_refund(&pt, pct, eff_gross, eff_net) };
+        let e = map.entry(rid).or_insert((name, 0.0, 0, 0)); e.1 += cut; e.2 += 1; if refunded > 0.0 { e.3 += 1; }
+    }
+    let payouts: Vec<Value> = map.into_iter().map(|(rid, (name, owed, deals, rf))| json!({ "rep_id": rid, "name": name, "owed": r2(owed), "deals": deals, "refunded_deals": rf })).collect();
+    Ok(json!({ "enabled": true, "start": start, "end": end, "payouts": payouts }))
+}
+
+#[tauri::command]
+pub async fn mark_rep_payout_paid(rep_id: String, period_start: String, period_end: String, amount: f64) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let amt = r2(amount);
+    let mut cols = Map::new();
+    cols.insert("rep_id".into(), Value::String(rep_id.clone()));
+    cols.insert("period_start".into(), Value::String(period_start.clone()));
+    cols.insert("period_end".into(), Value::String(period_end.clone()));
+    cols.insert("amount".into(), json!(amt));
+    cols.insert("status".into(), Value::String("paid".into()));
+    cols.insert("paid_at".into(), Value::String(now.clone()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("rep_payouts", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO rep_payouts (id,rep_id,period_start,period_end,amount,status,paid_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'paid',?6,?6,?6)",
+        rusqlite::params![id, rep_id, period_start, period_end, amt, now]).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn get_rep_payout_settings() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let get = |k: &str, d: &str| conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0)).unwrap_or_else(|_| d.to_string());
+    Ok(json!({
+        "enabled": get("rep_payouts_enabled", "0") == "1",
+        "period": get("rep_payout_period", "monthly"),
+        "anchor": get("rep_payout_anchor", ""),
+        "custom_days": get("rep_payout_custom_days", "0").parse::<i64>().unwrap_or(0),
+    }))
+}
+
+#[tauri::command]
+pub async fn set_rep_payout_settings(enabled: Option<bool>, period: Option<String>, anchor: Option<String>, custom_days: Option<i64>) -> Result<(), String> {
+    fn put(key: &str, val: String) -> Result<(), String> {
+        let mut cols = Map::new();
+        cols.insert("value".into(), Value::String(val.clone()));
+        sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key, val]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    if let Some(v) = enabled { put("rep_payouts_enabled", if v { "1".into() } else { "0".into() })?; }
+    if let Some(v) = period { let v = match v.as_str() { "weekly" | "biweekly" | "monthly" | "custom" => v, _ => "monthly".into() }; put("rep_payout_period", v)?; }
+    if let Some(v) = anchor { put("rep_payout_anchor", v)?; }
+    if let Some(v) = custom_days { put("rep_payout_custom_days", v.max(1).to_string())?; }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn delete_deal_flow(id: String) -> Result<(), String> {
     let invoice_id: String = {
@@ -6504,6 +6762,9 @@ pub struct WeeklyBrief {
     pub profit_business_this_month: f64,
     pub loss_deals_this_week: u32,
     pub loss_total_this_week: f64,
+    pub refunded_deals_this_week: u32,
+    pub refunded_total_this_week: f64,
+    pub rep_earnings_this_week: f64,
 }
 
 #[tauri::command]
@@ -6680,6 +6941,43 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         "SELECT COUNT(*) FROM interactions WHERE created_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
 
+    // Refunds on deals completed in the period (rep-filtered) — "deals that fell through".
+    let (refunded_deals_this_week, refunded_total_this_week): (u32, f64) = conn.query_row(
+        &format!("SELECT COUNT(DISTINCT rf.deal_flow_id), COALESCE(SUM(rf.amount),0) FROM refunds rf JOIN deal_flows df ON df.id=rf.deal_flow_id {rep_join} WHERE df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        [&week_start, &end_excl], |r| Ok((r.get::<_,i64>(0)? as u32, r.get::<_,f64>(1)?))
+    ).unwrap_or((0, 0.0));
+
+    // Rep earnings (their cut) for the period — only when viewing a specific rep and
+    // rep payouts are on. Maps the rep name to their staff pay config, then sums the
+    // refund-aware cut over deals where they're the assigned lead (deal_reps).
+    let rep_earnings_this_week: f64 = if rep_name.is_some() && setting_bool("rep_payouts_enabled") {
+        let rn = rep_name.as_ref().unwrap();
+        let staff: Option<(String, f64, String, i64)> = conn.query_row(
+            "SELECT id, COALESCE(commission_pct,0), COALESCE(pay_type,'profit_pct'), COALESCE(hide_pay_cuts,0) FROM staff_accounts WHERE display_name=?1 AND status='active' LIMIT 1",
+            [rn], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        ).ok();
+        match staff {
+            Some((sid, pct, pt, hide)) if hide == 0 => {
+                let mut stmt = conn.prepare(
+                    "SELECT COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0),
+                            (SELECT COALESCE(SUM(amount),0) FROM refunds rf WHERE rf.deal_flow_id=df.id),
+                            (SELECT COALESCE(MAX(keep_rep_cut),0) FROM refunds rf WHERE rf.deal_flow_id=df.id)
+                     FROM deal_flows df JOIN deal_reps dr ON dr.deal_flow_id=df.id
+                     WHERE dr.lead_rep_id=?1 AND df.stage='complete' AND df.completed_at >= ?2 AND df.completed_at < ?3"
+                ).map_err(|e| e.to_string())?;
+                let rows: Vec<(f64, f64, f64, i64)> = stmt
+                    .query_map(rusqlite::params![sid, week_start, end_excl], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|x| x.ok())
+                    .collect();
+                rows.iter().map(|(net, gross, refunded, keep)| {
+                    if *keep != 0 { rep_cut(&pt, pct, *gross, *net) } else { rep_cut_after_refund(&pt, pct, gross - refunded, net - refunded) }
+                }).sum()
+            }
+            _ => 0.0,
+        }
+    } else { 0.0 };
+
     Ok(WeeklyBrief {
         generated_at: now.to_rfc3339(),
         week_start: week_start.clone(),
@@ -6723,6 +7021,9 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         profit_business_this_month: df_mtd.business,
         loss_deals_this_week: df_this_week.loss_count,
         loss_total_this_week: df_this_week.loss_total,
+        refunded_deals_this_week,
+        refunded_total_this_week,
+        rep_earnings_this_week,
     })
 }
 
