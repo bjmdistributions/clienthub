@@ -326,16 +326,20 @@ function AccountTab() {
 
 function AppearanceTab() {
   const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
+  const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
   const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "blue");
 
   const setAccent = (a: string) => {
     setAccentState(a);
     window.dispatchEvent(new CustomEvent("accent-change", { detail: a }));
   };
-  const toggleDark = () => {
-    const next = !dark;
-    setDark(next);
-    window.dispatchEvent(new CustomEvent("dark-change", { detail: next }));
+  const setTheme = (mode: "light" | "dark" | "matte") => {
+    const isDark = mode !== "light";
+    const isMatte = mode === "matte";
+    setDark(isDark);
+    setMatte(isMatte);
+    window.dispatchEvent(new CustomEvent("dark-change", { detail: isDark }));
+    window.dispatchEvent(new CustomEvent("matte-change", { detail: isMatte }));
   };
 
   const ACCENTS = [
@@ -379,18 +383,20 @@ function AppearanceTab() {
       </div>
 
       <SectionLabel>Theme</SectionLabel>
-      <p className="text-[12px] text-muted mb-3 mt-0.5">Switch between light and dark interface.</p>
+      <p className="text-[12px] text-muted mb-3 mt-0.5">Light, dark, or a pure-black matte look — minimal and sharp.</p>
       <div className="flex gap-3">
-        {[
-          { val: false, label: "Light", icon: Sun },
-          { val: true,  label: "Dark",  icon: Moon },
-        ].map((opt) => {
+        {([
+          { mode: "light", label: "Light", icon: Sun },
+          { mode: "dark",  label: "Dark",  icon: Moon },
+          { mode: "matte", label: "Matte", icon: Moon },
+        ] as { mode: "light" | "dark" | "matte"; label: string; icon: typeof Sun }[]).map((opt) => {
           const Icon = opt.icon;
-          const isActive = dark === opt.val;
+          const current = matte ? "matte" : dark ? "dark" : "light";
+          const isActive = current === opt.mode;
           return (
             <button
-              key={opt.label}
-              onClick={() => { if (dark !== opt.val) toggleDark(); }}
+              key={opt.mode}
+              onClick={() => setTheme(opt.mode)}
               className={`flex-1 flex items-center justify-center gap-2 h-12 rounded-xl border text-[13px] font-medium transition-colors ${
                 isActive
                   ? "accent-active accent-active-bd"

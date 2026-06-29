@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { api, DashboardStats, Client, Invoice, BuyerTier, ProfitForecast, Note } from "../lib/api";
+import { api, DashboardStats, Client, Invoice, BuyerTier, ProfitForecast, Note, Newsletter } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
   Users, FileText, DollarSign, TrendingUp, Mail,
@@ -93,6 +93,7 @@ export default function DashboardView({ onNavigate }: Props) {
   const [profitMonth, setProfitMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [dailyProfit, setDailyProfit] = useState<{ day: string; profit: number }[]>([]);
   const [forecast, setForecast] = useState<ProfitForecast | null>(null);
+  const [sentNewsletters, setSentNewsletters] = useState<Newsletter[]>([]);
 
   const loadAll = () => {
     api.dashboardStats().then(setStats).catch(console.error);
@@ -101,6 +102,7 @@ export default function DashboardView({ onNavigate }: Props) {
     api.getPendingApprovals().then(setPending).catch(() => {});
     api.listInvoices().then((inv) => setRecent(inv.slice(0, 50))).catch(() => {});
     api.listNotes().then(setNotes).catch(() => {});
+    api.listNewsletters().then((ns) => setSentNewsletters(ns.filter((n) => n.status === "sent").slice(0, 5))).catch(() => {});
   };
 
   const loadProfitMonth = async (m: string) => {
@@ -445,6 +447,45 @@ export default function DashboardView({ onNavigate }: Props) {
             </div>
 
           </div>
+        </div>
+
+        {/* Newsletters sent */}
+        <div className="rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Newsletters Sent</h3>
+              <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Recent campaigns and how many went out</p>
+            </div>
+            <button
+              onClick={() => onNavigate("email")}
+              className="flex items-center gap-1 text-[12px] font-medium transition-colors"
+              style={{ color: "var(--accent-500)" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "var(--accent-600)")}
+              onMouseLeave={e => (e.currentTarget.style.color = "var(--accent-500)")}
+            >
+              Compose <ArrowRight size={11} />
+            </button>
+          </div>
+          {sentNewsletters.length === 0 ? (
+            <div className="text-[12px] text-center py-6" style={{ color: "var(--t-tx4)" }}>No newsletters sent yet</div>
+          ) : (
+            <div className="divide-y" style={{ ["--tw-divide-opacity" as any]: 1, borderColor: "var(--t-b2)" }}>
+              {sentNewsletters.map((n) => (
+                <div key={n.id} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                  <div className="min-w-0 flex items-center gap-2.5">
+                    <Mail size={14} style={{ color: "var(--t-tx4)" }} className="flex-shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{n.subject || "(no subject)"}</div>
+                      <div className="text-[11px]" style={{ color: "var(--t-tx4)" }}>{n.sent_at ? new Date(n.sent_at).toLocaleDateString() : ""}</div>
+                    </div>
+                  </div>
+                  <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "rgb(var(--c-success))" }}>
+                    {n.sent_count}/{n.recipient_count} sent
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Main grid */}

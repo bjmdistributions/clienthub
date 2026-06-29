@@ -7770,12 +7770,14 @@ pub async fn delete_newsletter(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn send_newsletter(
+    app: tauri::AppHandle,
     newsletter_id: String,
     client_ids: Vec<String>,
     subject_template: String,
     body_template: String,
     attachment_path: Option<String>,
 ) -> Result<NewsletterSendResult, String> {
+    use tauri::Emitter;
     crate::email::test_smtp().await.map_err(|e| format!("SMTP connection failed: {}", e))?;
 
     if let Some(ref path) = attachment_path {
@@ -7837,6 +7839,11 @@ pub async fn send_newsletter(
                 );
             }
         }
+        // Live progress for the compose view (works for immediate sends, not just scheduled).
+        let _ = app.emit("newsletter_send_progress", json!({
+            "sent": sent, "failed": failed, "skipped": skipped, "total": total,
+            "done": sent + failed + skipped,
+        }));
     }
 
     conn.execute(

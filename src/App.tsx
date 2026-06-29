@@ -122,6 +122,18 @@ export default function App() {
     return () => clearTimeout(t);
   }, [dark]);
 
+  // Matte black variant — applied on top of dark (deepens bg, flattens shadows).
+  const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
+  useEffect(() => {
+    const html = document.documentElement;
+    html.classList.add("theme-transitioning");
+    html.classList.toggle("matte", matte);
+    if (matte) html.classList.add("dark");
+    localStorage.setItem("clienthub_matte", matte ? "1" : "0");
+    const t = setTimeout(() => html.classList.remove("theme-transitioning"), 300);
+    return () => clearTimeout(t);
+  }, [matte]);
+
   // Accent color
   const [accent, setAccent] = useState(() => {
     const saved = localStorage.getItem("clienthub_accent");
@@ -146,6 +158,11 @@ export default function App() {
     const handler = (e: Event) => setDark((e as CustomEvent).detail);
     window.addEventListener("dark-change", handler);
     return () => window.removeEventListener("dark-change", handler);
+  }, []);
+  useEffect(() => {
+    const handler = (e: Event) => setMatte((e as CustomEvent).detail);
+    window.addEventListener("matte-change", handler);
+    return () => window.removeEventListener("matte-change", handler);
   }, []);
 
   const [draftCount, setDraftCount] = useState(0);
@@ -381,7 +398,7 @@ export default function App() {
 
           {/* Dark mode toggle */}
           <button
-            onClick={() => setDark(d => !d)}
+            onClick={() => { setDark(d => !d); setMatte(false); }}
             title={dark ? "Switch to light mode" : "Switch to dark mode"}
             className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
             style={{ color: dark ? "#FCD34D" : "#7A7A90" }}

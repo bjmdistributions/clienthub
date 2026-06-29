@@ -28,9 +28,11 @@ export function FormsPanel() {
   const [editing, setEditing] = useState<Draft | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [copied, setCopied] = useState("");
+  const [mapFields, setMapFields] = useState<{ value: string; label: string }[]>([]);
 
   const load = () => api.listForms().then(setForms).catch(() => {});
   useEffect(() => { load(); }, []);
+  useEffect(() => { api.getIntakeFields().then((fs) => setMapFields(fs.filter((f) => f.value !== "ignore"))).catch(() => {}); }, []);
 
   const openEdit = (f: FormDef) => {
     let fields: FormField[] = [];
@@ -92,6 +94,18 @@ export function FormsPanel() {
                 <input value={f.label} onChange={(e) => setField(i, { label: e.target.value })} placeholder="Label" className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[13px] text-ink" />
                 <label className="text-[11px] text-ink-2 flex items-center gap-1"><input type="checkbox" checked={f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> req</label>
                 <button onClick={() => removeField(i)} className="text-muted hover:text-red-400 px-1">✕</button>
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-[11px] text-muted whitespace-nowrap">Maps to</span>
+                <select
+                  value={f.map ?? (["name", "email", "phone", "company"].includes(f.type) ? f.type : "")}
+                  onChange={(e) => setField(i, { map: e.target.value })}
+                  className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink"
+                  title="Which of your client fields this answer fills"
+                >
+                  <option value="">Store as answer</option>
+                  {mapFields.map((mf) => <option key={mf.value} value={mf.value}>{mf.label}</option>)}
+                </select>
               </div>
               {f.type === "select" && (
                 <input value={(f.options || []).join(", ")} onChange={(e) => setField(i, { options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}

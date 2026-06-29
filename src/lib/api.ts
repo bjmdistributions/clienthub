@@ -202,6 +202,7 @@ export interface FormField {
   required: boolean;
   placeholder?: string;
   options?: string[];
+  map?: string; // canonical target: "name"|"email"|"phone"|"company"|"notes"|"cf:<key>"|"" (store as answer)
 }
 export interface FormDef {
   id: string;

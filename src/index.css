@@ -158,6 +158,39 @@ html.dark {
   --c-info-ink:     147 197 253;
 }
 
+/* ── Matte theme — pure-black & flat. Applied together with .dark; it only
+      deepens the backgrounds/surfaces and flattens shadows, so accent and data
+      colors stay exactly as in dark mode. Minimal, sharp, not flashy. ── */
+html.matte {
+  --color-bg:           #000000;
+  --color-surface:      #0A0A0C;
+  --color-border:       #1C1C20;
+  --color-border-light: #141417;
+
+  --shadow-xs:    0 1px 1px rgba(0,0,0,0.5);
+  --shadow-card:  0 0 0 1px rgba(255,255,255,0.03);
+  --shadow-panel: 0 0 0 1px rgba(255,255,255,0.05);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.06);
+
+  --t-bg:  #000000;
+  --t-s1:  #0A0A0C;
+  --t-s2:  #121214;
+  --t-s3:  #18181B;
+  --t-b1:  #1C1C20;
+  --t-b2:  #141417;
+  --t-b3:  #2A2A30;
+  --t-input-bg:     #0E0E10;
+  --t-input-border: #1C1C20;
+  --t-input-focus:  #161619;
+
+  --c-surface:    10 10 12;
+  --c-surface-2:  18 18 20;
+  --c-surface-3:  24 24 27;
+  --c-line:       28 28 32;
+  --c-line-2:     20 20 23;
+  --c-line-3:     42 42 48;
+}
+
 /* ── Smooth theme transition (applied momentarily on toggle) ── */
 html.theme-transitioning *,
 html.theme-transitioning *::before,

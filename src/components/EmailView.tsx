@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import VariablePicker, { VariableReference } from "./VariablePicker";
 import { NewsletterSchedule } from "../lib/api";
 import {
@@ -496,6 +497,7 @@ function NewsletterTab() {
   const [aiLoading, setAiLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendProgress, setSendProgress] = useState("");
+  const [sendPct, setSendPct] = useState(0);
   const [sendResult, setSendResult] = useState<NewsletterSendResult | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [showErrors, setShowErrors] = useState(false);
@@ -675,7 +677,13 @@ function NewsletterTab() {
     setSendResult(null);
     setSendError(null);
     setShowErrors(false);
-    setSendProgress("Sending...");
+    setSendProgress(`0 / ${count} sent`);
+    setSendPct(0);
+    const unlisten = await listen<{ total: number; done: number }>("newsletter_send_progress", (e) => {
+      const { done, total } = e.payload;
+      setSendProgress(`${done} / ${total} sent`);
+      setSendPct(total > 0 ? Math.round((done / total) * 100) : 0);
+    });
     try {
       const nl = await api.saveNewsletter(null, subject, body);
       const result = await api.sendNewsletter(nl.id, selected.map((c) => c.id), subject, body, attachmentPath);
@@ -685,7 +693,7 @@ function NewsletterTab() {
     } catch (e: any) {
       setSendProgress("");
       setSendError(String(e));
-    } finally { setSending(false); }
+    } finally { unlisten(); setSending(false); }
   };
 
   const handleSchedule = async () => {
@@ -1090,6 +1098,11 @@ function NewsletterTab() {
             <Send size={16} />
             {sending ? sendProgress : `Send ${validRecipients.length} emails`}
           </button>
+          {sending && (
+            <div className="mt-2 h-1.5 w-full bg-surface-3 rounded-full overflow-hidden">
+              <div className="h-full bg-accent rounded-full transition-all duration-300" style={{ width: `${sendPct}%` }} />
+            </div>
+          )}
 
           <button
             onClick={() => setShowSchedule(!showSchedule)}
