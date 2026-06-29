@@ -4,6 +4,7 @@ import { fmtAmount, fmtPhone } from "../lib/format";
 import { Plus, Trash2, Edit2, Search, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
+import PendingReviewModal from "./PendingReviewModal";
 import TierBadge from "./TierBadge";
 import ReliabilityBadge from "./ReliabilityBadge";
 
@@ -42,6 +43,7 @@ export default function ClientsView() {
   const [sortKey, setSortKey]               = useState<string>("name");
   const [sortDir, setSortDir]               = useState<1 | -1>(1);
   const [reps, setReps]                     = useState<string[]>([]);
+  const [reviewId, setReviewId]             = useState<string | null>(null);
   const tierDropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -267,8 +269,36 @@ export default function ClientsView() {
     );
   }
 
+  const pending = clients.filter((c) => c.approval_status === "pending");
+  const reviewClient = clients.find((c) => c.id === reviewId) || null;
+
   return (
     <div>
+      {reviewClient && (
+        <PendingReviewModal
+          client={reviewClient}
+          onClose={() => setReviewId(null)}
+          onResolved={async () => {
+            const next = pending.find((c) => c.id !== reviewId);
+            await applyFilter(filter);
+            setReviewId(next ? next.id : null);
+          }}
+        />
+      )}
+      {pending.length > 0 && (
+        <button
+          onClick={() => setReviewId(pending[0].id)}
+          className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-amber-200 bg-amber-50 text-left hover:bg-amber-100/70 transition-colors"
+        >
+          <span className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-500 text-white text-[12px] font-bold">{pending.length}</span>
+            <span className="text-[13px] font-medium text-amber-800">
+              {pending.length === 1 ? "1 new customer is" : `${pending.length} new customers are`} awaiting your approval
+            </span>
+          </span>
+          <span className="text-[12px] font-semibold text-amber-700">Review &rarr;</span>
+        </button>
+      )}
       {/* Header */}
       <div className="flex justify-between items-center mb-5">
         <div>
