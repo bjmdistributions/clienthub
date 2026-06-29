@@ -301,7 +301,8 @@ function AccountTab() {
   if (!me) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
   const initial = (form.display_name || me.email || "?").trim().charAt(0).toUpperCase();
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-xl">
+    <div className="space-y-4 max-w-xl">
+      <div className="bg-surface border border-line rounded-xl p-6">
       <div className="flex items-center gap-4 mb-6">
         {form.avatar
           ? <img src={form.avatar} alt="" className="w-20 h-20 rounded-full object-cover border border-line" />
@@ -320,6 +321,47 @@ function AccountTab() {
         <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Email</label><input className={inpSm + " opacity-60"} value={me.email} disabled /><p className="text-[10px] text-muted mt-1">Contact an admin to change your email.</p></div>
         <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Role</label><input className={inpSm + " opacity-60"} value={me.role_name} disabled /></div>
       </div>
+      </div>
+      <MyPlanCard />
+      <button onClick={() => window.dispatchEvent(new CustomEvent("replay-tour"))} className="text-[12px] text-muted hover:text-ink transition-colors">Replay the getting-started tour</button>
+    </div>
+  );
+}
+
+function MyPlanCard() {
+  const [plan, setPlan] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { api.getMyPlan().then(setPlan).catch((e) => setErr(String(e))); }, []);
+  if (err || !plan) return null; // local-first: hide when not signed into the server / offline
+  const planLabel = String(plan.plan || "free");
+  const pretty = planLabel.charAt(0).toUpperCase() + planLabel.slice(1);
+  const Row = ({ label, used, limit }: { label: string; used: number; limit: number | null }) => {
+    const pct = limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+    return (
+      <div>
+        <div className="flex items-center justify-between text-[12px] mb-1">
+          <span className="text-ink-2">{label}</span>
+          <span className="text-muted tabular-nums">{used}{limit != null ? ` / ${limit}` : " · unlimited"}</span>
+        </div>
+        {limit != null && (
+          <div className="h-1.5 w-full bg-surface-3 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 100 ? "rgb(var(--c-danger))" : "var(--accent-500)" }} />
+          </div>
+        )}
+      </div>
+    );
+  };
+  return (
+    <div className="bg-surface border border-line rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <SectionLabel>My Plan</SectionLabel>
+        <span className="text-[11px] font-bold uppercase tracking-wider text-accent bg-accent/10 border border-accent/20 px-2.5 py-1 rounded-full">{pretty}</span>
+      </div>
+      <div className="space-y-3">
+        <Row label="Team members" used={plan.members ?? 0} limit={plan.member_limit ?? null} />
+        <Row label="Clients" used={plan.clients ?? 0} limit={plan.client_limit ?? null} />
+      </div>
+      {planLabel === "free" && <p className="text-[12px] text-muted mt-4">Paid plans with higher limits are coming soon.</p>}
     </div>
   );
 }

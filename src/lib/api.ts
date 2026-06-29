@@ -1404,6 +1404,7 @@ export const api = {
     invoke<void>("netsync_connect", { url, email, password }),
   netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
   netsyncSyncNow: () => invoke<{ pushed: number; pulled: number }>("netsync_sync_now"),
+  getMyPlan: () => invoke<{ name: string; plan: string; members: number; member_limit: number | null; clients: number; client_limit: number | null }>("get_my_plan"),
 
   // Sticky notes
   listNotes: () => invoke<Note[]>("list_notes"),

@@ -305,3 +305,23 @@ pub async fn netsync_sync_now() -> Result<serde_json::Value, String> {
     let pulled = pull_apply().await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "pushed": pushed, "pulled": pulled }))
 }
+
+/// Fetch the signed-in workspace's plan + usage from the server (for the My Plan view).
+/// Requires a server connection; errors clearly when offline / not signed in.
+#[tauri::command]
+pub async fn get_my_plan() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server to see your plan.")?;
+    let resp = http()
+        .get(format!("{}/api/org", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server — check your connection.".to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}

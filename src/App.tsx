@@ -51,6 +51,7 @@ import CommandPalette from "./components/CommandPalette";
 import ShortcutsModal from "./components/ShortcutsModal";
 import AutomationLogView from "./components/AutomationLogView";
 import OnboardingWizard from "./components/OnboardingWizard";
+import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
@@ -175,12 +176,24 @@ export default function App() {
   const [sharePanelIds, setSharePanelIds] = useState<string[] | null>(null);
   const [shareMediaBase, setShareMediaBase] = useState("");
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  const [showTour, setShowTour] = useState(false);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [hasAccounts, setHasAccounts] = useState<boolean>(true);
   const [orgName, setOrgName] = useState<string>("");
   const [apCount, setApCount] = useState<number>(0);
   const [fbOpen, setFbOpen] = useState<boolean>(false);
+  // First-run getting-started tour (after setup + sign-in), and a replay hook.
+  useEffect(() => {
+    if (onboarded === true && me) {
+      try { if (localStorage.getItem("ec_welcome_desktop_v1") !== "1") setShowTour(true); } catch { /* ignore */ }
+    }
+  }, [onboarded, me]);
+  useEffect(() => {
+    const replay = () => setShowTour(true);
+    window.addEventListener("replay-tour", replay);
+    return () => window.removeEventListener("replay-tour", replay);
+  }, []);
 
   // Poll the admin approval queue for the notification badge.
   useEffect(() => {
@@ -600,6 +613,7 @@ export default function App() {
         )}
       </main>
 
+      {showTour && <GettingStarted onDone={() => setShowTour(false)} />}
       {quickLogOpen && <QuickLogModal onClose={() => setQuickLogOpen(false)} />}
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
