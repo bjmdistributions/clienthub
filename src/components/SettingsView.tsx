@@ -57,6 +57,7 @@ import {
   Download,
   CreditCard,
   Receipt,
+  ShoppingBag,
   Split,
   Database,
   Users,
@@ -112,7 +113,7 @@ const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:o
 type SettingsTab =
   | "account" | "appearance" | "company" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
-  | "ai" | "sheets" | "import" | "payments" | "billing"
+  | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify"
   | "sync" | "splits" | "backup" | "team";
 
 const SETTINGS_GROUPS: {
@@ -147,6 +148,7 @@ const SETTINGS_GROUPS: {
       { id: "import",   label: "Import",        icon: Download,   desc: "CSV & Google Contacts" },
       { id: "payments", label: "Payments",      icon: CreditCard, desc: "Accepted payment methods" },
       { id: "billing",  label: "Billing",       icon: Receipt,    desc: "Stripe configuration" },
+      { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
     ],
   },
   {
@@ -249,6 +251,7 @@ export default function SettingsView() {
           {tab === "backup"      && <BackupTab />}
           {tab === "team"        && <TeamTab />}
           {tab === "billing"     && <BillingTab />}
+          {tab === "shopify"     && <ShopifyTab />}
           {tab === "customfields"&& <CustomFieldsTab />}
         </div>
       </div>
@@ -1901,6 +1904,69 @@ function UpdateButton() {
         {checking ? "Checking..." : "Check for Updates"}
       </button>
       {status && <p className="text-[12px] text-muted mt-2">{status}</p>}
+    </div>
+  );
+}
+
+function ShopifyTab() {
+  const [cfg, setCfg] = useState<any>(null);
+  const [secret, setSecret] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.getShopifyConfig().then(setCfg).catch(() => {}); }, []);
+  const save = async () => {
+    if (!secret.trim()) return;
+    setBusy(true);
+    try {
+      await api.setShopifySecret(secret.trim());
+      setSecret(""); setSaved(true); setTimeout(() => setSaved(false), 2500);
+      setCfg(await api.getShopifyConfig());
+    } finally { setBusy(false); }
+  };
+  const url: string = cfg?.webhook_url || "https://ecliptr.app/api/integrations/shopify/customers?org=org_default";
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div>
+        <SectionLabel>Shopify customer sync</SectionLabel>
+        <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          New Shopify customers arrive as <strong>pending</strong> clients for you to review — nothing is added automatically.
+        </p>
+      </div>
+
+      <div className="bg-surface border border-line rounded-xl p-4 space-y-3.5">
+        <div className="text-[12px] font-medium">
+          Status: {cfg?.configured ? <span className="text-success-ink">Connected</span> : <span className="text-muted">Not set up yet</span>}
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-muted uppercase tracking-wide mb-1.5">Webhook URL</div>
+          <div className="flex items-center gap-2">
+            <input readOnly value={url} className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[12px] text-ink" />
+            <button onClick={() => navigator.clipboard?.writeText(url)} className="px-3 h-9 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-muted uppercase tracking-wide mb-1.5">Webhook signing secret</div>
+          <div className="flex items-center gap-2">
+            <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)}
+              placeholder={cfg?.configured ? "•••••••  (set — paste to replace)" : "Paste the secret from Shopify"}
+              className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+            <button onClick={save} disabled={busy || !secret.trim()}
+              className="px-4 h-9 rounded-lg bg-accent text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+              {saved ? "Saved" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-surface border border-line rounded-xl p-4">
+        <div className="text-[12px] font-semibold text-ink mb-2.5">Set it up in Shopify (one time)</div>
+        <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
+          <li>Shopify admin → <strong className="text-ink-2">Settings → Notifications → Webhooks</strong> → <strong className="text-ink-2">Create webhook</strong>.</li>
+          <li>Event: <strong className="text-ink-2">Customer creation</strong>. Format: <strong className="text-ink-2">JSON</strong>.</li>
+          <li>Paste the <strong className="text-ink-2">Webhook URL</strong> above as the destination.</li>
+          <li>Save, then copy the <strong className="text-ink-2">signing secret</strong> Shopify shows and paste it here.</li>
+        </ol>
+      </div>
     </div>
   );
 }

@@ -3966,6 +3966,29 @@ pub async fn set_rep_payout_settings(enabled: Option<bool>, period: Option<Strin
     Ok(())
 }
 
+// ──────────────────────── Shopify customer sync ────────────────────────
+
+#[tauri::command]
+pub async fn get_shopify_config() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let secret = conn.query_row("SELECT value FROM settings WHERE key='shopify_webhook_secret'", [], |r| r.get::<_, String>(0)).unwrap_or_default();
+    Ok(json!({
+        "configured": !secret.trim().is_empty(),
+        "webhook_url": "https://ecliptr.app/api/integrations/shopify/customers?org=org_default",
+    }))
+}
+
+#[tauri::command]
+pub async fn set_shopify_secret(secret: String) -> Result<(), String> {
+    let s = secret.trim().to_string();
+    let mut cols = Map::new();
+    cols.insert("value".into(), Value::String(s.clone()));
+    sync::record_upsert("settings", "shopify_webhook_secret", cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params!["shopify_webhook_secret", s]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn delete_deal_flow(id: String) -> Result<(), String> {
     let invoice_id: String = {

@@ -390,6 +390,8 @@ fn main() {
             commands::mark_rep_payout_paid,
             commands::get_rep_payout_settings,
             commands::set_rep_payout_settings,
+            commands::get_shopify_config,
+            commands::set_shopify_secret,
             employees::list_roles,
             employees::create_role,
             employees::update_role,

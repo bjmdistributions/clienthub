@@ -1267,6 +1267,8 @@ export const api = {
   markRepPayoutPaid: (repId: string, periodStart: string, periodEnd: string, amount: number) =>
     invoke<string>("mark_rep_payout_paid", { repId, periodStart, periodEnd, amount }),
   getRepPayoutSettings: () => invoke<any>("get_rep_payout_settings"),
+  getShopifyConfig: () => invoke<any>("get_shopify_config"),
+  setShopifySecret: (secret: string) => invoke<void>("set_shopify_secret", { secret }),
   setRepPayoutSettings: (fields: Partial<{ enabled: boolean; period: string; anchor: string; customDays: number }>) =>
     invoke<void>("set_rep_payout_settings", { ...fields }),
   deleteStaff: (id: string) => invoke<void>("delete_staff", { id }),
