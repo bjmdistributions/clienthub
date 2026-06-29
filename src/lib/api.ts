@@ -1269,6 +1269,11 @@ export const api = {
   getRepPayoutSettings: () => invoke<any>("get_rep_payout_settings"),
   getShopifyConfig: () => invoke<any>("get_shopify_config"),
   setShopifySecret: (secret: string) => invoke<void>("set_shopify_secret", { secret }),
+  createIntakeSource: (name: string) => invoke<any>("create_intake_source", { name }),
+  listIntakeSources: () => invoke<any[]>("list_intake_sources"),
+  saveIntakeMapping: (id: string, mappingJson: string) => invoke<void>("save_intake_mapping", { id, mappingJson }),
+  deleteIntakeSource: (id: string) => invoke<void>("delete_intake_source", { id }),
+  getIntakeFields: () => invoke<{ value: string; label: string }[]>("get_intake_fields"),
   setRepPayoutSettings: (fields: Partial<{ enabled: boolean; period: string; anchor: string; customDays: number }>) =>
     invoke<void>("set_rep_payout_settings", { ...fields }),
   deleteStaff: (id: string) => invoke<void>("delete_staff", { id }),

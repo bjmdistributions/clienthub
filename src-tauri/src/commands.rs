@@ -3989,6 +3989,112 @@ pub async fn set_shopify_secret(secret: String) -> Result<(), String> {
     Ok(())
 }
 
+// ──────────────────────── Inbound intake sources (custom forms/sites) ────────────────────────
+
+#[tauri::command]
+pub async fn create_intake_source(name: String) -> Result<Value, String> {
+    let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+    let token = Uuid::new_v4().simple().to_string();
+    let nm = if name.trim().is_empty() { "Web form".to_string() } else { name.trim().to_string() };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO intake_sources (id,org_id,name,kind,token,mapping_json,sample_json,created_at,updated_at)
+             VALUES (?1,'org_default',?2,'website',?3,'{}','{}',?4,?4)",
+            rusqlite::params![id, nm, token, now],
+        ).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("org_id".into(), Value::String("org_default".into()));
+    cols.insert("name".into(), Value::String(nm.clone()));
+    cols.insert("kind".into(), Value::String("website".into()));
+    cols.insert("token".into(), Value::String(token.clone()));
+    cols.insert("mapping_json".into(), Value::String("{}".into()));
+    cols.insert("sample_json".into(), Value::String("{}".into()));
+    cols.insert("created_at".into(), Value::String(now.clone()));
+    cols.insert("updated_at".into(), Value::String(now));
+    sync::record_upsert("intake_sources", &id, cols).map_err(|e| e.to_string())?;
+    Ok(json!({ "id": id, "name": nm, "token": token, "url": format!("https://ecliptr.app/api/intake/{}", token) }))
+}
+
+#[tauri::command]
+pub async fn list_intake_sources() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, kind, token, COALESCE(mapping_json,'{}'), COALESCE(sample_json,'{}'), created_at
+         FROM intake_sources WHERE COALESCE(kind,'')!='deleted' ORDER BY created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let token: String = r.get(3)?;
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "name": r.get::<_, String>(1)?,
+            "kind": r.get::<_, String>(2)?,
+            "token": token.clone(),
+            "url": format!("https://ecliptr.app/api/intake/{}", token),
+            "mapping_json": r.get::<_, String>(4)?,
+            "sample_json": r.get::<_, String>(5)?,
+            "created_at": r.get::<_, String>(6)?,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn save_intake_mapping(id: String, mapping_json: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE intake_sources SET mapping_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![mapping_json, now, id]).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("mapping_json".into(), Value::String(mapping_json));
+    cols.insert("updated_at".into(), Value::String(now));
+    sync::record_upsert("intake_sources", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_intake_source(id: String) -> Result<(), String> {
+    // Soft-delete: clears the token (kills the public URL) and hides it locally.
+    let now = Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE intake_sources SET kind='deleted', token='', updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("kind".into(), Value::String("deleted".into()));
+    cols.insert("token".into(), Value::String("".into()));
+    cols.insert("updated_at".into(), Value::String(now));
+    sync::record_upsert("intake_sources", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The canonical fields any incoming form field can map to: built-ins + the org's custom fields.
+#[tauri::command]
+pub async fn get_intake_fields() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut out = vec![
+        json!({"value":"name","label":"Full name"}),
+        json!({"value":"first_name","label":"First name"}),
+        json!({"value":"last_name","label":"Last name"}),
+        json!({"value":"email","label":"Email"}),
+        json!({"value":"phone","label":"Phone"}),
+        json!({"value":"company","label":"Company"}),
+        json!({"value":"notes","label":"Notes"}),
+    ];
+    if let Ok(mut stmt) = conn.prepare("SELECT field_key, label FROM custom_fields ORDER BY sort_order, label") {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            for (key, label) in rows.filter_map(|r| r.ok()) {
+                out.push(json!({"value": format!("cf:{}", key), "label": label}));
+            }
+        }
+    }
+    out.push(json!({"value":"ignore","label":"(ignore this field)"}));
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn delete_deal_flow(id: String) -> Result<(), String> {
     let invoice_id: String = {

@@ -58,6 +58,7 @@ import {
   CreditCard,
   Receipt,
   ShoppingBag,
+  Globe,
   Split,
   Database,
   Users,
@@ -113,7 +114,7 @@ const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:o
 type SettingsTab =
   | "account" | "appearance" | "company" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
-  | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify"
+  | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "webforms"
   | "sync" | "splits" | "backup" | "team";
 
 const SETTINGS_GROUPS: {
@@ -149,6 +150,7 @@ const SETTINGS_GROUPS: {
       { id: "payments", label: "Payments",      icon: CreditCard, desc: "Accepted payment methods" },
       { id: "billing",  label: "Billing",       icon: Receipt,    desc: "Stripe configuration" },
       { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
+      { id: "webforms", label: "Web forms",     icon: Globe,       desc: "Custom sites & forms → pending leads" },
     ],
   },
   {
@@ -252,6 +254,7 @@ export default function SettingsView() {
           {tab === "team"        && <TeamTab />}
           {tab === "billing"     && <BillingTab />}
           {tab === "shopify"     && <ShopifyTab />}
+          {tab === "webforms"    && <IntakeTab />}
           {tab === "customfields"&& <CustomFieldsTab />}
         </div>
       </div>
@@ -1904,6 +1907,121 @@ function UpdateButton() {
         {checking ? "Checking..." : "Check for Updates"}
       </button>
       {status && <p className="text-[12px] text-muted mt-2">{status}</p>}
+    </div>
+  );
+}
+
+function intakeAutoMatch(key: string): string | null {
+  const k = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (["email", "emailaddress", "mail", "e"].includes(k)) return "email";
+  if (["phone", "phonenumber", "tel", "telephone", "mobile", "cell"].includes(k)) return "phone";
+  if (["name", "fullname", "contactname", "yourname"].includes(k)) return "name";
+  if (["firstname", "fname", "givenname"].includes(k)) return "first_name";
+  if (["lastname", "lname", "surname", "familyname"].includes(k)) return "last_name";
+  if (["company", "companyname", "business", "businessname", "organization", "organisation", "org"].includes(k)) return "company";
+  if (["notes", "note", "message", "comments", "comment"].includes(k)) return "notes";
+  return null;
+}
+
+function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: { value: string; label: string }[]; onChange: () => void }) {
+  let saved: Record<string, string> = {};
+  try { saved = JSON.parse(source.mapping_json || "{}"); } catch { /* ignore */ }
+  let sample: Record<string, unknown> = {};
+  try { sample = JSON.parse(source.sample_json || "{}"); } catch { /* ignore */ }
+  const incoming = Object.keys(sample).filter((k) => k !== "website");
+
+  const [map, setMap] = useState<Record<string, string>>({ ...saved });
+  const [savedMsg, setSavedMsg] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  useEffect(() => {
+    setMap((prev) => {
+      const m = { ...prev };
+      for (const k of incoming) if (!(k in m)) m[k] = saved[k] ?? intakeAutoMatch(k) ?? `cf:${k}`;
+      return m;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.sample_json, source.mapping_json]);
+
+  const save = async () => {
+    await api.saveIntakeMapping(source.id, JSON.stringify(map));
+    setSavedMsg(true); setTimeout(() => setSavedMsg(false), 2000); onChange();
+  };
+  const del = () => {
+    if (confirmDel) { api.deleteIntakeSource(source.id).then(onChange).catch(() => {}); }
+    else { setConfirmDel(true); setTimeout(() => setConfirmDel(false), 3000); }
+  };
+
+  return (
+    <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-medium text-[13px] text-ink truncate">{source.name}</div>
+        <button onClick={del} className="text-[12px] text-danger-ink hover:underline shrink-0">{confirmDel ? "Confirm delete?" : "Delete"}</button>
+      </div>
+      <div className="flex items-center gap-2">
+        <input readOnly value={source.url} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
+        <button onClick={() => navigator.clipboard?.writeText(source.url)} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors shrink-0">Copy URL</button>
+      </div>
+      {incoming.length === 0 ? (
+        <div className="text-[12.5px] text-muted bg-surface-2 border border-line rounded-lg p-3 leading-relaxed">
+          Point your form at this URL (HTTP <strong>POST</strong>, JSON body). After the first submission its fields show up here to map — standard names (name, email, phone, company) link on their own.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="text-[11px] font-medium text-muted uppercase tracking-wide">Field mapping</div>
+          {incoming.map((k) => (
+            <div key={k} className="flex items-center gap-2">
+              <div className="flex-1 text-[12.5px] text-ink truncate" title={k}>{k}</div>
+              <span className="text-muted text-[12px] shrink-0">→</span>
+              <select value={map[k] ?? `cf:${k}`} onChange={(e) => setMap({ ...map, [k]: e.target.value })}
+                className="w-48 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12.5px] text-ink shrink-0">
+                {fields.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+                {!fields.some((f) => f.value === `cf:${k}`) && <option value={`cf:${k}`}>{`Keep as "${k}"`}</option>}
+              </select>
+            </div>
+          ))}
+          <div className="pt-1">
+            <button onClick={save} className="px-4 h-8 rounded-lg bg-accent text-white text-[12.5px] font-medium hover:opacity-90 transition-opacity">{savedMsg ? "Saved" : "Save mapping"}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IntakeTab() {
+  const [sources, setSources] = useState<any[]>([]);
+  const [fields, setFields] = useState<{ value: string; label: string }[]>([]);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const [s, f] = await Promise.all([api.listIntakeSources(), api.getIntakeFields()]);
+    setSources(s); setFields(f);
+  };
+  useEffect(() => { load().catch(() => {}); }, []);
+
+  const create = async () => {
+    setBusy(true);
+    try { await api.createIntakeSource(newName); setNewName(""); await load(); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="max-w-3xl space-y-5">
+      <div>
+        <SectionLabel>Web forms & custom sites</SectionLabel>
+        <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          Create an intake link for any website or form. Submissions become <strong>pending</strong> clients for you to approve. Common fields link automatically; map anything custom once and it's remembered.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name this source (e.g. Website contact form)"
+          className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+        <button onClick={create} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-white text-[13px] font-medium disabled:opacity-50 transition-opacity">Create link</button>
+      </div>
+      {sources.length === 0 && <div className="text-[13px] text-muted">No intake links yet — create one above.</div>}
+      {sources.map((s) => <IntakeSourceCard key={s.id} source={s} fields={fields} onChange={load} />)}
     </div>
   );
 }

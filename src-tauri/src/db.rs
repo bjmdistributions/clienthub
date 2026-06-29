@@ -1027,4 +1027,24 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_rep_payouts_rep ON rep_payouts(rep_id);
         "#,
     ),
+    (
+        52,
+        // Intake sources: external forms/sites that create pending clients. mapping_json
+        // maps an incoming field key -> an app field ("name"/"email"/"phone"/"company"/
+        // "notes", "cf:<key>" for a custom/meta field, or "ignore").
+        r#"
+        CREATE TABLE IF NOT EXISTS intake_sources (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            name TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'website',
+            token TEXT NOT NULL DEFAULT '',
+            mapping_json TEXT NOT NULL DEFAULT '{}',
+            sample_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_intake_sources_token ON intake_sources(token);
+        "#,
+    ),
 ];
