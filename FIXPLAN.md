@@ -82,12 +82,15 @@ same risk — measure + bump there too.
   (persists fine); 14 sends to blacklisted are ALL pre-fix (May 21–Jun 18; latest send overall Jun 25;
   fix shipped today) → none after the fix. → Root cause = E0 (old build). If still wrong on a CURRENT
   build, re-investigate. Also re-confirm the list "Blacklisted" badge (v0.14.56, theme-safe) shows.
-- [ ] **E2 High-Value tagging — UX is unclear / bad logic.** Currently a small pill toggle on the client
-  detail (metadata.exclusive, label "HIGH-VALUE"). Redesign: clearer affordance + label + a one-line
-  explanation of what it does (kept off mass sends/auto-add), maybe a confirm. Apply desktop + mobile.
-- [ ] **E3 Dashboard profit line graph uses accent.** DashboardView.tsx:376-377 — line stroke is a
-  gradient `--c-accent → --c-success` (turns grey in matte). Replace with a fixed designed gradient
-  (e.g. emerald→teal). Add a small filter/toggle for the chart (profit vs revenue, range).
+- [x] **E2 High-Value split — DONE (your call: two flags), all 3 surfaces.** "High-Value" is now a pure
+  positive label (★ gold badge, `metadata.high_value`, NO send effect); the do-not-spam behavior is a
+  separate "No bulk-email" toggle (`metadata.exclusive`, filtering unchanged). Desktop v0.14.62
+  (toggle_client_high_value cmd + 2 detail pills + 2 list badges). Server: split `toggle_meta_flag`
+  helper, `/high-value`→high_value, new `/no-bulk`→exclusive, activity returns both (rebuilt+restarted,
+  routes 401-verified). Mobile app.js?v=1 (2 toggles + 2 badges, deployed+verified). Newsletter
+  filtering stays on `exclusive` — no behavior change, just decoupled the label.
+- [x] **E3a Dashboard profit line** — DONE (v0.14.61): accent gradient → designed emerald→teal→cyan.
+- [ ] **E3b Dashboard chart filter/toggle** (profit vs revenue, range) — pairs with E4.
 - [ ] **E4 Analytics page — designed colors + far more options.** AnalyticsView already has a palette
   (indigo/emerald/rose) + custom range + xlsx export. Upgrade: refine the palette for visual appeal,
   add more chart types/comparisons/breakdowns + advanced filters. (Read AnalyticsView fully first.)
