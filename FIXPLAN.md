@@ -22,8 +22,15 @@ Legend: [ ] todo · [~] in progress · [x] done+verified · [?] needs your input
 
 ### B. Mobile parity (remaining features)
 - [~] B1. **Payout config editor** — built this turn (server `/api/staff/payout-config` + mobile 3-section UI); needs your on-device test
-- [ ] B2. Rep's **own earnings** on the mobile Weekly Brief
-- [ ] B3. **Intake / web-forms config** on mobile
+- [x] B2. Rep's **own earnings** on the mobile Weekly Brief — DONE. Server `/api/weekly-brief` now
+  computes `rep_earnings_this_week` (rep's cut on their completed deals this week, refund-aware) mirroring
+  the desktop `generate_weekly_brief`; mobile shows a "Your Earnings" card when >0 (app.js?v=5). Authed
+  rep value = your on-device check.
+- [x] B3. **Intake / web-forms config** on mobile — DONE. New authed server endpoints
+  `GET/POST /api/staff/intake-sources` (list + create, `admin:manage`, sync-correct insert + record_upsert
+  mirroring desktop `create_intake_source`). Mobile "Web forms" view under More: create a named source →
+  get a tokenised `/api/intake/:token` URL to paste into any external site/form (+ copy button).
+  Field-mapping builder stays desktop-only. app.js?v=6. Authed create = your on-device check.
 
 ### C. Verification gaps (built but unconfirmed — your eyes/device)
 - [ ] C1. Desktop v0.14.55–57 visual confirm (after auto-update installs)
