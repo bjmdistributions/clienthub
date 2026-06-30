@@ -40,7 +40,7 @@ export default function GettingStarted({ onDone }: { onDone: () => void }) {
             <ArrowLeft size={15} /> Back
           </button>
           <button onClick={() => (last ? finish() : setI((n) => n + 1))}
-            className="flex items-center gap-1.5 px-5 h-9 rounded-lg bg-accent text-white text-[13px] font-semibold hover:opacity-90 transition-opacity">
+            className="flex items-center gap-1.5 px-5 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold hover:opacity-90 transition-opacity">
             {last ? "Get started" : "Next"} {!last && <ArrowRight size={15} />}
           </button>
         </div>

@@ -75,7 +75,7 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
           {!isDelete && form && (
             <button disabled={busy} onClick={save} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-9 rounded-lg text-[12px] font-medium">Save</button>
           )}
-          <button disabled={busy} onClick={() => decide(true)} className="flex-1 bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[13px] font-medium">{isDelete ? "Approve deletion" : "Approve"}</button>
+          <button disabled={busy} onClick={() => decide(true)} className="flex-1 bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[13px] font-medium">{isDelete ? "Approve deletion" : "Approve"}</button>
           <button disabled={busy} onClick={() => decide(false)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-9 rounded-lg text-[12px] font-medium">Reject</button>
         </div>
       </div>
@@ -115,7 +115,7 @@ export function ApprovalsView() {
                 </div>
               </button>
               <div className="flex gap-2 flex-shrink-0">
-                <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium">Approve</button>
+                <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Approve</button>
                 <button onClick={() => quick(a.id, false)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Reject</button>
               </div>
             </div>

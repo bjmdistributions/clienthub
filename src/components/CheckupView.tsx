@@ -36,7 +36,7 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
     <div className="p-7 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-[18px] font-semibold text-ink">Checkup</h2>
-        <button onClick={() => setCreating(true)} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> New session</button>
+        <button onClick={() => setCreating(true)} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> New session</button>
       </div>
       <p className="text-[12px] text-muted mb-5">Work through your clients in three steps — reach out, note how it went, then mark them done. Move cards back any time.</p>
 
@@ -48,7 +48,7 @@ function SessionsList({ sessions, onOpen, reload }: { sessions: CheckupSession[]
             {cats.map((c) => <option key={c.id} value={c.label}>{c.label} only</option>)}
           </select>
           <div className="flex gap-2">
-            <button disabled={busy} onClick={create} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">Start session</button>
+            <button disabled={busy} onClick={create} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">Start session</button>
             <button onClick={() => setCreating(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
           </div>
         </div>
@@ -149,7 +149,7 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
             <div key={it.id} className="bg-surface border border-line rounded-xl p-3.5 shadow-sm">
               <div className="text-[14px] font-semibold text-ink">{it.name}</div>
               <Contact it={it} />
-              <button disabled={busy} onClick={() => move(it, 1)} className="mt-3 w-full h-8 rounded-lg bg-accent hover:bg-accent-hover text-white text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-50">
+              <button disabled={busy} onClick={() => move(it, 1)} className="mt-3 w-full h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-50">
                 Reached out <ArrowRight size={13} />
               </button>
             </div>

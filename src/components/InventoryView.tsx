@@ -134,7 +134,7 @@ export default function InventoryView() {
   return (
     <div>
       {toast && (
-        <div className="fixed bottom-5 right-5 bg-[#1A1A1E] text-white px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">
+        <div className="fixed bottom-5 right-5 bg-ink text-surface px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">
           {toast}
         </div>
       )}
@@ -162,7 +162,7 @@ export default function InventoryView() {
                 className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
                 <FileDown size={13} /> Export
               </button>
-              <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
+              <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
                 <Plus size={14} /> Add Lot
               </button>
             </>
@@ -205,7 +205,7 @@ export default function InventoryView() {
                 setManifestBusy(true);
                 try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { alert(e); }
                 setManifestBusy(false);
-              }} disabled={manifestBusy} className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+              }} disabled={manifestBusy} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
                 <Upload size={12} /> {manifestBusy ? "Analyzing..." : "Upload CSV"}
               </button>
             )}
@@ -242,7 +242,7 @@ export default function InventoryView() {
                 </table>
                 <div className="flex gap-2">
                   <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => showToast("Suggested bid copied — paste into your deal."))}
-                    className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
+                    className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
                     <Clipboard size={11} /> Copy Bid
                   </button>
                   <button onClick={() => { setManifest(null); }} className="text-[11px] text-muted hover:text-ink-2 px-3 h-8 rounded-lg hover:bg-surface-2">
@@ -628,7 +628,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
         </div>
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-          <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+          <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
             {saving ? "Saving..." : initial ? "Save" : "Create Lot"}
           </button>
         </div>
@@ -791,7 +791,7 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
 
         {/* Actions */}
         <div className="flex items-center gap-2 flex-wrap p-5 border-t border-line">
-          <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
+          <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
           {lot.status !== "sold" && lot.status !== "archived" && (
             <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to Deal</button>
           )}

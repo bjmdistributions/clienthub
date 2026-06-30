@@ -391,7 +391,6 @@ function AppearanceTab() {
     { id: "violet",  label: "Violet",   swatch: "#7C3AED" },
     { id: "amber",   label: "Amber",    swatch: "#D97706" },
     { id: "rose",    label: "Rose",     swatch: "#E11D48" },
-    { id: "slate",   label: "Graphite", swatch: "#334155" },
   ];
 
   return (
@@ -628,7 +627,7 @@ function InboxesSection() {
           </div>
           <input className={inpSm} type="password" placeholder="IMAP password / app password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           <div className="flex gap-2">
-            <button onClick={add} disabled={!form.host || !form.user || !form.password} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Add inbox</button>
+            <button onClick={add} disabled={!form.host || !form.user || !form.password} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Add inbox</button>
             <button onClick={() => setAdding(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
           </div>
         </div>
@@ -763,7 +762,7 @@ function EmailTab() {
               className={`px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors ${
                 oauthConnected
                   ? "bg-success hover:bg-success text-white"
-                  : "bg-accent hover:bg-accent-hover text-white"
+                  : "bg-accent hover:bg-accent-hover text-on-accent"
               }`}
             >
               {oauthConnecting ? (
@@ -788,7 +787,7 @@ function EmailTab() {
       )}
       <button
         onClick={save}
-        className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
+        className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
       >
         {saved ? <Check size={13} /> : <Save size={13} />}
         {saved ? "Saved" : "Save Settings"}
@@ -809,7 +808,7 @@ function WhatsAppFooterField() {
       <label className="block text-[12px] font-medium text-muted mb-1.5">WhatsApp Share Footer</label>
       <div className="flex gap-2">
         <input className={inp} value={footer} onChange={e => setFooter(e.target.value)} placeholder="💬 Reply to claim or for more info" />
-        <button onClick={save} className="bg-accent hover:bg-accent-hover text-white px-3 h-10 rounded-lg text-[13px] font-medium flex-shrink-0">
+        <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-10 rounded-lg text-[13px] font-medium flex-shrink-0">
           {saved ? "Saved" : "Save"}
         </button>
       </div>
@@ -999,7 +998,7 @@ function AiTab() {
       <button
         onClick={save}
         disabled={!selected}
-        className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+        className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
       >
         Set Active Model
       </button>
@@ -1122,7 +1121,7 @@ function SyncTab() {
               <button
                 onClick={syncNow}
                 disabled={nBusy}
-                className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
               >
                 {nBusy ? "Syncing…" : "Sync now"}
               </button>
@@ -1173,7 +1172,7 @@ function SyncTab() {
               <button
                 onClick={connectNet}
                 disabled={nBusy || !nUrl.trim() || !nEmail.trim() || !nPass}
-                className="bg-accent hover:bg-accent-hover text-white px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
               >
                 {nBusy ? "Connecting…" : "Connect"}
               </button>
@@ -1222,7 +1221,7 @@ function SyncTab() {
               <button
                 onClick={handleSetPassphrase}
                 disabled={settingPassphrase || !passphrase.trim()}
-                className="bg-accent hover:bg-accent-hover text-white px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
               >
                 {settingPassphrase ? "Setting..." : "Enable"}
               </button>
@@ -1404,7 +1403,7 @@ function CsvImportSection() {
                   key={h}
                   className={`text-[12px] px-3 py-1 rounded-full cursor-pointer border transition-colors ${
                     metaKeys.includes(h)
-                      ? "bg-accent text-white border-accent"
+                      ? "bg-accent text-on-accent border-accent"
                       : "bg-surface-2 border-line text-ink-2 hover:bg-surface-3"
                   }`}
                 >
@@ -1439,7 +1438,7 @@ function CsvImportSection() {
           <button
             onClick={runImport}
             disabled={importing || (!mapping.first_name && !mapping.last_name)}
-            className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+            className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
           >
             {importing ? "Importing..." : `Import ${preview.total_rows} clients`}
           </button>
@@ -1538,7 +1537,7 @@ function GoogleContactsSection() {
 
       {!connected ? (
         <button onClick={connect} disabled={busy}
-          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+          className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
           {busy ? "Connecting..." : "Connect Google Account"}
         </button>
       ) : (
@@ -1546,7 +1545,7 @@ function GoogleContactsSection() {
           <div className="flex items-center gap-2 mb-4">
             <span className="text-[12px] text-success-ink font-medium">● Connected</span>
             <button onClick={fetch} disabled={busy}
-              className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
               {busy ? "Loading..." : contacts.length > 0 ? "Refresh Contacts" : "Fetch Contacts"}
             </button>
             <button onClick={disconnect} className="text-[11px] text-muted hover:text-danger-ink">Disconnect</button>
@@ -1595,7 +1594,7 @@ function GoogleContactsSection() {
 
               {selected.size > 0 && (
                 <button onClick={importContacts} disabled={busy}
-                  className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
                   {busy ? "Importing..." : `Import ${selected.size} selected`}
                 </button>
               )}
@@ -1769,7 +1768,7 @@ function AutomationTab() {
         <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly — no email setup needed.</p>
         <div className="flex items-center gap-2">
           <code className="flex-1 text-[12px] bg-surface-2 rounded-lg px-2.5 py-1.5 break-all select-all text-ink-2">{leadFormUrl}</code>
-          <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied ✓" : "Copy"}</button>
+          <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied ✓" : "Copy"}</button>
         </div>
       </div>
 
@@ -1786,7 +1785,7 @@ function AutomationTab() {
                 <button
                   disabled={on || enabling === p.name}
                   onClick={() => enablePremade(p)}
-                  className={`h-8 rounded-lg text-[12px] font-medium transition-colors ${on ? "cursor-default" : "bg-accent hover:bg-accent-hover text-white"}`}
+                  className={`h-8 rounded-lg text-[12px] font-medium transition-colors ${on ? "cursor-default" : "bg-accent hover:bg-accent-hover text-on-accent"}`}
                   style={on ? { background: "rgba(16,185,129,0.12)", color: "rgb(var(--c-success))" } : undefined}
                 >
                   {on ? "✓ Enabled" : enabling === p.name ? "Enabling…" : "Enable"}
@@ -1798,7 +1797,7 @@ function AutomationTab() {
         <p className="text-[11px] text-muted mt-2.5">Requires email connected (Settings → Email). Fine-tune or remove any rule below.</p>
       </div>
 
-      <button onClick={() => setShowForm(true)} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors">
+      <button onClick={() => setShowForm(true)} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 mb-5 transition-colors">
         <Plus size={13} /> Add custom rule
       </button>
 
@@ -1818,7 +1817,7 @@ function AutomationTab() {
           </div>
           <div className="flex justify-end gap-2">
             <button onClick={() => setShowForm(false)} className="text-[13px] text-muted hover:text-ink transition-colors">Cancel</button>
-            <button onClick={save} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Save Rule</button>
+            <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Save Rule</button>
           </div>
         </div>
       )}
@@ -1855,7 +1854,7 @@ function AutomationTab() {
         </p>
 
         <div className="flex items-center gap-2 mb-4">
-          <button onClick={() => { setEditingFu(null); setFuForm({ name: "", trigger_type: "no_order", trigger_value: 30, action_type: "email", email_subject: "", email_body: "" }); setShowFuForm(true); }} className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1">
+          <button onClick={() => { setEditingFu(null); setFuForm({ name: "", trigger_type: "no_order", trigger_value: 30, action_type: "email", email_subject: "", email_body: "" }); setShowFuForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1">
             <Plus size={12} /> Add Rule
           </button>
           <button onClick={() => api.processFollowupRules().then(loadFu).catch(alert)} className="text-[12px] text-muted hover:text-ink-2 px-2 py-1 rounded hover:bg-surface-2">Run Now</button>
@@ -1904,7 +1903,7 @@ function AutomationTab() {
             )}
             <div className="flex justify-end gap-2">
               <button onClick={() => { setShowFuForm(false); setEditingFu(null); }} className="text-[13px] text-muted hover:text-ink transition-colors">Cancel</button>
-              <button onClick={saveFu} disabled={!fuForm.name.trim()} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50">
+              <button onClick={saveFu} disabled={!fuForm.name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50">
                 {editingFu ? "Save Changes" : "Create Rule"}
               </button>
             </div>
@@ -2052,7 +2051,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
             </div>
           ))}
           <div className="pt-1">
-            <button onClick={save} className="px-4 h-8 rounded-lg bg-accent text-white text-[12.5px] font-medium hover:opacity-90 transition-opacity">{savedMsg ? "Saved" : "Save mapping"}</button>
+            <button onClick={save} className="px-4 h-8 rounded-lg bg-accent text-on-accent text-[12.5px] font-medium hover:opacity-90 transition-opacity">{savedMsg ? "Saved" : "Save mapping"}</button>
           </div>
         </div>
       )}
@@ -2089,7 +2088,7 @@ function IntakeTab() {
       <div className="flex items-center gap-2">
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name this source (e.g. Website contact form)"
           className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
-        <button onClick={create} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-white text-[13px] font-medium disabled:opacity-50 transition-opacity">Create link</button>
+        <button onClick={create} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium disabled:opacity-50 transition-opacity">Create link</button>
       </div>
       {sources.length === 0 && <div className="text-[13px] text-muted">No intake links yet — create one above.</div>}
       {sources.map((s) => <IntakeSourceCard key={s.id} source={s} fields={fields} onChange={load} />)}
@@ -2140,7 +2139,7 @@ function ShopifyTab() {
               placeholder={cfg?.configured ? "•••••••  (set — paste to replace)" : "Paste the secret from Shopify"}
               className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
             <button onClick={save} disabled={busy || !secret.trim()}
-              className="px-4 h-9 rounded-lg bg-accent text-white text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+              className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
               {saved ? "Saved" : "Save"}
             </button>
           </div>
@@ -2213,7 +2212,7 @@ function PaymentsTab() {
         <h3 className="text-[14px] font-semibold text-ink">Payment Methods</h3>
         <button
           onClick={() => { setEditing(null); setForm({ kind: "ACH", label: "", details: "" }); setShowForm(true); }}
-          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors"
+          className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors"
         >
           <Plus size={13} /> Add
         </button>
@@ -2258,7 +2257,7 @@ function PaymentsTab() {
             <button
               onClick={save}
               disabled={!form.label.trim()}
-              className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+              className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
             >
               {editing ? "Update" : "Save"}
             </button>
@@ -2369,7 +2368,7 @@ function TemplatesTab() {
           <button
             onClick={add}
             disabled={!desc.trim()}
-            className="bg-accent hover:bg-accent-hover text-white h-9 px-4 rounded-lg text-[13px] font-medium w-full disabled:opacity-40 transition-colors"
+            className="bg-accent hover:bg-accent-hover text-on-accent h-9 px-4 rounded-lg text-[13px] font-medium w-full disabled:opacity-40 transition-colors"
           >
             Add
           </button>
@@ -2454,7 +2453,7 @@ function CategoriesTab() {
         <button
           onClick={create}
           disabled={!newLabel.trim()}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
         >
           <Plus size={13} /> Add
         </button>
@@ -2634,7 +2633,7 @@ function SheetsTab() {
           <button
             onClick={save}
             disabled={saving}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
           >
             <Save size={13} /> {saving ? "Saving..." : "Save Config"}
           </button>
@@ -2648,7 +2647,7 @@ function SheetsTab() {
           <button
             onClick={syncNow}
             disabled={syncing || !config.sheet_url}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
           >
             <RefreshCw size={13} className={syncing ? "animate-spin" : ""} /> {syncing ? "Syncing..." : "Sync Now"}
           </button>
@@ -2859,7 +2858,7 @@ function BackupTab() {
       </div>
 
       <div className="flex gap-2 mb-5">
-        <button onClick={handleBackup} disabled={busy} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-1.5">
+        <button onClick={handleBackup} disabled={busy} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-1.5">
           <RefreshCw size={13} className={busy ? "animate-spin" : ""} /> Backup Now
         </button>
       </div>
@@ -3188,7 +3187,7 @@ function ProfileModal({ u, roleName, onClose }: { u: StaffMember; roleName: stri
           {u.created_at && <Row label="Member since" value={new Date(u.created_at).toLocaleDateString()} />}
         </div>
         <div className="px-6 py-4 flex justify-end border-t border-line">
-          <button onClick={onClose} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium">Close</button>
+          <button onClick={onClose} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Close</button>
         </div>
       </div>
     </div>
@@ -3228,7 +3227,7 @@ function RolesPanel() {
           <div key={r.id} className="bg-surface border border-line rounded-xl p-5">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-[14px] font-semibold text-ink">{r.name} {r.is_system && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-muted ml-1">Built-in</span>}</h4>
-              {!full && <button onClick={() => save(r.id)} className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium">Save</button>}
+              {!full && <button onClick={() => save(r.id)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Save</button>}
             </div>
             {full ? (
               <p className="text-[12px] text-muted">Full access — everything (can't be limited).</p>
@@ -3271,7 +3270,7 @@ function RolesPanel() {
       })}
       <div className="bg-surface border border-line rounded-xl p-4 flex items-center gap-2">
         <input className={inpSm} placeholder="New role name (e.g. Junior Rep)" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
-        <button onClick={create} disabled={!newRole.trim()} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">Add role</button>
+        <button onClick={create} disabled={!newRole.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 whitespace-nowrap">Add role</button>
       </div>
     </div>
   );
@@ -3308,7 +3307,7 @@ function InvitesPanel() {
             {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
           <input className={inpSm} placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <button onClick={create} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">Create</button>
+          <button onClick={create} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">Create</button>
         </div>
         {created && (
           <div className="mt-3 bg-success-bg border border-success rounded-lg px-3 py-2">
@@ -3386,7 +3385,7 @@ function InvoiceNumberingSection() {
         </div>
       </div>
       <p className="text-[11px] text-muted mb-3">Preview: <span className="font-mono font-semibold text-accent-hover">{cfg.preview}</span></p>
-      <button onClick={save} className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[12px] font-medium">
+      <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>
     </div>
@@ -3435,7 +3434,7 @@ function QuoteNumberingSection() {
         </div>
       </div>
       <p className="text-[11px] text-muted mb-3">Preview: <span className="font-mono font-semibold text-accent-hover">{cfg.preview}</span></p>
-      <button onClick={save} className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[12px] font-medium">
+      <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>
     </div>
@@ -3495,7 +3494,7 @@ function BillingTab() {
       )}
 
       <div className="flex items-center gap-2">
-        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save Keys</button>
+        <button onClick={save} disabled={!showKeys || !pk || !sk} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Save Keys</button>
         {config?.configured && (
           <button onClick={async () => { await api.deleteStripeKeys(); setPk(""); setSk(""); setWh(""); load(); }} className="text-[12px] text-danger-ink hover:text-danger-ink">Clear Keys</button>
         )}
@@ -3557,7 +3556,7 @@ function CustomFieldsTab() {
       <p className="text-[12px] text-muted mb-4">
         Add custom fields to store additional client data. These appear on the client profile and can be mapped from sheet columns.
       </p>
-      <button onClick={openCreate} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium mb-4">
+      <button onClick={openCreate} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium mb-4">
         + Add Custom Field
       </button>
       {fields.length === 0 ? (
@@ -3621,7 +3620,7 @@ function CustomFieldsTab() {
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-              <button onClick={save} disabled={!form.label.trim() || !form.field_key.trim()} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+              <button onClick={save} disabled={!form.label.trim() || !form.field_key.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
                 {editing ? "Save" : "Create"}
               </button>
             </div>

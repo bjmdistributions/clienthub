@@ -105,7 +105,7 @@ export default function TiersView() {
             onClick={() => setSpendRange(i)}
             className={`px-2.5 h-7 rounded-md text-[11px] font-medium transition-colors ${
               spendRange === i
-                ? "bg-accent text-white"
+                ? "bg-accent text-on-accent"
                 : "bg-surface border border-line text-ink-2 hover:border-line-3"
             }`}
           >

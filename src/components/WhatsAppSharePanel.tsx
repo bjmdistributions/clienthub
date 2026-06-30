@@ -158,7 +158,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
               className="w-full h-[180px] rounded-lg p-3 text-[13px] font-mono resize-none focus:outline-none focus:ring-2 focus:ring-accent/30"
               style={{ background: "var(--t-input-bg)", border: "1px solid var(--t-input-border)", color: "var(--t-tx1)" }} />
             <button onClick={() => copy(message)}
-              className={`flex items-center gap-1.5 mt-2 text-[12px] font-medium px-3 h-8 rounded-md transition-colors ${copied ? "text-success-ink" : "text-white bg-accent hover:bg-accent-hover"}`}
+              className={`flex items-center gap-1.5 mt-2 text-[12px] font-medium px-3 h-8 rounded-md transition-colors ${copied ? "text-success-ink" : "text-on-accent bg-accent hover:bg-accent-hover"}`}
               style={copied ? { background: "var(--t-s3)" } : undefined}>
               {copied ? <><Check size={13} /> Copied to clipboard</> : <><Copy size={13} /> Copy message</>}
             </button>
@@ -274,7 +274,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                 </div>
                 <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>Unable to load WhatsApp Web</p>
                 <p className="text-[13px] mb-4" style={{ color: "var(--t-tx3)" }}>Check your internet connection and try again.</p>
-                <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-white bg-accent hover:bg-accent-hover transition-colors">
+                <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-on-accent bg-accent hover:bg-accent-hover transition-colors">
                   <RefreshCw size={13} /> Retry
                 </button>
               </div>

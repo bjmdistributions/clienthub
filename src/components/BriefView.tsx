@@ -126,7 +126,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
           <button onClick={() => window.print()}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white h-9 px-4 rounded-lg text-[13px] font-medium transition-colors">
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent h-9 px-4 rounded-lg text-[13px] font-medium transition-colors">
             <Printer size={14} /> Print
           </button>
           <button onClick={() => {

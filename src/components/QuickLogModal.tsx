@@ -129,7 +129,7 @@ export default function QuickLogModal({ onClose }: Props) {
                     onClick={() => setKind(k)}
                     className={`flex items-center gap-1.5 px-3 h-8 text-[12px] font-medium rounded-lg transition-colors ${
                       kind === k
-                        ? "bg-accent text-white"
+                        ? "bg-accent text-on-accent"
                         : "bg-surface-2 border border-line text-ink-2 hover:bg-surface-3"
                     }`}
                   >
@@ -182,7 +182,7 @@ export default function QuickLogModal({ onClose }: Props) {
             <button
               onClick={submit}
               disabled={submitting || !selected || !body.trim()}
-              className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 disabled:opacity-40 transition-colors"
+              className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 disabled:opacity-40 transition-colors"
             >
               <Send size={13} />
               {submitting ? "Saving..." : "Log"}

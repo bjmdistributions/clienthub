@@ -131,7 +131,7 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
             <Ban size={15} /> Reject
           </button>
           <button onClick={approve} disabled={busy || !name.trim()}
-            className="flex items-center gap-1.5 px-5 h-9 rounded-lg bg-accent text-white text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+            className="flex items-center gap-1.5 px-5 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
             <Check size={15} /> Approve customer
           </button>
         </div>

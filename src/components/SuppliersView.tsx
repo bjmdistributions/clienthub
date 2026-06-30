@@ -386,7 +386,7 @@ export default function SuppliersView() {
               <button
                 onClick={save}
                 disabled={saving || !input.name.trim()}
-                className="flex-1 flex items-center justify-center gap-1.5 h-10 bg-accent hover:bg-accent-hover text-white rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+                className="flex-1 flex items-center justify-center gap-1.5 h-10 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
               >
                 <Save size={14} /> {saving ? "Saving…" : "Save Supplier"}
               </button>

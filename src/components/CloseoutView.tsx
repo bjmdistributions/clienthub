@@ -356,7 +356,7 @@ function DealBreakdown({
           <button
             onClick={handleSaveDate}
             disabled={dateSaving || editDate === initialDate}
-            className="px-3 h-8 bg-accent hover:bg-accent-hover text-white text-[12px] font-medium
+            className="px-3 h-8 bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium
                        rounded-lg disabled:opacity-40 transition-colors whitespace-nowrap"
           >
             {dateSaving ? "Saving…" : "Save Date"}

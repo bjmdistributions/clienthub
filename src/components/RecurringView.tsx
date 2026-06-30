@@ -85,7 +85,7 @@ export default function RecurringView() {
           <p className="text-[12px] text-muted mt-0.5">{active.length} active, {paused.length} paused</p>
         </div>
         <button onClick={openCreate}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
           <Plus size={14} /> New Template
         </button>
       </div>
@@ -201,7 +201,7 @@ export default function RecurringView() {
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-              <button onClick={save} disabled={!clientId || !templateName.trim()} className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+              <button onClick={save} disabled={!clientId || !templateName.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
                 {editing ? "Save" : "Create"}
               </button>
             </div>

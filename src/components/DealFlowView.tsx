@@ -438,7 +438,7 @@ function DealFlowCard({
                         title={NODE_LABELS[key]}
                         className={[
                           "w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold transition-all duration-200",
-                          isDone    ? "bg-accent text-white" :
+                          isDone    ? "bg-accent text-on-accent" :
                           isCurrent ? "bg-surface border-2 border-accent text-accent shadow-[0_0_0_4px_var(--accent-tint)]" :
                           i === currentSi + 1
                                     ? "bg-surface border-2 border-line-3 text-muted hover:border-accent hover:text-accent"
@@ -897,7 +897,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
                 <button
                   onClick={handleAddSupplier}
                   disabled={saving || !suppName.trim() || !anyRateEntered}
-                  className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px]
+                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px]
                              font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5"
                 >
                   <Plus size={13} /> Add Supplier
@@ -1071,7 +1071,7 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
               <button
                 onClick={markAllPaid}
                 disabled={saving || payments.length === 0}
-                className="flex items-center gap-2 bg-accent hover:bg-accent text-white
+                className="flex items-center gap-2 bg-accent hover:bg-accent text-on-accent
                            px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center"
               >
                 <Check size={14} strokeWidth={2.5} />
@@ -1191,7 +1191,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <button
             onClick={handleCompleteClick}
             disabled={saving}
-            className="w-full bg-accent hover:bg-accent-hover text-white h-10 rounded-lg
+            className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg
                        text-[14px] font-medium disabled:opacity-40 transition-colors"
           >
             Complete Deal
@@ -1220,7 +1220,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             <button
               onClick={handleCompleteNow}
               disabled={saving}
-              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white
+              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent
                          px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
             >
               <Check size={13} /> No, complete now

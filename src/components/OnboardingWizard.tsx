@@ -169,7 +169,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
               <div className="flex gap-2 mb-2">
                 {Object.keys(PRESETS).map((p) => (
                   <button key={p} onClick={() => { setEmailSettings({ ...emailSettings, ...PRESETS[p] }); setEmailSkipped(false); }}
-                    className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${!emailSkipped && emailSettings.smtp_host === PRESETS[p]?.smtp_host ? "bg-accent text-white border-accent" : "bg-surface text-ink-2 border-line hover:bg-surface-2"}`}>
+                    className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${!emailSkipped && emailSettings.smtp_host === PRESETS[p]?.smtp_host ? "bg-accent text-on-accent border-accent" : "bg-surface text-ink-2 border-line hover:bg-surface-2"}`}>
                     {p}
                   </button>
                 ))}
@@ -191,7 +191,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     <p className="text-[11px] text-warning-ink bg-warning-bg px-3 py-2 rounded-lg">Using Gmail? You need an App Password, not your regular password.</p>
                   )}
                   <div className="flex items-center gap-3 pt-1">
-                    <button onClick={testEmail} disabled={emailTesting} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50 flex items-center gap-1.5">
+                    <button onClick={testEmail} disabled={emailTesting} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50 flex items-center gap-1.5">
                       {emailTesting ? "Testing..." : "Test Connection"}
                     </button>
                     {emailTested === "ok" && <span className="text-success-ink text-[12px] font-medium flex items-center gap-1"><Check size={13} /> Connected</span>}
@@ -244,7 +244,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                       {importSummary.errors.length > 0 && <p className="text-danger-ink mt-1">{importSummary.errors.length} errors</p>}
                     </div>
                   ) : (
-                    <button onClick={runImport} disabled={importing || !csvMapping.name} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50">
+                    <button onClick={runImport} disabled={importing || !csvMapping.name} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50">
                       {importing ? "Importing..." : `Import ${csvPreview?.total_rows ?? 0} clients`}
                     </button>
                   )}
@@ -279,12 +279,12 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 if (step === 1) { if (!biz.company.trim()) return; await saveBiz(); }
                 if (step === 2 && !emailSkipped) { if (!emailSettings.user.trim()) return; await saveEmail(); }
                 setStep(step + 1);
-              }} disabled={step === 1 && !biz.company.trim()} className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 flex items-center gap-1">
+              }} disabled={step === 1 && !biz.company.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 flex items-center gap-1">
                 Next <ArrowRight size={13} />
               </button>
             )}
             {step === 4 && (
-              <button onClick={finish} className="bg-accent hover:bg-accent-hover text-white px-6 h-9 rounded-lg text-[13px] font-medium">
+              <button onClick={finish} className="bg-accent hover:bg-accent-hover text-on-accent px-6 h-9 rounded-lg text-[13px] font-medium">
                 Open Ecliptr
               </button>
             )}

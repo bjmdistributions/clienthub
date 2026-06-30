@@ -87,6 +87,9 @@
   --c-line-3:       229 231 235;
   --c-accent: 37 99 235;
   --c-accent-hover: 29 78 216;
+  /* Foreground on the accent fill. Light theme accents are deep → white reads;
+     light accents (amber) override below. Dark/matte set near-black (pastel accents). */
+  --c-on-accent: 255 255 255;
   --c-success:        5 150 105;
   --c-success-bg:   236 253 245;
   --c-success-ink:    6 95 70;
@@ -144,6 +147,7 @@ html.dark {
   --c-line-3:        56 56 63;
   --c-accent: 96 165 250;
   --c-accent-hover: 147 197 253;
+  --c-on-accent: 17 17 19;
   --c-success:       52 211 153;
   --c-success-bg:    19 48 31;
   --c-success-ink:  110 231 183;
@@ -449,7 +453,7 @@ html[data-accent="teal"] { --c-accent:13 148 136; --c-accent-hover:15 118 110;
   --accent-glow:rgba(13,148,136,.38); --accent-tint:rgba(13,148,136,.16); --shadow-indigo:0 4px 20px rgba(13,148,136,.22),0 1px 4px rgba(13,148,136,.12); }
 html.dark[data-accent="teal"] { --c-accent:45 212 191; --c-accent-hover:94 234 212; }
 
-html[data-accent="amber"] { --c-accent:217 119 6; --c-accent-hover:180 83 9;
+html[data-accent="amber"] { --c-accent:217 119 6; --c-accent-hover:180 83 9; --c-on-accent:17 17 19;
   --color-primary:#D97706; --color-primary-hover:#B45309; --color-primary-light:#FFFBEB; --color-primary-glow:rgba(217,119,6,.18);
   --accent-50:#FFFBEB; --accent-100:#FEF3C7; --accent-400:#FBBF24; --accent-500:#F59E0B; --accent-600:#D97706; --accent-700:#B45309;
   --accent-glow:rgba(217,119,6,.38); --accent-tint:rgba(217,119,6,.16); --shadow-indigo:0 4px 20px rgba(217,119,6,.22),0 1px 4px rgba(217,119,6,.12); }

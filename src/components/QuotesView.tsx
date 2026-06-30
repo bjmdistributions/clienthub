@@ -101,7 +101,7 @@ export default function QuotesView({ onNavigate }: Props) {
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Quotes</h2>
           <p className="text-[12px] text-muted mt-0.5">{counts.all} quotes · estimates for reaching out to customers</p>
         </div>
-        <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
+        <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
           <Plus size={14} /> New Quote
         </button>
       </div>
@@ -271,7 +271,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
           )}
 
           <div className="border-t border-line pt-4 flex flex-wrap gap-2">
-            <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
+            <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
             <button onClick={onPdf} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><FileDown size={13} /> PDF</button>
             <button onClick={onSend} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Send size={13} /> Email</button>
             {quote.status !== "accepted" && (
@@ -389,7 +389,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
 
         <div className="flex justify-end gap-2 p-5 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-          <button onClick={submit} disabled={!canSave || saving} className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
+          <button onClick={submit} disabled={!canSave || saving} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
             {saving ? "Saving…" : initial ? "Save" : "Create Quote"}
           </button>
         </div>

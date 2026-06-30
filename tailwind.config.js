@@ -23,6 +23,8 @@ export default {
           DEFAULT: 'rgb(var(--c-accent) / <alpha-value>)',
           hover:   'rgb(var(--c-accent-hover) / <alpha-value>)',
         },
+        // Foreground paired with the accent background — guaranteed legible per theme.
+        'on-accent': 'rgb(var(--c-on-accent) / <alpha-value>)',
         success: {
           DEFAULT: 'rgb(var(--c-success) / <alpha-value>)',
           bg:      'rgb(var(--c-success-bg) / <alpha-value>)',

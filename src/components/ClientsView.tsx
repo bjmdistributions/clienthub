@@ -314,7 +314,7 @@ export default function ClientsView() {
           </button>
           <button
             onClick={() => { setEditing(null); setShowForm(true); }}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
           >
             <Plus size={14} /> New Client
           </button>
@@ -708,7 +708,7 @@ export default function ClientsView() {
                       <p className="text-[15px] font-semibold text-ink mb-1">No clients yet</p>
                       <p className="text-[13px] text-muted mb-4">Add your first client to get started</p>
                       <button onClick={() => { setEditing(null); setShowForm(true); }}
-                        className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
+                        className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
                         <Plus size={13} /> Add Client
                       </button>
                     </div>
@@ -812,7 +812,7 @@ function ClientForm({
           Cancel
         </button>
         <button onClick={() => onSave(form)} disabled={!form.name.trim()}
-          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+          className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
           Save
         </button>
       </div>

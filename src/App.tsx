@@ -141,7 +141,7 @@ export default function App() {
   const [accent, setAccent] = useState(() => {
     const saved = localStorage.getItem("clienthub_accent");
     // Migrate retired accent ids to the new default.
-    return saved && !["indigo", "red", "green", "black"].includes(saved) ? saved : "blue";
+    return saved && !["indigo", "red", "green", "black", "slate"].includes(saved) ? saved : "blue";
   });
   useEffect(() => {
     const html = document.documentElement;

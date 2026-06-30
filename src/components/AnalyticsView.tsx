@@ -211,7 +211,7 @@ export default function AnalyticsView() {
               onClick={() => applyPreset(p)}
               className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
                 preset === p.label
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-on-accent"
                   : "bg-surface border border-line text-muted hover:border-accent hover:text-accent"
               }`}
             >
@@ -246,7 +246,7 @@ export default function AnalyticsView() {
             <RefreshCw size={13} /> Refresh
           </button>
           <button onClick={handleExportAnalytics}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[12px] font-medium transition-colors">
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium transition-colors">
             <FileDown size={13} /> Export
           </button>
         </div>

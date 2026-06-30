@@ -170,7 +170,7 @@ export default function InvoicesView() {
         </div>
         <button
           onClick={() => { setEditing(null); setShowForm(true); }}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
         >
           <Plus size={14} /> New Invoice
         </button>
@@ -252,7 +252,7 @@ export default function InvoicesView() {
               <div className="flex justify-end gap-2 pt-1">
                 <button onClick={() => setPayModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
                 <button onClick={confirmPay} disabled={busy === payModal}
-                  className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+                  className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
                   {busy === payModal ? "Saving..." : "Confirm"}
                 </button>
               </div>
@@ -370,7 +370,7 @@ export default function InvoicesView() {
                   <p className="text-[15px] font-semibold text-ink mb-1">No invoices yet</p>
                   <p className="text-[13px] text-muted mb-4">Create your first invoice to send to a client</p>
                   <button onClick={() => { setEditing(null); setShowForm(true); }}
-                    className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
+                    className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
                     <Plus size={13} /> Create Invoice
                   </button>
                 </td>
@@ -637,7 +637,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Eye size={13} /> {previewing ? "Opening..." : "Preview"}
         </button>
         <button onClick={submit} disabled={submitting || (!createNew && !clientId) || items.length === 0}
-          className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
           {submitting ? "Saving..." : initial ? "Save Changes" : "Create Invoice"}
         </button>
       </div>
@@ -686,7 +686,7 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
         <div className="text-[14px] text-muted">Total: <span className="font-semibold text-ink">{fmtAmount(total)}</span></div>
         <div className="flex gap-3">
           <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-muted hover:bg-surface-3 transition-colors">Cancel</button>
-          <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors">
+          <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors">
             {saving ? "Saving..." : "Update Tax"}
           </button>
         </div>
@@ -855,7 +855,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     </div>
                   </div>
                   <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); } setSavingCosts(false); }}
-                    className="w-full bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
+                    className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
                     {savingCosts ? "Saving..." : "Save Costs"}
                   </button>
                 </div>
@@ -904,7 +904,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     value={shipping.delivery_date || ""} onChange={(e) => setShipping({ ...shipping, delivery_date: e.target.value })} />
                 </div>
                 <button onClick={async () => { setSavingShipping(true); try { await api.saveInvoiceShipping(invoice.id, shipping); } catch (e: any) { alert(e); } setSavingShipping(false); }}
-                  className="w-full bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[12px] font-medium transition-colors">
+                  className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
                   {savingShipping ? "Saving..." : "Save Shipping"}
                 </button>
               </div>
@@ -920,7 +920,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
 
         <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">
           <button onClick={onPdf}
-            className="w-full bg-accent hover:bg-accent-hover text-white h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
+            className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
             <Download size={15} /> Download PDF
           </button>
           <div className="flex gap-2.5">

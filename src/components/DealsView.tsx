@@ -149,7 +149,7 @@ export default function DealsView() {
           });
           setShowForm(true);
         }}
-          className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium transition-colors">
+          className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium transition-colors">
           <Plus size={16} /> New Deal
         </button>
         <button onClick={handleExportDeals}
@@ -515,7 +515,7 @@ function DealDetailPanel({
         <div className="sticky bottom-0 bg-surface border-t px-6 py-4 flex gap-3">
           <button onClick={async () => { setSaving(true); await onSave(); setSaving(false); }}
             disabled={!input.title || !input.client_id}
-            className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex-1 disabled:opacity-40 transition-colors">
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex-1 disabled:opacity-40 transition-colors">
             {saving ? "Saving..." : "Save"}
           </button>
           {deal && deal.stage === "won" && !deal.converted_invoice_id && (

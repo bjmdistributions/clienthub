@@ -40,7 +40,7 @@ export function FeedbackModal({ me, onClose }: { me: { display_name?: string; em
           className="w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink mb-2 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40" />
         <div className="text-[12px] mb-2 min-h-[18px]" style={{ color: msg.startsWith("Thanks") ? "#34d399" : "#f87171" }}>{msg}</div>
         <button disabled={busy} onClick={send}
-          className="w-full bg-accent hover:bg-accent-hover text-white h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+          className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
           {busy ? "Sending…" : "Send feedback"}
         </button>
       </div>

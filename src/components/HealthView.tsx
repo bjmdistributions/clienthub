@@ -35,7 +35,7 @@ export default function HealthView() {
                   f === "at_risk" ? "bg-warning text-white" :
                   f === "watch" ? "bg-warning text-white" :
                   f === "healthy" ? "bg-success text-white" :
-                  "bg-accent text-white"
+                  "bg-accent text-on-accent"
                 : "bg-surface-3 text-ink-2 hover:bg-surface-3"
             }`}>
             {f === "all" ? "All" : f.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}

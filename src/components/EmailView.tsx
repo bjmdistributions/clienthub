@@ -70,7 +70,7 @@ export default function EmailView() {
               <Icon size={14} />
               {labels[m]}
               {m === "drafts" && draftCount > 0 && (
-                <span className="bg-accent text-white text-[11px] font-medium rounded-full px-1.5 py-0.5 leading-none ml-0.5">
+                <span className="bg-accent text-on-accent text-[11px] font-medium rounded-full px-1.5 py-0.5 leading-none ml-0.5">
                   {draftCount}
                 </span>
               )}
@@ -88,7 +88,7 @@ export default function EmailView() {
             <button
               onClick={scan}
               disabled={scanning}
-              className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50 transition-colors"
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50 transition-colors"
             >
               <RefreshCw size={14} className={scanning ? "animate-spin" : ""} />
               {scanning ? "Scanning..." : "Scan Inbox"}
@@ -237,7 +237,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
         <button
           onClick={handleDraft}
           disabled={loading !== null}
-          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
+          className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 disabled:opacity-50"
         >
           {loading === "draft" ? <RefreshCw size={12} className="animate-spin" /> : <Sparkles size={12} />}
           Draft Reply
@@ -264,7 +264,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
           <button
             onClick={handleSend}
             disabled={sending}
-            className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mt-2"
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mt-2"
           >
             <Send size={12} />
             {sending ? "Sending..." : sent ? "Sent!" : "Send Reply"}
@@ -367,7 +367,7 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
                   <div className="flex gap-2">
                     <button
                       onClick={() => handleSave(d.id)}
-                      className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[14px] font-medium"
+                      className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium"
                     >
                       Save
                     </button>
@@ -397,7 +397,7 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
                     <button
                       onClick={() => handleSend(d.id)}
                       disabled={loading === d.id}
-                      className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-md text-[13px] font-medium flex items-center gap-1 disabled:opacity-50"
+                      className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-md text-[13px] font-medium flex items-center gap-1 disabled:opacity-50"
                     >
                       <Send size={12} />
                       {loading === d.id ? "Sending..." : "Send"}
@@ -477,7 +477,7 @@ function ComposeView() {
         <button
           onClick={send}
           disabled={sending || !to || !subject}
-          className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
+          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
         >
           <Send size={14} />
           {sending ? "Sending..." : sent ? "Sent!" : "Send"}
@@ -905,7 +905,7 @@ function NewsletterTab() {
               className="flex-1 border border-line-3 h-7 px-2 rounded-md text-[11px] focus:outline-none focus:ring-1 focus:ring-accent"
             />
             <button onClick={addManualEmail} disabled={!manualEmail.includes("@")}
-              className="bg-accent hover:bg-accent-hover text-white px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
+              className="bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-md text-[11px] font-medium disabled:opacity-40 transition-colors">
               Add
             </button>
           </div>
@@ -1035,13 +1035,13 @@ function NewsletterTab() {
                 <div className="flex rounded-md border border-line-3 overflow-hidden">
                   {["formal", "neutral", "casual"].map((t) => (
                     <button key={t} onClick={() => setAiTone(t)}
-                      className={`px-3 h-9 text-[12px] font-medium transition-colors ${aiTone === t ? "bg-accent text-white" : "bg-surface text-ink-2 hover:bg-surface-2"}`}>
+                      className={`px-3 h-9 text-[12px] font-medium transition-colors ${aiTone === t ? "bg-accent text-on-accent" : "bg-surface text-ink-2 hover:bg-surface-2"}`}>
                       {t.charAt(0).toUpperCase() + t.slice(1)}
                     </button>
                   ))}
                 </div>
                 <button onClick={generateAI} disabled={aiLoading || !aiPrompt.trim()}
-                  className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-md text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap">
+                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap">
                   <Sparkles size={13} /> {aiLoading ? "Writing..." : "Generate"}
                 </button>
               </div>
@@ -1092,7 +1092,7 @@ function NewsletterTab() {
           <button
             onClick={handleSend}
             disabled={sending || validRecipients.length === 0 || !subject.trim() || !body.trim()}
-            className="w-full bg-accent hover:bg-accent-hover text-white rounded-md text-[14px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+            className="w-full bg-accent hover:bg-accent-hover text-on-accent rounded-md text-[14px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
             style={{ height: 44 }}
           >
             <Send size={16} />
@@ -1137,7 +1137,7 @@ function NewsletterTab() {
                   className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px]" />
               )}
               <button onClick={handleSchedule} disabled={scheduling}
-                className="w-full bg-accent hover:bg-accent-hover text-white rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
+                className="w-full bg-accent hover:bg-accent-hover text-on-accent rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
                 {scheduling ? "Scheduling..." : "Schedule"}
               </button>
             </div>
@@ -1356,7 +1356,7 @@ function RecurringTab() {
         </p>
         <button
           onClick={openCreate}
-          className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
+          className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
         >
           <Plus size={14} /> New schedule
         </button>
@@ -1481,7 +1481,7 @@ function RecurringTab() {
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setShowForm(false)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
               <button onClick={save} disabled={saving}
-                className="bg-accent hover:bg-accent-hover text-white px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
                 {saving ? "Saving…" : editing ? "Save changes" : "Create schedule"}
               </button>
             </div>

@@ -71,7 +71,7 @@ export function FormsPanel() {
           <button onClick={() => setEditing(null)} className="text-[13px] text-muted hover:text-ink">← Back</button>
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-1.5 text-[12px] text-ink-2"><input type="checkbox" checked={editing.active} onChange={(e) => setEditing({ ...editing, active: e.target.checked })} /> Active</label>
-            <button onClick={save} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium">Save form</button>
+            <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Save form</button>
           </div>
         </div>
         <div className="space-y-3 bg-surface border border-line rounded-xl p-4">
@@ -126,7 +126,7 @@ export function FormsPanel() {
           <h4 className="text-[14px] font-semibold text-ink">Lead forms</h4>
           <p className="text-[12px] text-muted">Build a form, share the link — submissions become pending clients. <button onClick={() => api.openExternal("https://ecliptr.app/guide#forms")} className="text-accent hover:underline">Setup guide →</button></p>
         </div>
-        <button onClick={() => setEditing(blankForm())} className="bg-accent hover:bg-accent-hover text-white px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">+ New form</button>
+        <button onClick={() => setEditing(blankForm())} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">+ New form</button>
       </div>
       {forms.length === 0 ? (
         <p className="text-muted text-[13px] bg-surface border border-line rounded-xl p-6 text-center">No forms yet.</p>

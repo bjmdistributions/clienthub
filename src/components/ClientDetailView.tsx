@@ -220,7 +220,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               <div className="flex items-center gap-2">
                 <input readOnly className="border border-line px-3 h-8 rounded-lg text-[12px] text-ink-2 bg-surface-2 flex-1 font-mono" value={portalLink.portal_url} />
                 <button onClick={async () => { await navigator.clipboard.writeText(portalLink.portal_url); }}
-                  className="bg-accent hover:bg-accent-hover text-white px-3 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1">
+                  className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1">
                   Copy
                 </button>
                 <button onClick={async () => { if (confirm("Revoke this portal link?")) { await api.revokePortalLink(portalLink.token); setPortalLink(null); load(); } }}
@@ -236,7 +236,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
             </>
           ) : (
             <button onClick={async () => { const l = await api.generatePortalLink(clientId); setPortalLink(l); }}
-              className="bg-accent hover:bg-accent-hover text-white px-4 h-8 rounded-lg text-[12px] font-medium">
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
               Generate Portal Link
             </button>
           )}
@@ -337,7 +337,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               <button
                 onClick={handleSummarize}
                 disabled={summarizing || interactions.length === 0}
-                className="text-[12px] font-medium bg-accent hover:bg-accent-hover text-white px-3 h-7 rounded-md disabled:opacity-50 flex items-center gap-1.5"
+                className="text-[12px] font-medium bg-accent hover:bg-accent-hover text-on-accent px-3 h-7 rounded-md disabled:opacity-50 flex items-center gap-1.5"
               >
                 {summarizing && <RefreshCw size={10} className="animate-spin" />}
                 {summary ? "Re-summarize" : "Summarize History"}
@@ -376,7 +376,7 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               <div className="flex flex-wrap gap-1.5 px-4 pb-2">
                 {["call", "meeting", "email_out", "whatsapp", "sms", "note"].map((k) => (
                   <button key={k} onClick={() => setKindFilter(kindFilter === k ? null : k)}
-                    className={`text-[10px] px-2 py-0.5 rounded-full border font-medium capitalize transition-colors ${kindFilter === k ? "bg-accent text-white border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"}`}>
+                    className={`text-[10px] px-2 py-0.5 rounded-full border font-medium capitalize transition-colors ${kindFilter === k ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"}`}>
                     {k.replace("_", " ")}
                   </button>
                 ))}
@@ -626,7 +626,7 @@ function NoteForm({ clientId, onClose }: { clientId: string; onClose: () => void
         <button
           onClick={save}
           disabled={saving || !body.trim()}
-          className="bg-accent hover:bg-accent-hover text-white px-3 h-7 rounded-md text-[12px] font-medium disabled:opacity-40"
+          className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-7 rounded-md text-[12px] font-medium disabled:opacity-40"
         >
           {saving ? "Saving..." : "Save"}
         </button>
