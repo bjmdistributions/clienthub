@@ -441,6 +441,13 @@ html[data-accent="emerald"] { --c-accent:5 150 105; --c-accent-hover:4 120 87;
   --accent-glow:rgba(5,150,105,.38); --accent-tint:rgba(5,150,105,.16); --shadow-indigo:0 4px 20px rgba(5,150,105,.22),0 1px 4px rgba(5,150,105,.12); }
 html.dark[data-accent="emerald"] { --c-accent:16 185 129; --c-accent-hover:52 211 153; }
 
+/* Eclipse — the flagship Ecliptr accent (deep indigo-violet, white text in both themes). */
+html[data-accent="eclipse"] { --c-accent:79 70 229; --c-accent-hover:67 56 202; --c-on-accent:255 255 255;
+  --color-primary:#4F46E5; --color-primary-hover:#4338CA; --color-primary-light:#EEF2FF; --color-primary-glow:rgba(79,70,229,.18);
+  --accent-50:#EEF2FF; --accent-100:#E0E7FF; --accent-400:#818CF8; --accent-500:#6366F1; --accent-600:#4F46E5; --accent-700:#4338CA;
+  --accent-glow:rgba(79,70,229,.38); --accent-tint:rgba(79,70,229,.16); --shadow-indigo:0 4px 20px rgba(79,70,229,.22),0 1px 4px rgba(79,70,229,.12); }
+html.dark[data-accent="eclipse"] { --c-accent:99 102 241; --c-accent-hover:129 140 248; --c-on-accent:255 255 255; }
+
 html[data-accent="violet"] { --c-accent:124 58 237; --c-accent-hover:109 40 217;
   --color-primary:#7C3AED; --color-primary-hover:#6D28D9; --color-primary-light:#F5F3FF; --color-primary-glow:rgba(124,58,237,.18);
   --accent-50:#F5F3FF; --accent-100:#EDE9FE; --accent-400:#A78BFA; --accent-500:#8B5CF6; --accent-600:#7C3AED; --accent-700:#6D28D9;
