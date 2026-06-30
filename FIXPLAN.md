@@ -15,7 +15,8 @@ Legend: [ ] todo · [~] in progress · [x] done+verified · [?] needs your input
 - [x] A1. Matte/dark **low-contrast gray text** — FIXED + measured. Desktop v0.14.58 (`--c-faint` 2.89→**5.48**, `--c-muted` 5.07→**6.74**) + web/mobile `style.css?v=2` (text3 2.72→**5.48**, text2 4.78→**6.74**). Both pass WCAG AA. Verify on your installed build once v0.14.58 auto-updates.
 - [~] A2. **Theme-blind hardcoded colors** — 130 found across 30 components; fixing in batches.
   - [x] A2.1 `text-white` on accent **gradients** (invisible in matte: white-on-near-white, contrast 1.22) — fixed 6: Dashboard Invoices button, Notes "New note", UpdateNotification (button/icon/spinner), 3 Settings avatars → `text-on-accent` (15.3). Desktop v0.14.59. Matte-only bug (web/mobile have no matte). Kept text-white on semantic red/amber/green.
-  - [ ] A2.2 `bg-gray-*`/`text-gray-*`/`border-gray-*`/`bg-white`/`bg-black` neutrals → tokens (component by component, highest count first: InventoryView 24, SettingsView, ClientsView…)
+  - [x] A2.2 theme-blind neutrals — DONE. The only real pattern was faint borders: 38 `border-gray-50`/`divide-gray-50` → `border-line-2`/`divide-line-2` (desktop v0.14.60) + 2 web `#f3f4f6/#f9fafb` → `var(--c-border)`. All other scan hits were intentional (modal scrims `bg-black/X`, photo overlays, lightbox white-on-black, semantic red/amber/green buttons) — verified + kept. Build clean; classes generate CSS.
+  - [ ] A2.3 (ongoing) per-screen design/animation upgrades as requested — fold into each component pass.
 - [ ] A3. Confirm the matte **accent-active** fix (v0.14.57) is actually on your installed build
 - [ ] A4. Parity pass: same contrast audit on **web/mobile** (clienthub-api/www/style.css + app.js)
 
@@ -36,6 +37,10 @@ Legend: [ ] todo · [~] in progress · [x] done+verified · [?] needs your input
 - [?] D3. Legal pages (Terms/Privacy real content)
 - [?] D4. Retire Syncthing once server netsync confirmed
 - [?] D5. Stripe billing (you said: last)
+- [?] D6. **Cloudflare Browser Cache TTL** — the recurring "my change doesn't show" issue. The origin
+  already sends `no-cache` for css/js (main.rs:162); Cloudflare overrides it with a 4h `max-age`.
+  Fix once: Cloudflare dashboard → Caching → Configuration → **Browser Cache TTL → "Respect Existing
+  Headers"**. Until then we version-bust (`?v=N`) on each web asset change.
 
 ---
 
