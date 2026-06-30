@@ -1068,6 +1068,7 @@ export interface EmailDraft {
 export const api = {
   // Clients
   listClients: () => invoke<Client[]>("list_clients"),
+  clientLastActivity: () => invoke<{ client_id: string; kind: string; at: string }[]>("client_last_activity"),
   getClient: (id: string) => invoke<Client | null>("get_client", { id }),
   createClient: (input: ClientInput) => invoke<Client>("create_client", { input }),
   updateClient: (id: string, input: ClientInput) =>

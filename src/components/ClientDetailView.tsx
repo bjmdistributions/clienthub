@@ -139,8 +139,8 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
               }}
                 className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
                   client.is_blacklisted
-                    ? "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
-                    : "bg-gray-50 text-gray-400 border-gray-200 hover:border-red-200 hover:text-red-500"
+                    ? "bg-danger-bg text-danger-ink border-danger-ink/20"
+                    : "bg-surface-2 text-muted border-line hover:text-danger-ink hover:border-danger-ink/30"
                 }`}>
                 {client.is_blacklisted ? "BLACKLISTED" : "Not Blacklisted"}
               </button>
@@ -148,13 +148,13 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 const val = await api.toggleClientExclusive(client.id);
                 setClient({ ...client, metadata: { ...(client.metadata || {}), exclusive: val } });
               }}
-                title="Exclusive clients are kept off mass newsletters and auto-add — for VIPs you don't want spammed"
+                title="High-Value clients are kept off mass newsletters and auto-add — for VIPs you don't want spammed"
                 className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
                   client.metadata?.exclusive
                     ? "bg-accent/10 text-accent border-accent/30"
                     : "bg-surface-2 text-muted border-line hover:text-ink-2"
                 }`}>
-                {client.metadata?.exclusive ? "EXCLUSIVE" : "Not Exclusive"}
+                {client.metadata?.exclusive ? "HIGH-VALUE" : "Not High-Value"}
               </button>
               {tier && (
                 <>

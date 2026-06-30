@@ -63,6 +63,43 @@ fn extract_client_fields(meta: &Option<Value>) -> (Option<String>, Option<String
     )
 }
 
+#[derive(serde::Serialize)]
+pub struct ClientActivity {
+    pub client_id: String,
+    pub kind: String,
+    pub at: String,
+}
+
+/// The single most-recent activity per client (kind + timestamp) across sent
+/// invoices, sent quotes, sent newsletters, and logged interactions. Returned
+/// separately from the client list so the UI can show what the last touch was
+/// (Invoice / Quote / Newsletter / Call …) without reshaping the Client row.
+#[tauri::command]
+pub async fn client_last_activity() -> Result<Vec<ClientActivity>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT client_id, kind, at FROM (
+               SELECT client_id, kind, at,
+                      ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY at DESC) rn
+               FROM (
+                 SELECT client_id, 'invoice' AS kind, sent_at AS at FROM invoices WHERE COALESCE(sent_at,'') <> ''
+                 UNION ALL SELECT client_id, 'quote', sent_at FROM quotes WHERE COALESCE(sent_at,'') <> ''
+                 UNION ALL SELECT client_id, 'newsletter', sent_at FROM newsletter_sends WHERE status='sent' AND COALESCE(sent_at,'') <> ''
+                 UNION ALL SELECT client_id, kind, created_at FROM interactions
+                          WHERE kind IN ('checkup','call','note','meeting','email_in','email_out') AND COALESCE(created_at,'') <> ''
+               )
+             ) WHERE rn = 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok(ClientActivity { client_id: r.get(0)?, kind: r.get(1)?, at: r.get(2)? }))
+        .map_err(|e| e.to_string())?
+        .filter_map(|x| x.ok())
+        .collect();
+    Ok(rows)
+}
+
 #[tauri::command]
 pub async fn list_clients() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

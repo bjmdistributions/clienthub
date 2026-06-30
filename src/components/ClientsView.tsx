@@ -1,12 +1,26 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, CustomerHealth, DuplicateGroup, BuyerTier } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
-import { Plus, Trash2, Edit2, Search, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban } from "lucide-react";
+import { Plus, Trash2, Edit2, Search, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban, FileText, Calendar, StickyNote } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import ClientDetailView from "./ClientDetailView";
 import PendingReviewModal from "./PendingReviewModal";
 import TierBadge from "./TierBadge";
 import ReliabilityBadge from "./ReliabilityBadge";
+
+// What the client's most-recent touch was — icon + label + accent per kind, so
+// Invoice / Quote / Newsletter read distinctly in the list. (api.clientLastActivity)
+const ACTIVITY_META: Record<string, { label: string; Icon: typeof Clock; cls: string }> = {
+  invoice:    { label: "Invoice",    Icon: FileText,     cls: "text-accent" },
+  quote:      { label: "Quote",      Icon: FileText,     cls: "text-warning-ink" },
+  newsletter: { label: "Newsletter", Icon: Send,         cls: "text-muted" },
+  call:       { label: "Call",       Icon: Phone,        cls: "text-success-ink" },
+  meeting:    { label: "Meeting",    Icon: Calendar,     cls: "text-success-ink" },
+  note:       { label: "Note",       Icon: StickyNote,   cls: "text-muted" },
+  checkup:    { label: "Check-in",   Icon: CheckCircle2, cls: "text-success-ink" },
+  email_in:   { label: "Email",      Icon: Mail,         cls: "text-muted" },
+  email_out:  { label: "Email",      Icon: Mail,         cls: "text-muted" },
+};
 
 const relTime = (d: string | null | undefined): string => {
   if (!d) return "Never";
@@ -28,6 +42,8 @@ export default function ClientsView() {
   const [editing, setEditing]               = useState<Client | null>(null);
   const [showForm, setShowForm]             = useState(false);
   const [detailId, setDetailId]             = useState<string | null>(null);
+  const [activity, setActivity]             = useState<Record<string, { kind: string; at: string }>>({});
+  const [inboxLinked, setInboxLinked]       = useState<boolean | null>(null);
   const [showAdvanced, setShowAdvanced]     = useState(false);
   const [filter, setFilter]                 = useState<ClientFilter>({});
   const [searchText, setSearchText]         = useState("");
@@ -51,13 +67,24 @@ export default function ClientsView() {
     api.clientsMissingInfo().then(setMissingInfo).catch(console.error);
   };
 
+  const loadActivity = useCallback(() => {
+    api.clientLastActivity().then((rows) => {
+      const m: Record<string, { kind: string; at: string }> = {};
+      for (const r of rows) m[r.client_id] = { kind: r.kind, at: r.at };
+      setActivity(m);
+    }).catch(() => {});
+  }, []);
+
   const applyFilter = useCallback(async (f: ClientFilter) => {
     const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.rep;
     if (hasFilter) setClients(await api.listClientsFiltered(f));
     else setClients(await api.listClients());
-  }, []);
+    loadActivity();
+  }, [loadActivity]);
 
   useEffect(() => {
+    loadActivity();
+    api.getEmailInboxes().then((l) => setInboxLinked(l.length > 0)).catch(() => setInboxLinked(null));
     api.listClients().then((all) => {
       setClients(all);
       setSummaryStats({
@@ -133,7 +160,7 @@ export default function ClientsView() {
       case "email": return (c.email || "").toLowerCase();
       case "phone": return c.phone || "";
       case "revenue": return c.total_revenue || 0;
-      case "last": return c.last_contact_at || "";
+      case "last": return activity[c.id]?.at || c.last_contact_at || "";
       case "tier": { const bt = buyerTiers.find((t) => t.client_id === c.id); return TIER_RANK[bt?.tier || "New"] ?? 0; }
       default: return (c.name || "").toLowerCase();
     }
@@ -335,6 +362,17 @@ export default function ClientsView() {
           </div>
         ))}
       </div>
+
+      {/* Inbox-not-linked flag — without a linked inbox, client email replies aren't
+          captured, so "Last activity" is incomplete. */}
+      {inboxLinked === false && (
+        <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-xl border border-warning bg-warning-bg text-[12px] text-warning-ink">
+          <Mail size={14} className="flex-shrink-0" />
+          <span className="flex-1">
+            <span className="font-semibold">Inbox not linked.</span> Customer email replies aren't being tracked, so <span className="font-semibold">Last activity</span> may be incomplete. Link your inbox in <span className="font-semibold">Settings → Email</span> to capture activity automatically.
+          </span>
+        </div>
+      )}
 
       {/* Data Health */}
       {missingInfo && missingInfo.total_incomplete > 0 && (
@@ -643,7 +681,7 @@ export default function ClientsView() {
                 <tr
                   key={c.id}
                   onClick={() => setDetailId(c.id)}
-                  className={`border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""} ${c.is_blacklisted ? "bg-red-50/30" : ""}`}
+                  className={`border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""} ${c.is_blacklisted ? "bg-danger-bg/40" : ""}`}
                 >
                   <td className="px-3 py-3 w-10" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" className="accent-accent" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
@@ -652,7 +690,8 @@ export default function ClientsView() {
                     <span className="flex items-center gap-1.5">
                       {c.name}
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
-                      {c.is_blacklisted && <span className="text-[8px] font-bold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0" title="Blacklisted — excluded from newsletters">BL</span>}
+                      {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Blacklisted — excluded from all sends">Blacklisted</span>}
+                      {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — kept off mass sends so they aren't spammed">High-Value</span>}
                       {c.approval_status === "pending" && <span className="text-[8px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
                       {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
                       {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}
@@ -670,10 +709,20 @@ export default function ClientsView() {
                   <td className="px-4 py-3 text-[12px] text-muted">{c.email || "—"}</td>
                   <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">{c.phone ? fmtPhone(c.phone) : "—"}</td>
                   <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1 text-[12px] text-muted">
-                      <Clock size={11} className="text-faint" />
-                      {relTime(c.last_contact_at)}
-                    </span>
+                    {(() => {
+                      const a = activity[c.id];
+                      const at = a?.at || c.last_contact_at;
+                      const meta = a ? ACTIVITY_META[a.kind] : undefined;
+                      if (!at) return <span className="text-[12px] text-faint">—</span>;
+                      const Icon = meta?.Icon || Clock;
+                      return (
+                        <span className="inline-flex items-center gap-1.5 text-[12px] text-muted whitespace-nowrap">
+                          <Icon size={11} className={meta?.cls || "text-faint"} />
+                          {meta && <span className={`font-medium ${meta.cls}`}>{meta.label}</span>}
+                          <span>{relTime(at)}</span>
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
                     {fmtAmount(c.total_revenue || 0)}
