@@ -447,6 +447,28 @@ export interface DealInput {
   expected_close_date?: string;
 }
 
+export interface ARClient {
+  client_id: string;
+  client_name: string;
+  current: number;
+  d1_30: number;
+  d31_60: number;
+  d61_90: number;
+  d90_plus: number;
+  total: number;
+  oldest_days: number;
+}
+export interface ReceivablesAging {
+  clients: ARClient[];
+  current: number;
+  d1_30: number;
+  d31_60: number;
+  d61_90: number;
+  d90_plus: number;
+  total: number;
+  open_count: number;
+}
+
 export interface SupplierPayment {
   id: string;
   supplier_name: string;
@@ -1429,6 +1451,7 @@ export const api = {
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
   getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number }[]>("get_monthly_profit", { month }),
+  getReceivablesAging: () => invoke<ReceivablesAging>("get_receivables_aging"),
   getAnalyticsRange: (startDate: string, endDate: string) => invoke<any>("get_analytics_range", { startDate, endDate }),
   getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),
   dueFollowups: () => invoke<Client[]>("due_followups"),

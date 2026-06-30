@@ -24,9 +24,11 @@ import {
   MessageSquarePlus,
   ClipboardCheck,
   Building2,
+  Wallet,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
+import ReceivablesView from "./components/ReceivablesView";
 import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
 import SettingsView from "./components/SettingsView";
@@ -59,7 +61,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "platform" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -333,6 +335,7 @@ export default function App() {
     { id: "deals",     label: "Completed",  icon: Briefcase },
     { id: "analytics", label: "Analytics",  icon: BarChart3 },
     { id: "invoices",  label: "Invoices",   icon: FileText },
+    { id: "receivables", label: "Receivables", icon: Wallet },
     { id: "quotes",    label: "Quotes",     icon: FileSignature },
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
     { id: "suppliers", label: "Suppliers",  icon: Package },
@@ -363,6 +366,7 @@ export default function App() {
         <div className="max-w-[1280px] mx-auto">
           {t === "clients"    && <ClientsView />}
           {t === "invoices"   && <InvoicesView />}
+          {t === "receivables" && <ReceivablesView />}
           {t === "quotes"     && <QuotesView onNavigate={setTab} />}
           {t === "dealflow"   && <DealFlowView />}
           {t === "suppliers"  && <SuppliersView />}

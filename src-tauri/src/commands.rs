@@ -6802,6 +6802,52 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Accounts-receivable aging: open invoices (sent/overdue) bucketed by days past
+/// due_date, per client + grand totals. Payment is binary here (an invoice flips to
+/// 'paid' on receipt), so there is no partial-payment netting — open = full total.
+#[tauri::command]
+pub async fn get_receivables_aging() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT i.client_id, COALESCE(c.name,'(unknown)'), COALESCE(i.due_date,''), i.total
+         FROM invoices i LEFT JOIN clients c ON c.id=i.client_id
+         WHERE i.status IN ('sent','overdue')",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok((
+        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, f64>(3)?,
+    ))).map_err(|e| e.to_string())?;
+
+    let today = Utc::now().date_naive();
+    // client_id -> (name, [current,1-30,31-60,61-90,90+], oldest_days)
+    let mut map: std::collections::HashMap<String, (String, [f64; 5], i64)> = std::collections::HashMap::new();
+    let mut tot = [0f64; 5];
+    let mut count = 0i64;
+    for (cid, cname, due, amt) in rows.filter_map(|x| x.ok()) {
+        let days = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
+            .map(|d| (today - d).num_days())
+            .unwrap_or(0);
+        let idx = if days <= 0 { 0 } else if days <= 30 { 1 } else if days <= 60 { 2 } else if days <= 90 { 3 } else { 4 };
+        let e = map.entry(cid).or_insert((cname, [0.0; 5], 0));
+        e.1[idx] += amt;
+        if days > e.2 { e.2 = days; }
+        tot[idx] += amt;
+        count += 1;
+    }
+    let mut clients: Vec<Value> = map.into_iter().map(|(cid, (name, b, oldest))| {
+        json!({
+            "client_id": cid, "client_name": name,
+            "current": b[0], "d1_30": b[1], "d31_60": b[2], "d61_90": b[3], "d90_plus": b[4],
+            "total": b.iter().sum::<f64>(), "oldest_days": oldest,
+        })
+    }).collect();
+    clients.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(json!({
+        "clients": clients,
+        "current": tot[0], "d1_30": tot[1], "d31_60": tot[2], "d61_90": tot[3], "d90_plus": tot[4],
+        "total": tot.iter().sum::<f64>(), "open_count": count,
+    }))
+}
+
 /// Return analytics data filtered to [start_date, end_date] (YYYY-MM-DD).
 /// Empty strings mean "no bound" (all-time).
 #[tauri::command]
