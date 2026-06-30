@@ -93,7 +93,7 @@ export default function QuotesView({ onNavigate }: Props) {
   return (
     <div>
       {toast && (
-        <div className="fixed bottom-5 right-5 bg-[#1A1A1E] text-white px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">{toast}</div>
+        <div className="fixed bottom-5 right-5 bg-ink text-surface px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">{toast}</div>
       )}
 
       <div className="flex justify-between items-center mb-5">

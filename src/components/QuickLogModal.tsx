@@ -163,7 +163,7 @@ export default function QuickLogModal({ onClose }: Props) {
             <div
               className={`text-[13px] px-4 py-2.5 rounded-lg animate-fade-in ${
                 toast.ok
-                  ? "bg-[#1A1A1E] text-success-ink"
+                  ? "bg-success-bg border border-success text-success-ink"
                   : "bg-danger-bg border border-danger text-danger-ink"
               }`}
             >
