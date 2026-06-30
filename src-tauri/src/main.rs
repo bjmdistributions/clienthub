@@ -248,6 +248,8 @@ fn main() {
             toggle_client_blacklist,
             toggle_client_exclusive,
             toggle_client_high_value,
+            set_client_credit_limit,
+            get_client_credit_status,
             get_newsletter_include_ranked,
             set_newsletter_include_ranked,
             approve_client,

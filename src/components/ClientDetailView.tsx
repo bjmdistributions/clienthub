@@ -64,6 +64,14 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
   const [tier, setTier] = useState<BuyerTier | null>(null);
   const [portalLink, setPortalLink] = useState<PortalLink | null>(null);
+  const [credit, setCredit] = useState<{ credit_limit: number; exposure: number; available: number; over: boolean } | null>(null);
+  const [creditEdit, setCreditEdit] = useState("");
+
+  useEffect(() => {
+    api.getClientCreditStatus(clientId)
+      .then((c) => { setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); })
+      .catch(() => setCredit(null));
+  }, [clientId]);
   const [kindFilter, setKindFilter] = useState<string | null>(null);
 
   const load = async () => {
@@ -193,6 +201,32 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 </>
               )}
             </div>
+            {credit && (
+              <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-lg px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted uppercase tracking-wide font-semibold">Credit limit</span>
+                  <input
+                    value={creditEdit}
+                    onChange={(e) => setCreditEdit(e.target.value)}
+                    onBlur={async () => {
+                      const v = parseFloat(creditEdit) || 0;
+                      await api.setClientCreditLimit(client.id, v);
+                      const c = await api.getClientCreditStatus(client.id);
+                      setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : "");
+                    }}
+                    placeholder="none"
+                    className="w-24 text-[13px] bg-surface border border-line rounded px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  />
+                </div>
+                <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
+                {credit.credit_limit > 0 && (
+                  <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>
+                )}
+                {credit.over && (
+                  <span className="text-[10px] font-bold uppercase text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>
+                )}
+              </div>
+            )}
             <div className="flex gap-4 mt-3">
               {client.email && (
                 <div className="flex items-center gap-1.5">

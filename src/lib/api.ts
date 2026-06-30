@@ -1132,6 +1132,9 @@ export const api = {
     invoke<boolean>("toggle_client_exclusive", { id }),
   toggleClientHighValue: (id: string) =>
     invoke<boolean>("toggle_client_high_value", { id }),
+  setClientCreditLimit: (id: string, limit: number) => invoke<void>("set_client_credit_limit", { id, limit }),
+  getClientCreditStatus: (id: string) =>
+    invoke<{ credit_limit: number; exposure: number; available: number; over: boolean }>("get_client_credit_status", { id }),
   getNewsletterIncludeRanked: () => invoke<boolean>("get_newsletter_include_ranked"),
   setNewsletterIncludeRanked: (value: boolean) => invoke<void>("set_newsletter_include_ranked", { value }),
   approveClient: (id: string) =>

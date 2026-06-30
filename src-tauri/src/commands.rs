@@ -315,7 +315,21 @@ pub async fn update_client(id: String, input: ClientInput) -> Result<(), String>
     let now = Utc::now().to_rfc3339();
     let lead_status_val = input.lead_status.clone().unwrap_or_else(|| "prospect".into());
 
-    let mut meta = input.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
+    // Preserve metadata keys this form doesn't manage (high_value, exclusive,
+    // credit_limit, lead_representative, …): start from the STORED metadata and
+    // overlay only what the caller explicitly provided. (Previously this started
+    // from {} and silently wiped those keys on every client edit.)
+    let mut meta = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let existing: String = conn
+            .query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0))
+            .unwrap_or_else(|_| "{}".into());
+        let mut m: Value = serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({}));
+        if let (Some(mo), Some(io)) = (m.as_object_mut(), input.metadata.as_ref().and_then(|v| v.as_object())) {
+            for (k, v) in io { mo.insert(k.clone(), v.clone()); }
+        }
+        m
+    };
     if let Some(v) = &input.category { meta["category"] = Value::String(v.clone()); }
     if let Some(v) = &input.tags { meta["tags"] = Value::String(v.clone()); }
     if let Some(v) = &input.street_address { meta["street_address"] = Value::String(v.clone()); }
@@ -343,6 +357,43 @@ pub async fn update_client(id: String, input: ClientInput) -> Result<(), String>
         rusqlite::params![input.name, input.email, input.phone, input.company, input.notes, lead_status_val, now, metadata_str, id],
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Set (or clear, when 0) a client's credit limit — stored in metadata.credit_limit.
+#[tauri::command]
+pub async fn set_client_credit_limit(id: String, limit: f64) -> Result<(), String> {
+    let existing: String = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?
+    };
+    let mut m: Value = serde_json::from_str(&existing).unwrap_or_else(|_| json!({}));
+    if let Some(o) = m.as_object_mut() {
+        if limit > 0.0 { o.insert("credit_limit".into(), json!(limit)); } else { o.remove("credit_limit"); }
+    }
+    let meta_str = serde_json::to_string(&m).unwrap_or_else(|_| "{}".into());
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(meta_str.clone()));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE clients SET metadata=?1 WHERE id=?2", rusqlite::params![meta_str, id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A client's credit status: their limit, current exposure (open AR = sent/overdue
+/// invoice totals), available headroom, and whether they're over the limit.
+#[tauri::command]
+pub async fn get_client_credit_status(id: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let meta: String = conn.query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0)).unwrap_or_else(|_| "{}".into());
+    let limit = serde_json::from_str::<Value>(&meta).ok()
+        .and_then(|m| m.get("credit_limit").and_then(|v| v.as_f64())).unwrap_or(0.0);
+    let exposure: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status IN ('sent','overdue')",
+        [&id], |r| r.get(0)).unwrap_or(0.0);
+    Ok(json!({
+        "credit_limit": limit, "exposure": exposure,
+        "available": limit - exposure, "over": limit > 0.0 && exposure > limit,
+    }))
 }
 
 #[tauri::command]
