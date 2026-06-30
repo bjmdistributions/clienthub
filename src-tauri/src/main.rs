@@ -392,6 +392,8 @@ fn main() {
             commands::mark_rep_payout_paid,
             commands::get_rep_payout_settings,
             commands::set_rep_payout_settings,
+            commands::get_payout_split,
+            commands::save_payout_split,
             commands::get_shopify_config,
             commands::set_shopify_secret,
             commands::create_intake_source,

@@ -2708,81 +2708,94 @@ function SheetsTab() {
 }
 
 function SplitsTab() {
-  const [split, setSplit] = useState<ProfitSplit | null>(null);
+  type Share = { name: string; pct: number; is_business: boolean };
+  const [shares, setShares] = useState<Share[]>([]);
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [loaded, setLoaded] = useState(false);
 
+  const reloadStaff = () => api.listStaff().then((s) => setStaff(s.filter((x) => x.status === "active"))).catch(() => {});
   useEffect(() => {
-    api.getProfitSplit().then(setSplit).catch(() => {});
+    api.getPayoutSplit().then(setShares).catch(() => {});
+    reloadStaff().finally(() => setLoaded(true));
   }, []);
 
-  const total = (split?.jack_pct ?? 0) + (split?.ben_pct ?? 0) + (split?.business_pct ?? 0);
+  const total = shares.reduce((a, s) => a + (Number(s.pct) || 0), 0);
   const valid = Math.abs(total - 100) < 0.01;
-  // Auto-save only when the split is valid (totals 100%).
-  const save = async () => {
-    if (split) await api.saveProfitSplit(split.business_pct, split.jack_pct, split.ben_pct, split.jack_name, split.ben_name);
+  const persist = (next: Share[]) => {
+    setShares(next);
+    if (Math.abs(next.reduce((a, s) => a + (Number(s.pct) || 0), 0) - 100) < 0.01) api.savePayoutSplit(next).catch(() => {});
   };
-  useAutosave(split, save, split !== null && valid);
+  const setShare = (i: number, patch: Partial<Share>) => persist(shares.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
+  const removeShare = (i: number) => persist(shares.filter((_, idx) => idx !== i));
 
-  if (!split) return <div className="text-sm text-muted py-8 text-center">Loading...</div>;
+  const PAY_TYPES: [string, string][] = [["profit_pct", "% of profit"], ["gross_pct", "% of gross"], ["fixed", "Fixed $"]];
+  const setRepType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); reloadStaff(); };
+  const setRepVal = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
+
+  // Live preview off a sample $1,000 profit, using the first rep with a profit-% rule.
+  const sample = 1000;
+  const previewRep = staff.find((u) => ((u as any).pay_type || "profit_pct") === "profit_pct" && u.commission_pct > 0);
+  const repCut = previewRep ? sample * (previewRep.commission_pct / 100) : 0;
+  const remainder = sample - repCut;
+
+  if (!loaded) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
 
   return (
-    <div className="max-w-lg">
-      <SectionLabel>Profit Split (must total 100%)</SectionLabel>
-      <div className="mt-4 space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label={`${split.jack_name || "Partner 1"} name`}>
-            <input
-              type="text"
-              value={split.jack_name}
-              onChange={(e) => setSplit({ ...split, jack_name: e.target.value })}
-              className={inpSm}
-            />
-          </Field>
-          <Field label="Share %">
-            <input
-              type="number"
-              step="0.1"
-              value={split.jack_pct}
-              onChange={(e) => setSplit({ ...split, jack_pct: parseFloat(e.target.value) || 0 })}
-              className={inpSm}
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label={`${split.ben_name || "Partner 2"} name`}>
-            <input
-              type="text"
-              value={split.ben_name}
-              onChange={(e) => setSplit({ ...split, ben_name: e.target.value })}
-              className={inpSm}
-            />
-          </Field>
-          <Field label="Share %">
-            <input
-              type="number"
-              step="0.1"
-              value={split.ben_pct}
-              onChange={(e) => setSplit({ ...split, ben_pct: parseFloat(e.target.value) || 0 })}
-              className={inpSm}
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="text-[12px] font-medium text-muted mb-1.5">Business share %</div>
-            <div className="border border-line px-3 h-9 rounded-lg text-[13px] flex items-center bg-surface-2 text-muted">
-              {split.business_pct.toFixed(1)}% (auto)
+    <div className="max-w-2xl space-y-7">
+      <div>
+        <SectionLabel>Sales reps</SectionLabel>
+        <p className="text-[12px] text-muted mt-0.5 mb-3">Each person's cut when they're the deal's lead rep — taken first, off the top.</p>
+        <div className="space-y-2">
+          {staff.length === 0 && <div className="text-[12px] text-muted">No team members yet.</div>}
+          {staff.map((u) => (
+            <div key={u.id} className="flex items-center gap-2 bg-surface border border-line rounded-lg px-3 py-2">
+              <div className="flex-1 min-w-0 text-[13px] text-ink truncate">{u.display_name}{u.role_name ? <span className="text-muted text-[11px] ml-1.5">{u.role_name}</span> : null}</div>
+              <select defaultValue={(u as any).pay_type || "profit_pct"} onChange={(e) => setRepType(u.id, e.target.value)}
+                className="bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink shrink-0">
+                {PAY_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+              <input type="number" min={0} step="0.1" defaultValue={u.commission_pct} onBlur={(e) => setRepVal(u.id, parseFloat(e.target.value) || 0)}
+                className="w-20 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink text-right shrink-0" />
             </div>
-          </div>
-          <div>
-            <div className="text-[12px] font-medium text-muted mb-1.5">Total</div>
-            <div className={`border px-3 h-9 rounded-lg text-[13px] flex items-center gap-1.5 ${
-              valid ? "border-success bg-success-bg text-success-ink" : "border-danger bg-danger-bg text-danger-ink"
-            }`}>
-              {valid ? <Check size={13} /> : <AlertCircle size={13} />}
-              {total.toFixed(1)}%
-              {!valid && <span className="text-[11px] ml-1">(must equal 100%)</span>}
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <SectionLabel>Owners &amp; Business — split the remainder</SectionLabel>
+        <p className="text-[12px] text-muted mt-0.5 mb-3">Whatever's left after the rep's cut is divided by these shares. Must total 100%.</p>
+        <div className="space-y-2">
+          {shares.map((s, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input value={s.name} onChange={(e) => setShare(i, { name: e.target.value })} placeholder={s.is_business ? "Business" : "Name"}
+                className="flex-1 min-w-0 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+              {s.is_business && <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full shrink-0">Business</span>}
+              <input type="number" min={0} step="0.1" value={s.pct} onChange={(e) => setShare(i, { pct: parseFloat(e.target.value) || 0 })}
+                className="w-20 bg-surface-2 border border-line rounded-lg h-9 px-2 text-[13px] text-ink text-right shrink-0" />
+              <span className="text-[12px] text-muted shrink-0">%</span>
+              <button onClick={() => removeShare(i)} className="text-muted hover:text-danger-ink px-1 shrink-0" title="Remove">✕</button>
             </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 mt-3 flex-wrap">
+          <button onClick={() => setShares([...shares, { name: "", pct: 0, is_business: false }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Owner</button>
+          {!shares.some((s) => s.is_business) && <button onClick={() => setShares([...shares, { name: "Business", pct: 0, is_business: true }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Business</button>}
+          <div className={`ml-auto flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12px] border ${valid ? "border-success bg-success-bg text-success-ink" : "border-danger bg-danger-bg text-danger-ink"}`}>
+            {valid ? <Check size={13} /> : <AlertCircle size={13} />} {total.toFixed(1)}%{!valid && " · must equal 100%"}
           </div>
+        </div>
+      </div>
+
+      <div>
+        <SectionLabel>Preview</SectionLabel>
+        <div className="bg-surface border border-line rounded-xl p-4 mt-2 text-[13px] space-y-1.5">
+          <div className="flex justify-between"><span className="text-muted">Sample deal profit</span><span className="tabular-nums text-ink font-medium">${sample.toFixed(0)}</span></div>
+          {previewRep && <div className="flex justify-between"><span className="text-ink-2">Rep cut — {previewRep.display_name} ({previewRep.commission_pct}%)</span><span className="tabular-nums text-ink">${repCut.toFixed(2)}</span></div>}
+          <div className="flex justify-between border-t border-line pt-1.5"><span className="text-ink-2 font-medium">Remainder to owners</span><span className="tabular-nums text-ink font-medium">${remainder.toFixed(2)}</span></div>
+          {shares.map((s, i) => (
+            <div key={i} className="flex justify-between pl-3"><span className="text-muted">{s.name || "—"}{s.is_business ? " · Business" : ""} · {s.pct}%</span><span className="tabular-nums text-ink">${(remainder * (Number(s.pct) || 0) / 100).toFixed(2)}</span></div>
+          ))}
+          {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet — the full profit goes to the owner split.</p>}
         </div>
       </div>
     </div>

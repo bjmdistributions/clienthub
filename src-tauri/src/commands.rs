@@ -3736,11 +3736,68 @@ pub async fn delete_refund(id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// The full pay breakdown for one deal flow (refund-aware): lead rep, cut, owner
+/// Dynamic owner-split shares (name, pct, is_business). Reads `profit_split_json`;
+/// if unset, migrates from the legacy jack/ben/business settings. Each share takes
+/// pct% of the REMAINDER after the rep's cut — identical formula, N entries.
+fn read_profit_split_shares() -> Vec<(String, f64, bool)> {
+    if let Ok(conn) = pool().get() {
+        if let Ok(j) = conn.query_row("SELECT value FROM settings WHERE key='profit_split_json'", [], |r| r.get::<_, String>(0)) {
+            if !j.trim().is_empty() {
+                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&j) {
+                    let shares: Vec<(String, f64, bool)> = arr.iter().filter_map(|e| {
+                        let name = e.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let pct = e.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                        let is_biz = e.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false);
+                        if name.is_empty() && !is_biz { None } else { Some((if is_biz && name.is_empty() { "Business".into() } else { name }, pct, is_biz)) }
+                    }).collect();
+                    if !shares.is_empty() { return shares; }
+                }
+            }
+        }
+    }
+    let s = read_profit_split().unwrap_or(ProfitSplit { business_pct: 40.0, jack_pct: 30.0, ben_pct: 30.0, jack_name: "Jack".into(), ben_name: "Ben".into() });
+    vec![(s.jack_name, s.jack_pct, false), (s.ben_name, s.ben_pct, false), ("Business".to_string(), s.business_pct, true)]
+}
+
+#[tauri::command]
+pub async fn get_payout_split() -> Result<Vec<Value>, String> {
+    Ok(read_profit_split_shares().into_iter().map(|(name, pct, is_business)| json!({ "name": name, "pct": pct, "is_business": is_business })).collect())
+}
+
+/// Save the dynamic owner split. Also back-fills the legacy jack/ben/business settings
+/// from the first ≤2 people + the business entity, so complete_deal_flow + any legacy
+/// reader stays consistent for the common case.
+#[tauri::command]
+pub async fn save_payout_split(shares: Vec<Value>) -> Result<(), String> {
+    let json = serde_json::to_string(&shares).map_err(|e| e.to_string())?;
+    let put = |key: &str, val: String| -> Result<(), String> {
+        { let conn = pool().get().map_err(|e| e.to_string())?;
+          conn.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key, val]).map_err(|e| e.to_string())?; }
+        let mut cols = Map::new();
+        cols.insert("value".into(), Value::String(val));
+        sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    put("profit_split_json", json)?;
+    let biz_pct = shares.iter().find(|s| s.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false)).and_then(|s| s.get("pct")).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let non_biz: Vec<&Value> = shares.iter().filter(|s| !s.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false)).collect();
+    let share_at = |i: usize| -> (String, f64) {
+        non_biz.get(i).map(|s| (s.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(), s.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0))).unwrap_or((String::new(), 0.0))
+    };
+    let (jn, jp) = share_at(0);
+    let (bn, bp) = share_at(1);
+    put("profit_split_jack", jp.to_string())?;
+    put("profit_split_ben", bp.to_string())?;
+    put("profit_split_business", biz_pct.to_string())?;
+    if !jn.is_empty() { put("profit_split_jack_name", jn)?; }
+    if !bn.is_empty() { put("profit_split_ben_name", bn)?; }
+    Ok(())
+}
+
+/// The full pay breakdown for one deal flow (refund-aware): lead rep, cut, dynamic owner
 /// splits of the remaining effective net, refunded total, and owed-back.
 #[tauri::command]
 pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
-    let split = read_profit_split()?;
     let enabled = setting_bool("rep_payouts_enabled");
     let conn = pool().get().map_err(|e| e.to_string())?;
     let (net, gross, refund_owed): (f64, f64, f64) = conn.query_row(
@@ -3789,11 +3846,7 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         "unmatched_rep_name": unmatched_name,
         "rep_cut": if has_cut { r2(cut) } else { 0.0 },
         "remaining_profit": r2(remaining),
-        "splits": [
-            { "name": split.jack_name, "amount": r2(remaining * split.jack_pct / 100.0) },
-            { "name": split.ben_name, "amount": r2(remaining * split.ben_pct / 100.0) },
-            { "name": "Business", "amount": r2(remaining * split.business_pct / 100.0) },
-        ],
+        "splits": read_profit_split_shares().into_iter().map(|(name, pct, is_business)| json!({ "name": name, "amount": r2(remaining * pct / 100.0), "is_business": is_business })).collect::<Vec<_>>(),
     }))
 }
 
