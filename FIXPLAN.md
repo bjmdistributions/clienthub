@@ -70,6 +70,28 @@ same risk — measure + bump there too.
 
 **Verify:** re-run the contrast eval (target ≥4.5 for faint, ≥7 for muted) + render the Invoices view.
 
+### E. New batch (2026-06-30 #2)
+- [ ] **E0 (BLOCKER) — verify your installed desktop is current.** `latest.json` serves v0.14.59 signed
+  (auto-update works), but if your install predates the ED79 signing-key fix it can't verify → stuck on
+  an OLD build → every desktop fix looks "still broken." **Action:** reinstall the latest .msi from
+  `github.com/bjmdistributions/clienthub/releases/latest` once, then auto-update works going forward.
+  Until confirmed, we can't tell code bugs from stale-build bugs on desktop.
+- [~] **E1 Blacklist + newsletters.** CODE IS CORRECT (verified): EmailView picker excludes blacklisted
+  (v0.14.55); desktop `send_newsletter` skips `is_blacklisted` per-recipient (commands.rs:7893); server
+  scheduler filters at resolve (scheduler.rs:84) AND per-recipient (347). PROD DATA: 5 clients blacklisted
+  (persists fine); 14 sends to blacklisted are ALL pre-fix (May 21–Jun 18; latest send overall Jun 25;
+  fix shipped today) → none after the fix. → Root cause = E0 (old build). If still wrong on a CURRENT
+  build, re-investigate. Also re-confirm the list "Blacklisted" badge (v0.14.56, theme-safe) shows.
+- [ ] **E2 High-Value tagging — UX is unclear / bad logic.** Currently a small pill toggle on the client
+  detail (metadata.exclusive, label "HIGH-VALUE"). Redesign: clearer affordance + label + a one-line
+  explanation of what it does (kept off mass sends/auto-add), maybe a confirm. Apply desktop + mobile.
+- [ ] **E3 Dashboard profit line graph uses accent.** DashboardView.tsx:376-377 — line stroke is a
+  gradient `--c-accent → --c-success` (turns grey in matte). Replace with a fixed designed gradient
+  (e.g. emerald→teal). Add a small filter/toggle for the chart (profit vs revenue, range).
+- [ ] **E4 Analytics page — designed colors + far more options.** AnalyticsView already has a palette
+  (indigo/emerald/rose) + custom range + xlsx export. Upgrade: refine the palette for visual appeal,
+  add more chart types/comparisons/breakdowns + advanced filters. (Read AnalyticsView fully first.)
+
 ### A2. Theme-blind hardcoded colors (130 hits / 30 components)
 **Scan (desktop):** top offenders — InventoryView (24), SettingsView (15), ClientsView (14),
 CheckupView (10), DealFlowView (8), AuthView (7), InvoicesView (7), DealsView/EmailView/OnboardingWizard (4).

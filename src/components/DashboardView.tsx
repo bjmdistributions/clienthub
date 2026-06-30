@@ -373,8 +373,11 @@ export default function DashboardView({ onNavigate }: Props) {
                 <LineChart data={dailyProfit} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
                   <defs>
                     <linearGradient id="profitGrad" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="rgb(var(--c-accent))" />
-                      <stop offset="100%" stopColor="rgb(var(--c-success))" />
+                      {/* Designed, theme-independent profit gradient (emerald → teal → cyan) —
+                          stays vivid in light/dark/matte instead of greying out with the accent. */}
+                      <stop offset="0%" stopColor="#34D399" />
+                      <stop offset="55%" stopColor="#14B8A6" />
+                      <stop offset="100%" stopColor="#06B6D4" />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="2 4" stroke="var(--t-b1)" vertical={false} />
@@ -386,7 +389,7 @@ export default function DashboardView({ onNavigate }: Props) {
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
                   <Line type="monotone" dataKey="profit" stroke="url(#profitGrad)" strokeWidth={2.5} dot={false}
-                    activeDot={{ r: 5, fill: "rgb(var(--c-accent))", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(99,102,241,0.4))" } }}
+                    activeDot={{ r: 5, fill: "#10B981", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(16,185,129,0.5))" } }}
                     isAnimationActive animationDuration={1000} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>
