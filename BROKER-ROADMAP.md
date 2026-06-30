@@ -11,7 +11,16 @@ dependency order. 1 and 2 are the ones that actually decide adoption; 3 and 4 bu
 
 ---
 
-## 1. Make `net_profit` unimpeachable (refine — do NOT rebuild)  · effort S–M · do first
+## 1. Make `net_profit` unimpeachable (refine — do NOT rebuild)  · ✅ SHIPPED v0.14.65 (desktop) + server
+**Done:** deal costs are now categorized (`supplier · freight · wire_in · wire_out · other`). A new
+"Add freight / wire fee" form + per-line category tag + a by-category cost breakdown on the deal.
+`net_profit` recompute is **unchanged** (category is additive — still `gross − Σ costs`), so freight +
+incoming/outgoing wire fees now flow into profit AND payouts. Supplier-spend analytics guarded to
+`category='supplier'` so fees don't masquerade as suppliers; `category` preserved across the server
+round-trip (models.rs + input). **Remaining for full parity:** the web/mobile deal view doesn't manage
+deal costs at all today, so mobile cost-entry is a *net-new* surface (not a hidden gap) — fast-follow.
+
+
 **Already there:** `CostItem {label, amount}`, `total_cost = Σ amounts`, `net_profit = gross − total_cost`
 (commands.rs:2476/2482), `shipping_charged` (charged to customer), `supplier_payments_json` +
 `total_supplier_cost` on the deal. The spine is correct.
