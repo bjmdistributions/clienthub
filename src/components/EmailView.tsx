@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend } from "../lib/api";
+import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend, BuyerTier } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import VariablePicker, { VariableReference } from "./VariablePicker";
@@ -516,6 +516,13 @@ function NewsletterTab() {
   // Dormant clients are excluded from newsletters by default — kept on record,
   // just not contacted. Untick to include them in a send.
   const [excludeDormant, setExcludeDormant] = useState(true);
+  const [tiers, setTiers] = useState<BuyerTier[]>([]);
+  const [tierFilter, setTierFilter] = useState<"all" | "ranked" | string[]>("all");
+  const [includeRanked, setIncludeRanked] = useState(true);
+  useEffect(() => {
+    api.buyerTiers().then(setTiers).catch(() => {});
+    api.getNewsletterIncludeRanked().then(setIncludeRanked).catch(() => {});
+  }, []);
   const [showFilters, setShowFilters] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [scheduleInterval, setScheduleInterval] = useState(0);
@@ -581,10 +588,20 @@ function NewsletterTab() {
       )
     : filteredClients;
 
+  const tierMap: Record<string, string> = {};
+  for (const t of tiers) tierMap[t.client_id] = t.tier;
+  const RANKED_TIERS = ["S", "A", "B", "C", "D"];
   const metadataFilteredClients = searchedClients.filter((c) => {
+    if (c.is_blacklisted) return false;                         // never mass-send to blacklisted (bug fix)
+    if (c.metadata?.exclusive) return false;                    // exclusive VIPs stay off mass sends
     if (excludeDormant && c.lead_status === "inactive") return false;
     if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
     if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;
+    const tier = tierMap[c.id] || "";
+    if (tierFilter === "ranked") return RANKED_TIERS.includes(tier);
+    if (Array.isArray(tierFilter)) return tierFilter.includes(tier);
+    // "all": include everyone unless ranked clients are off by default.
+    if (!includeRanked && RANKED_TIERS.includes(tier)) return false;
     return true;
   });
   const excludedByFilter = searchedClients.length - metadataFilteredClients.length;
@@ -832,6 +849,34 @@ function NewsletterTab() {
                   className="accent-accent" />
                 Exclude under $10k annual spend
               </label>
+
+              {/* Tier targeting — send only to top-ranked buyers, or pick specific tiers. */}
+              <div className="pt-2 mt-1 border-t border-line">
+                <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">Buyer tiers</div>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {([["all", "All tiers"], ["ranked", "Ranked only"]] as [string, string][]).map(([v, l]) => (
+                    <button key={v} onClick={() => setTierFilter(v as "all" | "ranked")}
+                      className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${tierFilter === v ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
+                  ))}
+                  {([["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
+                    const active = Array.isArray(tierFilter) && tierFilter.includes(code);
+                    return (
+                      <button key={code} onClick={() => {
+                        const cur = Array.isArray(tierFilter) ? tierFilter : [];
+                        const next = active ? cur.filter((t) => t !== code) : [...cur, code];
+                        setTierFilter(next.length ? next : "all");
+                      }}
+                        className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${active ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{label}</button>
+                    );
+                  })}
+                </div>
+                <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
+                  <input type="checkbox" checked={includeRanked}
+                    onChange={(e) => { setIncludeRanked(e.target.checked); api.setNewsletterIncludeRanked(e.target.checked).catch(() => {}); }}
+                    className="accent-accent" />
+                  Include ranked clients in mass sends (default)
+                </label>
+              </div>
               {excludedByFilter > 0 && (
                 <div className="text-[10px] text-warning-ink">{excludedByFilter} client{excludedByFilter !== 1 ? "s" : ""} excluded by filters</div>
               )}

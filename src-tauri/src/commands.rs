@@ -329,6 +329,42 @@ pub async fn toggle_client_blacklist(id: String) -> Result<bool, String> {
     Ok(val != 0)
 }
 
+/// "Exclusive" clients (e.g. VIPs) are kept off mass sends + auto-add — softer than a
+/// blacklist. Stored in client metadata.exclusive so no schema change is needed.
+#[tauri::command]
+pub async fn toggle_client_exclusive(id: String) -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let meta: String = conn.query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let mut m: Value = serde_json::from_str(&meta).unwrap_or_else(|_| json!({}));
+    let next = !m.get("exclusive").and_then(|x| x.as_bool()).unwrap_or(false);
+    if let Some(o) = m.as_object_mut() { o.insert("exclusive".into(), json!(next)); }
+    let meta_str = serde_json::to_string(&m).unwrap_or_else(|_| "{}".into());
+    conn.execute("UPDATE clients SET metadata=?1 WHERE id=?2", rusqlite::params![meta_str, id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(meta_str));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
+/// Whether tier-ranked clients are included by default in mass "select all" sends.
+#[tauri::command]
+pub async fn get_newsletter_include_ranked() -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let v: String = conn.query_row("SELECT value FROM settings WHERE key='newsletter_include_ranked'", [], |r| r.get(0)).unwrap_or_else(|_| "1".into());
+    Ok(v != "0" && !v.eq_ignore_ascii_case("false"))
+}
+
+#[tauri::command]
+pub async fn set_newsletter_include_ranked(value: bool) -> Result<(), String> {
+    let v = if value { "1" } else { "0" };
+    { let conn = pool().get().map_err(|e| e.to_string())?;
+      conn.execute("INSERT INTO settings (key,value) VALUES ('newsletter_include_ranked',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [v]).map_err(|e| e.to_string())?; }
+    let mut cols = Map::new();
+    cols.insert("value".into(), Value::String(v.to_string()));
+    sync::record_upsert("settings", "newsletter_include_ranked", cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn approve_client(id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

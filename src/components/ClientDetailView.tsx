@@ -144,6 +144,18 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 }`}>
                 {client.is_blacklisted ? "BLACKLISTED" : "Not Blacklisted"}
               </button>
+              <button onClick={async () => {
+                const val = await api.toggleClientExclusive(client.id);
+                setClient({ ...client, metadata: { ...(client.metadata || {}), exclusive: val } });
+              }}
+                title="Exclusive clients are kept off mass newsletters and auto-add — for VIPs you don't want spammed"
+                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
+                  client.metadata?.exclusive
+                    ? "bg-accent/10 text-accent border-accent/30"
+                    : "bg-surface-2 text-muted border-line hover:text-ink-2"
+                }`}>
+                {client.metadata?.exclusive ? "EXCLUSIVE" : "Not Exclusive"}
+              </button>
               {tier && (
                 <>
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-2 ${

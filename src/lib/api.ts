@@ -1083,6 +1083,10 @@ export const api = {
     invoke<void>("update_client_status", { id, status }),
   toggleClientBlacklist: (id: string) =>
     invoke<boolean>("toggle_client_blacklist", { id }),
+  toggleClientExclusive: (id: string) =>
+    invoke<boolean>("toggle_client_exclusive", { id }),
+  getNewsletterIncludeRanked: () => invoke<boolean>("get_newsletter_include_ranked"),
+  setNewsletterIncludeRanked: (value: boolean) => invoke<void>("set_newsletter_include_ranked", { value }),
   approveClient: (id: string) =>
     invoke<void>("approve_client", { id }),
   rejectClient: (id: string) =>
