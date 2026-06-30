@@ -529,6 +529,7 @@ fn main() {
             dashboard_stats,
             get_monthly_profit,
             get_receivables_aging,
+            get_payables_aging,
             get_analytics_range,
             list_deals_for_supplier,
             // CSV import

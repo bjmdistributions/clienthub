@@ -25,10 +25,12 @@ import {
   ClipboardCheck,
   Building2,
   Wallet,
+  Banknote,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
 import ReceivablesView from "./components/ReceivablesView";
+import PayablesView from "./components/PayablesView";
 import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
 import SettingsView from "./components/SettingsView";
@@ -61,7 +63,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "platform" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -336,6 +338,7 @@ export default function App() {
     { id: "analytics", label: "Analytics",  icon: BarChart3 },
     { id: "invoices",  label: "Invoices",   icon: FileText },
     { id: "receivables", label: "Receivables", icon: Wallet },
+    { id: "payables",  label: "Payables",   icon: Banknote },
     { id: "quotes",    label: "Quotes",     icon: FileSignature },
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
     { id: "suppliers", label: "Suppliers",  icon: Package },
@@ -367,6 +370,7 @@ export default function App() {
           {t === "clients"    && <ClientsView />}
           {t === "invoices"   && <InvoicesView />}
           {t === "receivables" && <ReceivablesView />}
+          {t === "payables"   && <PayablesView />}
           {t === "quotes"     && <QuotesView onNavigate={setTab} />}
           {t === "dealflow"   && <DealFlowView />}
           {t === "suppliers"  && <SuppliersView />}

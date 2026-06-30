@@ -6848,6 +6848,59 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
     }))
 }
 
+/// Accounts-payable aging: unpaid cost lines (paid=false) on active deals, grouped by
+/// payee, aged by days since the deal was funded (payment_received_at, else created_at).
+/// Includes freight/wire fees — real outgoing obligations. No supplier due-date yet
+/// (wire-based, paid promptly); explicit Net-terms is a later refinement.
+#[tauri::command]
+pub async fn get_payables_aging() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(sp.value,'$.supplier_name') AS payee, \
+                CAST(json_extract(sp.value,'$.amount') AS REAL) AS amount, \
+                COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor \
+         FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
+         WHERE df.stage != 'complete' \
+           AND COALESCE(json_extract(sp.value,'$.paid'),0)=0 \
+           AND json_extract(sp.value,'$.supplier_name') IS NOT NULL",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok((
+        r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+        r.get::<_, f64>(1)?,
+        r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+    ))).map_err(|e| e.to_string())?;
+
+    let today = Utc::now().date_naive();
+    // payee -> ([≤30,31-60,61-90,90+], oldest_days)
+    let mut map: std::collections::HashMap<String, ([f64; 4], i64)> = std::collections::HashMap::new();
+    let mut tot = [0f64; 4];
+    let mut count = 0i64;
+    for (payee, amount, anchor) in rows.filter_map(|x| x.ok()) {
+        let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
+            .map(|d| (today - d).num_days())
+            .unwrap_or(0);
+        let idx = if days <= 30 { 0 } else if days <= 60 { 1 } else if days <= 90 { 2 } else { 3 };
+        let e = map.entry(payee).or_insert(([0.0; 4], 0));
+        e.0[idx] += amount;
+        if days > e.1 { e.1 = days; }
+        tot[idx] += amount;
+        count += 1;
+    }
+    let mut suppliers: Vec<Value> = map.into_iter().map(|(name, (b, oldest))| {
+        json!({
+            "payee": name,
+            "d0_30": b[0], "d31_60": b[1], "d61_90": b[2], "d90_plus": b[3],
+            "total": b.iter().sum::<f64>(), "oldest_days": oldest,
+        })
+    }).collect();
+    suppliers.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(json!({
+        "suppliers": suppliers,
+        "d0_30": tot[0], "d31_60": tot[1], "d61_90": tot[2], "d90_plus": tot[3],
+        "total": tot.iter().sum::<f64>(), "open_count": count,
+    }))
+}
+
 /// Return analytics data filtered to [start_date, end_date] (YYYY-MM-DD).
 /// Empty strings mean "no bound" (all-time).
 #[tauri::command]

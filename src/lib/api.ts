@@ -469,6 +469,25 @@ export interface ReceivablesAging {
   open_count: number;
 }
 
+export interface PayableSupplier {
+  payee: string;
+  d0_30: number;
+  d31_60: number;
+  d61_90: number;
+  d90_plus: number;
+  total: number;
+  oldest_days: number;
+}
+export interface PayablesAging {
+  suppliers: PayableSupplier[];
+  d0_30: number;
+  d31_60: number;
+  d61_90: number;
+  d90_plus: number;
+  total: number;
+  open_count: number;
+}
+
 export interface SupplierPayment {
   id: string;
   supplier_name: string;
@@ -1452,6 +1471,7 @@ export const api = {
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
   getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number }[]>("get_monthly_profit", { month }),
   getReceivablesAging: () => invoke<ReceivablesAging>("get_receivables_aging"),
+  getPayablesAging: () => invoke<PayablesAging>("get_payables_aging"),
   getAnalyticsRange: (startDate: string, endDate: string) => invoke<any>("get_analytics_range", { startDate, endDate }),
   getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),
   dueFollowups: () => invoke<Client[]>("due_followups"),
