@@ -198,7 +198,7 @@ export default function DealFlowView() {
 
           {/* Drawer body */}
           {drawerOpen && (
-            <div className="border-t border-line divide-y divide-gray-50">
+            <div className="border-t border-line divide-y divide-line-2">
               {completedFiltered.length === 0 ? (
                 <p className="text-[12px] text-faint text-center py-8">
                   {search ? "No completed deals match your search" : "No completed deals yet"}
@@ -245,7 +245,7 @@ export default function DealFlowView() {
                         </div>
                       </button>
                       {isExp && (
-                        <div className="border-t border-gray-50 bg-surface-2/40 px-5 py-5">
+                        <div className="border-t border-line-2 bg-surface-2/40 px-5 py-5">
                           <CompletedBreakdown flow={flow} onReload={load} />
                         </div>
                       )}
@@ -488,7 +488,7 @@ function DealFlowCard({
                 </thead>
                 <tbody>
                   {invItems.map((it, i) => (
-                    <tr key={i} className="border-t border-gray-50">
+                    <tr key={i} className="border-t border-line-2">
                       <td className="py-1.5 text-ink-2">{it.description}</td>
                       <td className="py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
                       <td className="py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
@@ -560,7 +560,7 @@ function PanelInvoiced({ flow }: { flow: DealFlow }) {
           </div>
           {items.map((item, i) => (
             <div key={i}
-              className="grid grid-cols-[1fr_48px_90px_90px] gap-x-3 px-3 py-2 border-t border-gray-50 text-[13px]">
+              className="grid grid-cols-[1fr_48px_90px_90px] gap-x-3 px-3 py-2 border-t border-line-2 text-[13px]">
               <span className="text-ink-2 truncate">{item.description}</span>
               <span className="text-muted text-center tabular-nums">{item.qty}</span>
               <span className="text-muted text-right tabular-nums">{fmtAmount(item.rate)}</span>
@@ -806,7 +806,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
                         <div
                           key={i}
                           className="grid grid-cols-[1fr_44px_80px_80px_80px] gap-x-2 px-3 py-2
-                                     border-t border-gray-50 items-center"
+                                     border-t border-line-2 items-center"
                         >
                           <span className="text-[12px] text-ink-2 truncate" title={item.description}>
                             {item.description}
@@ -1021,7 +1021,7 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
           {/* Cost breakdown — read-only, shows what was entered per item */}
           <div className="rounded-lg border border-line overflow-hidden bg-surface">
             {payments.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 border-b border-gray-50 last:border-0">
+              <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 border-b border-line-2 last:border-0">
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-medium text-ink truncate">{p.supplier_name}</div>
                   {p.quantity != null && p.unit_price != null && (
@@ -1381,10 +1381,10 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
       {/* Supplier breakdown */}
       {payments.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-gray-50">
+          <div className="px-4 py-2.5 border-b border-line-2">
             <SectionLabel>Supplier Payments</SectionLabel>
           </div>
-          <div className="divide-y divide-gray-50">
+          <div className="divide-y divide-line-2">
             {payments.map((p) => (
               <div key={p.id} className="flex items-center gap-3 px-4 py-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />

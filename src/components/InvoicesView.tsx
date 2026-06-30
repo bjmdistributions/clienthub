@@ -227,7 +227,7 @@ export default function InvoicesView() {
       {payModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setPayModal(null)}>
           <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] animate-fade-up" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-50">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
               <h3 className="text-[14px] font-semibold text-ink">Mark as Paid</h3>
               <button onClick={() => setPayModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
                 <X size={16} />
@@ -265,7 +265,7 @@ export default function InvoicesView() {
       <div className="bg-surface border border-line rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-50">
+            <tr className="border-b border-line-2">
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Number</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
               <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Issue</th>
@@ -296,7 +296,7 @@ export default function InvoicesView() {
                 profit = null;
               }
               return (
-                <tr key={inv.id} className="border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors" onClick={() => openDetail(inv.id)}>
+                <tr key={inv.id} className="border-b border-line-2 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors" onClick={() => openDetail(inv.id)}>
                   <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(inv.client_id)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
@@ -494,7 +494,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
                     {filteredClients.map((c) => (
                       <button key={c.id} type="button"
                         onClick={() => { setClientId(c.id); setClientSearch(c.name); setShowClientPicker(false); setCreateNew(false); }}
-                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-accent/10 border-b border-gray-50 last:border-0 transition-colors">
+                        className="w-full text-left px-3 py-2 text-[13px] hover:bg-accent/10 border-b border-line-2 last:border-0 transition-colors">
                         {c.name}
                       </button>
                     ))}
@@ -788,7 +788,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               </thead>
               <tbody>
                 {items.map((it, i) => (
-                  <tr key={i} className="border-t border-gray-50">
+                  <tr key={i} className="border-t border-line-2">
                     <td className="px-3 py-2.5 text-ink-2">{it.description}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted">{it.qty}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>

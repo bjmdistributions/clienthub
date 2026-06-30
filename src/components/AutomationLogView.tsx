@@ -67,7 +67,7 @@ export default function AutomationLogView() {
         <div className="bg-surface border border-line rounded-xl overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-50">
+              <tr className="border-b border-line-2">
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Date</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Rule</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Action</th>
@@ -78,7 +78,7 @@ export default function AutomationLogView() {
               {filtered.slice(0, 200).map(e => {
                 const ok = !e.details?.includes("failed") && !e.details?.includes("error") && !e.details?.includes("SMTP");
                 return (
-                  <tr key={e.id} className="border-b border-gray-50 last:border-0 hover:bg-surface-2/60">
+                  <tr key={e.id} className="border-b border-line-2 last:border-0 hover:bg-surface-2/60">
                     <td className="px-4 py-2.5 text-[12px] text-muted tabular-nums whitespace-nowrap">
                       {new Date(e.triggered_at).toLocaleDateString()} {new Date(e.triggered_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </td>

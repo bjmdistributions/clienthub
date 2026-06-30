@@ -673,7 +673,7 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="px-5 py-2.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
             <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Quick Actions</p>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-50">
+          <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line-2">
             {[
               { label: "Add Client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "var(--accent-600)", dotBg: "var(--accent-tint)"  },
               { label: "New Invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "rgb(var(--c-accent))", dotBg: "rgb(var(--c-accent) / 0.1)"  },

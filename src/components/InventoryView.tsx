@@ -196,7 +196,7 @@ export default function InventoryView() {
           <ChevronDown size={13} className={`text-muted transition-transform ${showManifest ? "rotate-180" : ""}`} />
         </button>
         {showManifest && (
-          <div className="px-5 pb-4 border-t border-gray-50">
+          <div className="px-5 pb-4 border-t border-line">
             <p className="text-[11px] text-muted mt-3 mb-3">Upload a manifest CSV to analyze categories, estimate margins, and calculate a suggested bid.</p>
             {!manifest && (
               <button onClick={async () => {
@@ -232,7 +232,7 @@ export default function InventoryView() {
                   </thead>
                   <tbody>
                     {manifest.categories.map((c) => (
-                      <tr key={c.category} className="border-t border-gray-50">
+                      <tr key={c.category} className="border-t border-line">
                         <td className="px-3 py-2 font-medium text-ink-2">{c.category}</td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted">{c.items}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(c.total_retail)}</td>
@@ -290,7 +290,7 @@ export default function InventoryView() {
                 )}
                 {selectMode && (
                   <span className={`absolute top-2.5 right-2.5 z-10 w-6 h-6 rounded-md flex items-center justify-center border-2 ${isSel ? "bg-accent border-accent" : "bg-surface/95 border-line-3"}`}>
-                    {isSel && <Check size={14} className="text-white" />}
+                    {isSel && <Check size={14} className="text-on-accent" />}
                   </span>
                 )}
                 <span className={`absolute top-2.5 left-2.5 text-[9px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide backdrop-blur-sm ${statusColor(lot.status)}`}>{lot.status}</span>

@@ -181,7 +181,7 @@ export default function SuppliersView() {
                   <span className="flex items-center gap-1 truncate"><Mail size={9} /> {s.email}</span>
                 )}
               </div>
-              <div className="flex items-center justify-between border-t border-gray-50 pt-2.5 mt-auto">
+              <div className="flex items-center justify-between border-t border-line-2 pt-2.5 mt-auto">
                 <div>
                   <div className="text-[11px] font-bold text-ink tabular-nums">{fmtAmount(s.total_paid)}</div>
                   <div className="text-[10px] text-muted">total paid</div>
@@ -308,7 +308,7 @@ export default function SuppliersView() {
                           No completed deals with this supplier yet
                         </div>
                       ) : (
-                        <div className="divide-y divide-gray-50">
+                        <div className="divide-y divide-line-2">
                           {supplierDeals.map((d: any) => {
                             const margin = d.gross_revenue > 0
                               ? ((d.net_profit / d.gross_revenue) * 100).toFixed(1)
@@ -369,7 +369,7 @@ export default function SuppliersView() {
                       <span>Date</span><span>Item</span><span>Qty</span><span>Price</span>
                     </div>
                     {history.map((h) => (
-                      <div key={h.id} className="grid grid-cols-4 px-3 py-2 text-[12px] border-t border-gray-50">
+                      <div key={h.id} className="grid grid-cols-4 px-3 py-2 text-[12px] border-t border-line-2">
                         <span className="text-muted">{new Date(h.recorded_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
                         <span className="text-ink-2 truncate">{h.item_description}</span>
                         <span className="text-muted">{h.quantity || "—"}</span>

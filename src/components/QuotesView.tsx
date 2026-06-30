@@ -128,7 +128,7 @@ export default function QuotesView({ onNavigate }: Props) {
             {filtered.map((q) => {
               const ds = displayStatus(q);
               return (
-                <tr key={q.id} onClick={() => setDetailId(q.id)} className="border-b border-gray-50 hover:bg-surface-2/50 transition-colors cursor-pointer">
+                <tr key={q.id} onClick={() => setDetailId(q.id)} className="border-b border-line-2 hover:bg-surface-2/50 transition-colors cursor-pointer">
                   <td className="px-4 py-3 font-mono text-[12px] text-ink-2">{q.number}</td>
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(q.client_id)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums hidden md:table-cell">{q.issue_date.slice(0, 10)}</td>
@@ -246,7 +246,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
               </thead>
               <tbody>
                 {items.map((it, i) => (
-                  <tr key={i} className="border-t border-gray-50">
+                  <tr key={i} className="border-t border-line-2">
                     <td className="px-3 py-2.5 text-ink-2">{it.description}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted">{it.qty}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>

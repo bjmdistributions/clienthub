@@ -661,7 +661,7 @@ export default function ClientsView() {
       <div className="bg-surface border border-line rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-50">
+            <tr className="border-b border-line-2">
               <th className="px-3 py-3 w-10">
                 <input type="checkbox" className="accent-accent" checked={selectedIds.size === clients.length && clients.length > 0} onChange={toggleSelectAll} />
               </th>
@@ -681,7 +681,7 @@ export default function ClientsView() {
                 <tr
                   key={c.id}
                   onClick={() => setDetailId(c.id)}
-                  className={`border-b border-gray-50 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""} ${c.is_blacklisted ? "bg-danger-bg/40" : ""}`}
+                  className={`border-b border-line-2 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${selectedIds.has(c.id) ? "bg-accent/10" : ""} ${c.is_blacklisted ? "bg-danger-bg/40" : ""}`}
                 >
                   <td className="px-3 py-3 w-10" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" className="accent-accent" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
@@ -855,7 +855,7 @@ function ClientForm({
         </div>
       </div>
 
-      <div className="flex justify-end gap-2 pt-2 border-t border-gray-50">
+      <div className="flex justify-end gap-2 pt-2 border-t border-line-2">
         <button onClick={onCancel}
           className="px-4 h-9 text-[13px] text-muted hover:text-ink border border-line rounded-lg hover:bg-surface-2 transition-colors">
           Cancel

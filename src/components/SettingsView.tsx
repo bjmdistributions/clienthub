@@ -972,7 +972,7 @@ function AiTab() {
   return (
     <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
       {/* Status indicator */}
-      <div className="flex items-center gap-2 mb-5 pb-5 border-b border-gray-50">
+      <div className="flex items-center gap-2 mb-5 pb-5 border-b border-line-2">
         <span className="text-[13px] font-medium text-ink-2">Ollama status</span>
         {online === null ? (
           <span className="text-[13px] text-muted">checking...</span>
@@ -1588,7 +1588,7 @@ function GoogleContactsSection() {
                   </thead>
                   <tbody>
                     {filtered.map(c => (
-                      <tr key={c.resource_name} className="border-t border-gray-50 hover:bg-surface-2/50">
+                      <tr key={c.resource_name} className="border-t border-line-2 hover:bg-surface-2/50">
                         <td className="px-3 py-2"><input type="checkbox" className="accent-accent" checked={selected.has(c.resource_name)} onChange={() => {
                           const ns = new Set(selected);
                           if (ns.has(c.resource_name)) ns.delete(c.resource_name); else ns.add(c.resource_name);
@@ -1941,7 +1941,7 @@ function AutomationTab() {
         </div>
 
         {fuLog.length > 0 && (
-          <div className="mt-4 border-t border-gray-50 pt-4">
+          <div className="mt-4 border-t border-line-2 pt-4">
             <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Recent Activity</p>
             <div className="space-y-1 max-h-40 overflow-y-auto">
               {fuLog.slice(0, 20).map((l) => (
@@ -2471,7 +2471,7 @@ function CategoriesTab() {
         </button>
       </div>
 
-      <div className="bg-surface border border-line rounded-xl divide-y divide-gray-50 overflow-hidden">
+      <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
         {cats.map((c, i) => (
           <div key={c.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-surface-2/50 transition-colors">
             {editingId === c.id ? (
@@ -2684,7 +2684,7 @@ function SheetsTab() {
 
       {/* Sync log */}
       <div className="bg-surface border border-line rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-gray-50">
+        <div className="px-5 py-3 border-b border-line-2">
           <span className="text-[10px] font-semibold text-muted uppercase tracking-widest">Sync History</span>
         </div>
         {log.length === 0 ? (
@@ -2701,7 +2701,7 @@ function SheetsTab() {
             </thead>
             <tbody>
               {log.map((l) => (
-                <tr key={l.id} className="border-t border-gray-50 hover:bg-surface-2/40 transition-colors">
+                <tr key={l.id} className="border-t border-line-2 hover:bg-surface-2/40 transition-colors">
                   <td className="px-5 py-2.5 text-[12px] text-ink-2">{new Date(l.synced_at).toLocaleString()}</td>
                   <td className="px-5 py-2.5 text-[12px] text-success-ink text-right tabular-nums">{l.new_clients}</td>
                   <td className="px-5 py-2.5 text-[12px] text-muted text-right tabular-nums">{l.skipped_duplicates}</td>
@@ -3599,7 +3599,7 @@ function CustomFieldsTab() {
             </thead>
             <tbody>
               {fields.map(f => (
-                <tr key={f.id} className="border-t border-gray-50 hover:bg-surface-2/50">
+                <tr key={f.id} className="border-t border-line-2 hover:bg-surface-2/50">
                   <td className="px-4 py-2.5 text-[13px] font-medium text-ink">{f.label}</td>
                   <td className="px-4 py-2.5 text-[12px] text-muted font-mono">{f.field_key}</td>
                   <td className="px-4 py-2.5 text-[12px] text-muted capitalize">{f.field_type}</td>

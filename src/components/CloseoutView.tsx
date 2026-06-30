@@ -285,12 +285,12 @@ function DealBreakdown({
       {/* Supplier payments */}
       {payments.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-gray-50">
+          <div className="px-4 py-2.5 border-b border-line-2">
             <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">
               Supplier Payments
             </p>
           </div>
-          <div className="divide-y divide-gray-50">
+          <div className="divide-y divide-line-2">
             {payments.map((p) => (
               <div key={p.id} className="flex items-center gap-3 px-4 py-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />

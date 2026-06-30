@@ -890,7 +890,7 @@ function NewsletterTab() {
             return (
               <button key={c.id}
                 onClick={() => isSelected ? removeRecipient(c.id) : addRecipient(c)}
-                className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-surface-2 transition-colors border-b border-gray-50 ${
+                className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-surface-2 transition-colors border-b border-line-2 ${
                   isSelected ? "bg-accent/10" : ""
                 }`}>
                 <div className="min-w-0">
@@ -920,7 +920,7 @@ function NewsletterTab() {
           </div>
           <div className="overflow-y-auto" style={{ maxHeight: 140 }}>
             {selected.map((c) => (
-              <div key={c.id} className="flex items-center justify-between py-1.5 px-3 hover:bg-surface-2 border-b border-gray-50">
+              <div key={c.id} className="flex items-center justify-between py-1.5 px-3 hover:bg-surface-2 border-b border-line-2">
                 <div className="min-w-0 flex-1">
                   <div className="text-[12px] text-ink truncate">{c.name}</div>
                   {c.email ? (
@@ -1304,7 +1304,7 @@ function NewsletterTab() {
               {showHistory && (
                 <div className="mt-2 space-y-1.5">
                   {templates.filter((t) => t.status === "sent").slice(0, 5).map((t) => (
-                    <div key={t.id} className="text-[12px] text-ink-2 py-1 border-b border-gray-50 last:border-0">
+                    <div key={t.id} className="text-[12px] text-ink-2 py-1 border-b border-line-2 last:border-0">
                       <div className="font-medium text-ink truncate">{t.subject || "Untitled"}</div>
                       <div className="text-muted">{new Date(t.created_at).toLocaleDateString()} · {t.sent_count} sent</div>
                     </div>

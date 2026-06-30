@@ -123,7 +123,7 @@ export default function TiersView() {
       <div className="bg-surface border border-line rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-50">
+            <tr className="border-b border-line-2">
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Tier</th>
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Spend / Freq.</th>
@@ -140,7 +140,7 @@ export default function TiersView() {
               <tr
                 key={t.client_id}
                 onClick={() => setDetailId(t.client_id)}
-                className="border-b border-gray-50 last:border-0 hover:bg-surface-2/60 transition-colors cursor-pointer"
+                className="border-b border-line-2 last:border-0 hover:bg-surface-2/60 transition-colors cursor-pointer"
                 style={{ animationDelay: `${i * 20}ms` }}
               >
                 <td className="px-5 py-3 text-[13px] font-medium text-ink">{t.client_name}</td>

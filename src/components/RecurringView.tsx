@@ -99,7 +99,7 @@ export default function RecurringView() {
         ) : (
           <table className="min-w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-50">
+              <tr className="border-b border-line-2">
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Template</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Frequency</th>
@@ -110,7 +110,7 @@ export default function RecurringView() {
             </thead>
             <tbody>
               {templates.map((t) => (
-                <tr key={t.id} className="border-b border-gray-50 last:border-0 hover:bg-surface-2/70 transition-colors">
+                <tr key={t.id} className="border-b border-line-2 last:border-0 hover:bg-surface-2/70 transition-colors">
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{t.template_name}</td>
                   <td className="px-4 py-3 text-[13px] text-ink-2">{t.client_name}</td>
                   <td className="px-4 py-3 text-[12px] text-muted capitalize">{t.frequency}</td>

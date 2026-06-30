@@ -447,7 +447,7 @@ export default function AnalyticsView() {
                   if (!n) return null;
                   return (
                     <div key={t} className="flex items-center justify-between py-2.5
-                                             border-b border-gray-50 last:border-0">
+                                             border-b border-line-2 last:border-0">
                       <TierBadge tier={t} />
                       <div className="flex items-center gap-4">
                         <div className="w-24 h-1.5 bg-surface-3 rounded-full overflow-hidden">
@@ -525,7 +525,7 @@ export default function AnalyticsView() {
           {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).length > 0 ? (
             <div>
               {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).map((c: any, i: number) => (
-                <div key={i} className="py-3 border-b border-gray-50 last:border-0">
+                <div key={i} className="py-3 border-b border-line-2 last:border-0">
                   <div className="flex items-start justify-between mb-2">
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
