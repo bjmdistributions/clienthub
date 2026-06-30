@@ -18,11 +18,13 @@ const bucketColor = (k: string) =>
 
 export default function ReceivablesView() {
   const [data, setData] = useState<ReceivablesAging | null>(null);
+  const [ap, setAp] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = () => {
     setLoading(true);
     api.getReceivablesAging().then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+    api.getPayablesAging().then((p) => setAp(p.total)).catch(() => setAp(null));
   };
   useEffect(load, []);
 
@@ -44,6 +46,28 @@ export default function ReceivablesView() {
           <RefreshCw size={13} /> Refresh
         </button>
       </div>
+
+      {/* Cash position — what you're owed, what you owe, the float between them */}
+      {ap !== null && (
+        <div className="bg-surface border border-line rounded-xl p-4 flex flex-wrap items-center gap-x-8 gap-y-2">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Owed to you</div>
+            <div className="text-[20px] font-bold text-success-ink tabular-nums">{fmtAmount(data.total)}</div>
+          </div>
+          <div className="text-[18px] text-faint">−</div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">You owe</div>
+            <div className="text-[20px] font-bold text-danger-ink tabular-nums">{fmtAmount(ap)}</div>
+          </div>
+          <div className="text-[18px] text-faint">=</div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Net cash position</div>
+            <div className={`text-[20px] font-bold tabular-nums ${data.total - ap >= 0 ? "text-ink" : "text-danger-ink"}`}>
+              {fmtAmount(data.total - ap)}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Aging summary tiles */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
