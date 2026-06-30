@@ -21,7 +21,10 @@ Legend: [ ] todo · [~] in progress · [x] done+verified · [?] needs your input
 - [ ] A4. Parity pass: same contrast audit on **web/mobile** (clienthub-api/www/style.css + app.js)
 
 ### B. Mobile parity (remaining features)
-- [~] B1. **Payout config editor** — built this turn (server `/api/staff/payout-config` + mobile 3-section UI); needs your on-device test
+- [~] B1. **Payout config editor** — built (server `/api/staff/payout-config` + mobile 3-section UI).
+  Wiring verified (C0): GET loads + POST saves; mobile payload field names match the server structs
+  exactly (`shares`→OwnerShare{name,pct,is_business}, `reps`→RepPayCfg{id,pay_type,value,hide}) — no
+  silent default mismatch. Only the on-device save/persist check remains.
 - [x] B2. Rep's **own earnings** on the mobile Weekly Brief — DONE. Server `/api/weekly-brief` now
   computes `rep_earnings_this_week` (rep's cut on their completed deals this week, refund-aware) mirroring
   the desktop `generate_weekly_brief`; mobile shows a "Your Earnings" card when >0 (app.js?v=5). Authed
