@@ -91,7 +91,8 @@ export default function DashboardView({ onNavigate }: Props) {
   const [clients, setClients]         = useState<Client[]>([]);
   const [tiers, setTiers]             = useState<BuyerTier[]>([]);
   const [profitMonth, setProfitMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [dailyProfit, setDailyProfit] = useState<{ day: string; profit: number }[]>([]);
+  const [dailyProfit, setDailyProfit] = useState<{ day: string; profit: number; revenue: number }[]>([]);
+  const [chartMetric, setChartMetric] = useState<"profit" | "revenue">("profit");
   const [forecast, setForecast] = useState<ProfitForecast | null>(null);
   const [sentNewsletters, setSentNewsletters] = useState<Newsletter[]>([]);
 
@@ -112,17 +113,20 @@ export default function DashboardView({ onNavigate }: Props) {
     const today = new Date();
     const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === mo;
     const profitMap: Record<string, number> = {};
-    raw.forEach((r) => { profitMap[r.day] = r.profit; });
+    const revenueMap: Record<string, number> = {};
+    raw.forEach((r) => { profitMap[r.day] = r.profit; revenueMap[r.day] = r.revenue; });
     const maxDataDay = raw.length > 0
       ? Math.max(...raw.map((r) => parseInt(r.day.split("-")[2], 10)))
       : 0;
     const lastDay = isCurrentMonth ? Math.max(today.getDate(), maxDataDay) : daysInMonth;
-    let cumulative = 0;
+    let cumProfit = 0;
+    let cumRevenue = 0;
     const data = [];
     for (let d = 1; d <= lastDay; d++) {
       const dayStr = `${m}-${String(d).padStart(2, "0")}`;
-      cumulative += profitMap[dayStr] || 0;
-      data.push({ day: String(d), profit: cumulative });
+      cumProfit += profitMap[dayStr] || 0;
+      cumRevenue += revenueMap[dayStr] || 0;
+      data.push({ day: String(d), profit: cumProfit, revenue: cumRevenue });
     }
     setDailyProfit(data);
   };
@@ -353,19 +357,33 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="lg:col-span-3 rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
             <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>{monthLabel} Profit</h3>
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>{monthLabel} {chartMetric === "revenue" ? "Revenue" : "Profit"}</h3>
                 <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Cumulative this month</p>
               </div>
-              <div className="flex items-center gap-1">
-                {([-1, 1] as const).map(dir => (
-                  <button key={dir} onClick={() => changeMonth(dir)}
-                    className="w-7 h-7 flex items-center justify-center rounded-md transition-colors"
-                    style={{ color: "var(--t-tx4)" }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "var(--t-s3)"; e.currentTarget.style.color = "var(--accent-600)"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--t-tx4)"; }}>
-                    {dir === -1 ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: "var(--t-s3)" }}>
+                  {(["profit", "revenue"] as const).map(mtr => {
+                    const on = chartMetric === mtr;
+                    return (
+                      <button key={mtr} onClick={() => setChartMetric(mtr)}
+                        className="px-2.5 py-1 rounded-md text-[11px] font-semibold capitalize transition-all"
+                        style={on ? { background: "var(--t-s1)", color: "var(--t-tx1)" } : { background: "transparent", color: "var(--t-tx4)" }}>
+                        {mtr}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-1">
+                  {([-1, 1] as const).map(dir => (
+                    <button key={dir} onClick={() => changeMonth(dir)}
+                      className="w-7 h-7 flex items-center justify-center rounded-md transition-colors"
+                      style={{ color: "var(--t-tx4)" }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "var(--t-s3)"; e.currentTarget.style.color = "var(--accent-600)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--t-tx4)"; }}>
+                      {dir === -1 ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             {dailyProfit.length > 0 ? (
@@ -379,17 +397,21 @@ export default function DashboardView({ onNavigate }: Props) {
                       <stop offset="55%" stopColor="#14B8A6" />
                       <stop offset="100%" stopColor="#06B6D4" />
                     </linearGradient>
+                    <linearGradient id="revenueGrad" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#6366F1" />
+                      <stop offset="100%" stopColor="#818CF8" />
+                    </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="2 4" stroke="var(--t-b1)" vertical={false} />
                   <XAxis dataKey="day" tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Inter" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Inter" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)", borderRadius: 10, color: "var(--t-tx1)", fontSize: 12, fontFamily: "Inter", boxShadow: "var(--shadow-panel)" }}
-                    formatter={(v: any) => [fmtFullAmount(Number(v) || 0), "Profit"]}
+                    formatter={(v: any) => [fmtFullAmount(Number(v) || 0), chartMetric === "revenue" ? "Revenue" : "Profit"]}
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
-                  <Line type="monotone" dataKey="profit" stroke="url(#profitGrad)" strokeWidth={2.5} dot={false}
-                    activeDot={{ r: 5, fill: "#10B981", strokeWidth: 0, style: { filter: "drop-shadow(0 0 6px rgba(16,185,129,0.5))" } }}
+                  <Line type="monotone" dataKey={chartMetric} stroke={chartMetric === "revenue" ? "url(#revenueGrad)" : "url(#profitGrad)"} strokeWidth={2.5} dot={false}
+                    activeDot={{ r: 5, fill: chartMetric === "revenue" ? "#6366F1" : "#10B981", strokeWidth: 0, style: { filter: chartMetric === "revenue" ? "drop-shadow(0 0 6px rgba(99,102,241,0.5))" : "drop-shadow(0 0 6px rgba(16,185,129,0.5))" } }}
                     isAnimationActive animationDuration={1000} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>

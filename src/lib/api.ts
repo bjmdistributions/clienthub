@@ -1425,7 +1425,7 @@ export const api = {
 
   // Dashboard
   dashboardStats: () => invoke<DashboardStats>("dashboard_stats"),
-  getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number }[]>("get_monthly_profit", { month }),
+  getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number }[]>("get_monthly_profit", { month }),
   getAnalyticsRange: (startDate: string, endDate: string) => invoke<any>("get_analytics_range", { startDate, endDate }),
   getDealsForSupplier: (supplierId: string) => invoke<any[]>("list_deals_for_supplier", { supplierId }),
   dueFollowups: () => invoke<Client[]>("due_followups"),

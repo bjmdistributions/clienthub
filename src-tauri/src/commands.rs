@@ -6784,13 +6784,13 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
 pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT date(df.completed_at) as d, COALESCE(SUM(df.net_profit),0)
+        "SELECT date(df.completed_at) as d, COALESCE(SUM(df.net_profit),0), COALESCE(SUM(df.gross_revenue),0)
          FROM deal_flows df
          WHERE df.stage='complete' AND strftime('%Y-%m', df.completed_at) = ?1
          GROUP BY d ORDER BY d"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&month], |r| {
-        Ok(json!({ "day": r.get::<_, String>(0)?, "profit": r.get::<_, f64>(1)? }))
+        Ok(json!({ "day": r.get::<_, String>(0)?, "profit": r.get::<_, f64>(1)?, "revenue": r.get::<_, f64>(2)? }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
