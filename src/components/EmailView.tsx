@@ -558,6 +558,14 @@ function NewsletterTab() {
   }, []);
 
   const activeScheduled = scheduledSends.filter((s) => s.status === "pending" || s.status === "running");
+  const sendingNow = templates.filter((t) => t.status === "sending");
+  const hasSendingNewsletter = sendingNow.length > 0;
+  // Keep the history live while a send is in progress, even if the composer is closed.
+  useEffect(() => {
+    if (!sending && !hasSendingNewsletter) return;
+    const iv = setInterval(() => { api.listNewsletters().then(setTemplates).catch(() => {}); }, 1500);
+    return () => clearInterval(iv);
+  }, [sending, hasSendingNewsletter]);
 
   const categoryLabels = allCategories.map((c) => c.label);
   const validRecipients = selected.filter((c) => c.email);
@@ -1166,6 +1174,24 @@ function NewsletterTab() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {sendingNow.length > 0 && (
+            <div className="mt-3 border border-line rounded-md p-3 bg-surface-2 space-y-2">
+              <div className="text-[12px] font-medium text-ink">Sending now</div>
+              {sendingNow.map((nl) => {
+                const pct = nl.recipient_count > 0 ? Math.round((nl.sent_count / nl.recipient_count) * 100) : 0;
+                return (
+                  <div key={nl.id} className="bg-surface rounded-md p-2 border border-line">
+                    <div className="text-[12px] font-medium text-ink truncate">{nl.subject || "Untitled"}</div>
+                    <div className="mt-1 h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                      <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="text-[11px] text-muted mt-1">{nl.sent_count}/{nl.recipient_count} sent · still working…</div>
+                  </div>
+                );
+              })}
             </div>
           )}
 

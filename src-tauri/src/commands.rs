@@ -7794,6 +7794,9 @@ pub async fn send_newsletter(
     let mut skipped: u32 = 0;
     let mut errors: Vec<NewsletterSendError> = Vec::new();
     let total = client_ids.len() as u32;
+    // Mark the newsletter as actively sending so it shows in history as still-working
+    // (not just in the composer) — you can close out and watch it finish.
+    let _ = conn.execute("UPDATE newsletters SET status='sending', recipient_count=?1, sent_count=0 WHERE id=?2", rusqlite::params![total, &newsletter_id]);
 
     for cid in &client_ids {
         let sid = Uuid::new_v4().to_string();
@@ -7844,6 +7847,8 @@ pub async fn send_newsletter(
             "sent": sent, "failed": failed, "skipped": skipped, "total": total,
             "done": sent + failed + skipped,
         }));
+        // Persist progress so the history view shows it live even with the composer closed.
+        let _ = conn.execute("UPDATE newsletters SET sent_count=?1 WHERE id=?2", rusqlite::params![sent + failed + skipped, &newsletter_id]);
     }
 
     conn.execute(
