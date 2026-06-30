@@ -98,10 +98,12 @@ same risk — measure + bump there too.
   revenue/category series now a fixed designed indigo (#6366F1) not the grey-in-matte accent; added two
   NEW chart types — a Profit Trend **area** chart (emerald gradient) + a Client Mix **donut** (clients
   by tier). Refined the palette.
-- [ ] **E4-mobile parity (remaining).** Done so far: mobile dashboard profit chart recolored to match
-  (app.js?v=2). Still to port for full parity: mobile analytics designed palette + the new chart types,
-  and the dashboard profit/revenue toggle on mobile. (Mobile charts are hand-rolled SVG, not recharts —
-  bigger lift; do next.)
+- [x] **E4-mobile parity — DONE (app.js?v=4 + SW v48).** (1) Dashboard **Profit/Revenue toggle**
+  (segmented control; `/api/dashboard/monthly-profit` now returns daily gross_revenue; `dashChart`
+  parametrized — profit emerald #10B981, revenue indigo #6366F1). (2) Analytics **revenue trend**
+  recolored to designed indigo. (3) New **Client Mix donut** on mobile analytics (donutChart helper,
+  designed tier swatches — verified: segments sum exactly to the ring). (4) Dashboard line was already
+  recolored. Note: `lineChartSVG` is dead (no callers); the live chart is `dashChart`.
 
 ### A2. Theme-blind hardcoded colors (130 hits / 30 components)
 **Scan (desktop):** top offenders — InventoryView (24), SettingsView (15), ClientsView (14),
