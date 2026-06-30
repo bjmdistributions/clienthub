@@ -247,6 +247,7 @@ fn main() {
             update_client_status,
             toggle_client_blacklist,
             toggle_client_exclusive,
+            toggle_client_high_value,
             get_newsletter_include_ranked,
             set_newsletter_include_ranked,
             approve_client,

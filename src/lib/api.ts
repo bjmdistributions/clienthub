@@ -1086,6 +1086,8 @@ export const api = {
     invoke<boolean>("toggle_client_blacklist", { id }),
   toggleClientExclusive: (id: string) =>
     invoke<boolean>("toggle_client_exclusive", { id }),
+  toggleClientHighValue: (id: string) =>
+    invoke<boolean>("toggle_client_high_value", { id }),
   getNewsletterIncludeRanked: () => invoke<boolean>("get_newsletter_include_ranked"),
   setNewsletterIncludeRanked: (value: boolean) => invoke<void>("set_newsletter_include_ranked", { value }),
   approveClient: (id: string) =>

@@ -383,6 +383,23 @@ pub async fn toggle_client_exclusive(id: String) -> Result<bool, String> {
     Ok(next)
 }
 
+/// A purely-cosmetic "High-Value" label (metadata.high_value). Unlike `exclusive`
+/// (Don't bulk-email), this has NO effect on sends — it's just a positive badge.
+#[tauri::command]
+pub async fn toggle_client_high_value(id: String) -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let meta: String = conn.query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let mut m: Value = serde_json::from_str(&meta).unwrap_or_else(|_| json!({}));
+    let next = !m.get("high_value").and_then(|x| x.as_bool()).unwrap_or(false);
+    if let Some(o) = m.as_object_mut() { o.insert("high_value".into(), json!(next)); }
+    let meta_str = serde_json::to_string(&m).unwrap_or_else(|_| "{}".into());
+    conn.execute("UPDATE clients SET metadata=?1 WHERE id=?2", rusqlite::params![meta_str, id]).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(meta_str));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
 /// Whether tier-ranked clients are included by default in mass "select all" sends.
 #[tauri::command]
 pub async fn get_newsletter_include_ranked() -> Result<bool, String> {

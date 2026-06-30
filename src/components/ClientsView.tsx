@@ -691,7 +691,8 @@ export default function ClientsView() {
                       {c.name}
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
                       {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Blacklisted — excluded from all sends">Blacklisted</span>}
-                      {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — kept off mass sends so they aren't spammed">High-Value</span>}
+                      {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-warning-ink bg-warning-bg border border-warning-ink/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
+                      {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
                       {c.approval_status === "pending" && <span className="text-[8px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
                       {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
                       {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}

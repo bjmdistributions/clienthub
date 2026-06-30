@@ -145,16 +145,28 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
                 {client.is_blacklisted ? "BLACKLISTED" : "Not Blacklisted"}
               </button>
               <button onClick={async () => {
+                const val = await api.toggleClientHighValue(client.id);
+                setClient({ ...client, metadata: { ...(client.metadata || {}), high_value: val } });
+              }}
+                title="A positive label for your best buyers. Purely a tag — it does NOT change who receives newsletters."
+                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
+                  client.metadata?.high_value
+                    ? "bg-warning-bg text-warning-ink border-warning-ink/30"
+                    : "bg-surface-2 text-muted border-line hover:text-ink-2"
+                }`}>
+                {client.metadata?.high_value ? "★ HIGH-VALUE" : "Mark High-Value"}
+              </button>
+              <button onClick={async () => {
                 const val = await api.toggleClientExclusive(client.id);
                 setClient({ ...client, metadata: { ...(client.metadata || {}), exclusive: val } });
               }}
-                title="High-Value clients are kept off mass newsletters and auto-add — for VIPs you don't want spammed"
+                title="Keeps this client OFF mass newsletters and auto-add — for people you don't want to bulk-email."
                 className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
                   client.metadata?.exclusive
                     ? "bg-accent/10 text-accent border-accent/30"
                     : "bg-surface-2 text-muted border-line hover:text-ink-2"
                 }`}>
-                {client.metadata?.exclusive ? "HIGH-VALUE" : "Not High-Value"}
+                {client.metadata?.exclusive ? "NO BULK-EMAIL" : "Bulk email OK"}
               </button>
               {tier && (
                 <>
