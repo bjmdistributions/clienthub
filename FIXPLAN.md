@@ -33,6 +33,11 @@ Legend: [ ] todo · [~] in progress · [x] done+verified · [?] needs your input
   Field-mapping builder stays desktop-only. app.js?v=6. Authed create = your on-device check.
 
 ### C. Verification gaps (built but unconfirmed — your eyes/device)
+- [x] C0. **Code-layer verification pass (2026-06-30)** — all clean. Confirmed: `deal_reps` syncs +
+  is populated (B2 rep-earnings sound); `intake_sources` INSERT columns match the real schema (B3);
+  `toggle_client_high_value` is registered in `generate_handler!` + wired in api.ts + both pills render
+  (E2); no straggler mislabels `exclusive` as "High-Value" anywhere; server `deal_flows.gross_revenue`
+  exists (E3b). Runtime/authed values still = your on-device check (C1–C2).
 - [ ] C1. Desktop v0.14.55–57 visual confirm (after auto-update installs)
 - [ ] C2. Mobile refunds/credits, pending-review, payouts, payout-config on device
 - [ ] C3. WhatsApp/OG: re-scrape via FB Sharing Debugger (or share ecliptr.app/?x=1)
