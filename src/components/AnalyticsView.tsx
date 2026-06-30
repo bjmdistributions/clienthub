@@ -4,7 +4,7 @@ import { fmtAmount } from "../lib/format";
 import { RefreshCw, FileDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  BarChart, Bar, AreaChart, Area, PieChart, Pie, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
 } from "recharts";
 import TierBadge from "./TierBadge";
@@ -23,6 +23,14 @@ const TIER_CLR: Record<string, string> = {
   C:        "#B17F4A",   // Bronze (muted)
   Prospect: "#9CA3AF",   // Prospect
 };
+
+const TIER_NAME: Record<string, string> = {
+  S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect",
+};
+
+// Designed series colors — fixed hues so charts stay vivid in light/dark/matte
+// instead of greying out with the theme accent. Revenue = indigo, profit = emerald.
+const C_REVENUE = "#6366F1";
 
 const TIER_ORDER = ["S", "A", "B", "C", "Prospect"];
 
@@ -101,7 +109,7 @@ export default function AnalyticsView() {
   const STATUS_CLR = P.STATUS;
   const TT = P.TT;
   const AX = P.AX;
-  const indigo = P.accent;   // revenue / category bars → brand accent (emerald)
+  const indigo = C_REVENUE;  // revenue / category bars → designed indigo (vivid in matte, not the grey accent)
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
@@ -324,6 +332,61 @@ export default function AnalyticsView() {
             </BarChart>
           </ResponsiveContainer>
         ) : <Blank h={300} />}
+      </div>
+
+      {/* ── Row: Profit Trend (area) + Client Mix (donut) ──────────
+          Two new chart *types* — an area trend + a donut — for variety
+          beyond the bars/lists, with designed (theme-independent) colors.
+      ─────────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+        {/* Profit Trend — area */}
+        <div className="bg-surface border border-line rounded-xl p-5
+                        animate-fade-up [animation-fill-mode:backwards] stagger-2">
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Profit Trend</h3>
+          <p className="text-[11px] text-muted mb-5">Net profit by month</p>
+          {monthly.length > 0 ? (
+            <ResponsiveContainer width="100%" height={240}>
+              <AreaChart data={monthly} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="anProfitArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%"   stopColor="#34D399" stopOpacity={0.34} />
+                    <stop offset="100%" stopColor="#14B8A6" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
+                <XAxis dataKey="month" tick={AX} axisLine={false} tickLine={false} />
+                <YAxis tick={AX} axisLine={false} tickLine={false}
+                  tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
+                <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
+                <Area type="monotone" dataKey="profit" stroke="#10B981" strokeWidth={2.5}
+                  fill="url(#anProfitArea)" isAnimationActive animationDuration={900} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : <Blank h={240} />}
+        </div>
+
+        {/* Client Mix — donut */}
+        <div className="bg-surface border border-line rounded-xl p-5
+                        animate-fade-up [animation-fill-mode:backwards] stagger-3">
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client Mix</h3>
+          <p className="text-[11px] text-muted mb-5">Share of clients by tier</p>
+          {totalCl > 0 ? (
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie
+                  data={TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => ({ name: TIER_NAME[t], value: tierMap[t] }))}
+                  dataKey="value" nameKey="name" cx="50%" cy="50%"
+                  innerRadius={58} outerRadius={88} paddingAngle={2} stroke="none">
+                  {TIER_ORDER.filter((t) => tierMap[t] > 0).map((t) => (
+                    <Cell key={t} fill={TIER_CLR[t]} />
+                  ))}
+                </Pie>
+                <Tooltip {...TT} formatter={(v: any, n: any) => [`${v} client${v !== 1 ? "s" : ""}`, n]} />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : <Blank h={240} />}
+        </div>
       </div>
 
       {/* ── Row: Invoice Status + Top Spenders ─────────────────── */}
