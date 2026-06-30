@@ -128,7 +128,7 @@ export default function NotesView() {
           </p>
         </div>
         <button onClick={addNote}
-          className="btn-ripple flex items-center gap-1.5 text-white px-4 h-9 rounded-lg text-[13px] font-medium transition-all duration-150 hover:-translate-y-px"
+          className="btn-ripple flex items-center gap-1.5 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-all duration-150 hover:-translate-y-px"
           style={{ background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))", boxShadow: "0 2px 10px var(--accent-glow)" }}>
           <Plus size={14} /> New note
         </button>

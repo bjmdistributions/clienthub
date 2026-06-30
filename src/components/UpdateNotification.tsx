@@ -62,7 +62,7 @@ export default function UpdateNotification() {
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
           style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 12px var(--accent-glow)" }}>
-          <Download size={14} className="text-white" />
+          <Download size={14} className="text-on-accent" />
         </div>
         <div>
           <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>Ecliptr {update.version} is available</p>
@@ -83,10 +83,10 @@ export default function UpdateNotification() {
         <button
           onClick={handleInstall}
           disabled={downloading || installing}
-          className="h-8 px-4 rounded-lg text-[12px] font-semibold text-white disabled:opacity-50 transition-all flex items-center gap-1.5"
+          className="h-8 px-4 rounded-lg text-[12px] font-semibold text-on-accent disabled:opacity-50 transition-all flex items-center gap-1.5"
           style={{ background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))", boxShadow: "0 2px 8px var(--accent-glow)" }}
         >
-          {installing ? <Check size={12} /> : downloading ? <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : null}
+          {installing ? <Check size={12} /> : downloading ? <span className="w-3 h-3 border-2 border-on-accent/40 border-t-on-accent rounded-full animate-spin" /> : null}
           {installing ? "Restarting…" : downloading ? "Downloading" : "Install Now"}
         </button>
       </div>

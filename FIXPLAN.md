@@ -12,7 +12,7 @@ Legend: [ ] todo · [~] in progress · [x] done+verified · [?] needs your input
 ## CHECKDOWN (restate every turn)
 
 ### A. Design / readability (top priority — the bugs you keep hitting)
-- [ ] A1. Matte/dark **low-contrast gray text** (faint/muted) — measured, root cause found (see below)
+- [x] A1. Matte/dark **low-contrast gray text** — FIXED + measured. Desktop v0.14.58 (`--c-faint` 2.89→**5.48**, `--c-muted` 5.07→**6.74**) + web/mobile `style.css?v=2` (text3 2.72→**5.48**, text2 4.78→**6.74**). Both pass WCAG AA. Verify on your installed build once v0.14.58 auto-updates.
 - [ ] A2. **Theme-blind hardcoded colors** — 130 found across 30 desktop components; triage + fix the genuine ones
 - [ ] A3. Confirm the matte **accent-active** fix (v0.14.57) is actually on your installed build
 - [ ] A4. Parity pass: same contrast audit on **web/mobile** (clienthub-api/www/style.css + app.js)

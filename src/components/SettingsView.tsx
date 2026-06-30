@@ -306,7 +306,7 @@ function AccountTab() {
       <div className="flex items-center gap-4 mb-6">
         {form.avatar
           ? <img src={form.avatar} alt="" className="w-20 h-20 rounded-full object-cover border border-line" />
-          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-white" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{initial}</div>}
+          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{initial}</div>}
         <div>
           <label className="bg-surface-2 border border-line hover:bg-surface-3 text-ink-2 px-3 h-8 rounded-lg text-[12px] font-medium inline-flex items-center cursor-pointer">
             Upload photo<input type="file" accept="image/*" className="hidden" onChange={pick} />
@@ -3129,7 +3129,7 @@ function PeoplePanel() {
                 <button onClick={() => setViewing(u)} className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity group">
                   {u.avatar
                     ? <img src={u.avatar} alt="" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
-                    : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-white flex-shrink-0" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
+                    : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-on-accent flex-shrink-0" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
                   <div className="min-w-0">
                     <div className="font-medium text-ink truncate group-hover:text-accent">{u.display_name}</div>
                     <div className="text-[11px] text-muted truncate">{u.title ? `${u.title} · ` : ""}{u.email}</div>
@@ -3195,7 +3195,7 @@ function ProfileModal({ u, roleName, onClose }: { u: StaffMember; roleName: stri
         <div className="p-6 flex flex-col items-center text-center border-b border-line">
           {u.avatar
             ? <img src={u.avatar} alt="" className="w-20 h-20 rounded-full object-cover" />
-            : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-white" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
+            : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
           <div className="mt-3 text-[17px] font-semibold text-ink">{u.display_name}</div>
           {u.title && <div className="text-[13px] text-muted">{u.title}</div>}
           <div className="mt-2 flex items-center gap-2">
