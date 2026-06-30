@@ -315,8 +315,8 @@ export default function InvoicesView() {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide ${statusColor(inv)}`}>
                         {statusLabel(inv)}
                       </span>
-                      {/* Deal flow progress dots */}
-                      <FlowDots stage={inv.deal_flow_stage} />
+                      {/* Deal flow progress dots — a completed invoice always shows all stages filled. */}
+                      <FlowDots stage={inv.is_complete ? "complete" : inv.deal_flow_stage} />
                     </div>
                   </td>
                   <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>

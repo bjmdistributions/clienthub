@@ -126,7 +126,7 @@ export default function SuppliersView() {
               onClick={() => setFilter(f)}
               className={`px-3 h-9 rounded-lg text-[12px] font-medium capitalize transition-colors ${
                 filter === f
-                  ? "bg-gray-900 text-white"
+                  ? "bg-accent text-on-accent"
                   : "bg-surface border border-line text-muted hover:border-line-3"
               }`}
             >

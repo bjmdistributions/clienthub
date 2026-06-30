@@ -478,6 +478,16 @@ html[data-accent="slate"] { --c-accent:51 65 85; --c-accent-hover:30 41 59;
   --accent-glow:rgba(51,65,85,.38); --accent-tint:rgba(51,65,85,.16); --shadow-indigo:0 4px 20px rgba(51,65,85,.22),0 1px 4px rgba(51,65,85,.12); }
 html.dark[data-accent="slate"] { --c-accent:203 213 225; --c-accent-hover:226 232 240; }
 
+/* ── Matte = monochrome. Forces the accent to white/grey regardless of the selected
+   color (placed after the data-accent blocks + uses [data-accent] specificity so it
+   always wins). Semantic success/warning/danger stay — color only when it's useful. ── */
+html.matte, html.matte[data-accent] {
+  --c-accent: 232 232 236; --c-accent-hover: 200 200 206; --c-on-accent: 17 17 19;
+  --accent-50:#161618; --accent-100:#202024; --accent-400:#8A8A92; --accent-500:#C8C8CE; --accent-600:#E8E8EC; --accent-700:#F4F4F6;
+  --accent-glow:rgba(255,255,255,.10); --accent-tint:rgba(255,255,255,.07);
+  --color-primary:#E8E8EC; --color-primary-hover:#C8C8CE; --color-primary-light:#202024; --color-primary-glow:rgba(255,255,255,.10);
+}
+
 /* ── Accent-aware active state (Settings nav rail, theme toggle).
       These are app chrome, so they follow the accent. The icon/text
       shade lightens in dark mode for legibility on the matte bg.    */
