@@ -460,6 +460,8 @@ export interface SupplierPayment {
   notes?: string | null;
   paid: boolean;
   paid_at?: string | null;
+  /** Cost type: supplier (default) | freight | wire_in | wire_out | other. */
+  category?: string | null;
 }
 
 export interface SupplierPaymentInput {
@@ -470,6 +472,7 @@ export interface SupplierPaymentInput {
   unit_price?: number | null;
   method?: string | null;
   notes?: string | null;
+  category?: string | null;
 }
 
 export interface PaymentReceivedInput {

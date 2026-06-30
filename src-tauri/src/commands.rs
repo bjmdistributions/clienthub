@@ -3015,6 +3015,9 @@ pub struct SupplierPayment {
     pub notes: Option<String>,
     pub paid: bool,
     pub paid_at: Option<String>,
+    /// Cost type so net_profit can be broken down: supplier (default) | freight | wire_in | wire_out | other.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3026,6 +3029,8 @@ pub struct SupplierPaymentInput {
     pub unit_price: Option<f64>,
     pub method: Option<String>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3425,6 +3430,7 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
         notes: input.notes,
         paid: false,
         paid_at: None,
+        category: input.category,
     });
 
     write_sp(&id, &payments, &df.invoice_id)?;
@@ -6684,6 +6690,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
              LEFT JOIN suppliers s ON json_extract(sp.value, '$.supplier_id') = s.id
              WHERE df.stage = 'complete'
                AND json_extract(sp.value, '$.supplier_name') IS NOT NULL
+               AND COALESCE(json_extract(sp.value, '$.category'), 'supplier') = 'supplier'
              GROUP BY json_extract(sp.value, '$.supplier_name')
              ORDER BY total_paid DESC
              LIMIT 6"

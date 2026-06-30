@@ -36,6 +36,18 @@ const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface " +
   "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
+// Non-supplier deal costs (freight, wire fees) — entered as categorized cost lines
+// so net_profit reflects them. `supplier` is the default for existing/normal lines.
+const COST_CATS: { value: string; label: string }[] = [
+  { value: "freight",  label: "Freight" },
+  { value: "wire_in",  label: "Incoming wire fee" },
+  { value: "wire_out", label: "Outgoing wire fee" },
+  { value: "other",    label: "Other cost" },
+];
+const catLabel = (c?: string | null) =>
+  c === "freight" ? "Freight" : c === "wire_in" ? "Wire in" :
+  c === "wire_out" ? "Wire out" : c === "other" ? "Other" : "Supplier";
+
 // ─── Main view ────────────────────────────────────────────────────────────
 export default function DealFlowView() {
   const [flows,        setFlows]        = useState<DealFlow[]>([]);
@@ -599,6 +611,10 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
   // enter a different amount (e.g. a slight underpayment they'll eat).
   const [receivedAmount, setReceivedAmount] = useState<string>((flow.invoice_total ? flow.invoice_total.toFixed(2) : ""));
   useEffect(() => { setReceivedAmount((flow.invoice_total ? flow.invoice_total.toFixed(2) : "")); }, [flow.invoice_total]);
+  const [showCost, setShowCost] = useState(false);
+  const [costType, setCostType] = useState("freight");
+  const [costAmt,  setCostAmt]  = useState("");
+  const [costNote, setCostNote] = useState("");
 
   const isDone = si(flow.stage) > si("invoiced");
 
@@ -666,6 +682,24 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
     setSaving(false);
   };
 
+  const handleAddCost = async () => {
+    const amt = parseAmt(costAmt);
+    if (amt <= 0) { alert("Enter a cost amount."); return; }
+    setSaving(true);
+    try {
+      const label = COST_CATS.find((c) => c.value === costType)?.label || "Cost";
+      await api.addSupplierPayment(flow.id, {
+        supplier_name: costNote.trim() || label,
+        supplier_id:   null,
+        amount:        amt,
+        category:      costType,
+      });
+      setCostAmt(""); setCostNote(""); setShowCost(false);
+      onReload();
+    } catch (e: any) { alert(e); }
+    setSaving(false);
+  };
+
   const handleMarkReceived = async () => {
     if (!hasSuppliers) return;
     const amt = parseFloat(receivedAmount);
@@ -694,7 +728,12 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
           {existingPayments.map((p) => (
             <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 bg-surface border border-line rounded-lg">
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-medium text-ink truncate">{p.supplier_name}</div>
+                <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
+                  {p.supplier_name}
+                  {p.category && p.category !== "supplier" && (
+                    <span className="text-[9px] font-bold uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded flex-shrink-0">{catLabel(p.category)}</span>
+                  )}
+                </div>
                 {p.quantity != null && p.unit_price != null && (
                   <div className="text-[11px] text-muted tabular-nums">
                     {p.quantity} × {fmtAmount(p.unit_price)}
@@ -712,14 +751,56 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
               )}
             </div>
           ))}
-          {!isDone && (
-            <div className="flex justify-end text-[11px] text-muted pr-1">
-              Supplier total: <span className="font-semibold text-ink-2 ml-1 tabular-nums">
-                {fmtAmount(existingPayments.reduce((s, p) => s + p.amount, 0))}
-              </span>
-            </div>
-          )}
+          {!isDone && (() => {
+            const byCat = existingPayments.reduce((m: Record<string, number>, p) => {
+              const k = p.category && p.category !== "supplier" ? p.category : "supplier";
+              m[k] = (m[k] || 0) + p.amount; return m;
+            }, {});
+            const totalCost = existingPayments.reduce((s, p) => s + p.amount, 0);
+            const keys = ["supplier", "freight", "wire_in", "wire_out", "other"].filter((k) => byCat[k]);
+            return (
+              <div className="text-[11px] text-muted pr-1 space-y-0.5">
+                {keys.length > 1 && keys.map((k) => (
+                  <div key={k} className="flex justify-end gap-2">
+                    <span>{catLabel(k)}</span>
+                    <span className="font-medium text-ink-2 tabular-nums w-24 text-right">{fmtAmount(byCat[k])}</span>
+                  </div>
+                ))}
+                <div className="flex justify-end gap-2 border-t border-line pt-0.5 mt-0.5">
+                  <span>Total cost</span>
+                  <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
+      )}
+
+      {/* Add freight / wire fee / other cost (categorized → counted in net profit) */}
+      {!isDone && (
+        showCost ? (
+          <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+            <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Add cost</div>
+            <select value={costType} onChange={(e) => setCostType(e.target.value)} className={inp}>
+              {COST_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+            <input type="text" placeholder="Note (optional — e.g. DHL, bank ref)" value={costNote}
+              onChange={(e) => setCostNote(e.target.value)} className={inp} />
+            <input type="number" inputMode="decimal" placeholder="Amount" value={costAmt}
+              onChange={(e) => setCostAmt(e.target.value)} className={inp} />
+            <div className="flex gap-2">
+              <button onClick={handleAddCost} disabled={saving}
+                className="flex-1 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold disabled:opacity-50">Add cost</button>
+              <button onClick={() => { setShowCost(false); setCostAmt(""); setCostNote(""); }}
+                className="px-4 h-9 rounded-lg border border-line text-[13px] text-muted">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setShowCost(true)}
+            className="flex items-center gap-1.5 text-[12px] text-accent hover:text-accent-hover font-medium">
+            <Plus size={13} /> Add freight / wire fee
+          </button>
+        )
       )}
 
       {/* Add supplier form */}
@@ -1023,7 +1104,12 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
             {payments.map((p) => (
               <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 border-b border-line-2 last:border-0">
                 <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-medium text-ink truncate">{p.supplier_name}</div>
+                  <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
+                  {p.supplier_name}
+                  {p.category && p.category !== "supplier" && (
+                    <span className="text-[9px] font-bold uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded flex-shrink-0">{catLabel(p.category)}</span>
+                  )}
+                </div>
                   {p.quantity != null && p.unit_price != null && (
                     <div className="text-[11px] text-muted tabular-nums">
                       {p.quantity} × {fmtAmount(p.unit_price)}
