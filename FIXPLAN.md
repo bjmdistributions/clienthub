@@ -89,11 +89,19 @@ same risk — measure + bump there too.
   helper, `/high-value`→high_value, new `/no-bulk`→exclusive, activity returns both (rebuilt+restarted,
   routes 401-verified). Mobile app.js?v=1 (2 toggles + 2 badges, deployed+verified). Newsletter
   filtering stays on `exclusive` — no behavior change, just decoupled the label.
-- [x] **E3a Dashboard profit line** — DONE (v0.14.61): accent gradient → designed emerald→teal→cyan.
-- [ ] **E3b Dashboard chart filter/toggle** (profit vs revenue, range) — pairs with E4.
-- [ ] **E4 Analytics page — designed colors + far more options.** AnalyticsView already has a palette
-  (indigo/emerald/rose) + custom range + xlsx export. Upgrade: refine the palette for visual appeal,
-  add more chart types/comparisons/breakdowns + advanced filters. (Read AnalyticsView fully first.)
+- [x] **E3a Dashboard profit line** — DONE: accent gradient → designed emerald→teal→cyan. Desktop
+  v0.14.61 + mobile parity (lineChartSVG, app.js?v=2).
+- [x] **E3b Dashboard profit/revenue toggle** — DONE (desktop v0.14.64): segmented control;
+  get_monthly_profit returns daily gross_revenue; cumulative for both; revenue = designed indigo.
+  Mobile toggle = remaining parity (see E4-mobile).
+- [x] **E4 Analytics — designed colors + more chart types (your pick).** DONE (desktop v0.14.63):
+  revenue/category series now a fixed designed indigo (#6366F1) not the grey-in-matte accent; added two
+  NEW chart types — a Profit Trend **area** chart (emerald gradient) + a Client Mix **donut** (clients
+  by tier). Refined the palette.
+- [ ] **E4-mobile parity (remaining).** Done so far: mobile dashboard profit chart recolored to match
+  (app.js?v=2). Still to port for full parity: mobile analytics designed palette + the new chart types,
+  and the dashboard profit/revenue toggle on mobile. (Mobile charts are hand-rolled SVG, not recharts —
+  bigger lift; do next.)
 
 ### A2. Theme-blind hardcoded colors (130 hits / 30 components)
 **Scan (desktop):** top offenders — InventoryView (24), SettingsView (15), ClientsView (14),
