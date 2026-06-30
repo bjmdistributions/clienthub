@@ -44,7 +44,7 @@ Fixing it once corrects everything downstream and is the cheapest high-trust win
 
 ---
 
-## 2. AR / AP + cash-float view (the biggest real gap)  · ▶ IN PROGRESS
+## 2. AR / AP + cash-float view (the biggest real gap)  · ✅ SHIPPED (desktop v0.14.66–68 + server + mobile)
 **§1 correction:** payment is **binary** at the invoice level (an invoice flips fully to `paid` on
 receipt — commands.rs:29), so there is **no partial-payment netting** — open = full invoice total.
 - ✅ **2a Receivables (AR aging)** — SHIPPED (desktop v0.14.66 + server `/api/staff/receivables` +
@@ -52,7 +52,12 @@ receipt — commands.rs:29), so there is **no partial-payment netting** — open
   aging tiles + per-client table; new Receivables nav tab (desktop) + More entry (mobile). No schema change.
 - ⬜ **2b Payables (AP)** — unpaid supplier amounts (deals not yet "Supplier Paid"), grouped + aged.
   Supplier-payment `paid` flag already exists; a `supplier_due_date` is the only net-new field.
-- ⬜ **2c Cash-float card** — `AR − AP = net exposure` + "due this week", on the dashboard. Needs 2a + 2b.
+- ✅ **2b Payables (AP)** — SHIPPED (v0.14.67 + server `/api/staff/payables` + mobile). Unpaid cost
+  lines (`paid=false`) on active deals, grouped by payee, aged ≤30/31–60/61–90/90+ by days since funded;
+  Payables nav tab + mobile view. No schema change; supplier Net-terms due-date deferred.
+- ✅ **2c Cash-float** — SHIPPED (v0.14.68 + mobile). Cash-position strip on Receivables:
+  `Owed to you (AR) − You owe (AP) = Net position`. (Placed on Receivables, not the dashboard, to avoid
+  dashboard surgery — can be promoted to a dashboard card later.)
 
 
 **Already there:** invoices have `due_date`, `status`, `paid_at`; `mark_overdue_invoices` auto-flags
