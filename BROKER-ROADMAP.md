@@ -44,7 +44,17 @@ Fixing it once corrects everything downstream and is the cheapest high-trust win
 
 ---
 
-## 2. AR / AP + cash-float view (the biggest real gap)  · effort M–L · do second
+## 2. AR / AP + cash-float view (the biggest real gap)  · ▶ IN PROGRESS
+**§1 correction:** payment is **binary** at the invoice level (an invoice flips fully to `paid` on
+receipt — commands.rs:29), so there is **no partial-payment netting** — open = full invoice total.
+- ✅ **2a Receivables (AR aging)** — SHIPPED (desktop v0.14.66 + server `/api/staff/receivables` +
+  mobile). Open invoices bucketed Current/1–30/31–60/61–90/90+ by `due_date`, per client + totals;
+  aging tiles + per-client table; new Receivables nav tab (desktop) + More entry (mobile). No schema change.
+- ⬜ **2b Payables (AP)** — unpaid supplier amounts (deals not yet "Supplier Paid"), grouped + aged.
+  Supplier-payment `paid` flag already exists; a `supplier_due_date` is the only net-new field.
+- ⬜ **2c Cash-float card** — `AR − AP = net exposure` + "due this week", on the dashboard. Needs 2a + 2b.
+
+
 **Already there:** invoices have `due_date`, `status`, `paid_at`; `mark_overdue_invoices` auto-flags
 overdue (commands.rs:2122); deal has `payment_received_amount`; `outstanding = Σ total WHERE status IN
 ('sent','overdue')` (948). `supplier_payments_json` + the "Supplier Paid" stage track payables.
