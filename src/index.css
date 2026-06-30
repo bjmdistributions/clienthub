@@ -496,6 +496,10 @@ html.matte, html.matte[data-accent] {
 .accent-active-ic     { color: var(--accent-600); }
 html.dark .accent-active    { color: var(--accent-400); }
 html.dark .accent-active-ic { color: var(--accent-400); }
+/* Matte: keep active chrome crisp/near-white. The dark rule above would otherwise
+   apply matte's accent-400 (#8A8A92) — a muddy mid-grey that's hard to read. */
+html.matte .accent-active    { color: var(--accent-700); }
+html.matte .accent-active-ic { color: var(--accent-600); }
 
 /* ════════════════════════════════════════════════════════════
    SPLIT-SCREEN PANES — container queries

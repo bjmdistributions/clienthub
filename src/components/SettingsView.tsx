@@ -398,27 +398,38 @@ function AppearanceTab() {
     <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
       <SectionLabel>Accent Color</SectionLabel>
       <p className="text-[12px] text-muted mb-3 mt-0.5">
-        Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity.
+        {matte
+          ? "Matte is monochrome by design — accent colors are disabled. Switch to Light or Dark to choose an accent."
+          : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}
       </p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
         {ACCENTS.map((a) => {
-          const isActive = accent === a.id;
+          const isActive = accent === a.id && !matte;
           return (
             <button
               key={a.id}
-              onClick={() => setAccent(a.id)}
+              onClick={() => { if (!matte) setAccent(a.id); }}
+              disabled={matte}
+              title={matte ? "Matte is monochrome — accent colors don't apply" : a.label}
               className={`relative flex flex-col items-center gap-2 py-4 rounded-xl border transition-all ${
-                isActive ? "border-transparent ring-2 ring-offset-1" : "border-line hover:border-line-3"
+                matte
+                  ? "border-line opacity-40 cursor-not-allowed"
+                  : isActive ? "border-transparent ring-2 ring-offset-1" : "border-line hover:border-line-3"
               }`}
               style={isActive ? ({ ["--tw-ring-color" as any]: a.swatch } as any) : undefined}
             >
               <span
-                className="w-9 h-9 rounded-full shadow-inner flex items-center justify-center"
+                className="relative w-9 h-9 rounded-full shadow-inner flex items-center justify-center"
                 style={{ background: a.swatch }}
               >
                 {isActive && <Check size={16} className="text-white" />}
+                {matte && (
+                  <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
+                    <span className="block w-[150%] h-[2px] rotate-45 rounded-full bg-white" />
+                  </span>
+                )}
               </span>
-              <span className="text-[12px] font-medium text-ink-2">{a.label}</span>
+              <span className={`text-[12px] font-medium text-ink-2 ${matte ? "line-through" : ""}`}>{a.label}</span>
             </button>
           );
         })}
