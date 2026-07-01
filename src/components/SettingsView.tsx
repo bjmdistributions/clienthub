@@ -69,6 +69,7 @@ import {
   MessageCircle,
   CheckCheck,
   ArrowDownAZ,
+  Contrast,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -425,13 +426,14 @@ function AppearanceTab() {
     setAccentState(a);
     window.dispatchEvent(new CustomEvent("accent-change", { detail: a }));
   };
-  const setTheme = (mode: "light" | "dark" | "matte") => {
-    const isDark = mode !== "light";
-    const isMatte = mode === "matte";
+  // Base (light/dark) and Mono are now orthogonal — set each independently.
+  const setBase = (isDark: boolean) => {
     setDark(isDark);
-    setMatte(isMatte);
     window.dispatchEvent(new CustomEvent("dark-change", { detail: isDark }));
-    window.dispatchEvent(new CustomEvent("matte-change", { detail: isMatte }));
+  };
+  const setMono = (on: boolean) => {
+    setMatte(on);
+    window.dispatchEvent(new CustomEvent("matte-change", { detail: on }));
   };
 
   const ACCENTS = [
@@ -449,7 +451,7 @@ function AppearanceTab() {
       <SectionLabel>Accent Color</SectionLabel>
       <p className="text-[12px] text-muted mb-3 mt-0.5">
         {matte
-          ? "Matte is monochrome by design — accent colors are disabled. Switch to Light or Dark to choose an accent."
+          ? "Mono is on — accent colors are disabled while the interface is monochrome. Turn Mono off to choose an accent."
           : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}
       </p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
@@ -460,7 +462,7 @@ function AppearanceTab() {
               key={a.id}
               onClick={() => { if (!matte) setAccent(a.id); }}
               disabled={matte}
-              title={matte ? "Matte is monochrome — accent colors don't apply" : a.label}
+              title={matte ? "Mono is on — accent colors don't apply" : a.label}
               className={`relative flex flex-col items-center gap-2 py-4 rounded-xl border transition-all ${
                 matte
                   ? "border-line opacity-40 cursor-not-allowed"
@@ -486,20 +488,18 @@ function AppearanceTab() {
       </div>
 
       <SectionLabel>Theme</SectionLabel>
-      <p className="text-[12px] text-muted mb-3 mt-0.5">Light, dark, or a pure-black matte look — minimal and sharp.</p>
-      <div className="flex gap-3">
+      <p className="text-[12px] text-muted mb-3 mt-0.5">Pick a base, then add Mono for a stripped-back monochrome look.</p>
+      <div className="flex gap-3 mb-5">
         {([
-          { mode: "light", label: "Light", icon: Sun },
-          { mode: "dark",  label: "Dark",  icon: Moon },
-          { mode: "matte", label: "Matte", icon: Moon },
-        ] as { mode: "light" | "dark" | "matte"; label: string; icon: typeof Sun }[]).map((opt) => {
+          { isDark: false, label: "Light", icon: Sun },
+          { isDark: true,  label: "Dark",  icon: Moon },
+        ] as { isDark: boolean; label: string; icon: typeof Sun }[]).map((opt) => {
           const Icon = opt.icon;
-          const current = matte ? "matte" : dark ? "dark" : "light";
-          const isActive = current === opt.mode;
+          const isActive = dark === opt.isDark;
           return (
             <button
-              key={opt.mode}
-              onClick={() => setTheme(opt.mode)}
+              key={opt.label}
+              onClick={() => setBase(opt.isDark)}
               className={`flex-1 flex items-center justify-center gap-2 h-12 rounded-xl border text-[13px] font-medium transition-colors ${
                 isActive
                   ? "accent-active accent-active-bd"
@@ -511,6 +511,29 @@ function AppearanceTab() {
           );
         })}
       </div>
+
+      {/* Mono — orthogonal to light/dark. Strips accent + goes grayscale. */}
+      <button
+        onClick={() => setMono(!matte)}
+        role="switch"
+        aria-checked={matte}
+        className={`w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
+          matte ? "accent-active accent-active-bd" : "border-line hover:border-line-3"
+        }`}
+      >
+        <span className={`flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg ${matte ? "bg-ink text-surface" : "bg-surface-2 text-muted"}`}>
+          <Contrast size={16} />
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className={`block text-[13px] font-semibold ${matte ? "text-ink" : "text-ink-2"}`}>Mono</span>
+          <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
+            Monochrome — strips accent color; pure black in dark, clean white/black in light.
+          </span>
+        </span>
+        <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
+          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${matte ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+        </span>
+      </button>
     </div>
   );
 }

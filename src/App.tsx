@@ -129,13 +129,14 @@ export default function App() {
     return () => clearTimeout(t);
   }, [dark]);
 
-  // Matte black variant — applied on top of dark (deepens bg, flattens shadows).
+  // Mono (monochrome) — orthogonal to light/dark. It strips the accent and goes
+  // grayscale; combined with dark it's the pure-black look, with light it's the
+  // clean white/black look. Persisted independently of `dark` (no forced dark).
   const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
   useEffect(() => {
     const html = document.documentElement;
     html.classList.add("theme-transitioning");
     html.classList.toggle("matte", matte);
-    if (matte) html.classList.add("dark");
     localStorage.setItem("clienthub_matte", matte ? "1" : "0");
     const t = setTimeout(() => html.classList.remove("theme-transitioning"), 300);
     return () => clearTimeout(t);
@@ -435,9 +436,10 @@ export default function App() {
             </button>
           )}
 
-          {/* Dark mode toggle */}
+          {/* Dark mode toggle — flips the base only; Mono (if on) is preserved
+              since it's now orthogonal to light/dark. */}
           <button
-            onClick={() => { setDark(d => !d); setMatte(false); }}
+            onClick={() => setDark(d => !d)}
             title={dark ? "Switch to light mode" : "Switch to dark mode"}
             className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
             style={{ color: dark ? "#FCD34D" : "#7A7A90" }}
