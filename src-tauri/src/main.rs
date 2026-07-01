@@ -186,6 +186,9 @@ fn main() {
                 tracing::warn!("sync watcher failed to start: {}", e);
             }
 
+            // One-time background cleanup of email_in interactions that the pre-fix
+            // scanner re-logged every scan (IMAP N:* bug). Guarded to run once.
+            std::thread::spawn(|| email::dedup_email_interactions_once());
             // Periodic IMAP scan every 5 minutes.
             email::spawn_periodic_scan(300);
 

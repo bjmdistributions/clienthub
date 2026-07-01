@@ -286,6 +286,11 @@ fn scan_blocking(
 
     for msg in messages.iter() {
         let uid = msg.uid.unwrap_or(0);
+        // IMAP `UID N:*` returns the highest-UID message even when N is past it,
+        // so an inbox with no new mail keeps re-returning its last email — which
+        // was getting re-logged as a fresh interaction every 5-minute scan. Skip
+        // anything at or below the cursor so only genuinely-new mail is processed.
+        if uid <= last_uid { continue; }
         max_uid = max_uid.max(uid);
 
         if let Some(body_bytes) = msg.body() {
@@ -409,6 +414,55 @@ pub fn spawn_periodic_scan(interval_secs: u64) {
             }
         }
     });
+}
+
+/// One-time cleanup of the `email_in` interactions that the pre-fix scanner
+/// re-logged every 5 minutes (the IMAP `N:*` bug). Keeps the earliest row per
+/// (client, subject, body) and tombstones the rest so the deletes sync. Guarded
+/// by a settings flag so it runs at most once. Safe to call on every startup.
+pub fn dedup_email_interactions_once() {
+    let conn = match crate::db::pool().get() { Ok(c) => c, Err(_) => return };
+    let done = conn
+        .query_row("SELECT value FROM settings WHERE key='email_dedup_v1_done'", [], |r| r.get::<_, String>(0))
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if done {
+        return;
+    }
+    let ids: Vec<String> = {
+        let mut stmt = match conn.prepare(
+            "SELECT id FROM interactions WHERE kind='email_in' AND id NOT IN (
+                 SELECT id FROM (
+                     SELECT id, ROW_NUMBER() OVER (
+                         PARTITION BY client_id, COALESCE(subject,''), COALESCE(body,'') ORDER BY created_at
+                     ) rn
+                     FROM interactions WHERE kind='email_in'
+                 ) WHERE rn = 1
+             )",
+        ) {
+            Ok(s) => s,
+            Err(e) => { tracing::warn!("email dedup query failed: {}", e); return; }
+        };
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .map(|rows| rows.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default()
+    };
+    // Mark done first so a mid-run interruption can't loop; the deletes below are
+    // idempotent (already-deleted rows are simply no-ops).
+    let _ = conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('email_dedup_v1_done','1') ON CONFLICT(key) DO UPDATE SET value='1'",
+        [],
+    );
+    drop(conn);
+    let mut n = 0u32;
+    for id in &ids {
+        if let Ok(conn) = crate::db::pool().get() {
+            let _ = conn.execute("DELETE FROM interactions WHERE id=?1", [id]);
+        }
+        let _ = crate::sync::record_delete("interactions", id);
+        n += 1;
+    }
+    tracing::info!("email dedup: removed {} re-logged email_in interactions", n);
 }
 
 /// Match emails against signup rules, then known clients.
