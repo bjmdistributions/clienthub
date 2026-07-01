@@ -1434,6 +1434,7 @@ export const api = {
   deleteCredential: (key: string) => invoke<void>("delete_credential", { key }),
   saveEmailSettings: (settings: EmailSettings) =>
     invoke<void>("save_email_settings", { settings }),
+  sendTestEmail: () => invoke<string>("send_test_email"),
   getEmailSettings: () => invoke<EmailSettings | null>("get_email_settings"),
   saveCompanyInfo: (info: CompanyInfo) => invoke<void>("save_company_info", { info }),
   getCompanyInfo: () => invoke<CompanyInfo | null>("get_company_info"),

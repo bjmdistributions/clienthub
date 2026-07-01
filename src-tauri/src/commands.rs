@@ -5089,6 +5089,21 @@ pub async fn save_email_settings(settings: crate::email::EmailSettings) -> Resul
     crate::email::save_settings(&settings).map_err(|e| e.to_string())
 }
 
+/// Send a real test email to the configured account — verifies outbound email works
+/// end-to-end (connection + auth + delivery). Returns the address it sent to.
+#[tauri::command]
+pub async fn send_test_email() -> Result<String, String> {
+    let settings = crate::email::load_settings().map_err(|e| format!("No email configured: {}", e))?;
+    let to = settings.user.clone();
+    crate::email::send(
+        &to,
+        "Ecliptr test email",
+        "This is a test from Ecliptr. If you're reading this, your outbound email is connected and working correctly.",
+        None,
+    ).await.map_err(|e| format!("Send failed: {}", e))?;
+    Ok(to)
+}
+
 #[tauri::command]
 pub async fn get_email_settings() -> Result<Option<crate::email::EmailSettings>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

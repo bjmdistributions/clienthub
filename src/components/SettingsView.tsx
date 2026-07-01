@@ -667,6 +667,8 @@ function EmailTab() {
   const [oauthConnected,   setOauthConnected]   = useState(false);
   const [showSecrets,      setShowSecrets]      = useState(false);
   const [saved,            setSaved]            = useState(false);
+  const [testing,          setTesting]          = useState(false);
+  const [testMsg,          setTestMsg]          = useState<string | null>(null);
   const [error,            setError]            = useState<string | null>(null);
 
   useEffect(() => {
@@ -797,13 +799,30 @@ function EmailTab() {
           <AlertCircle size={13} /> {error}
         </div>
       )}
-      <button
-        onClick={save}
-        className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
-      >
-        {saved ? <Check size={13} /> : <Save size={13} />}
-        {saved ? "Saved" : "Save Settings"}
-      </button>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={save}
+          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
+        >
+          {saved ? <Check size={13} /> : <Save size={13} />}
+          {saved ? "Saved" : "Save Settings"}
+        </button>
+        <button
+          onClick={async () => {
+            setTestMsg(null); setTesting(true);
+            try { const to = await api.sendTestEmail(); setTestMsg(`Sent — check ${to}`); }
+            catch (e: any) { setTestMsg(`Failed: ${e}`); }
+            setTesting(false);
+          }}
+          disabled={testing}
+          className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+        >
+          <Mail size={13} /> {testing ? "Sending…" : "Send test email"}
+        </button>
+        {testMsg && (
+          <span className={`text-[12px] ${testMsg.startsWith("Failed") ? "text-danger-ink" : "text-success-ink"}`}>{testMsg}</span>
+        )}
+      </div>
 
       <InboxesSection />
     </div>

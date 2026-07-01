@@ -461,6 +461,7 @@ fn main() {
             save_credential,
             delete_credential,
             save_email_settings,
+            send_test_email,
             get_email_settings,
             save_company_info,
             get_company_info,
