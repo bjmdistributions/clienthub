@@ -801,8 +801,8 @@ function NewsletterTab() {
       {/* Panel A: Recipients */}
       <div className="nl-pane w-full lg:w-[300px] lg:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col">
         <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-          <span className="text-[14px] font-semibold text-ink">Clients</span>
-          <span className="bg-accent/10 text-accent-hover text-[11px] font-medium px-2 py-0.5 rounded-full">{clients.length}</span>
+          <span className="text-[14px] font-semibold text-ink">Audience</span>
+          <span className="bg-accent/10 text-accent-hover text-[11px] font-semibold px-2 py-0.5 rounded-full tabular-nums">{metadataFilteredClients.filter((c) => c.email).length} will receive</span>
         </div>
 
         <div className="px-3 py-2 border-b border-line">
@@ -826,62 +826,56 @@ function NewsletterTab() {
           />
         </div>
 
-        <div className="px-3 py-2 border-b border-line">
+        {/* Audience — the primary control, always visible (was buried in a collapse) */}
+        <div className="px-3 py-2.5 border-b border-line">
+          <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">Audience</div>
+          <div className="flex flex-wrap gap-1.5 mb-2.5">
+            {([["all", "Everyone"], ["ranked", "Ranked buyers"]] as [string, string][]).map(([v, l]) => (
+              <button key={v} onClick={() => setTierFilter(v as "all" | "ranked")}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${tierFilter === v ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
+            ))}
+            {([["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
+              const active = Array.isArray(tierFilter) && tierFilter.includes(code);
+              return (
+                <button key={code} onClick={() => {
+                  const cur = Array.isArray(tierFilter) ? tierFilter : [];
+                  const next = active ? cur.filter((t) => t !== code) : [...cur, code];
+                  setTierFilter(next.length ? next : "all");
+                }}
+                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${active ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{label}</button>
+              );
+            })}
+          </div>
+
           <button onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-1 text-[11px] text-muted hover:text-ink-2 w-full">
+            className="flex items-center gap-1 text-[11px] text-muted hover:text-ink-2">
             <ChevronDown size={11} className={`transition-transform ${showFilters ? "rotate-180" : ""}`} />
-            Filter recipients
+            More filters
           </button>
           {showFilters && (
-            <div className="mt-2 space-y-1.5">
-              <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
-                <input type="checkbox" checked={excludeDormant} onChange={(e) => setExcludeDormant(e.target.checked)}
-                  className="accent-accent" />
-                Exclude dormant clients
-              </label>
-              <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
-                <input type="checkbox" checked={excludeAsNeeded} onChange={(e) => setExcludeAsNeeded(e.target.checked)}
-                  className="accent-accent" />
-                Exclude "As Needed / One Time"
-              </label>
-              <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
-                <input type="checkbox" checked={excludeUnder10k} onChange={(e) => setExcludeUnder10k(e.target.checked)}
-                  className="accent-accent" />
-                Exclude under $10k annual spend
-              </label>
-
-              {/* Tier targeting — send only to top-ranked buyers, or pick specific tiers. */}
-              <div className="pt-2 mt-1 border-t border-line">
-                <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">Buyer tiers</div>
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {([["all", "All tiers"], ["ranked", "Ranked only"]] as [string, string][]).map(([v, l]) => (
-                    <button key={v} onClick={() => setTierFilter(v as "all" | "ranked")}
-                      className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${tierFilter === v ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
-                  ))}
-                  {([["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
-                    const active = Array.isArray(tierFilter) && tierFilter.includes(code);
-                    return (
-                      <button key={code} onClick={() => {
-                        const cur = Array.isArray(tierFilter) ? tierFilter : [];
-                        const next = active ? cur.filter((t) => t !== code) : [...cur, code];
-                        setTierFilter(next.length ? next : "all");
-                      }}
-                        className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${active ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{label}</button>
-                    );
-                  })}
-                </div>
-                <label className="flex items-center gap-2 text-[11px] text-ink-2 cursor-pointer">
-                  <input type="checkbox" checked={includeRanked}
-                    onChange={(e) => { setIncludeRanked(e.target.checked); api.setNewsletterIncludeRanked(e.target.checked).catch(() => {}); }}
-                    className="accent-accent" />
-                  Include ranked clients in mass sends (default)
-                </label>
+            <div className="mt-2">
+              <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">Exclude</div>
+              <div className="flex flex-wrap gap-1.5">
+                {([
+                  ["Dormant", excludeDormant, setExcludeDormant],
+                  ["One-time", excludeAsNeeded, setExcludeAsNeeded],
+                  ["Under $10k", excludeUnder10k, setExcludeUnder10k],
+                ] as [string, boolean, (v: boolean) => void][]).map(([l, on, set]) => (
+                  <button key={l} onClick={() => set(!on)}
+                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${on ? "bg-danger-bg text-danger-ink border-danger-ink/30" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
+                ))}
               </div>
-              {excludedByFilter > 0 && (
-                <div className="text-[10px] text-warning-ink">{excludedByFilter} client{excludedByFilter !== 1 ? "s" : ""} excluded by filters</div>
-              )}
+              <label className="flex items-center gap-2 text-[10px] text-muted cursor-pointer mt-2">
+                <input type="checkbox" checked={includeRanked}
+                  onChange={(e) => { setIncludeRanked(e.target.checked); api.setNewsletterIncludeRanked(e.target.checked).catch(() => {}); }}
+                  className="accent-accent" />
+                Include ranked buyers when "Everyone" is selected
+              </label>
             </div>
           )}
+          <div className="text-[10px] text-muted mt-2 leading-snug">
+            Blacklisted &amp; do-not-bulk clients are always excluded.{excludedByFilter > 0 ? ` ${excludedByFilter} more filtered out.` : ""}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200, minHeight: 120 }}>
