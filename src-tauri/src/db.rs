@@ -22,8 +22,116 @@ pub fn app_data_dir() -> &'static PathBuf {
     APP_DATA_DIR.get().expect("app data dir not initialized")
 }
 
+/// Name of the pointer file (in the app-data ROOT) that records which per-account
+/// store is active. Absent → the main account, whose store is the root itself
+/// (the existing `clienthub.db` + `sync/`), byte-for-byte unchanged.
+const ACTIVE_STORE_FILE: &str = "active_store";
+
+/// Resolve the ACTIVE data-store directory under the app-data root.
+///
+/// Per-account isolation: each signed-in account gets its own store directory so
+/// its local SQLite + sync folder never mix with another account's. The MAIN
+/// account keeps the root directory itself (existing data untouched). A different
+/// account is stored under `accounts/<key>/`.
+///
+/// The active store is chosen by the `active_store` pointer file in the root:
+///   - missing / empty            → the root (main account) — the default for
+///                                   every existing install, so nothing moves.
+///   - a relative dir name (key)  → `<root>/accounts/<key>/` (a fresh account).
+///
+/// The pointer lives OUTSIDE any DB (a plain file) precisely because "which
+/// account is active" cannot be read from a DB we haven't opened yet.
+fn resolve_store_dir(root: &std::path::Path) -> PathBuf {
+    let pointer = root.join(ACTIVE_STORE_FILE);
+    let key = std::fs::read_to_string(&pointer)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match key {
+        // Main account (or any install predating per-account stores): the root.
+        None => root.to_path_buf(),
+        // A specific account: an isolated subdirectory. `sanitize_store_key`
+        // guarantees the key can't escape `accounts/`.
+        Some(k) => root.join("accounts").join(sanitize_store_key(&k)),
+    }
+}
+
+/// Keep a store key filesystem-safe and confined to a single path component (no
+/// separators / traversal). Used when routing an account to `accounts/<key>/`.
+pub fn sanitize_store_key(key: &str) -> String {
+    let cleaned: String = key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() { "default".to_string() } else { trimmed.to_string() }
+}
+
+/// Marker file (inside a store dir) recording which org owns that store. Written
+/// the first time an org occupies a store; used to decide whether a signing-in
+/// account belongs here or needs its own store.
+const STORE_ORG_FILE: &str = "store_org";
+
+/// The app-data ROOT (parent of all per-account stores). Distinct from
+/// `app_data_dir()`, which returns the ACTIVE store dir (root or a subdir).
+static APP_ROOT_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn app_root_dir() -> &'static PathBuf {
+    APP_ROOT_DIR.get().expect("app root dir not initialized")
+}
+
+/// The org id that owns the ACTIVE store, if recorded yet (None on a brand-new
+/// empty store that no account has claimed).
+pub fn active_store_org() -> Option<String> {
+    std::fs::read_to_string(app_data_dir().join(STORE_ORG_FILE))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Record which org owns the ACTIVE store (idempotent; only writes if unset). Call
+/// once an account is confirmed to belong to this store so future logins can tell
+/// whether they match.
+pub fn claim_active_store_org(org_id: &str) {
+    if org_id.trim().is_empty() { return; }
+    let marker = app_data_dir().join(STORE_ORG_FILE);
+    if !marker.exists() {
+        let _ = std::fs::write(&marker, org_id.trim());
+    }
+}
+
+/// Point the app at the store for `org_id` (relative to the root) and return the
+/// store key written to the pointer. Empty pointer (root) is used for the org that
+/// already owns the root store; otherwise `accounts/<org_id>/`. Does NOT move data
+/// and does NOT restart — the caller restarts so `init` re-runs cleanly.
+pub fn set_active_store_for_org(org_id: &str) -> Result<()> {
+    let root = app_root_dir();
+    let pointer = root.join(ACTIVE_STORE_FILE);
+    // If the root store is unclaimed or already owned by this org, use the root.
+    let root_org = std::fs::read_to_string(root.join(STORE_ORG_FILE))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let use_root = match &root_org {
+        None => true,                       // root not yet claimed → this org takes it
+        Some(o) => o == org_id.trim(),      // root already this org → stay
+    };
+    if use_root {
+        // Empty/absent pointer means "root store".
+        let _ = std::fs::remove_file(&pointer);
+    } else {
+        let key = sanitize_store_key(org_id);
+        std::fs::write(&pointer, &key).context("write active_store pointer")?;
+    }
+    Ok(())
+}
+
 pub fn init(app: &App) -> Result<()> {
-    let dir = app.path().app_data_dir().context("app_data_dir")?;
+    let root = app.path().app_data_dir().context("app_data_dir")?;
+    std::fs::create_dir_all(&root)?;
+    APP_ROOT_DIR.set(root.clone()).ok();
+    // The active store may be the root (main account) or a per-account subdir.
+    let dir = resolve_store_dir(&root);
     std::fs::create_dir_all(&dir)?;
     let db_path = dir.join("clienthub.db");
 
@@ -57,6 +165,27 @@ pub fn init(app: &App) -> Result<()> {
         let conn = pool.get()?;
         run_migrations(&conn)?;
         seed_defaults(&conn)?;
+
+        // Claim the ROOT store for the main workspace on existing installs. If this
+        // is the root store, has no owner marker yet, but already holds real data
+        // (accounts or clients), it's the pre-existing main account's store — stamp
+        // it `org_default` so a DIFFERENT account signing in later is routed to its
+        // own store instead of mixing into this one. A genuinely fresh install has
+        // no such rows, stays unclaimed, and is claimed by whoever first signs in.
+        if dir == root && !dir.join(STORE_ORG_FILE).exists() {
+            let has_data: bool = conn
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM staff_accounts) + (SELECT COUNT(*) FROM clients)",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if has_data {
+                let _ = std::fs::write(dir.join(STORE_ORG_FILE), "org_default");
+                tracing::info!("claimed root data store for org_default (existing install)");
+            }
+        }
     }
 
     POOL.set(pool).ok();
@@ -1053,6 +1182,22 @@ const MIGRATIONS: &[(u32, &str)] = &[
         // category. Top-level categories have parent_id = NULL.
         r#"
         ALTER TABLE categories ADD COLUMN parent_id TEXT;
+        "#,
+    ),
+    (
+        54,
+        // Promote the High-Value + Exclusive flags out of the metadata blob into
+        // real columns, so later metadata writes can't clobber them. Backfill from
+        // any existing metadata.high_value / metadata.exclusive (true/1).
+        r#"
+        ALTER TABLE clients ADD COLUMN high_value INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE clients ADD COLUMN exclusive INTEGER NOT NULL DEFAULT 0;
+        UPDATE clients SET high_value=1
+          WHERE json_valid(metadata)
+            AND json_extract(metadata,'$.high_value') IN (1, 'true');
+        UPDATE clients SET exclusive=1
+          WHERE json_valid(metadata)
+            AND json_extract(metadata,'$.exclusive') IN (1, 'true');
         "#,
     ),
 ];

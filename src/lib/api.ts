@@ -37,6 +37,9 @@ export interface Client {
   next_follow_up_date: string | null;
   needs_review: boolean;
   is_blacklisted: boolean;
+  // Real columns (promoted from metadata). Toggle commands return the new value.
+  high_value?: boolean;
+  exclusive?: boolean;
   approval_status: string;
 }
 

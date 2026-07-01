@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react";
 import { api, type ApprovalRequest, type Client, type ClientInput } from "../lib/api";
+import PendingReviewModal from "./PendingReviewModal";
+import { UserPlus, Inbox, ChevronRight } from "lucide-react";
 
 const kindLabel = (k: string) =>
   k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k;
+
+function sourceLabel(m: Record<string, any> | null | undefined): string {
+  const s = String(m?.source || "");
+  if (s === "shopify") return "Shopify";
+  if (s === "intake") return "Web form";
+  if (s === "form") return "Ecliptr form";
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+}
 
 function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClose: () => void; onResolved: () => void }) {
   const [client, setClient] = useState<Client | null>(null);
@@ -85,11 +95,16 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
 
 export function ApprovalsView() {
   const [items, setItems] = useState<ApprovalRequest[]>([]);
+  const [pending, setPending] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
+  const [reviewClient, setReviewClient] = useState<Client | null>(null);
 
   const load = () =>
-    api.listApprovalRequests().then((r) => { setItems(r); setLoading(false); }).catch(() => setLoading(false));
+    Promise.all([
+      api.listApprovalRequests().then(setItems).catch(() => {}),
+      api.getPendingApprovals().then(setPending).catch(() => {}),
+    ]).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
 
   const resolved = () => { setSelected(null); load(); window.dispatchEvent(new CustomEvent("approvals-changed")); };
@@ -98,29 +113,82 @@ export function ApprovalsView() {
     await load(); window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
 
+  // Role-based requests that aren't a plain new-customer add (e.g. deletions).
+  const nonAddRequests = items.filter((a) => a.kind !== "client_add");
+  const total = pending.length + nonAddRequests.length;
+
   return (
     <div className="p-6 max-w-2xl mx-auto">
-      <h2 className="text-[18px] font-semibold text-ink mb-1">Pending approvals</h2>
-      <p className="text-[12px] text-muted mb-5">Click a request to review the details and edit before approving.</p>
-      {loading ? null : items.length === 0 ? (
-        <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-10 text-center">Nothing waiting on you 🎉</div>
-      ) : (
-        <div className="space-y-3">
-          {items.map((a) => (
-            <div key={a.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-4">
-              <button className="min-w-0 text-left flex-1" onClick={() => setSelected(a)}>
-                <div className="text-[14px] font-medium text-ink truncate">{a.summary || kindLabel(a.kind)}</div>
-                <div className="text-[11px] text-muted mt-0.5">
-                  {kindLabel(a.kind)}{a.requested_by_name ? ` · by ${a.requested_by_name}` : ""} · {new Date(a.created_at).toLocaleString()} · <span className="text-accent">review</span>
-                </div>
-              </button>
-              <div className="flex gap-2 flex-shrink-0">
-                <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Approve</button>
-                <button onClick={() => quick(a.id, false)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Reject</button>
-              </div>
-            </div>
-          ))}
+      <h2 className="text-[18px] font-semibold text-ink mb-1">Notifications</h2>
+      <p className="text-[12px] text-muted mb-5">Customers waiting on your review, and any requests from your team.</p>
+
+      {loading ? null : total === 0 ? (
+        <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
+          <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3"><Inbox size={18} /></div>
+          <div className="text-[13px] text-muted">Nothing waiting on you</div>
         </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Pending customers — click to open the full review */}
+          {pending.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2 mb-2.5">
+                <UserPlus size={15} className="text-muted" />
+                <h3 className="text-[13px] font-semibold text-ink">Pending customers</h3>
+                <span className="text-[11px] font-semibold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums">{pending.length}</span>
+              </div>
+              <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+                {pending.map((c) => {
+                  const src = sourceLabel(c.metadata);
+                  const initials = (c.name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
+                  return (
+                    <button key={c.id} onClick={() => setReviewClient(c)}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-2 transition-colors">
+                      <span className="w-9 h-9 rounded-full bg-accent/10 text-accent-hover flex items-center justify-center text-[13px] font-bold flex-shrink-0">{initials}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13.5px] font-semibold text-ink truncate">{c.name}</span>
+                          {src && <span className="text-[10px] font-medium uppercase tracking-wide text-muted bg-surface-2 px-1.5 py-0.5 rounded flex-shrink-0">{src}</span>}
+                        </div>
+                        <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "New customer to review"}</div>
+                      </div>
+                      <span className="text-[11px] font-medium text-accent flex items-center gap-0.5 flex-shrink-0">Review <ChevronRight size={13} /></span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* Team requests (deletions, etc.) */}
+          {nonAddRequests.length > 0 && (
+            <section>
+              <h3 className="text-[13px] font-semibold text-ink mb-2.5">Team requests</h3>
+              <div className="space-y-2.5">
+                {nonAddRequests.map((a) => (
+                  <div key={a.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-4">
+                    <button className="min-w-0 text-left flex-1" onClick={() => setSelected(a)}>
+                      <div className="text-[14px] font-medium text-ink truncate">{a.summary || kindLabel(a.kind)}</div>
+                      <div className="text-[11px] text-muted mt-0.5">
+                        {kindLabel(a.kind)}{a.requested_by_name ? ` · by ${a.requested_by_name}` : ""} · {new Date(a.created_at).toLocaleString()} · <span className="text-accent">review</span>
+                      </div>
+                    </button>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Approve</button>
+                      <button onClick={() => quick(a.id, false)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Reject</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
+
+      {reviewClient && (
+        <PendingReviewModal client={reviewClient}
+          onClose={() => setReviewClient(null)}
+          onResolved={() => { setReviewClient(null); load(); window.dispatchEvent(new CustomEvent("approvals-changed")); }} />
       )}
       {selected && <ApprovalDetail a={selected} onClose={() => setSelected(null)} onResolved={resolved} />}
     </div>

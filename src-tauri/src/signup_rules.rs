@@ -293,8 +293,21 @@ fn create_client_from_customer_with_notes(
     put("country", &customer.country);
     put("title", &customer.title);
     put("tax_id", &customer.tax_id);
-    if !customer.first_name.trim().is_empty() { put("first_name", &customer.first_name); }
-    if !customer.last_name.trim().is_empty() { put("last_name", &customer.last_name); }
+    put("first_name", &customer.first_name);
+    put("last_name", &customer.last_name);
+    // Sales rep: default to the company name when blank (mirrors the parser, but
+    // also covers the AI-fallback path which doesn't run the parser). Written to
+    // both `sales_rep` (the capture field) and `lead_representative` (what the
+    // client profile reads for "Rep").
+    let sales_rep = if !customer.sales_rep.trim().is_empty() {
+        customer.sales_rep.trim().to_string()
+    } else {
+        customer.company.trim().to_string()
+    };
+    if !sales_rep.is_empty() {
+        meta.insert("sales_rep".into(), serde_json::Value::String(sales_rep.clone()));
+        meta.insert("lead_representative".into(), serde_json::Value::String(sales_rep.clone()));
+    }
     if !customer.categories.is_empty() {
         meta.insert(
             "categories".into(),
@@ -336,6 +349,17 @@ fn create_client_from_customer_with_notes(
     )?;
 
     log_signup_interaction(&id, email)?;
+
+    // Raise a pending-approval so the captured lead shows in the approvals bell for
+    // a human to review (mirrors the intake path). Non-fatal if it can't be queued.
+    if let Err(e) = crate::commands::queue_client_approval(
+        "client_add",
+        &id,
+        &format!("New lead via web form: {}", name),
+    ) {
+        tracing::warn!("queue_client_approval for {}: {}", id, e);
+    }
+
     tracing::info!("auto-created pending client {} from form/signup email", name);
     Ok(id)
 }

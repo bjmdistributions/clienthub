@@ -38,6 +38,9 @@ pub struct ExtractedCustomer {
     pub zip: String,
     pub country: String,
     pub tax_id: String,
+    /// Sales rep / representative named on the form. Defaults to the company name
+    /// when the form didn't specify one (see `parse_form_email`).
+    pub sales_rep: String,
     /// Values of any "Category *" / "Jewelry*"-style labels that had a value.
     pub categories: Vec<String>,
     /// Every other non-empty label:value pair, keyed by the original label.
@@ -128,6 +131,7 @@ pub fn parse_form_email(body: &str) -> Option<ExtractedCustomer> {
             "mobile" | "cell" | "cell phone" | "mobile phone" => mobile = val,
             "company" | "company name" | "business" | "business name" | "organization" | "organisation" => c.company = val,
             "job title" | "title" | "role" => c.title = val,
+            "sales rep" | "sales representative" | "rep" | "representative" | "sales person" | "salesperson" => c.sales_rep = val,
             "street address" | "address" | "address line 1" | "street" => c.address = val,
             "city" | "town" => c.city = val,
             "state" | "province" | "region" => c.state = val,
@@ -151,6 +155,11 @@ pub fn parse_form_email(body: &str) -> Option<ExtractedCustomer> {
         if !fl.is_empty() {
             c.name = fl;
         }
+    }
+
+    // Sales rep defaults to the company name when the form didn't specify one.
+    if c.sales_rep.trim().is_empty() && !c.company.trim().is_empty() {
+        c.sales_rep = c.company.trim().to_string();
     }
 
     Some(c)

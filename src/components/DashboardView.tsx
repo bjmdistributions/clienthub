@@ -22,6 +22,7 @@ function relNote(iso: string): string {
 }
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import TierBadge from "./TierBadge";
+import PendingReviewModal from "./PendingReviewModal";
 
 interface Props {
   onNavigate: (t: any) => void;
@@ -86,6 +87,7 @@ export default function DashboardView({ onNavigate }: Props) {
   const [stats, setStats]             = useState<DashboardStats | null>(null);
   const [followups, setFollowups]     = useState<Client[]>([]);
   const [pendingApprovals, setPending] = useState<Client[]>([]);
+  const [reviewClient, setReviewClient] = useState<Client | null>(null);
   const [recentInvoices, setRecent]   = useState<Invoice[]>([]);
   const [notes, setNotes]             = useState<Note[]>([]);
   const [clients, setClients]         = useState<Client[]>([]);
@@ -194,6 +196,14 @@ export default function DashboardView({ onNavigate }: Props) {
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
+
+      {reviewClient && (
+        <PendingReviewModal
+          client={reviewClient}
+          onClose={() => setReviewClient(null)}
+          onResolved={() => { setPending((p) => p.filter((x) => x.id !== reviewClient.id)); setReviewClient(null); }}
+        />
+      )}
 
       {/* ── Page Header ─────────────────────────────────── */}
       <div className="px-6 py-4 flex items-center justify-between flex-shrink-0"
@@ -751,6 +761,11 @@ export default function DashboardView({ onNavigate }: Props) {
                         {c.email && <p className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{c.email}</p>}
                       </div>
                       <div className="flex items-center gap-1 ml-2">
+                        <button onClick={() => setReviewClient(c)}
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                          style={{ background: "var(--t-s2)", color: "var(--t-tx2)", border: "1px solid var(--t-b1)" }}>
+                          Review
+                        </button>
                         <button onClick={async () => { await api.approveClient(c.id); setPending(p => p.filter(x => x.id !== c.id)); }}
                           className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
                           style={{ background: "rgba(16,185,129,0.12)", color: "rgb(var(--c-success))", border: "1px solid rgba(16,185,129,0.2)" }}>

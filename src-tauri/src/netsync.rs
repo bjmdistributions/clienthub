@@ -229,13 +229,22 @@ pub fn spawn_loop() {
 // ---------- connection management ----------
 
 #[derive(Deserialize)]
-struct LoginResp {
-    token: Option<String>,
+struct LoginUser {
+    #[serde(default)]
+    org_id: String,
 }
 
-/// Log in to the server, store the connection, and bootstrap by pulling the full
-/// org history (cursor 0). The session token is returned in the login body.
-pub async fn connect(url: &str, email: &str, password: &str) -> Result<()> {
+#[derive(Deserialize)]
+struct LoginResp {
+    token: Option<String>,
+    #[serde(default)]
+    user: Option<LoginUser>,
+}
+
+/// Authenticate against the server WITHOUT touching local state — used to learn a
+/// signing-in account's org id before deciding which local store to use. Returns
+/// `(token, org_id)`. Does not store the connection or pull anything.
+pub async fn probe_login(url: &str, email: &str, password: &str) -> Result<(String, String)> {
     let base = url.trim_end_matches('/').to_string();
     let resp = http()
         .post(format!("{}/api/auth/employee/login", base))
@@ -248,6 +257,16 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<()> {
     }
     let body: LoginResp = resp.json().await.context("login decode")?;
     let token = body.token.context("server did not return a token")?;
+    let org_id = body.user.map(|u| u.org_id).unwrap_or_default();
+    Ok((token, org_id))
+}
+
+/// Log in to the server, store the connection, and bootstrap by pulling the full
+/// org history (cursor 0). Returns the account's org id (from the login body) so
+/// the caller can claim/verify the active store.
+pub async fn connect(url: &str, email: &str, password: &str) -> Result<String> {
+    let base = url.trim_end_matches('/').to_string();
+    let (token, org_id) = probe_login(&base, email, password).await?;
     state_set("netsync_url", &base);
     state_set("netsync_token", &token);
     // Only reset the cursor on the very first connect (full bootstrap). On a
@@ -258,7 +277,7 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<()> {
     }
     pull_apply().await?;
     push_pending().await.ok(); // flush anything queued before connecting
-    Ok(())
+    Ok(org_id)
 }
 
 /// Clear the token (disables sync). Keeps the URL + cursor for a cheap reconnect.
@@ -284,7 +303,7 @@ pub fn status_json() -> serde_json::Value {
 
 #[tauri::command]
 pub async fn netsync_connect(url: String, email: String, password: String) -> Result<(), String> {
-    connect(&url, &email, &password).await.map_err(|e| e.to_string())
+    connect(&url, &email, &password).await.map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

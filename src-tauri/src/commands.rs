@@ -39,10 +39,26 @@ pub struct Client {
     pub needs_review: bool,
     pub is_blacklisted: bool,
     pub approval_status: String,
+    /// Real columns (promoted out of metadata so later metadata writes can't clear
+    /// them). The UI reads these; metadata still mirrors them for older readers.
+    pub high_value: bool,
+    pub exclusive: bool,
 }
 
 fn extract_meta_str(meta: &Option<Value>, key: &str) -> Option<String> {
     meta.as_ref()?.get(key)?.as_str().map(|s| s.to_string())
+}
+
+/// Read a boolean flag from metadata, tolerating JSON bool, 1/0, or "true".
+/// Used as a fallback for high_value/exclusive so rows that only ever had the flag
+/// in metadata (e.g. synced from an older peer) still read as true.
+fn meta_flag(meta: &Option<Value>, key: &str) -> bool {
+    match meta.as_ref().and_then(|m| m.get(key)) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_i64().map(|i| i != 0).unwrap_or(false),
+        Some(Value::String(s)) => s.eq_ignore_ascii_case("true") || s == "1",
+        _ => false,
+    }
 }
 
 fn extract_client_fields(meta: &Option<Value>) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, bool) {
@@ -112,7 +128,9 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                     COALESCE(c.is_blacklisted,0),
-                    COALESCE(c.approval_status,'active')
+                    COALESCE(c.approval_status,'active'),
+                    COALESCE(c.high_value,0),
+                    COALESCE(c.exclusive,0)
              FROM clients c
              ORDER BY c.name",
         )
@@ -121,6 +139,8 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
         .query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let high_value = r.get::<_, i64>(16)? != 0 || meta_flag(&meta, "high_value");
+            let exclusive = r.get::<_, i64>(17)? != 0 || meta_flag(&meta, "exclusive");
             Ok(Client {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -140,6 +160,8 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                 needs_review,
                 is_blacklisted: r.get::<_, i64>(14)? != 0,
                 approval_status: r.get(15)?,
+                high_value,
+                exclusive,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -173,13 +195,17 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
-                COALESCE(c.approval_status,'active')
+                COALESCE(c.approval_status,'active'),
+                COALESCE(c.high_value,0),
+                COALESCE(c.exclusive,0)
          FROM clients c
          WHERE c.id=?1",
         [&id],
         |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let high_value = r.get::<_, i64>(16).unwrap_or(0) != 0 || meta_flag(&meta, "high_value");
+            let exclusive = r.get::<_, i64>(17).unwrap_or(0) != 0 || meta_flag(&meta, "exclusive");
             Ok(Client {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -199,6 +225,8 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 needs_review,
                 is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
                 approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+                high_value,
+                exclusive,
             })
         },
     );
@@ -292,6 +320,8 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
         needs_review: input.needs_review.unwrap_or(false),
         is_blacklisted: false,
         approval_status: approval_status.into(),
+        high_value: false,
+        exclusive: false,
     })
 }
 
@@ -418,36 +448,45 @@ pub async fn toggle_client_blacklist(id: String) -> Result<bool, String> {
 }
 
 /// "Exclusive" clients (e.g. VIPs) are kept off mass sends + auto-add — softer than a
-/// blacklist. Stored in client metadata.exclusive so no schema change is needed.
+/// blacklist. Stored in the real `exclusive` column (so later metadata writes can't
+/// clobber it); metadata.exclusive is kept mirrored for server/mobile readers.
 #[tauri::command]
 pub async fn toggle_client_exclusive(id: String) -> Result<bool, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let meta: String = conn.query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
-    let mut m: Value = serde_json::from_str(&meta).unwrap_or_else(|_| json!({}));
-    let next = !m.get("exclusive").and_then(|x| x.as_bool()).unwrap_or(false);
-    if let Some(o) = m.as_object_mut() { o.insert("exclusive".into(), json!(next)); }
-    let meta_str = serde_json::to_string(&m).unwrap_or_else(|_| "{}".into());
-    conn.execute("UPDATE clients SET metadata=?1 WHERE id=?2", rusqlite::params![meta_str, id]).map_err(|e| e.to_string())?;
-    let mut cols = Map::new();
-    cols.insert("metadata".into(), Value::String(meta_str));
-    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
-    Ok(next)
+    toggle_client_flag(&id, "exclusive")
 }
 
-/// A purely-cosmetic "High-Value" label (metadata.high_value). Unlike `exclusive`
-/// (Don't bulk-email), this has NO effect on sends — it's just a positive badge.
+/// A "High-Value" badge. Stored in the real `high_value` column; metadata mirror
+/// kept in sync. Purely cosmetic — no effect on sends (unlike `exclusive`).
 #[tauri::command]
 pub async fn toggle_client_high_value(id: String) -> Result<bool, String> {
+    toggle_client_flag(&id, "high_value")
+}
+
+/// Flip a boolean client flag that lives in a real column (`high_value` /
+/// `exclusive`) AND is mirrored into metadata. Writes + syncs both the column and
+/// the metadata mirror so every reader (desktop column, older metadata readers on
+/// server/mobile) stays consistent. Returns the new value.
+fn toggle_client_flag(id: &str, col: &str) -> Result<bool, String> {
+    debug_assert!(col == "high_value" || col == "exclusive");
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let meta: String = conn.query_row("SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let (cur, meta): (i64, String) = conn.query_row(
+        &format!("SELECT COALESCE({col},0), COALESCE(metadata,'{{}}') FROM clients WHERE id=?1"),
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    let next = cur == 0;
     let mut m: Value = serde_json::from_str(&meta).unwrap_or_else(|_| json!({}));
-    let next = !m.get("high_value").and_then(|x| x.as_bool()).unwrap_or(false);
-    if let Some(o) = m.as_object_mut() { o.insert("high_value".into(), json!(next)); }
+    if let Some(o) = m.as_object_mut() { o.insert(col.into(), json!(next)); }
     let meta_str = serde_json::to_string(&m).unwrap_or_else(|_| "{}".into());
-    conn.execute("UPDATE clients SET metadata=?1 WHERE id=?2", rusqlite::params![meta_str, id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        &format!("UPDATE clients SET {col}=?1, metadata=?2 WHERE id=?3"),
+        rusqlite::params![next as i64, meta_str, id],
+    ).map_err(|e| e.to_string())?;
+    // Sync BOTH the column and the metadata mirror so all readers converge.
     let mut cols = Map::new();
+    cols.insert(col.into(), json!(next as i64));
     cols.insert("metadata".into(), Value::String(meta_str));
-    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    sync::record_upsert("clients", id, cols).map_err(|e| e.to_string())?;
     Ok(next)
 }
 
@@ -507,6 +546,8 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
     let rows = stmt.query_map([], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let high_value = meta_flag(&meta, "high_value");
+        let exclusive = meta_flag(&meta, "exclusive");
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -518,6 +559,8 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
             needs_review,
             is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
             approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+            high_value,
+            exclusive,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -582,6 +625,14 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
                 let mut cols = Map::new();
                 cols.insert("approval_status".into(), Value::String("active".into()));
                 sync::record_upsert("clients", eid, cols).map_err(|e| e.to_string())?;
+                // Write the approved lead back to the connected Google Sheet (new
+                // direction). Best-effort: silently skips if no sheet/token is set,
+                // and never blocks the approval on a sheet error.
+                match crate::sheet_writeback::append_approved_client(eid).await {
+                    Ok(true) => tracing::info!("wrote approved client {} back to sheet", eid),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!("sheet write-back for {} failed: {}", eid, e),
+                }
             }
             ("client_add", false) | ("client_delete", true) => delete_client_row(eid)?,
             _ => {}
@@ -734,7 +785,7 @@ pub async fn delete_form(id: String) -> Result<(), String> {
 }
 
 /// Queue an admin approval row (rep add/delete requests). Returns its id.
-fn queue_client_approval(kind: &str, entity_id: &str, summary: &str) -> Result<String, String> {
+pub(crate) fn queue_client_approval(kind: &str, entity_id: &str, summary: &str) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let (rb, rbn) = match crate::employees::session_actor() {
@@ -1099,6 +1150,8 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let rows = stmt.query_map([pattern], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let high_value = meta_flag(&meta, "high_value");
+        let exclusive = meta_flag(&meta, "exclusive");
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1110,6 +1163,8 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
             needs_review,
             is_blacklisted: r.get::<_, i64>(14)? != 0,
             approval_status: r.get(15)?,
+            high_value,
+            exclusive,
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1182,6 +1237,8 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let rows = stmt.query_map([cutoff], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let high_value = meta_flag(&meta, "high_value");
+        let exclusive = meta_flag(&meta, "exclusive");
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1193,6 +1250,8 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
             needs_review,
             is_blacklisted: false,
             approval_status: "active".into(),
+            high_value,
+            exclusive,
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1217,6 +1276,8 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
         .query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let high_value = meta_flag(&meta, "high_value");
+            let exclusive = meta_flag(&meta, "exclusive");
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1229,6 +1290,8 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
                 needs_review,
                 is_blacklisted: false,
                 approval_status: "active".into(),
+                high_value,
+                exclusive,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1357,6 +1420,8 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     let rows: Vec<Client> = stmt.query_map(param_refs.as_slice(), |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let high_value = meta_flag(&meta, "high_value");
+            let exclusive = meta_flag(&meta, "exclusive");
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1368,6 +1433,8 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 needs_review,
                 is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
                 approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+                high_value,
+                exclusive,
             })
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
@@ -1456,6 +1523,8 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
     let rows = stmt.query_map(params, |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let high_value = meta_flag(&meta, "high_value");
+        let exclusive = meta_flag(&meta, "exclusive");
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1466,6 +1535,8 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
                 needs_review,
                 is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
                 approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
+                high_value,
+                exclusive,
             })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1491,6 +1562,8 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
         let rows = stmt.query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+            let high_value = meta_flag(&meta, "high_value");
+            let exclusive = meta_flag(&meta, "exclusive");
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1501,6 +1574,8 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
                 needs_review,
                 is_blacklisted: false,
                 approval_status: "active".into(),
+                high_value,
+                exclusive,
             })
         }).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
@@ -4979,7 +5054,7 @@ pub async fn oauth_start_consent(
     client_id: String,
     client_secret: String,
 ) -> Result<(), String> {
-    crate::oauth_flow::start_consent_flow(app_handle, client_id, client_secret, "https://mail.google.com/", "oauth")
+    crate::oauth_flow::start_consent_flow(app_handle, client_id, client_secret, "https://mail.google.com/ https://www.googleapis.com/auth/spreadsheets", "oauth")
         .await
         .map_err(|e| e.to_string())
 }

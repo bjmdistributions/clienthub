@@ -13,6 +13,7 @@ mod google_contacts;
 mod invoice;
 mod manifest;
 mod oauth_flow;
+mod sheet_writeback;
 mod signup_rules;
 mod netsync;
 mod sync;
@@ -387,6 +388,8 @@ fn main() {
             employees::employee_bootstrap,
             employees::employee_login,
             employees::login,
+            employees::switch_workspace_restart,
+            employees::active_workspace,
             employees::list_staff,
             employees::update_staff,
             employees::delete_staff,

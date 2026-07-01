@@ -53,6 +53,39 @@ const leadStatusColor = (s: string): string => {
   return "bg-accent/10 text-accent-hover border border-accent/20";
 };
 
+// A clear labeled on/off switch (replaces the old mystery pill buttons).
+function FlagSwitch({ label, on, onToggle, title, danger }: { label: string; on: boolean; onToggle: () => void | Promise<void>; title?: string; danger?: boolean }) {
+  const onCls = danger ? "bg-danger-bg text-danger-ink border-danger-ink/30" : "bg-accent/10 text-accent border-accent/30";
+  const knobCls = on ? (danger ? "bg-danger-ink" : "bg-accent") : "bg-line-3";
+  return (
+    <button onClick={onToggle} role="switch" aria-checked={on} title={title}
+      className={`inline-flex items-center justify-between gap-2 w-full min-w-[136px] pl-2.5 pr-1.5 h-7 rounded-full text-[11px] font-medium border transition-colors ${
+        on ? onCls : "bg-surface-2 text-muted border-line hover:text-ink-2"
+      }`}>
+      <span>{label}</span>
+      <span className={`relative w-7 h-4 rounded-full transition-colors flex-shrink-0 ${knobCls}`}>
+        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[14px]" : "translate-x-0.5"}`} />
+      </span>
+    </button>
+  );
+}
+
+// A calm key-stat tile for the profile header + financials.
+function StatTile({ label, value, tone = "ink", hint }: { label: string; value: string; tone?: "ink" | "success" | "warning" | "danger" | "muted"; hint?: string }) {
+  const valCls = tone === "success" ? "text-success-ink" : tone === "warning" ? "text-warning-ink" : tone === "danger" ? "text-danger-ink" : tone === "muted" ? "text-muted" : "text-ink";
+  return (
+    <div className="bg-surface-2/60 border border-line-2 rounded-xl px-3.5 py-3">
+      <div className="text-[10px] font-semibold text-muted uppercase tracking-wide">{label}</div>
+      <div className={`text-[17px] font-bold tabular-nums mt-1 truncate ${valCls}`}>{value}</div>
+      {hint && <div className="text-[10px] text-faint truncate mt-0.5">{hint}</div>}
+    </div>
+  );
+}
+
+function SubHeading({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+  return <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">{icon}{children}</div>;
+}
+
 export default function ClientDetailView({ clientId, onBack }: Props) {
   const [client, setClient] = useState<Client | null>(null);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
@@ -66,6 +99,8 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const [portalLink, setPortalLink] = useState<PortalLink | null>(null);
   const [credit, setCredit] = useState<{ credit_limit: number; exposure: number; available: number; over: boolean } | null>(null);
   const [creditEdit, setCreditEdit] = useState("");
+  // Profit made from this client = sum of its completed deals' net profit.
+  const [clientProfit, setClientProfit] = useState<number | null>(null);
 
   useEffect(() => {
     api.getClientCreditStatus(clientId)
@@ -81,6 +116,13 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
     setInteractions(await api.listInteractions(clientId));
     setInvoices(await api.listInvoicesForClient(clientId));
     api.getBuyerTier(clientId).then(setTier).catch(() => {});
+    // Sum net profit across this client's completed deal flows.
+    api.listDealFlows().then((flows) => {
+      const p = flows
+        .filter((f) => f.client_id === clientId && f.stage === "complete")
+        .reduce((s, f) => s + (f.net_profit || 0), 0);
+      setClientProfit(p);
+    }).catch(() => setClientProfit(null));
     api.listPortalLinks(clientId).then((links) => {
       const active = links.find((l) => l.is_active && new Date(l.expires_at) > new Date());
       if (active) setPortalLink(active);
@@ -115,6 +157,32 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
   const paid = invoices
     .filter((i) => i.status === "paid")
     .reduce((s, i) => s + i.total, 0);
+  const revenue = client.total_revenue || paid;
+
+  // Sales rep — must be shown. Falls back to company name, then "Unassigned".
+  const meta = client.metadata || {};
+  const rep = (meta.lead_representative || meta.sales_rep || client.company || "").toString().trim();
+  const repDisplay = rep || "Unassigned";
+  const initials = (client.name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
+
+  const lastActivityRaw = client.last_contact_at || interactions[0]?.created_at || null;
+  const relTime = (d: string | null): string => {
+    if (!d) return "—";
+    const ms = Date.now() - new Date(d).getTime();
+    if (isNaN(ms)) return "—";
+    const days = Math.floor(ms / 86400000);
+    if (days <= 0) return "Today";
+    if (days === 1) return "Yesterday";
+    if (days < 30) return `${days}d ago`;
+    if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+    return `${Math.floor(days / 365)}y ago`;
+  };
+  const tierLabel = tier ? (tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect") : null;
+  const tierChipCls = tier ? (
+    tier.tier === "S" ? "bg-accent/10 text-accent-hover" :
+    tier.tier === "A" ? "bg-success-bg text-success-ink" :
+    tier.tier === "B" ? "bg-warning-bg text-warning-ink" : "bg-surface-3 text-muted"
+  ) : "";
 
   return (
     <div>
@@ -126,180 +194,120 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
         <ArrowLeft size={14} /> Back to Clients
       </button>
 
-      {/* Header card */}
-      <div className="bg-surface border border-line rounded-lg p-6 mb-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-[18px] font-semibold text-ink">{client.name}</h2>
-            {client.company && (
-              <div className="text-[13px] text-muted flex items-center gap-1.5 mt-1">
-                <Building2 size={14} /> {client.company}
+      {/* ── Identity header ─────────────────────────────── */}
+      <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start gap-4 min-w-0">
+            <div className="w-14 h-14 rounded-2xl bg-accent/10 text-accent-hover flex items-center justify-center text-[18px] font-bold flex-shrink-0">{initials}</div>
+            <div className="min-w-0">
+              <h2 className="text-[20px] font-bold text-ink truncate">{client.name}</h2>
+              <div className="flex items-center gap-x-3 gap-y-0.5 mt-1 flex-wrap text-[13px] text-muted">
+                {client.company && <span className="inline-flex items-center gap-1.5"><Building2 size={14} /> {client.company}</span>}
+                <span className="inline-flex items-center gap-1.5" title="Sales rep"><User size={14} /> Rep: <span className={`font-medium ${rep ? "text-ink-2" : "text-faint"}`}>{repDisplay}</span></span>
               </div>
-            )}
-            <div className="mt-2 flex items-center gap-2 flex-wrap">
-              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${leadStatusColor(client.lead_status)}`}>
-                {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-              </span>
-              <button onClick={async () => {
-                const val = await api.toggleClientBlacklist(client.id);
-                client.is_blacklisted = val;
-                setClient({ ...client });
-              }}
-                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
-                  client.is_blacklisted
-                    ? "bg-danger-bg text-danger-ink border-danger-ink/20"
-                    : "bg-surface-2 text-muted border-line hover:text-danger-ink hover:border-danger-ink/30"
-                }`}>
-                {client.is_blacklisted ? "BLACKLISTED" : "Not Blacklisted"}
-              </button>
-              <button onClick={async () => {
-                const val = await api.toggleClientHighValue(client.id);
-                setClient({ ...client, metadata: { ...(client.metadata || {}), high_value: val } });
-              }}
-                title="A positive label for your best buyers. Purely a tag — it does NOT change who receives newsletters."
-                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
-                  client.metadata?.high_value
-                    ? "bg-warning-bg text-warning-ink border-warning-ink/30"
-                    : "bg-surface-2 text-muted border-line hover:text-ink-2"
-                }`}>
-                {client.metadata?.high_value ? "★ HIGH-VALUE" : "Mark High-Value"}
-              </button>
-              <button onClick={async () => {
-                const val = await api.toggleClientExclusive(client.id);
-                setClient({ ...client, metadata: { ...(client.metadata || {}), exclusive: val } });
-              }}
-                title="Keeps this client OFF mass newsletters and auto-add — for people you don't want to bulk-email."
-                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border cursor-pointer transition-colors ${
-                  client.metadata?.exclusive
-                    ? "bg-accent/10 text-accent border-accent/30"
-                    : "bg-surface-2 text-muted border-line hover:text-ink-2"
-                }`}>
-                {client.metadata?.exclusive ? "NO BULK-EMAIL" : "Bulk email OK"}
-              </button>
-              {tier && (
-                <>
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-2 ${
-                    tier.tier === "S" ? "bg-accent/10 text-accent-hover" :
-                    tier.tier === "A" ? "bg-success-bg text-success-ink" :
-                    tier.tier === "B" ? "bg-warning-bg text-warning-ink" :
-                    "bg-surface-3 text-muted"
-                  }`}>
-                    Tier: {tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect"}
-                  </span>
-                  {tier.avg_commission_pct > 0 && (
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ml-1 ${
-                      tier.avg_commission_pct >= 25 ? "bg-success-bg text-success-ink" :
-                      tier.avg_commission_pct >= 10 ? "bg-warning-bg text-warning-ink" :
-                      "bg-danger-bg text-danger-ink"
-                    }`}>
-                      {tier.avg_commission_pct.toFixed(1)}% avg margin
-                    </span>
-                  )}
-                  <span className="ml-1 inline-flex">
-                    <ReliabilityBadge reliability={tier.reliability} pct={tier.reliability_pct} quotesSent={tier.quotes_sent} quotesWon={tier.quotes_won} size="md" />
-                  </span>
-                </>
-              )}
-            </div>
-            {credit && (
-              <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-lg px-4 py-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-muted uppercase tracking-wide font-semibold">Credit limit</span>
-                  <input
-                    value={creditEdit}
-                    onChange={(e) => setCreditEdit(e.target.value)}
-                    onBlur={async () => {
-                      const v = parseFloat(creditEdit) || 0;
-                      await api.setClientCreditLimit(client.id, v);
-                      const c = await api.getClientCreditStatus(client.id);
-                      setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : "");
-                    }}
-                    placeholder="none"
-                    className="w-24 text-[13px] bg-surface border border-line rounded px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
-                  />
-                </div>
-                <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
-                {credit.credit_limit > 0 && (
-                  <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>
-                )}
-                {credit.over && (
-                  <span className="text-[10px] font-bold uppercase text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>
-                )}
-              </div>
-            )}
-            <div className="flex gap-4 mt-3">
-              {client.email && (
-                <div className="flex items-center gap-1.5">
-                  <a
-                    href={`mailto:${client.email}`}
-                    className="flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"
-                  >
-                    <Mail size={14} /> {client.email}
-                  </a>
-                  <CopyEmail email={client.email} />
-                </div>
-              )}
-              {client.phone && (
-                <span className="flex items-center gap-1.5 text-[13px] text-ink-2">
-                  <Phone size={14} /> {fmtPhone(client.phone)}
+              <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${leadStatusColor(client.lead_status)}`}>
+                  {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                 </span>
-              )}
+                {tierLabel && <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${tierChipCls}`}>{tierLabel}</span>}
+                {tier && tier.avg_commission_pct > 0 && (
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
+                    tier.avg_commission_pct >= 25 ? "bg-success-bg text-success-ink" : tier.avg_commission_pct >= 10 ? "bg-warning-bg text-warning-ink" : "bg-danger-bg text-danger-ink"
+                  }`}>{tier.avg_commission_pct.toFixed(1)}% margin</span>
+                )}
+                {tier && <ReliabilityBadge reliability={tier.reliability} pct={tier.reliability_pct} quotesSent={tier.quotes_sent} quotesWon={tier.quotes_won} size="md" />}
+              </div>
             </div>
           </div>
 
-          {/* Financial summary */}
-          <div className="text-right">
-            <div className="text-[12px] font-medium text-muted uppercase tracking-wide">Outstanding</div>
-            <div className="text-[20px] font-semibold text-warning-ink tabular-nums mt-0.5">
-              {fmtAmount(outstanding)}
-            </div>
-            <div className="text-[12px] font-medium text-muted uppercase tracking-wide mt-3">Paid</div>
-            <div className="text-[16px] font-semibold text-success-ink tabular-nums mt-0.5">
-              {fmtAmount(paid)}
-            </div>
+          {/* Flag switches — clear on/off */}
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+            <FlagSwitch label="High-value"
+              on={client.high_value ?? !!client.metadata?.high_value}
+              title="A positive label for your best buyers. Purely a tag — it does not change who receives newsletters."
+              onToggle={async () => { const val = await api.toggleClientHighValue(client.id); setClient({ ...client, high_value: val, metadata: { ...(client.metadata || {}), high_value: val } }); }} />
+            <FlagSwitch label="No bulk email"
+              on={client.exclusive ?? !!client.metadata?.exclusive}
+              title="Keeps this client off mass newsletters and auto-add — for people you don't want to bulk-email."
+              onToggle={async () => { const val = await api.toggleClientExclusive(client.id); setClient({ ...client, exclusive: val, metadata: { ...(client.metadata || {}), exclusive: val } }); }} />
+            <FlagSwitch label="Blacklisted" danger
+              on={client.is_blacklisted}
+              title="Blacklisted clients are excluded from all sends."
+              onToggle={async () => { const val = await api.toggleClientBlacklist(client.id); client.is_blacklisted = val; setClient({ ...client }); }} />
           </div>
         </div>
 
-        {client.notes && (
-          <div className="mt-4 px-4 py-3 bg-surface-2 border border-line rounded-lg text-[13px] text-ink-2">
-            {client.notes}
+        {/* Key stats row */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+          <StatTile label="Revenue" value={fmtAmount(revenue)} tone="ink" />
+          <StatTile label="Profit" value={clientProfit === null ? "—" : fmtAmount(clientProfit)} tone={clientProfit !== null && clientProfit < 0 ? "danger" : "success"} hint={clientProfit === null ? undefined : "completed deals"} />
+          <StatTile label="Orders" value={String(client.invoice_count)} tone="ink" hint={`${outstanding > 0 ? fmtAmount(outstanding) + " open" : "none open"}`} />
+          <StatTile label="Last activity" value={relTime(lastActivityRaw)} tone="ink" />
+        </div>
+
+        {/* Contact line */}
+        {(client.email || client.phone) && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-4 pt-4 border-t border-line-2">
+            {client.email && (
+              <div className="flex items-center gap-1.5">
+                <a href={`mailto:${client.email}`} className="flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"><Mail size={14} /> {client.email}</a>
+                <CopyEmail email={client.email} />
+              </div>
+            )}
+            {client.phone && <span className="flex items-center gap-1.5 text-[13px] text-ink-2"><Phone size={14} /> {fmtPhone(client.phone)}</span>}
+          </div>
+        )}
+      </div>
+
+      {/* ── Financials: credit + portal ─────────────────── */}
+      <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+        <SubHeading icon={<ShoppingCart size={15} className="text-muted" />}>Financials</SubHeading>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
+          <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
+          <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
+          <StatTile label="Invoices sent" value={String(client.invoice_count)} tone="ink" />
+        </div>
+
+        {credit && (
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-xl px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted uppercase tracking-wide font-semibold">Credit limit</span>
+              <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
+                onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
+                placeholder="none" className="w-24 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+            </div>
+            <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
+            {credit.credit_limit > 0 && <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>}
+            {credit.over && <span className="text-[10px] font-bold uppercase text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
           </div>
         )}
 
-        <div className="mt-4 inline-flex items-center gap-2 bg-surface-3 text-ink-2 px-3 py-1.5 rounded-full text-[13px] font-medium">
-          <ShoppingCart size={14} />
-          <span className="font-semibold">{client.invoice_count}</span> invoices sent
-        </div>
-
-        <div className="mt-4 pt-4 border-t border-line">
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Client Portal</p>
+        <div className="mt-4 pt-4 border-t border-line-2">
+          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Client portal</p>
           {portalLink ? (
             <>
               <div className="flex items-center gap-2">
                 <input readOnly className="border border-line px-3 h-8 rounded-lg text-[12px] text-ink-2 bg-surface-2 flex-1 font-mono" value={portalLink.portal_url} />
-                <button onClick={async () => { await navigator.clipboard.writeText(portalLink.portal_url); }}
-                  className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1">
-                  Copy
-                </button>
-                <button onClick={async () => { if (confirm("Revoke this portal link?")) { await api.revokePortalLink(portalLink.token); setPortalLink(null); load(); } }}
-                  className="text-[11px] text-danger-ink hover:text-danger-ink px-2 h-8 rounded-lg hover:bg-danger-bg">
-                  Revoke
-                </button>
+                <button onClick={async () => { await navigator.clipboard.writeText(portalLink.portal_url); }} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[11px] font-medium">Copy</button>
+                <button onClick={async () => { if (confirm("Revoke this portal link?")) { await api.revokePortalLink(portalLink.token); setPortalLink(null); load(); } }} className="text-[11px] text-danger-ink px-2 h-8 rounded-lg hover:bg-danger-bg">Revoke</button>
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <input className="border border-line px-2 h-7 rounded text-[10px] w-48" placeholder="Portal base URL" value={portalLink.portal_url.split("/portal/")[0] || ""}
-                  onChange={(e) => api.savePortalBaseUrl(e.target.value).then(() => load())} />
+                <input className="border border-line px-2 h-7 rounded text-[10px] w-48" placeholder="Portal base URL" value={portalLink.portal_url.split("/portal/")[0] || ""} onChange={(e) => api.savePortalBaseUrl(e.target.value).then(() => load())} />
                 <span className="text-[9px] text-muted">Set your domain or IP</span>
               </div>
             </>
           ) : (
-            <button onClick={async () => { const l = await api.generatePortalLink(clientId); setPortalLink(l); }}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
-              Generate Portal Link
-            </button>
+            <button onClick={async () => { const l = await api.generatePortalLink(clientId); setPortalLink(l); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">Generate portal link</button>
           )}
           <p className="text-[10px] text-muted mt-1.5">Share this link so {client.name} can view their invoices. Expires in 30 days.</p>
         </div>
+
+        {client.notes && (
+          <div className="mt-4 pt-4 border-t border-line-2">
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Notes</p>
+            <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
+          </div>
+        )}
       </div>
 
       {/* Metadata cards */}

@@ -206,10 +206,14 @@ export default function App() {
     if (me) api.getMyPlan().then((p) => setSuperadmin(!!p.is_superadmin)).catch(() => setSuperadmin(false));
   }, [me]);
 
-  // Poll the admin approval queue for the notification badge.
+  // Poll the notification queue for the bell badge: pending customers waiting
+  // for review PLUS any role-based approval requests.
   useEffect(() => {
     if (!me?.is_admin) { setApCount(0); return; }
-    const refresh = () => api.approvalRequestsCount().then(setApCount).catch(() => {});
+    const refresh = () => Promise.all([
+      api.approvalRequestsCount().catch(() => 0),
+      api.getPendingApprovals().then((p) => p.length).catch(() => 0),
+    ]).then(([reqs, pend]) => setApCount(reqs + pend)).catch(() => {});
     refresh();
     const onChanged = () => refresh();
     window.addEventListener("approvals-changed", onChanged);
@@ -421,7 +425,7 @@ export default function App() {
           {me?.is_admin && (
             <button
               onClick={() => setTab("approvals")}
-              title={apCount > 0 ? `${apCount} pending approval${apCount !== 1 ? "s" : ""}` : "Approvals"}
+              title={apCount > 0 ? `${apCount} waiting for review` : "Notifications"}
               className="relative w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
               style={{ color: tab === "approvals" ? "var(--accent-400)" : "#7A7A90" }}
               onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== "approvals") e.currentTarget.style.color = "var(--accent-400)"; }}

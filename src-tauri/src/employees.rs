@@ -157,6 +157,13 @@ fn current_staff_id() -> Option<String> {
     conn.query_row("SELECT value FROM settings WHERE key='current_staff_id'", [], |r| r.get::<_, String>(0)).ok()
 }
 
+/// The org id for a staff account in the active store (for per-account store
+/// isolation). Desktop is single-org, so this is normally `org_default`.
+fn staff_org_id(staff_id: &str) -> Option<String> {
+    let conn = pool().get().ok()?;
+    conn.query_row("SELECT org_id FROM staff_accounts WHERE id=?1", [staff_id], |r| r.get::<_, String>(0)).ok()
+}
+
 fn set_current_staff(id: Option<&str>) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     match id {
@@ -327,7 +334,13 @@ const SERVER_URL: &str = "https://ecliptr.app";
 #[tauri::command]
 pub async fn login(email: String, password: String) -> Result<Me, String> {
     // 1. Local-first: instant + offline-safe for accounts already on this device.
+    //    An account is only local to the ACTIVE store, so a successful local login
+    //    means this account already belongs here — safe to proceed + claim.
     if let Ok(me) = employee_login(email.clone(), password.clone()) {
+        // This account is local to the active store → it owns/shares this store.
+        if let Some(org) = staff_org_id(&me.id) {
+            crate::db::claim_active_store_org(&org);
+        }
         let (e, p) = (email.clone(), password.clone());
         tauri::async_runtime::spawn(async move {
             if let Err(err) = crate::netsync::connect(SERVER_URL, &e, &p).await {
@@ -336,21 +349,68 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
         });
         return Ok(me);
     }
-    // 2. No local match → authenticate against the server, pull the org down,
-    //    then complete the login locally against the freshly-synced account.
+
+    // 2. No local match. Before pulling ANY data into the active store, probe the
+    //    server to learn this account's org id. If it belongs to a DIFFERENT org
+    //    than the one that owns the active store, we must NOT mix its data in —
+    //    route it to its own per-account store and ask the app to restart there.
+    let (_, org_id) = match crate::netsync::probe_login(SERVER_URL, &email, &password).await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            return if msg.contains("HTTP") {
+                Err("Invalid email or password.".into())
+            } else {
+                Err("Couldn't reach the server, and no local account matches. Check your connection and try again.".into())
+            };
+        }
+    };
+
+    if let Some(store_org) = crate::db::active_store_org() {
+        if !org_id.is_empty() && org_id != store_org {
+            // Different workspace than the one occupying this store → switch stores
+            // and restart. The current store's data is left completely untouched.
+            crate::db::set_active_store_for_org(&org_id).map_err(|e| e.to_string())?;
+            return Err(format!("__SWITCH_WORKSPACE__:{}", org_id));
+        }
+    }
+
+    // 3. Same org as this store (or store unclaimed) → connect, pull the org down,
+    //    claim the store, then complete the login locally against the synced account.
     match crate::netsync::connect(SERVER_URL, &email, &password).await {
-        Ok(()) => employee_login(email, password),
+        Ok(returned_org) => {
+            crate::db::claim_active_store_org(if returned_org.is_empty() { &org_id } else { &returned_org });
+            employee_login(email, password)
+        }
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("HTTP") {
-                // Server answered but rejected the credentials.
                 Err("Invalid email or password.".into())
             } else {
-                // Couldn't reach the server and nothing local matched.
                 Err("Couldn't reach the server, and no local account matches. Check your connection and try again.".into())
             }
         }
     }
+}
+
+/// Restart the app so it re-opens against the store the pointer now targets. Used
+/// after `login` signals `__SWITCH_WORKSPACE__` (the pointer is already written):
+/// the front-end confirms the workspace switch, then calls this. On next launch
+/// `db::init` opens the per-account (possibly empty) store and the account signs
+/// in there. No data is moved or deleted.
+#[tauri::command]
+pub fn switch_workspace_restart(app: tauri::AppHandle) {
+    app.restart();
+}
+
+/// Whether the active local store already belongs to a workspace, and which one.
+/// Lets the UI reason about workspace switches. `store_org` is empty on a brand-new
+/// store no account has claimed yet.
+#[tauri::command]
+pub fn active_workspace() -> Value {
+    json!({
+        "store_org": crate::db::active_store_org().unwrap_or_default(),
+    })
 }
 
 // ──────────────────────── Team management (admin) ────────────────────────
