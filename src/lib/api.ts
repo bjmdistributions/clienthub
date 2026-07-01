@@ -1111,6 +1111,22 @@ export interface SignupRuleInput {
   active: boolean;
 }
 
+// ── Automations dashboard summary (Automation tab) ──
+export interface IntakeSourceSummary {
+  id: string;
+  name: string;
+  token: string;
+  kind: string;
+  captured_count: number;
+  url: string;
+}
+export interface AutomationsSummary {
+  followup_rules: { total: number; active: number };
+  signup_rules: { total: number; active: number };
+  intake_sources: IntakeSourceSummary[];
+  intake_base_url: string;
+}
+
 export interface LineItemTemplate {
   id: string;
   description: string;
@@ -1679,6 +1695,7 @@ export const api = {
   toggleFollowupRule: (id: string) => invoke<void>("toggle_followup_rule", { id }),
   processFollowupRules: () => invoke<FollowUpLogEntry[]>("process_followup_rules"),
   getFollowupLog: () => invoke<FollowUpLogEntry[]>("get_followup_log"),
+  automationsSummary: () => invoke<AutomationsSummary>("automations_summary"),
 
   // Portal
   generatePortalLink: (clientId: string) => invoke<PortalLink>("generate_portal_link", { clientId }),

@@ -411,6 +411,7 @@ fn main() {
             commands::save_intake_mapping,
             commands::delete_intake_source,
             commands::get_intake_fields,
+            commands::automations_summary,
             employees::list_roles,
             employees::create_role,
             employees::update_role,

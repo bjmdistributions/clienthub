@@ -4273,6 +4273,55 @@ pub async fn list_intake_sources() -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// One call for the Automation dashboard: follow-up rule counts, signup rule
+/// counts, and every intake source with how many pending clients it captured.
+/// Identical shape to the server `GET /api/automations/summary`. All data is
+/// local (intake_sources sync down; follow-up + signup rules are desktop-local).
+#[tauri::command]
+pub async fn automations_summary() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    // Follow-up rules (column `is_active`).
+    let fu_total: i64 = conn.query_row("SELECT COUNT(*) FROM followup_rules", [], |r| r.get(0)).unwrap_or(0);
+    let fu_active: i64 = conn.query_row("SELECT COUNT(*) FROM followup_rules WHERE is_active=1", [], |r| r.get(0)).unwrap_or(0);
+
+    // Signup rules (column `active`).
+    let su_total: i64 = conn.query_row("SELECT COUNT(*) FROM signup_rules", [], |r| r.get(0)).unwrap_or(0);
+    let su_active: i64 = conn.query_row("SELECT COUNT(*) FROM signup_rules WHERE active=1", [], |r| r.get(0)).unwrap_or(0);
+
+    // Intake sources + pending clients captured per source.
+    let mut sources: Vec<Value> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, COALESCE(kind,'website'), token FROM intake_sources \
+             WHERE COALESCE(kind,'')!='deleted' ORDER BY created_at DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        for row in rows.filter_map(|x| x.ok()) {
+            let (id, name, kind, token) = row;
+            let captured: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM clients WHERE approval_status='pending' \
+                   AND json_extract(metadata,'$.intake_source_id')=?1",
+                [&id], |r| r.get(0),
+            ).unwrap_or(0);
+            sources.push(json!({
+                "id": id, "name": name, "token": token, "kind": kind,
+                "captured_count": captured,
+                "url": format!("https://ecliptr.app/api/intake/{}", token),
+            }));
+        }
+    }
+
+    Ok(json!({
+        "followup_rules": { "total": fu_total, "active": fu_active },
+        "signup_rules": { "total": su_total, "active": su_active },
+        "intake_sources": sources,
+        "intake_base_url": "https://ecliptr.app/api/intake/",
+    }))
+}
+
 #[tauri::command]
 pub async fn save_intake_mapping(id: String, mapping_json: String) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
