@@ -6930,44 +6930,62 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
 pub async fn get_receivables_aging() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT i.client_id, COALESCE(c.name,'(unknown)'), COALESCE(i.due_date,''), i.total
+        "SELECT i.id, i.number, i.deal_flow_id, i.client_id, COALESCE(c.name,'(unknown)'), COALESCE(i.due_date,''), i.total
          FROM invoices i LEFT JOIN clients c ON c.id=i.client_id
          WHERE i.status IN ('sent','overdue')",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok((
-        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, f64>(3)?,
+        r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
+        r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, f64>(6)?,
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
     // client_id -> (name, [current,1-30,31-60,61-90,90+], oldest_days)
     let mut map: std::collections::HashMap<String, (String, [f64; 5], i64)> = std::collections::HashMap::new();
+    let mut items: Vec<Value> = Vec::new();
     let mut tot = [0f64; 5];
     let mut due_soon = 0f64; // open invoices coming due within the next 7 days
     let mut count = 0i64;
-    for (cid, cname, due, amt) in rows.filter_map(|x| x.ok()) {
+    for (inv_id, inv_number, deal_flow_id, cid, cname, due, amt) in rows.filter_map(|x| x.ok()) {
         let days = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
         if days >= -7 && days <= 0 { due_soon += amt; }
         let idx = if days <= 0 { 0 } else if days <= 30 { 1 } else if days <= 60 { 2 } else if days <= 90 { 3 } else { 4 };
+        let bucket = ["current", "d1_30", "d31_60", "d61_90", "d90_plus"][idx];
+        items.push(json!({
+            "invoice_id": inv_id, "invoice_number": inv_number, "deal_flow_id": deal_flow_id,
+            "client_id": cid, "client_name": cname, "amount": amt,
+            "due_date": if due.is_empty() { Value::Null } else { json!(due) },
+            "days_overdue": days.max(0), "bucket": bucket,
+        }));
         let e = map.entry(cid).or_insert((cname, [0.0; 5], 0));
         e.1[idx] += amt;
         if days > e.2 { e.2 = days; }
         tot[idx] += amt;
         count += 1;
     }
-    let mut clients: Vec<Value> = map.into_iter().map(|(cid, (name, b, oldest))| {
+    let mut by_client: Vec<Value> = map.into_iter().map(|(cid, (name, b, oldest))| {
         json!({
             "client_id": cid, "client_name": name,
             "current": b[0], "d1_30": b[1], "d31_60": b[2], "d61_90": b[3], "d90_plus": b[4],
             "total": b.iter().sum::<f64>(), "oldest_days": oldest,
         })
     }).collect();
-    clients.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(json!({
-        "clients": clients,
+    by_client.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    let total: f64 = tot.iter().sum();
+    let summary = json!({
         "current": tot[0], "d1_30": tot[1], "d31_60": tot[2], "d61_90": tot[3], "d90_plus": tot[4],
-        "total": tot.iter().sum::<f64>(), "open_count": count, "due_soon": due_soon,
+        "total": total, "open_count": count, "due_soon": due_soon,
+    });
+    Ok(json!({
+        "summary": summary,
+        "by_client": by_client.clone(),
+        "items": items,
+        // Legacy aggregate fields (kept so nothing regresses).
+        "clients": by_client,
+        "current": tot[0], "d1_30": tot[1], "d31_60": tot[2], "d61_90": tot[3], "d90_plus": tot[4],
+        "total": total, "open_count": count, "due_soon": due_soon,
     }))
 }
 
@@ -6981,8 +6999,13 @@ pub async fn get_payables_aging() -> Result<Value, String> {
     let mut stmt = conn.prepare(
         "SELECT json_extract(sp.value,'$.supplier_name') AS payee, \
                 CAST(json_extract(sp.value,'$.amount') AS REAL) AS amount, \
-                COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor \
-         FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
+                COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
+                df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
+                i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name \
+         FROM deal_flows df \
+         JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
+         LEFT JOIN invoices i ON i.id = df.invoice_id \
+         LEFT JOIN clients c ON c.id = i.client_id \
          WHERE df.stage != 'complete' \
            AND COALESCE(json_extract(sp.value,'$.paid'),0)=0 \
            AND json_extract(sp.value,'$.supplier_name') IS NOT NULL",
@@ -6991,36 +7014,58 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         r.get::<_, Option<String>>(0)?.unwrap_or_default(),
         r.get::<_, f64>(1)?,
         r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        r.get::<_, String>(3)?,
+        r.get::<_, Option<String>>(4)?,
+        r.get::<_, Option<String>>(5)?,
+        r.get::<_, Option<String>>(6)?,
+        r.get::<_, Option<String>>(7)?,
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
     // payee -> ([≤30,31-60,61-90,90+], oldest_days)
     let mut map: std::collections::HashMap<String, ([f64; 4], i64)> = std::collections::HashMap::new();
+    let mut items: Vec<Value> = Vec::new();
     let mut tot = [0f64; 4];
     let mut count = 0i64;
-    for (payee, amount, anchor) in rows.filter_map(|x| x.ok()) {
+    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name) in rows.filter_map(|x| x.ok()) {
         let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
         let idx = if days <= 30 { 0 } else if days <= 60 { 1 } else if days <= 90 { 2 } else { 3 };
+        let bucket = ["d0_30", "d31_60", "d61_90", "d90_plus"][idx];
+        items.push(json!({
+            "deal_flow_id": deal_flow_id, "invoice_id": invoice_id, "invoice_number": invoice_number,
+            "payee": payee, "amount": amount, "client_id": client_id, "client_name": client_name,
+            "anchor_date": if anchor.is_empty() { Value::Null } else { json!(anchor) },
+            "days": days, "bucket": bucket,
+        }));
         let e = map.entry(payee).or_insert(([0.0; 4], 0));
         e.0[idx] += amount;
         if days > e.1 { e.1 = days; }
         tot[idx] += amount;
         count += 1;
     }
-    let mut suppliers: Vec<Value> = map.into_iter().map(|(name, (b, oldest))| {
+    let mut by_payee: Vec<Value> = map.into_iter().map(|(name, (b, oldest))| {
         json!({
             "payee": name,
             "d0_30": b[0], "d31_60": b[1], "d61_90": b[2], "d90_plus": b[3],
             "total": b.iter().sum::<f64>(), "oldest_days": oldest,
         })
     }).collect();
-    suppliers.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(json!({
-        "suppliers": suppliers,
+    by_payee.sort_by(|a, b| b["total"].as_f64().unwrap_or(0.0).partial_cmp(&a["total"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    let total: f64 = tot.iter().sum();
+    let summary = json!({
         "d0_30": tot[0], "d31_60": tot[1], "d61_90": tot[2], "d90_plus": tot[3],
-        "total": tot.iter().sum::<f64>(), "open_count": count,
+        "total": total, "open_count": count,
+    });
+    Ok(json!({
+        "summary": summary,
+        "by_payee": by_payee.clone(),
+        "items": items,
+        // Legacy aggregate fields (kept so nothing regresses).
+        "suppliers": by_payee,
+        "d0_30": tot[0], "d31_60": tot[1], "d61_90": tot[2], "d90_plus": tot[3],
+        "total": total, "open_count": count,
     }))
 }
 

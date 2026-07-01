@@ -449,6 +449,17 @@ export interface DealInput {
   expected_close_date?: string;
 }
 
+// ── Receivables (AR) — aged by invoice due date, deal-aware ──
+export interface ReceivablesSummary {
+  current: number;
+  d1_30: number;
+  d31_60: number;
+  d61_90: number;
+  d90_plus: number;
+  total: number;
+  open_count: number;
+  due_soon: number;
+}
 export interface ARClient {
   client_id: string;
   client_name: string;
@@ -460,18 +471,33 @@ export interface ARClient {
   total: number;
   oldest_days: number;
 }
+/** One open receivable (invoice). `deal_flow_id` set → drill-down to the deal. */
+export interface ARItem {
+  invoice_id: string;
+  invoice_number: string;
+  deal_flow_id: string | null;
+  client_id: string;
+  client_name: string;
+  amount: number;
+  due_date: string;
+  days_overdue: number;
+  bucket: string;
+}
 export interface ReceivablesAging {
-  clients: ARClient[];
-  current: number;
-  d1_30: number;
+  summary: ReceivablesSummary;
+  by_client: ARClient[];
+  items: ARItem[];
+}
+
+// ── Payables (AP) — what you owe suppliers/freight/wires, deal-aware ──
+export interface PayablesSummary {
+  d0_30: number;
   d31_60: number;
   d61_90: number;
   d90_plus: number;
   total: number;
   open_count: number;
-  due_soon: number;
 }
-
 export interface PayableSupplier {
   payee: string;
   d0_30: number;
@@ -481,14 +507,23 @@ export interface PayableSupplier {
   total: number;
   oldest_days: number;
 }
+/** One open payable (a deal cost). Surfaces which customer/deal it's for. */
+export interface APItem {
+  deal_flow_id: string;
+  invoice_id: string | null;
+  invoice_number: string | null;
+  payee: string;
+  amount: number;
+  client_id: string | null;
+  client_name: string | null;
+  anchor_date: string;
+  days: number;
+  bucket: string;
+}
 export interface PayablesAging {
-  suppliers: PayableSupplier[];
-  d0_30: number;
-  d31_60: number;
-  d61_90: number;
-  d90_plus: number;
-  total: number;
-  open_count: number;
+  summary: PayablesSummary;
+  by_payee: PayableSupplier[];
+  items: APItem[];
 }
 
 export interface SupplierPayment {
