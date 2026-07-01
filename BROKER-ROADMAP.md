@@ -104,8 +104,9 @@ cash. Low risk because the PDF engine already exists.
 section, both editable). Endpoints `POST /api/clients/:id/credit-limit` + `GET …/credit-status`.
 **Also fixed a latent data-loss bug found via §1:** both desktop *and* server `update_client` started
 metadata from `{}` and silently **wiped `high_value`/`exclusive`/`lead_representative`/`credit_limit`
-on every client edit** — now they preserve stored metadata. **Remaining (phase 2):** active
-warning-on-invoice-create when a new invoice would push a buyer over their limit (passive flag ships now).
+on every client edit** — now they preserve stored metadata. **Active guardrail SHIPPED (v0.14.71 +
+mobile):** creating an invoice that would push a buyer's open exposure over their limit now shows a soft
+warning (desktop banner / mobile confirm) — you can still proceed. #4 is complete.
 
 
 **Already there:** nothing — `clients` has tier/blacklist/metadata but **no `credit_limit`** (confirmed;
