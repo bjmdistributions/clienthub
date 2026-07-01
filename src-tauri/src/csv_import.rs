@@ -60,6 +60,28 @@ pub fn preview(path: &str) -> Result<CsvPreview> {
     })
 }
 
+/// Distinct, non-empty, trimmed values of a single column across every row —
+/// used to detect the set of categories present in a spreadsheet column. Sorted
+/// case-insensitively; de-duplicated case-insensitively (first spelling wins).
+pub fn distinct_column(path: &str, col: usize) -> Result<Vec<String>> {
+    let mut rdr = csv::Reader::from_path(path).context("open csv")?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for result in rdr.records() {
+        if let Ok(rec) = result {
+            if let Some(v) = rec.get(col) {
+                let v = v.trim();
+                if v.is_empty() { continue; }
+                if seen.insert(v.to_lowercase()) {
+                    out.push(v.to_string());
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(out)
+}
+
 pub fn import(path: &str, mapping: &ColumnMapping) -> Result<ImportSummary> {
     let mut rdr = csv::Reader::from_path(path).context("open csv")?;
     let headers: Vec<String> = rdr

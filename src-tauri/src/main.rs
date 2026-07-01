@@ -586,6 +586,9 @@ fn main() {
             update_category,
             delete_category,
             reorder_categories,
+            sort_categories,
+            import_categories,
+            csv_distinct_column,
             // Sheet Sync
             get_sheet_sync_config,
             save_sheet_sync_config,
@@ -595,6 +598,7 @@ fn main() {
             save_custom_field,
             delete_custom_field,
             get_sheet_headers,
+            sheet_category_column_values,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

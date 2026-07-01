@@ -3725,12 +3725,28 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         "UPDATE invoices SET status='paid', is_complete=?1, profit=?2, total_cost=?3, margin=?4 WHERE id=?5",
         rusqlite::params![(!awaiting_shipping) as i64, net, total_cost, margin_pct, df.invoice_id],
     ).map_err(|e| e.to_string())?;
-    // Auto-mark linked inventory lot as Sold (best-effort)
+    // Auto-mark linked inventory lot as Sold (best-effort). Capture the affected
+    // lot ids first so the status change can be synced to other devices.
+    let sold_lot_ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM inventory WHERE linked_deal_id = (SELECT d.id FROM deals d WHERE d.converted_invoice_id = ?1) AND status='reserved'"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&df.invoice_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
     if let Err(e) = conn.execute(
         "UPDATE inventory SET status='sold' WHERE linked_deal_id = (SELECT d.id FROM deals d WHERE d.converted_invoice_id = ?1) AND status='reserved'",
         [&df.invoice_id],
     ) {
         tracing::warn!("auto-mark inventory sold failed: {}", e);
+    } else {
+        for lot_id in &sold_lot_ids {
+            let mut cols = Map::new();
+            cols.insert("status".into(), json!("sold"));
+            if let Err(e) = crate::sync::record_upsert("inventory", lot_id, cols) {
+                tracing::warn!("sync auto-sold inventory {}: {}", lot_id, e);
+            }
+        }
     }
     let warning = if is_loss { Some(format!("This deal resulted in a loss of ${:.2}", net.abs())) } else { None };
     Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
@@ -4627,6 +4643,17 @@ pub async fn record_supplier_price(
         "INSERT INTO supplier_price_history (id, supplier_id, item_description, price, quantity, recorded_at, deal_flow_id, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         rusqlite::params![id, supplier_id, item_description, price, quantity, now, deal_flow_id, notes],
     ).map_err(|e| e.to_string())?;
+    // Sync the full row so price history propagates with its parent supplier.
+    let mut cols = Map::new();
+    cols.insert("org_id".into(), json!("org_default"));
+    cols.insert("supplier_id".into(), json!(supplier_id));
+    cols.insert("item_description".into(), json!(item_description));
+    cols.insert("price".into(), json!(price));
+    cols.insert("quantity".into(), json!(quantity));
+    cols.insert("recorded_at".into(), json!(now));
+    cols.insert("deal_flow_id".into(), json!(deal_flow_id));
+    cols.insert("notes".into(), json!(notes));
+    sync::record_upsert("supplier_price_history", &id, cols).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -5688,6 +5715,10 @@ pub async fn remove_lot_photo(lot_id: String, photo_path: String) -> Result<Vec<
     let now = Utc::now().to_rfc3339();
     conn.execute("UPDATE inventory SET photos_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![new_json, now, &lot_id])
         .map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("photos_json".into(), json!(new_json));
+    cols.insert("updated_at".into(), json!(now));
+    crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
     Ok(photos)
 }
 
@@ -5717,6 +5748,10 @@ pub async fn attach_lot_manifest(lot_id: String, file_path: String) -> Result<St
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("UPDATE inventory SET manifest_path=?1, updated_at=?2 WHERE id=?3", rusqlite::params![rel_path, now, &lot_id])
         .map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("manifest_path".into(), json!(rel_path));
+    cols.insert("updated_at".into(), json!(now));
+    crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
     Ok(rel_path)
 }
 
@@ -5732,6 +5767,10 @@ pub async fn remove_lot_manifest(lot_id: String) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
     conn.execute("UPDATE inventory SET manifest_path=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, &lot_id])
         .map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("manifest_path".into(), Value::Null);
+    cols.insert("updated_at".into(), json!(now));
+    crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -7796,6 +7835,13 @@ pub async fn csv_preview(path: String) -> Result<crate::csv_import::CsvPreview, 
     crate::csv_import::preview(&path).map_err(|e| e.to_string())
 }
 
+/// Distinct values of one column in a CSV — used to detect categories from a
+/// spreadsheet before bulk-adding them.
+#[tauri::command]
+pub async fn csv_distinct_column(path: String, column: usize) -> Result<Vec<String>, String> {
+    crate::csv_import::distinct_column(&path, column).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn csv_import(
     path: String,
@@ -8601,29 +8647,46 @@ pub async fn get_smtp_settings_for_pi() -> Result<serde_json::Value, String> {
 }
 
 // ============================================================
-//  Categories (local-only — not synced)
+//  Categories (synced — propagate to server + other devices)
 // ============================================================
+
+/// Emit a sync upsert for one category row. `org_id` is always included so the
+/// server can org-scope the row on arrival (the desktop is single-org).
+fn sync_category_upsert(id: &str, label: &str, sort_order: i64, parent_id: Option<&str>) {
+    let mut cols = Map::new();
+    cols.insert("org_id".into(), json!("org_default"));
+    cols.insert("label".into(), json!(label));
+    cols.insert("sort_order".into(), json!(sort_order));
+    cols.insert("parent_id".into(), json!(parent_id));
+    if let Err(e) = sync::record_upsert("categories", id, cols) {
+        tracing::warn!("sync record_upsert for category {}: {}", id, e);
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Category {
     pub id: String,
     pub label: String,
     pub sort_order: i64,
+    /// Non-null → this is a subcategory of the given parent category.
+    pub parent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct CategoryInput {
     pub label: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[tauri::command]
 pub async fn list_categories() -> Result<Vec<Category>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, label, sort_order FROM categories ORDER BY sort_order"
+        "SELECT id, label, sort_order, parent_id FROM categories ORDER BY sort_order"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
-        Ok(Category { id: r.get(0)?, label: r.get(1)?, sort_order: r.get(2)? })
+        Ok(Category { id: r.get(0)?, label: r.get(1)?, sort_order: r.get(2)?, parent_id: r.get(3)? })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -8636,11 +8699,69 @@ pub async fn create_category(input: CategoryInput) -> Result<String, String> {
         "SELECT COALESCE(MAX(sort_order), -1) FROM categories", [],
         |r| r.get(0),
     ).unwrap_or(-1);
+    // A subcategory can only nest under a top-level category (one level deep).
+    let parent = input.parent_id.filter(|p| !p.is_empty());
+    let sort_order = max_sort + 1;
     conn.execute(
-        "INSERT INTO categories (id, label, sort_order) VALUES (?1, ?2, ?3)",
-        rusqlite::params![id, input.label, max_sort + 1],
+        "INSERT INTO categories (id, label, sort_order, parent_id) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, input.label, sort_order, parent],
     ).map_err(|e| e.to_string())?;
+    sync_category_upsert(&id, &input.label, sort_order, parent.as_deref());
     Ok(id)
+}
+
+/// Reassign every category's sort_order by label (A→Z, or Z→A when `desc`).
+/// Sub-categories keep their label order within each parent because the UI
+/// groups by parent_id and renders each group in sort_order.
+#[tauri::command]
+pub async fn sort_categories(desc: bool) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut cats: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn.prepare("SELECT id, label, parent_id FROM categories").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    cats.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    if desc { cats.reverse(); }
+    for (i, (id, label, parent_id)) in cats.iter().enumerate() {
+        conn.execute("UPDATE categories SET sort_order=?1 WHERE id=?2", rusqlite::params![i as i64, id])
+            .map_err(|e| e.to_string())?;
+        sync_category_upsert(id, label, i as i64, parent_id.as_deref());
+    }
+    Ok(())
+}
+
+/// Bulk-create top-level categories from a list of labels (e.g. detected from a
+/// spreadsheet column). Skips blanks and labels that already exist
+/// (case-insensitive). Returns how many were actually added.
+#[tauri::command]
+pub async fn import_categories(labels: Vec<String>) -> Result<usize, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut seen: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT label FROM categories").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).map(|s| s.trim().to_lowercase()).collect()
+    };
+    let mut max_sort: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM categories", [], |r| r.get(0),
+    ).unwrap_or(-1);
+    let mut added = 0usize;
+    for raw in labels {
+        let label = raw.trim();
+        if label.is_empty() { continue; }
+        let key = label.to_lowercase();
+        if !seen.insert(key) { continue; }
+        max_sort += 1;
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO categories (id, label, sort_order) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, label, max_sort],
+        ).map_err(|e| e.to_string())?;
+        sync_category_upsert(&id, label, max_sort, None);
+        added += 1;
+    }
+    Ok(added)
 }
 
 #[tauri::command]
@@ -8650,13 +8771,33 @@ pub async fn update_category(id: String, input: CategoryInput) -> Result<(), Str
         "UPDATE categories SET label=?1 WHERE id=?2",
         rusqlite::params![input.label, id],
     ).map_err(|e| e.to_string())?;
+    // Sync the full row so label + existing sort_order/parent_id round-trip.
+    let (sort_order, parent_id): (i64, Option<String>) = conn.query_row(
+        "SELECT sort_order, parent_id FROM categories WHERE id=?1", [&id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+    sync_category_upsert(&id, &input.label, sort_order, parent_id.as_deref());
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_category(id: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // Promote any subcategories to top-level so they aren't orphaned. Capture the
+    // affected children first so each promotion can be synced.
+    let children: Vec<(String, String, i64)> = {
+        let mut stmt = conn.prepare("SELECT id, label, sort_order FROM categories WHERE parent_id=?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    conn.execute("UPDATE categories SET parent_id=NULL WHERE parent_id=?1", [&id]).map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM categories WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    for (child_id, label, sort_order) in &children {
+        sync_category_upsert(child_id, label, *sort_order, None);
+    }
+    sync::record_delete("categories", &id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -8668,6 +8809,13 @@ pub async fn reorder_categories(ids: Vec<String>) -> Result<(), String> {
             "UPDATE categories SET sort_order=?1 WHERE id=?2",
             rusqlite::params![i as i64, id],
         ).map_err(|e| e.to_string())?;
+        // Sync the new order along with the row's existing label/parent_id.
+        if let Ok((label, parent_id)) = conn.query_row(
+            "SELECT label, parent_id FROM categories WHERE id=?1", [id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        ) {
+            sync_category_upsert(id, &label, i as i64, parent_id.as_deref());
+        }
     }
     Ok(())
 }
@@ -9148,6 +9296,57 @@ pub async fn get_sheet_headers(sheet_url: String) -> Result<Vec<SheetHeader>, St
         SheetHeader { column_letter: col, header_text: h.trim().to_string() }
     }).collect();
     Ok(headers)
+}
+
+/// Distinct non-empty values of the configured Google Sheet's category column,
+/// sorted case-insensitively. Used by the UI to detect categories from the
+/// connected sheet so they can be imported. Reuses the same CSV export plumbing
+/// and `category_col` config as `sync_from_sheet`.
+#[tauri::command]
+pub async fn sheet_category_column_values() -> Result<Vec<String>, String> {
+    let (sheet_url, mut category_col, skip_header_rows): (Option<String>, String, i64) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT sheet_url, category_col, skip_header_rows FROM sheet_sync_config WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).map_err(|e| e.to_string())?
+    };
+    if category_col.is_empty() { category_col = "P".into(); }
+    let sheet_url = sheet_url.ok_or("No sheet URL configured")?;
+
+    let csv_url = {
+        let base = sheet_url
+            .split('?').next().unwrap_or(&sheet_url)
+            .split('#').next().unwrap_or(&sheet_url)
+            .trim_end_matches('/');
+        if base.contains("/edit") {
+            base.replace("/edit", "/export?format=csv")
+        } else {
+            format!("{}/export?format=csv", base)
+        }
+    };
+
+    let resp = reqwest::get(&csv_url).await
+        .map_err(|e| format!("Failed to fetch sheet: {}. Is the sheet set to 'Anyone with link can view'?", e))?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+
+    let cat_idx = col_index(&category_col);
+    // De-dupe case-insensitively while preserving the first-seen original casing.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut values: Vec<String> = Vec::new();
+    let mut reader = csv::ReaderBuilder::new().has_headers(false).from_reader(text.as_bytes());
+    for (row_num, row) in reader.records().enumerate() {
+        if (row_num as i64) < skip_header_rows { continue; }
+        let record = match row { Ok(r) => r, Err(_) => continue };
+        let val = record.get(cat_idx).unwrap_or("").trim().to_string();
+        if val.is_empty() { continue; }
+        if seen.insert(val.to_lowercase()) {
+            values.push(val);
+        }
+    }
+    values.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(values)
 }
 
 pub fn spawn_periodic_sheet_sync(interval_secs: u64) {

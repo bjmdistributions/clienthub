@@ -260,10 +260,12 @@ export interface Category {
   id: string;
   label: string;
   sort_order: number;
+  parent_id?: string | null;
 }
 
 export interface CategoryInput {
   label: string;
+  parent_id?: string | null;
 }
 
 export interface SheetSyncConfig {
@@ -1572,6 +1574,10 @@ export const api = {
   updateCategory: (id: string, input: CategoryInput) => invoke<void>("update_category", { id, input }),
   deleteCategory: (id: string) => invoke<void>("delete_category", { id }),
   reorderCategories: (ids: string[]) => invoke<void>("reorder_categories", { ids }),
+  sortCategories: (desc: boolean) => invoke<void>("sort_categories", { desc }),
+  importCategories: (labels: string[]) => invoke<number>("import_categories", { labels }),
+  csvDistinctColumn: (path: string, column: number) => invoke<string[]>("csv_distinct_column", { path, column }),
+  sheetCategoryValues: () => invoke<string[]>("sheet_category_column_values"),
 
   // Sheet Sync
   getSheetSyncConfig: () => invoke<SheetSyncConfig>("get_sheet_sync_config"),

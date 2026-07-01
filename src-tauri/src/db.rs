@@ -1047,4 +1047,12 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_intake_sources_token ON intake_sources(token);
         "#,
     ),
+    (
+        53,
+        // Subcategories: a category with a non-null parent_id is a child of that
+        // category. Top-level categories have parent_id = NULL.
+        r#"
+        ALTER TABLE categories ADD COLUMN parent_id TEXT;
+        "#,
+    ),
 ];

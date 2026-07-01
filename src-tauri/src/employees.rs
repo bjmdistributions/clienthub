@@ -174,6 +174,33 @@ fn require_admin() -> Result<Me, String> {
     Ok(me)
 }
 
+// ── Last-admin guardrails ───────────────────────────────────────────────────
+// "Admin" is defined by permissions (`*` or `admin:manage`), matching the
+// server, so a custom role granted full access still counts as an admin.
+const ADMIN_PRED: &str =
+    "(r.permissions_json LIKE '%\"*\"%' OR r.permissions_json LIKE '%admin:manage%')";
+
+fn role_grants_admin(conn: &rusqlite::Connection, role_id: &str) -> bool {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM roles r WHERE r.id=?1 AND {ADMIN_PRED}"),
+        [role_id], |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0
+}
+
+fn user_grants_admin(conn: &rusqlite::Connection, user_id: &str) -> bool {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id WHERE s.id=?1 AND {ADMIN_PRED}"),
+        [user_id], |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0
+}
+
+fn other_active_admins(conn: &rusqlite::Connection, exclude_id: &str) -> i64 {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id WHERE s.id<>?1 AND s.status='active' AND {ADMIN_PRED}"),
+        [exclude_id], |r| r.get::<_, i64>(0),
+    ).unwrap_or(0)
+}
+
 /// True when the current desktop user may act without approval: the owner (no
 /// staff session = PIN) or an admin. Non-admin reps return false.
 pub fn session_is_privileged() -> bool {
@@ -355,8 +382,20 @@ pub fn update_staff(id: String, role_id: Option<String>, status: Option<String>,
     let mut cols = Map::new();
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        if let Some(v) = &role_id { conn.execute("UPDATE staff_accounts SET role_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("role_id".into(), json!(v)); }
-        if let Some(v) = &status { conn.execute("UPDATE staff_accounts SET status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("status".into(), json!(v)); }
+        if let Some(v) = &role_id {
+            // Don't let the org demote its only admin into lockout.
+            if user_grants_admin(&conn, &id) && !role_grants_admin(&conn, v) && other_active_admins(&conn, &id) == 0 {
+                return Err("Can't demote the last admin — make someone else an admin first.".into());
+            }
+            conn.execute("UPDATE staff_accounts SET role_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("role_id".into(), json!(v));
+        }
+        if let Some(v) = &status {
+            // Suspending the last active admin would lock the org out.
+            if v == "suspended" && user_grants_admin(&conn, &id) && other_active_admins(&conn, &id) == 0 {
+                return Err("Can't suspend the last admin — make someone else an admin first.".into());
+            }
+            conn.execute("UPDATE staff_accounts SET status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("status".into(), json!(v));
+        }
         if let Some(v) = commission_pct { conn.execute("UPDATE staff_accounts SET commission_pct=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("commission_pct".into(), json!(v)); }
         if let Some(v) = hide_pay_cuts { conn.execute("UPDATE staff_accounts SET hide_pay_cuts=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v as i64, now, id]).map_err(|e| e.to_string())?; cols.insert("hide_pay_cuts".into(), json!(v as i64)); }
         if let Some(v) = &pay_type { let v = match v.as_str() { "gross_pct" | "fixed" => v.as_str(), _ => "profit_pct" }; conn.execute("UPDATE staff_accounts SET pay_type=?1, updated_at=?2 WHERE id=?3", rusqlite::params![v, now, id]).map_err(|e| e.to_string())?; cols.insert("pay_type".into(), json!(v)); }
@@ -377,15 +416,9 @@ pub fn delete_staff(id: String) -> Result<(), String> {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let exists: i64 = conn.query_row("SELECT COUNT(*) FROM staff_accounts WHERE id=?1", [&id], |r| r.get(0)).unwrap_or(0);
         if exists == 0 { return Err("User not found.".into()); }
-        let admin_pred = "(r.permissions_json LIKE '%\"*\"%' OR r.permissions_json LIKE '%admin:manage%')";
-        let target_admin: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id WHERE s.id=?1 AND {admin_pred}"),
-            [&id], |r| r.get(0)).unwrap_or(0);
-        if target_admin > 0 {
-            let others: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM staff_accounts s JOIN roles r ON r.id=s.role_id WHERE s.id<>?1 AND s.status='active' AND {admin_pred}"),
-                [&id], |r| r.get(0)).unwrap_or(0);
-            if others == 0 { return Err("Can't remove the last admin.".into()); }
+        // Don't let the org delete its last admin and lock itself out.
+        if user_grants_admin(&conn, &id) && other_active_admins(&conn, &id) == 0 {
+            return Err("Can't remove the last admin.".into());
         }
         conn.execute("DELETE FROM deal_reps WHERE lead_rep_id=?1", [&id]).ok();
         conn.execute("DELETE FROM staff_accounts WHERE id=?1", [&id]).map_err(|e| e.to_string())?;

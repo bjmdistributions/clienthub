@@ -30,6 +30,7 @@ import {
   WhatsappSettings,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { isAdmin } from "../lib/permissions";
 import {
   Save,
   Eye,
@@ -67,6 +68,7 @@ import {
   Sun,
   MessageCircle,
   CheckCheck,
+  ArrowDownAZ,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -93,19 +95,46 @@ function useAutosave(value: unknown, save: () => Promise<void>, ready: boolean) 
   const report = useContext(SaveStatusCtx);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const lastSaved = useRef<string | null>(null);
+  const saveRef = useRef(save);
+  const pending = useRef<string | null>(null);   // json scheduled but not yet saved
+  saveRef.current = save;
   const json = JSON.stringify(value);
+
+  // Run the save with a hard timeout: a hung round-trip (e.g. an unreachable
+  // server in SaaS mode) reports an error instead of pinning the pill on
+  // "Saving…" forever.
+  const run = async (j: string) => {
+    pending.current = null;
+    report("saving");
+    try {
+      await Promise.race([
+        saveRef.current(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 12000)),
+      ]);
+      lastSaved.current = j;
+      report("saved");
+    } catch { report("error"); }
+  };
+
   useEffect(() => {
     if (!ready) { lastSaved.current = json; return; }   // baseline = loaded value
     if (json === lastSaved.current) return;             // no real change
+    pending.current = json;
     report("saving");
     clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
-      try { await save(); lastSaved.current = json; report("saved"); }
-      catch { report("error"); }
-    }, 700);
+    timer.current = setTimeout(() => { void run(json); }, 700);
     return () => clearTimeout(timer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [json, ready]);
+
+  // On unmount, flush a still-pending edit so it isn't lost when the user
+  // switches sections mid-debounce, and the pill can never stick on "Saving…"
+  // after the section is gone.
+  useEffect(() => () => {
+    clearTimeout(timer.current);
+    if (pending.current !== null) void run(pending.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 }
 
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
@@ -164,7 +193,17 @@ const SETTINGS_GROUPS: {
   },
 ];
 
-export default function SettingsView() {
+export default function SettingsView({ me }: { me: Me | null | undefined }) {
+  // Everyone can open Settings, but only admins see org-sensitive sections;
+  // viewers/sales get Appearance (per-device) + their own Account.
+  const admin = isAdmin(me);
+  const NON_ADMIN_SECTIONS: SettingsTab[] = ["account", "appearance"];
+  const groups = admin
+    ? SETTINGS_GROUPS
+    : SETTINGS_GROUPS
+        .map((g) => ({ ...g, items: g.items.filter((i) => NON_ADMIN_SECTIONS.includes(i.id)) }))
+        .filter((g) => g.items.length > 0);
+
   const [tab, setTab] = useState<SettingsTab>(
     () => (localStorage.getItem("clienthub_settings_tab") as SettingsTab) || "appearance"
   );
@@ -174,7 +213,18 @@ export default function SettingsView() {
   };
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
-  const active = SETTINGS_GROUPS.flatMap((g) => g.items).find((i) => i.id === tab);
+  // A non-admin whose stored tab is now gated falls back to Appearance.
+  useEffect(() => {
+    if (!admin && !NON_ADMIN_SECTIONS.includes(tab)) setTab("appearance");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [admin, tab]);
+
+  // Clear the auto-save pill when switching sections so a prior section's
+  // "Saving…"/"Couldn't save" can't linger on a section that doesn't autosave
+  // (e.g. Team), where it would look like the current action is stuck.
+  useEffect(() => { setSaveState("idle"); }, [tab]);
+
+  const active = groups.flatMap((g) => g.items).find((i) => i.id === tab);
 
   return (
    <SaveStatusCtx.Provider value={setSaveState}>
@@ -186,7 +236,7 @@ export default function SettingsView() {
           <p className="text-[12px] text-muted mt-0.5">Manage your workspace</p>
         </div>
         <nav className="space-y-5">
-          {SETTINGS_GROUPS.map((g) => (
+          {groups.map((g) => (
             <div key={g.group}>
               <div className="px-3 mb-1.5 text-[10px] font-semibold text-muted uppercase tracking-widest">
                 {g.group}
@@ -2429,15 +2479,30 @@ function TemplatesTab() {
 function CategoriesTab() {
   const [cats,      setCats]      = useState<Category[]>([]);
   const [newLabel,  setNewLabel]  = useState("");
+  const [newParent, setNewParent] = useState<string>("");   // "" = top-level
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
+  const [sortDesc,  setSortDesc]  = useState(false);
+  const [addedMsg,  setAddedMsg]  = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  // Shared import panel. `source` distinguishes a spreadsheet file (pick a
+  // column first) from the connected Google Sheet (values arrive directly).
+  const [imp, setImp] = useState<null | {
+    source: "csv" | "sheet";
+    path: string; headers: string[]; total: number;
+    col: number | null; values: string[]; chosen: Record<string, boolean>; loading: boolean;
+  }>(null);
 
-  useEffect(() => { api.listCategories().then(setCats); }, []);
   const reload = () => api.listCategories().then(setCats);
+  useEffect(() => { reload(); }, []);
+
+  const tops = cats.filter((c) => !c.parent_id);
+  const childrenOf = (id: string) => cats.filter((c) => c.parent_id === id);
+  const existingLabels = new Set(cats.map((c) => c.label.trim().toLowerCase()));
 
   const create = async () => {
     if (!newLabel.trim()) return;
-    await api.createCategory({ label: newLabel.trim() });
+    await api.createCategory({ label: newLabel.trim(), parent_id: newParent || null });
     setNewLabel("");
     reload();
   };
@@ -2450,78 +2515,222 @@ function CategoriesTab() {
   };
 
   const remove = async (id: string, label: string) => {
-    if (confirm(`Delete category "${label}"? Existing clients will keep their category value.`)) {
+    const kids = childrenOf(id).length;
+    const extra = kids > 0 ? ` Its ${kids} subcategor${kids === 1 ? "y" : "ies"} will become top-level.` : "";
+    if (confirm(`Delete category "${label}"? Existing clients keep their category value.${extra}`)) {
       await api.deleteCategory(id);
       reload();
     }
   };
 
-  const move = async (id: string, dir: 1 | -1) => {
-    const idx = cats.findIndex((c) => c.id === id);
-    if (idx < 0) return;
-    const target = idx + dir;
-    if (target < 0 || target >= cats.length) return;
-    const reordered = [...cats];
-    [reordered[idx], reordered[target]] = [reordered[target], reordered[idx]];
-    await api.reorderCategories(reordered.map((c) => c.id));
+  const toggleSort = async () => {
+    const desc = !sortDesc;
+    setSortDesc(desc);
+    await api.sortCategories(desc);
     reload();
   };
 
+  // ── Detect categories from a spreadsheet column ──
+  const pickFile = async () => {
+    const selected = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
+    if (!selected || typeof selected !== "string") return;
+    try {
+      const preview = await api.csvPreview(selected);
+      setImp({ source: "csv", path: selected, headers: preview.headers, total: preview.total_rows, col: null, values: [], chosen: {}, loading: false });
+    } catch (e: any) { alert(typeof e === "string" ? e : "Could not read that file."); }
+  };
+
+  // Pull the distinct values of the connected Google Sheet's category column and
+  // reuse the same import checklist (new values pre-checked).
+  const pickSheet = async () => {
+    setImp({ source: "sheet", path: "", headers: [], total: 0, col: 0, values: [], chosen: {}, loading: true });
+    try {
+      const values = await api.sheetCategoryValues();
+      const chosen: Record<string, boolean> = {};
+      values.forEach((v) => { chosen[v] = !existingLabels.has(v.trim().toLowerCase()); });
+      setImp((prev) => prev ? { ...prev, values, chosen, loading: false } : prev);
+    } catch (e: any) {
+      setImp(null);
+      alert(typeof e === "string" ? e : "Could not read the connected Sheet. Configure it under Google Sheets first.");
+    }
+  };
+
+  const pickColumn = async (col: number) => {
+    if (!imp) return;
+    setImp({ ...imp, col, loading: true });
+    try {
+      const values = await api.csvDistinctColumn(imp.path, col);
+      const chosen: Record<string, boolean> = {};
+      values.forEach((v) => { chosen[v] = !existingLabels.has(v.trim().toLowerCase()); });  // pre-check new ones
+      setImp((prev) => prev ? { ...prev, col, values, chosen, loading: false } : prev);
+    } catch (e: any) {
+      alert(typeof e === "string" ? e : "Could not read that column.");
+      setImp((prev) => prev ? { ...prev, loading: false } : prev);
+    }
+  };
+
+  const chosenCount = imp ? imp.values.filter((v) => imp.chosen[v]).length : 0;
+  const runImport = async () => {
+    if (!imp) return;
+    const labels = imp.values.filter((v) => imp.chosen[v]);
+    if (labels.length === 0) return;
+    setImporting(true);
+    try {
+      const added = await api.importCategories(labels);
+      setAddedMsg(`Added ${added} categor${added === 1 ? "y" : "ies"}.`);
+      setImp(null);
+      reload();
+      setTimeout(() => setAddedMsg(null), 3000);
+    } catch (e: any) { alert(typeof e === "string" ? e : "Import failed."); }
+    finally { setImporting(false); }
+  };
+
+  // Rendered as a direct call (not <Row/>) so editing keeps input focus.
+  // `group` reveals the row's actions on hover for a calmer resting state.
+  const renderRow = (c: Category, child?: boolean) => (
+    <div key={c.id} className={`group flex items-center gap-2 pr-3 py-2 hover:bg-surface-2/60 transition-colors ${child ? "pl-4" : "pl-4"}`}>
+      {child && (
+        <span className="flex items-center text-faint shrink-0" aria-hidden>
+          <span className="w-3 border-t border-line-2 mr-1.5 ml-0.5" />
+        </span>
+      )}
+      {editingId === c.id ? (
+        <>
+          <input value={editLabel} onChange={(e) => setEditLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") update(c.id); if (e.key === "Escape") setEditingId(null); }}
+            className="flex-1 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" autoFocus />
+          <button onClick={() => update(c.id)}       title="Save"   className="text-success-ink p-1.5 rounded-lg hover:bg-success-bg transition-colors"><Check size={14} /></button>
+          <button onClick={() => setEditingId(null)} title="Cancel" className="text-muted hover:text-ink-2 p-1.5 rounded-lg hover:bg-surface-3 transition-colors"><X size={14} /></button>
+        </>
+      ) : (
+        <>
+          <span className={`flex-1 truncate ${child ? "text-[12.5px] text-ink-2" : "text-[13px] font-medium text-ink"}`}>{c.label}</span>
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+            {!child && (
+              <button onClick={() => { setNewParent(c.id); setNewLabel(""); setTimeout(() => document.getElementById("cat-new-input")?.focus(), 0); }}
+                title="Add subcategory" className="text-faint hover:text-accent px-1.5 py-1 rounded-lg hover:bg-surface-3 transition-colors flex items-center gap-0.5 text-[11px] font-medium"><Plus size={12} /> sub</button>
+            )}
+            <button onClick={() => { setEditingId(c.id); setEditLabel(c.label); }} title="Rename" className="text-faint hover:text-ink-2 p-1.5 rounded-lg hover:bg-surface-3 transition-colors"><Edit2 size={13} /></button>
+            <button onClick={() => remove(c.id, c.label)}                          title="Delete" className="text-faint hover:text-danger-ink p-1.5 rounded-lg hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  const toolBtn = "flex items-center gap-1.5 border border-line px-3 h-9 rounded-lg text-[12.5px] text-ink hover:bg-surface-2 hover:border-line-3 transition-colors";
+
   return (
     <div className="max-w-2xl">
-      <p className="text-[12px] text-muted mb-4">
-        Manage client category labels. Categories help organize and filter clients.
+      <p className="text-[12px] text-muted mb-4 leading-relaxed">
+        Manage client category labels and subcategories. Categories help organize and filter clients.
       </p>
 
-      <div className="flex gap-2 mb-4">
-        <input
-          placeholder="New category name..."
-          value={newLabel}
-          onChange={(e) => setNewLabel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && create()}
-          className={`${inp} flex-1`}
-        />
-        <button
-          onClick={create}
-          disabled={!newLabel.trim()}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
-        >
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 mb-3">
+        <button onClick={toggleSort} title="Toggle sort order" className={toolBtn}>
+          <ArrowDownAZ size={13} className={sortDesc ? "rotate-180" : ""} />
+          {sortDesc ? "Sort Z→A" : "Sort A→Z"}
+        </button>
+        <div className="w-px h-5 bg-line-2 mx-0.5" />
+        <button onClick={pickFile} className={toolBtn}>
+          <Upload size={13} /> Import from spreadsheet
+        </button>
+        <button onClick={pickSheet} className={toolBtn}>
+          <Sheet size={13} /> Import from connected Sheet
+        </button>
+        {addedMsg && <span className="text-[12px] text-success-ink font-medium ml-1">{addedMsg}</span>}
+      </div>
+
+      {/* Import panel — shared by the spreadsheet-file and connected-Sheet sources */}
+      {imp && (
+        <div className="bg-surface border border-line rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5 text-[13px] font-medium text-ink">
+              {imp.source === "sheet" ? <Sheet size={14} className="text-muted" /> : <Upload size={14} className="text-muted" />}
+              {imp.source === "sheet" ? "Import categories from connected Sheet" : "Import categories from spreadsheet"}
+            </div>
+            <button onClick={() => setImp(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3"><X size={14} /></button>
+          </div>
+          {imp.source === "csv" && (
+            <>
+              <div className="text-[11.5px] text-muted mb-3">{imp.total} rows detected. Choose the column that holds the category.</div>
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {imp.headers.map((h, i) => (
+                  <button key={i} onClick={() => pickColumn(i)}
+                    className={`px-2.5 h-8 rounded-lg text-[12px] border transition-colors ${imp.col === i ? "bg-accent text-on-accent border-accent" : "border-line text-ink hover:bg-surface-2"}`}>
+                    {h || `Column ${i + 1}`}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {imp.loading && <div className="text-[12px] text-muted py-2">{imp.source === "sheet" ? "Reading connected Sheet…" : "Reading column…"}</div>}
+          {imp.col !== null && !imp.loading && (
+            imp.values.length === 0
+              ? <div className="text-[12px] text-muted py-2">{imp.source === "sheet" ? "No category values found in the connected Sheet." : "No values found in that column."}</div>
+              : <>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[12px] text-muted">{imp.values.length} distinct value{imp.values.length === 1 ? "" : "s"} — new ones are pre-selected.</div>
+                    <div className="flex gap-3 text-[11.5px]">
+                      <button className="text-accent" onClick={() => setImp({ ...imp, chosen: Object.fromEntries(imp.values.map((v) => [v, true])) })}>All</button>
+                      <button className="text-muted hover:text-ink-2" onClick={() => setImp({ ...imp, chosen: {} })}>None</button>
+                    </div>
+                  </div>
+                  <div className="max-h-56 overflow-auto border border-line rounded-lg divide-y divide-line-2 mb-3">
+                    {imp.values.map((v) => {
+                      const exists = existingLabels.has(v.trim().toLowerCase());
+                      return (
+                        <label key={v} className="flex items-center gap-2 px-3 py-1.5 text-[13px] cursor-pointer hover:bg-surface-2/50">
+                          <input type="checkbox" checked={!!imp.chosen[v]} onChange={(e) => setImp({ ...imp, chosen: { ...imp.chosen, [v]: e.target.checked } })} />
+                          <span className="flex-1 text-ink">{v}</span>
+                          {exists && <span className="text-[10.5px] text-muted">already exists</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <button onClick={runImport} disabled={importing || chosenCount === 0}
+                    className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+                    {importing ? "Adding…" : `Add ${chosenCount} categor${chosenCount === 1 ? "y" : "ies"}`}
+                  </button>
+                </>
+          )}
+        </div>
+      )}
+
+      {/* Add row */}
+      <div className="flex gap-2 mb-5">
+        <select value={newParent} onChange={(e) => setNewParent(e.target.value)}
+          className="border border-line px-2.5 h-10 rounded-lg text-[13px] bg-surface max-w-[170px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors">
+          <option value="">Top-level</option>
+          {tops.map((t) => <option key={t.id} value={t.id}>Under: {t.label}</option>)}
+        </select>
+        <input id="cat-new-input" placeholder={newParent ? "New subcategory…" : "New category name…"} value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") create(); }}
+          className={`${inp} flex-1`} />
+        <button onClick={create} disabled={!newLabel.trim()}
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors shrink-0">
           <Plus size={13} /> Add
         </button>
       </div>
 
-      <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
-        {cats.map((c, i) => (
-          <div key={c.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-surface-2/50 transition-colors">
-            {editingId === c.id ? (
-              <>
-                <input
-                  value={editLabel}
-                  onChange={(e) => setEditLabel(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && update(c.id)}
-                  className="flex-1 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-                  autoFocus
-                />
-                <button onClick={() => update(c.id)}    className="text-success-ink hover:text-success-ink p-1.5 rounded-lg hover:bg-success-bg transition-colors"><Check  size={13} /></button>
-                <button onClick={() => setEditingId(null)} className="text-muted hover:text-ink-2 p-1.5 rounded-lg hover:bg-surface-3 transition-colors"><X size={13} /></button>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => move(c.id, -1)} disabled={i === 0}                className="text-faint hover:text-muted disabled:opacity-20 transition-colors"><ChevronUp   size={12} /></button>
-                  <button onClick={() => move(c.id,  1)} disabled={i === cats.length - 1} className="text-faint hover:text-muted disabled:opacity-20 transition-colors"><ChevronDown size={12} /></button>
-                </div>
-                <span className="flex-1 text-[13px] text-ink">{c.label}</span>
-                <button onClick={() => { setEditingId(c.id); setEditLabel(c.label); }} className="text-faint hover:text-ink-2 p-1.5 rounded-lg hover:bg-surface-3 transition-colors"><Edit2  size={13} /></button>
-                <button onClick={() => remove(c.id, c.label)}                          className="text-faint hover:text-danger-ink p-1.5 rounded-lg hover:bg-danger-bg  transition-colors"><Trash2 size={13} /></button>
-              </>
-            )}
-          </div>
-        ))}
-        {cats.length === 0 && (
-          <div className="text-center text-[13px] text-muted py-8">No categories defined yet.</div>
-        )}
-      </div>
+      {/* Tree */}
+      {cats.length === 0 ? (
+        <div className="bg-surface border border-dashed border-line rounded-xl py-12 px-6 text-center">
+          <div className="mx-auto w-9 h-9 rounded-lg bg-surface-2 flex items-center justify-center text-muted mb-3"><Tag size={17} /></div>
+          <div className="text-[13px] font-medium text-ink-2">No categories yet</div>
+          <div className="text-[12px] text-muted mt-1 max-w-xs mx-auto leading-relaxed">Add one above, or import your existing labels from a spreadsheet or your connected Sheet.</div>
+        </div>
+      ) : (
+        <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
+          {tops.map((c) => (
+            <div key={c.id}>
+              {renderRow(c)}
+              {childrenOf(c.id).map((ch) => renderRow(ch, true))}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -3095,8 +3304,24 @@ function PeoplePanel() {
   useEffect(() => { api.getRepPayoutSettings().then(setRp).catch(() => {}); }, []);
   const saveRp = (fields: any) => { setRp((p: any) => ({ ...(p || {}), ...fields })); api.setRepPayoutSettings(fields).catch(() => {}); };
 
-  const setRole = async (id: string, roleId: string) => { await api.updateStaff(id, { roleId }); load(); };
-  const setStatus = async (id: string, status: string) => { await api.updateStaff(id, { status }); load(); };
+  // Per-row save feedback so a role/status change is never ambiguous (and any
+  // failure is shown inline instead of silently swallowed).
+  const [rowMsg, setRowMsg] = useState<Record<string, { t: "saving" | "saved" | "error"; msg?: string }>>({});
+  const flash = (id: string, s: { t: "saving" | "saved" | "error"; msg?: string }) => {
+    setRowMsg((m) => ({ ...m, [id]: s }));
+    if (s.t !== "saving") setTimeout(() => setRowMsg((m) => { const n = { ...m }; delete n[id]; return n; }), 2500);
+  };
+  const errText = (e: any) => (typeof e === "string" ? e : e?.message || "Failed to save");
+  const setRole = async (id: string, roleId: string) => {
+    flash(id, { t: "saving" });
+    try { await api.updateStaff(id, { roleId }); flash(id, { t: "saved" }); load(); }
+    catch (e: any) { flash(id, { t: "error", msg: errText(e) }); }
+  };
+  const setStatus = async (id: string, status: string) => {
+    flash(id, { t: "saving" });
+    try { await api.updateStaff(id, { status }); flash(id, { t: "saved" }); load(); }
+    catch (e: any) { flash(id, { t: "error", msg: errText(e) }); }
+  };
   const setComm = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
   const setHide = async (id: string, hidePayCuts: boolean) => { await api.updateStaff(id, { hidePayCuts }); };
   const setPayType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); load(); };
@@ -3156,10 +3381,21 @@ function PeoplePanel() {
                 </button>
               </td>
               <td className="px-4 py-3">
-                <select value={u.role_id} disabled={u.id === me} onChange={(e) => setRole(u.id, e.target.value)}
-                  className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface disabled:opacity-60">
-                  {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
+                <div className="flex items-center gap-2">
+                  <select value={u.role_id} disabled={u.id === me} onChange={(e) => setRole(u.id, e.target.value)}
+                    className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface disabled:opacity-60">
+                    {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                  {rowMsg[u.id] && (
+                    <span className={`text-[10.5px] font-medium whitespace-nowrap ${
+                      rowMsg[u.id].t === "error" ? "text-danger-ink"
+                      : rowMsg[u.id].t === "saved" ? "text-success-ink" : "text-muted"}`}
+                      title={rowMsg[u.id].msg || ""}>
+                      {rowMsg[u.id].t === "saving" ? "Saving…"
+                       : rowMsg[u.id].t === "saved" ? "Saved" : (rowMsg[u.id].msg || "Failed")}
+                    </span>
+                  )}
+                </div>
               </td>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 flex-wrap">

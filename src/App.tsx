@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
 import {
   Users,
   FileText,
@@ -255,17 +255,27 @@ export default function App() {
   const [indicatorStyle, setIndicatorStyle] = useState({ top: 0, opacity: 0 });
   const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
-  useEffect(() => {
-    const btn = buttonRefs.current[tab];
-    const nav = navRef.current;
-    if (btn && nav) {
+  useLayoutEffect(() => {
+    const measure = () => {
+      const btn = buttonRefs.current[tab];
+      const nav = navRef.current;
+      if (!btn || !nav) return;
       const navRect = nav.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
       setIndicatorStyle({
         top: btnRect.top - navRect.top + btnRect.height / 2 - 10,
         opacity: 1,
       });
-    }
+    };
+    measure();
+    // The old [tab]-only effect measured once and never recomputed, so the bar
+    // stayed on the previously-measured tab when the nav layout shifted (window
+    // resize, tab list add/remove, fonts settling). Recompute on those too.
+    const nav = navRef.current;
+    const ro = nav ? new ResizeObserver(measure) : null;
+    if (nav && ro) ro.observe(nav);
+    window.addEventListener("resize", measure);
+    return () => { window.removeEventListener("resize", measure); ro?.disconnect(); };
   }, [tab]);
 
   useEffect(() => {
@@ -381,7 +391,7 @@ export default function App() {
           {t === "automation" && <AutomationLogView />}
           {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
           {t === "email"      && <EmailView />}
-          {t === "settings"   && <SettingsView />}
+          {t === "settings"   && <SettingsView me={me} />}
           {t === "platform"   && <PlatformView />}
         </div>
       </div>

@@ -38,7 +38,9 @@ export function tabPerm(feature: Feature): string | null {
     case "analytics":
     case "brief":        return "analytics:view";
     case "email":        return "email:view";
-    case "settings":     return "admin:manage";
+    // Everyone can OPEN Settings (to reach Appearance + their own Profile); the
+    // org-sensitive sections gate themselves to admins inside SettingsView.
+    case "settings":     return null;
     default:             return null;
   }
 }
