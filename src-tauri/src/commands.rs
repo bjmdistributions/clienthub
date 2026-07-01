@@ -6888,11 +6888,13 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
     // client_id -> (name, [current,1-30,31-60,61-90,90+], oldest_days)
     let mut map: std::collections::HashMap<String, (String, [f64; 5], i64)> = std::collections::HashMap::new();
     let mut tot = [0f64; 5];
+    let mut due_soon = 0f64; // open invoices coming due within the next 7 days
     let mut count = 0i64;
     for (cid, cname, due, amt) in rows.filter_map(|x| x.ok()) {
         let days = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
+        if days >= -7 && days <= 0 { due_soon += amt; }
         let idx = if days <= 0 { 0 } else if days <= 30 { 1 } else if days <= 60 { 2 } else if days <= 90 { 3 } else { 4 };
         let e = map.entry(cid).or_insert((cname, [0.0; 5], 0));
         e.1[idx] += amt;
@@ -6911,7 +6913,7 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
     Ok(json!({
         "clients": clients,
         "current": tot[0], "d1_30": tot[1], "d31_60": tot[2], "d61_90": tot[3], "d90_plus": tot[4],
-        "total": tot.iter().sum::<f64>(), "open_count": count,
+        "total": tot.iter().sum::<f64>(), "open_count": count, "due_soon": due_soon,
     }))
 }
 

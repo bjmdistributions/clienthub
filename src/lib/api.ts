@@ -467,6 +467,7 @@ export interface ReceivablesAging {
   d90_plus: number;
   total: number;
   open_count: number;
+  due_soon: number;
 }
 
 export interface PayableSupplier {

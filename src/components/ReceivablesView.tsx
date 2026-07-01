@@ -47,6 +47,13 @@ export default function ReceivablesView() {
         </button>
       </div>
 
+      {data.due_soon > 0 && (
+        <div className="bg-success-bg border border-success-ink/20 rounded-lg px-4 py-2.5 text-[13px]">
+          <span className="font-bold text-success-ink tabular-nums">{fmtAmount(data.due_soon)}</span>
+          <span className="text-ink-2"> due to you in the next 7 days</span>
+        </div>
+      )}
+
       {/* Cash position — what you're owed, what you owe, the float between them */}
       {ap !== null && (
         <div className="bg-surface border border-line rounded-xl p-4 flex flex-wrap items-center gap-x-8 gap-y-2">
