@@ -26,6 +26,10 @@ pub struct SignupRule {
     pub subject_pattern: Option<String>,
     pub active: bool,
     pub created_at: String,
+    /// Which inbox this rule watches. Empty = all inboxes. When set, it must equal
+    /// the scanned email's `source` (the inbox label) for the rule to match.
+    #[serde(default)]
+    pub inbox_source: String,
 }
 
 pub fn ensure_table() -> Result<()> {
@@ -42,13 +46,16 @@ pub fn ensure_table() -> Result<()> {
         );
         "#,
     )?;
+    // Bind a rule to one inbox (by its label). Idempotent for existing DBs; the
+    // duplicate-column error is benign and ignored.
+    let _ = conn.execute("ALTER TABLE signup_rules ADD COLUMN inbox_source TEXT NOT NULL DEFAULT ''", []);
     Ok(())
 }
 
 pub fn list_rules() -> Result<Vec<SignupRule>> {
     let conn = pool().get()?;
     let mut stmt = conn.prepare(
-        "SELECT id,name,sender_pattern,subject_pattern,active,created_at
+        "SELECT id,name,sender_pattern,subject_pattern,active,created_at,COALESCE(inbox_source,'')
          FROM signup_rules ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -59,6 +66,7 @@ pub fn list_rules() -> Result<Vec<SignupRule>> {
             subject_pattern: r.get(3)?,
             active: r.get::<_, i64>(4)? != 0,
             created_at: r.get(5)?,
+            inbox_source: r.get(6)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -70,6 +78,9 @@ pub struct RuleInput {
     pub sender_pattern: Option<String>,
     pub subject_pattern: Option<String>,
     pub active: bool,
+    /// Inbox label this rule is bound to. Empty/omitted = all inboxes.
+    #[serde(default)]
+    pub inbox_source: Option<String>,
 }
 
 pub fn create_rule(input: RuleInput) -> Result<String> {
@@ -83,20 +94,48 @@ pub fn create_rule(input: RuleInput) -> Result<String> {
 
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
+    let inbox_source = input.inbox_source.clone().unwrap_or_default();
     let conn = pool().get()?;
     conn.execute(
-        "INSERT INTO signup_rules (id,name,sender_pattern,subject_pattern,active,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6)",
+        "INSERT INTO signup_rules (id,name,sender_pattern,subject_pattern,active,created_at,inbox_source)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
         rusqlite::params![
             id,
             input.name,
             input.sender_pattern,
             input.subject_pattern,
             input.active as i64,
-            now
+            now,
+            inbox_source
         ],
     )?;
     Ok(id)
+}
+
+/// Update an existing rule in place (name, patterns, active, inbox binding).
+pub fn update_rule(id: &str, input: RuleInput) -> Result<()> {
+    if let Some(p) = &input.sender_pattern {
+        Regex::new(p).context("invalid sender pattern")?;
+    }
+    if let Some(p) = &input.subject_pattern {
+        Regex::new(p).context("invalid subject pattern")?;
+    }
+    let inbox_source = input.inbox_source.clone().unwrap_or_default();
+    let conn = pool().get()?;
+    conn.execute(
+        "UPDATE signup_rules
+         SET name=?1, sender_pattern=?2, subject_pattern=?3, active=?4, inbox_source=?5
+         WHERE id=?6",
+        rusqlite::params![
+            input.name,
+            input.sender_pattern,
+            input.subject_pattern,
+            input.active as i64,
+            inbox_source,
+            id
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn delete_rule(id: &str) -> Result<()> {
@@ -114,10 +153,15 @@ pub fn toggle_rule(id: &str, active: bool) -> Result<()> {
     Ok(())
 }
 
-/// Test whether an email matches any active rule. Returns the matching rule's name
-/// if matched, None otherwise.
-pub fn matches_any(from: &str, subject: &str) -> Result<Option<String>> {
+/// Test whether an email matches any active rule. `source` is the inbox label the
+/// email came from (`ParsedEmail.source`); a rule bound to a specific inbox only
+/// matches mail from that inbox. Returns the matching rule's name if matched.
+pub fn matches_any(from: &str, subject: &str, source: &str) -> Result<Option<String>> {
     for rule in list_rules()?.iter().filter(|r| r.active) {
+        // Inbox binding: empty = any inbox; otherwise it must equal the source.
+        if !rule.inbox_source.is_empty() && rule.inbox_source != source {
+            continue;
+        }
         let sender_ok = match &rule.sender_pattern {
             Some(p) => Regex::new(p).map(|re| re.is_match(from)).unwrap_or(false),
             None => true,
@@ -135,15 +179,22 @@ pub fn matches_any(from: &str, subject: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Called from email::process_new_emails when a rule matches.
-/// Uses AI extraction to pull client fields, creates the client,
-/// and logs the original email as the first interaction.
+/// Called from email::process_new_emails when a rule matches. Tries the
+/// deterministic form-email parser first (Shopify-style `Label:\n<value>`); only
+/// falls back to AI extraction when the body has no recognizable label structure.
+/// Creates a PENDING client (awaiting approval), logs the email as the first
+/// interaction, and dedups by email.
 pub async fn auto_create_client(email: &crate::email::ParsedEmail) -> Result<String> {
+    // 1. Deterministic path (preferred): structured contact-form email.
+    if let Some(customer) = crate::form_parser::parse_form_email(&email.body_text) {
+        return create_client_from_customer(&customer, email);
+    }
+
+    // 2. Fallback: AI extraction for freeform emails.
     let extracted = crate::ai::extract_structured(&email.body_text)
         .await
         .context("AI extraction failed")?;
 
-    // Pull fields from extraction with sensible fallbacks.
     let client_name = extracted
         .get("client_name")
         .and_then(|v| v.as_str())
@@ -161,72 +212,131 @@ pub async fn auto_create_client(email: &crate::email::ParsedEmail) -> Result<Str
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .or_else(|| Some(email.from.clone()));
+        .unwrap_or_else(|| email.from.clone());
 
-    // Build a notes blurb from requested_services.
     let services = extracted
         .get("requested_services")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
+        .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
         .unwrap_or_default();
-
     let notes = if services.is_empty() {
         format!("Auto-imported from signup email on {}", Utc::now().format("%Y-%m-%d"))
     } else {
         format!("Requested: {}", services)
     };
 
-    // Dedupe by email
+    let mut customer = crate::form_parser::ExtractedCustomer::default();
+    customer.name = client_name;
+    customer.email = client_email;
+    create_client_from_customer_with_notes(&customer, email, &notes)
+}
+
+/// Create a PENDING client from a parsed customer (default notes).
+fn create_client_from_customer(
+    customer: &crate::form_parser::ExtractedCustomer,
+    email: &crate::email::ParsedEmail,
+) -> Result<String> {
+    let notes = format!("Auto-imported from web form on {}", Utc::now().format("%Y-%m-%d"));
+    create_client_from_customer_with_notes(customer, email, &notes)
+}
+
+/// Shared client-creation path used by both the deterministic and AI branches.
+/// Address / title / tax_id / categories / extra all land in `metadata`. Dedups
+/// by email (logs the interaction on the existing client and returns its id).
+fn create_client_from_customer_with_notes(
+    customer: &crate::form_parser::ExtractedCustomer,
+    email: &crate::email::ParsedEmail,
+    notes: &str,
+) -> Result<String> {
+    // Resolve display name + email with fallbacks to the sending address.
+    let name = if !customer.name.trim().is_empty() {
+        customer.name.trim().to_string()
+    } else {
+        let fl = format!("{} {}", customer.first_name, customer.last_name);
+        if !fl.trim().is_empty() {
+            fl.trim().to_string()
+        } else {
+            email.from_name.clone().unwrap_or_else(|| {
+                email.from.split('@').next().unwrap_or("New Client").to_string()
+            })
+        }
+    };
+    let client_email = if !customer.email.trim().is_empty() {
+        customer.email.trim().to_string()
+    } else {
+        email.from.clone()
+    };
+
+    // Dedup by email → just log the interaction on the existing client.
     let conn = pool().get()?;
-    if let Some(em) = &client_email {
+    if !client_email.is_empty() {
         let exists: Option<String> = conn
-            .query_row(
-                "SELECT id FROM clients WHERE LOWER(email)=LOWER(?1)",
-                [em],
-                |r| r.get(0),
-            )
+            .query_row("SELECT id FROM clients WHERE LOWER(email)=LOWER(?1)", [&client_email], |r| r.get(0))
             .ok();
         if let Some(existing_id) = exists {
-            // Just log the email as an interaction on the existing client
             log_signup_interaction(&existing_id, email)?;
             return Ok(existing_id);
         }
     }
 
+    // Build metadata: address parts, title, tax_id, categories, extra, source.
+    let mut meta = serde_json::Map::new();
+    let mut put = |k: &str, v: &str| {
+        if !v.trim().is_empty() {
+            meta.insert(k.to_string(), serde_json::Value::String(v.trim().to_string()));
+        }
+    };
+    put("street_address", &customer.address);
+    put("city", &customer.city);
+    put("state", &customer.state);
+    put("zip_code", &customer.zip);
+    put("country", &customer.country);
+    put("title", &customer.title);
+    put("tax_id", &customer.tax_id);
+    if !customer.first_name.trim().is_empty() { put("first_name", &customer.first_name); }
+    if !customer.last_name.trim().is_empty() { put("last_name", &customer.last_name); }
+    if !customer.categories.is_empty() {
+        meta.insert(
+            "categories".into(),
+            serde_json::Value::Array(
+                customer.categories.iter().map(|c| serde_json::Value::String(c.clone())).collect(),
+            ),
+        );
+    }
+    for (k, v) in &customer.extra {
+        // Prefix custom form fields so they don't collide with known metadata keys.
+        meta.insert(format!("cf:{k}"), serde_json::Value::String(v.clone()));
+    }
+    meta.insert("source".into(), serde_json::Value::String("web_form".into()));
+    let metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).unwrap_or_else(|_| "{}".into());
+
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
+    let company = customer.company.trim().to_string();
+    let phone = customer.phone.trim().to_string();
 
     let mut cols = serde_json::Map::new();
-    cols.insert("name".into(), serde_json::Value::String(client_name.clone()));
-    cols.insert(
-        "email".into(),
-        client_email
-            .clone()
-            .map(serde_json::Value::String)
-            .unwrap_or(serde_json::Value::Null),
-    );
-    cols.insert("phone".into(), serde_json::Value::Null);
-    cols.insert("company".into(), serde_json::Value::Null);
-    cols.insert("notes".into(), serde_json::Value::String(notes.clone()));
+    cols.insert("name".into(), serde_json::Value::String(name.clone()));
+    cols.insert("email".into(), serde_json::Value::String(client_email.clone()));
+    cols.insert("phone".into(), serde_json::Value::String(phone.clone()));
+    cols.insert("company".into(), serde_json::Value::String(company.clone()));
+    cols.insert("notes".into(), serde_json::Value::String(notes.to_string()));
     cols.insert("billing_status".into(), serde_json::Value::String("active".into()));
+    cols.insert("lead_status".into(), serde_json::Value::String("prospect".into()));
+    cols.insert("approval_status".into(), serde_json::Value::String("pending".into()));
+    cols.insert("metadata".into(), serde_json::Value::String(metadata_str.clone()));
     cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
     cols.insert("updated_at".into(), serde_json::Value::String(now.clone()));
-
     crate::sync::record_upsert("clients", &id, cols)?;
 
     conn.execute(
-        "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,created_at,updated_at)
-         VALUES (?1,?2,?3,NULL,NULL,?4,'active',?5,?5)",
-        rusqlite::params![id, client_name, client_email, notes, now],
+        "INSERT INTO clients (id,name,email,phone,company,notes,billing_status,lead_status,created_at,updated_at,metadata,approval_status,is_blacklisted)
+         VALUES (?1,?2,?3,?4,?5,?6,'active','prospect',?7,?7,?8,'pending',0)",
+        rusqlite::params![id, name, client_email, phone, company, notes, now, metadata_str],
     )?;
 
     log_signup_interaction(&id, email)?;
-    tracing::info!("auto-created client {} from signup email", client_name);
+    tracing::info!("auto-created pending client {} from form/signup email", name);
     Ok(id)
 }
 

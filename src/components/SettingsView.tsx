@@ -28,6 +28,8 @@ import {
   GoogleContact,
   CustomField,
   WhatsappSettings,
+  CapturedCustomer,
+  FormCapturePreview,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { isAdmin } from "../lib/permissions";
@@ -72,6 +74,9 @@ import {
   Contrast,
   Cloud,
   ChevronRight,
+  Inbox,
+  Send,
+  Wand2,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -692,307 +697,477 @@ function TestResultLine({ state }: { state: TestState }) {
   return null;
 }
 
-function InboxesSection() {
+// ── Calm settings-card scaffolding (shared, reused by the de-clutter pass) ──
+// One clear card per thing: icon + title + one-line plain purpose, then body.
+function SettingCard({ icon: Icon, title, purpose, aside, children }: {
+  icon: typeof Mail; title: string; purpose: string; aside?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-surface border border-line rounded-2xl p-6">
+      <div className="flex items-start justify-between gap-3 mb-5">
+        <div className="flex items-start gap-3">
+          <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0 mt-0.5"><Icon size={17} /></span>
+          <div>
+            <div className="text-[15px] font-semibold text-ink">{title}</div>
+            <div className="text-[12.5px] text-muted mt-0.5">{purpose}</div>
+          </div>
+        </div>
+        {aside && <div className="flex-shrink-0">{aside}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Connected / not-connected pill (calm, reused).
+function ConnectedPill({ ok }: { ok: boolean }) {
+  return ok
+    ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full"><Check size={13} /> Connected</span>
+    : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><span className="w-2 h-2 rounded-full bg-line-3" /> Not set up</span>;
+}
+
+// A quiet "Advanced" disclosure for technical/rare fields.
+function Advanced({ label = "Advanced", children }: { label?: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-3">
+      <button type="button" onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-ink-2 transition-colors">
+        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} /> {label}
+      </button>
+      {open && <div className="mt-3">{children}</div>}
+    </div>
+  );
+}
+
+// Email provider presets — auto-fill host/port so the user only enters
+// email + app password. "Other" leaves the fields editable.
+const EMAIL_PROVIDERS: Record<string, { label: string; smtp_host: string; smtp_port: number; imap_host: string; imap_port: number }> = {
+  gmail:   { label: "Gmail",   smtp_host: "smtp.gmail.com",       smtp_port: 587, imap_host: "imap.gmail.com",       imap_port: 993 },
+  outlook: { label: "Outlook", smtp_host: "smtp-mail.outlook.com", smtp_port: 587, imap_host: "outlook.office365.com", imap_port: 993 },
+  other:   { label: "Other",   smtp_host: "",                     smtp_port: 587, imap_host: "",                     imap_port: 993 },
+};
+
+function ProviderPicker({ value, onPick }: { value: string; onPick: (id: string) => void }) {
+  return (
+    <div className="flex gap-2">
+      {Object.entries(EMAIL_PROVIDERS).map(([id, p]) => (
+        <button key={id} type="button" onClick={() => onPick(id)}
+          className={`flex-1 h-9 rounded-lg text-[13px] font-medium border transition-colors ${value === id ? "accent-active accent-active-bd" : "border-line text-muted hover:border-line-3"}`}>
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Detect the provider from a host (so a saved config shows the right preset).
+function providerFromHost(host: string): string {
+  if (host.includes("gmail")) return "gmail";
+  if (host.includes("outlook") || host.includes("office365")) return "outlook";
+  return "other";
+}
+
+// One monitored inbox row — status + Test + remove.
+function InboxRow({ ib }: { ib: EmailInbox }) {
+  const [st, setSt] = useState<TestState>({ status: "idle" });
+  const test = async () => {
+    setSt({ status: "testing" });
+    try { const r = await api.testInboxConnection(ib.id); setSt({ status: r.ok ? "ok" : "fail", message: r.message }); }
+    catch (e: any) { setSt({ status: "fail", message: String(e) }); }
+  };
+  const remove = async () => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(ib.id).catch(() => {}); window.dispatchEvent(new CustomEvent("email-inboxes-changed")); };
+  return (
+    <div className="border border-line rounded-xl px-3.5 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <StatusDot state={st} />
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-ink truncate">{ib.label}</div>
+            <div className="text-[11px] text-muted truncate">{ib.user}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button onClick={test} disabled={st.status === "testing"}
+            className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors">Test</button>
+          <button onClick={remove} className="text-faint hover:text-danger-ink p-1.5 rounded-lg hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
+        </div>
+      </div>
+      {st.status !== "idle" && <div className="mt-2 pl-5"><TestResultLine state={st} /></div>}
+    </div>
+  );
+}
+
+// ── Card 1: Sending email (SMTP send-from + Google OAuth) ──
+function SendingCard() {
+  const [settings, setSettings] = useState<EmailSettings>({
+    smtp_host: "smtp.gmail.com", smtp_port: 587, imap_host: "imap.gmail.com", imap_port: 993,
+    user: "", auth_method: "password",
+  });
+  const [provider,   setProvider]   = useState("gmail");
+  const [smtpPass,   setSmtpPass]   = useState("");
+  const [imapPass,   setImapPass]   = useState("");
+  const [oauthClientId,     setOauthClientId]     = useState("");
+  const [oauthClientSecret, setOauthClientSecret] = useState("");
+  const [oauthConnecting,   setOauthConnecting]   = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [useGoogle,   setUseGoogle]   = useState(false);
+  const [saved,       setSaved]       = useState(false);
+  const [error,       setError]       = useState<string | null>(null);
+  const [smtpTest,    setSmtpTest]    = useState<TestState>({ status: "idle" });
+  const [gStatus,     setGStatus]     = useState<{ connected: boolean; email: string; scopes: string } | null>(null);
+  const [showGuide,   setShowGuide]   = useState(false);
+
+  const refreshGoogleStatus = () => api.googleEmailStatus().then(setGStatus).catch(() => setGStatus(null));
+  useEffect(() => {
+    api.getEmailSettings().then((s) => {
+      if (!s) return;
+      setSettings(s);
+      setProvider(providerFromHost(s.smtp_host || ""));
+      setUseGoogle(s.auth_method === "oauth2");
+    }).catch(() => {});
+    refreshGoogleStatus();
+  }, []);
+
+  const pickProvider = (id: string) => {
+    setProvider(id);
+    if (id !== "other") {
+      const p = EMAIL_PROVIDERS[id];
+      setSettings((s) => ({ ...s, smtp_host: p.smtp_host, smtp_port: p.smtp_port, imap_host: p.imap_host, imap_port: p.imap_port }));
+    }
+  };
+
+  const authorize = async () => {
+    setError(null); setOauthConnecting(true);
+    try {
+      if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
+      if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
+      await api.saveEmailSettings({ ...settings, auth_method: "oauth2" });
+      await api.oauthStartConsent(oauthClientId, oauthClientSecret);
+      await refreshGoogleStatus();
+    } catch (e: any) { setError(e.toString()); }
+    finally { setOauthConnecting(false); }
+  };
+
+  const testSmtp = async () => {
+    setSmtpTest({ status: "testing" });
+    try { const r = await api.testSmtpConnection(); setSmtpTest({ status: r.ok ? "ok" : "fail", message: r.message }); }
+    catch (e: any) { setSmtpTest({ status: "fail", message: String(e) }); }
+  };
+
+  const save = async () => {
+    setError(null);
+    try {
+      const next = { ...settings, auth_method: (useGoogle ? "oauth2" : "password") as "password" | "oauth2" };
+      await api.saveEmailSettings(next);
+      if (!useGoogle) {
+        await api.saveCredential("smtp_user", settings.user);
+        if (smtpPass) await api.saveCredential("smtp_pass", smtpPass);
+        if (imapPass) await api.saveCredential("imap_pass", imapPass);
+        try {
+          const company = await api.getCompanyInfo().catch(() => null);
+          await api.pushDesktopSmtpToPi(company?.name || settings.user || "");
+        } catch { /* ignore */ }
+      } else {
+        if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
+        if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
+      }
+      setSaved(true); setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) { setError(e.toString()); }
+  };
+
+  if (showGuide) return <GoogleCloudGuide onBack={() => { setShowGuide(false); refreshGoogleStatus(); }} />;
+
+  const connected = useGoogle ? !!gStatus?.connected : (smtpTest.status === "ok");
+
+  return (
+    <SettingCard icon={Send} title="Sending email" purpose="Invoices, quotes, and newsletters go out from here."
+      aside={<ConnectedPill ok={connected} />}>
+      <ProviderPicker value={provider} onPick={pickProvider} />
+
+      <div className="mt-4 space-y-3">
+        <Field label="Email address">
+          <input className={inp} value={settings.user} onChange={(e) => setSettings({ ...settings, user: e.target.value })} placeholder="you@company.com" />
+        </Field>
+
+        {/* Toggle between an app password and the Google one-click path. */}
+        <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none">
+          <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="accent-accent" />
+          Use Connect Google instead of an app password
+        </label>
+
+        {!useGoogle ? (
+          <SecretInput label="App password" value={smtpPass} onChange={setSmtpPass} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+        ) : (
+          <div className="rounded-xl border border-line bg-surface-2/40 p-4">
+            <div className="flex items-center gap-2 mb-1"><Cloud size={15} className="text-accent" /><span className="text-[13px] font-semibold text-ink">Connect Google</span>
+              {gStatus?.connected && <span className="ml-auto text-[11.5px] font-medium text-success-ink inline-flex items-center gap-1"><Check size={12} /> {gStatus.email || "connected"}</span>}
+            </div>
+            <p className="text-[11.5px] text-muted mb-3">Connect Gmail without storing your password.</p>
+            <SecretInput label="Google Client ID"     value={oauthClientId}     onChange={setOauthClientId}     showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+            <SecretInput label="Google Client Secret" value={oauthClientSecret} onChange={setOauthClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+            <div className="flex items-center gap-2 flex-wrap">
+              <button type="button" onClick={authorize} disabled={oauthConnecting || !oauthClientId || !oauthClientSecret}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors">
+                {oauthConnecting ? <><RefreshCw size={13} className="animate-spin" /> Connecting…</> : gStatus?.connected ? <><RefreshCw size={13} /> Reconnect</> : <><Cloud size={13} /> Connect Google</>}
+              </button>
+              <button type="button" onClick={() => setShowGuide(true)} className="inline-flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Where do I get these? <ChevronRight size={13} /></button>
+            </div>
+          </div>
+        )}
+
+        <Advanced label="Advanced (mail server)">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="SMTP host"><input className={inpSm} value={settings.smtp_host} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} /></Field>
+            <Field label="SMTP port"><input type="number" className={inpSm} value={settings.smtp_port} onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 587 })} /></Field>
+          </div>
+          <p className="text-[11px] text-muted mt-1">Credentials are stored in your OS keychain — never written to disk or synced.</p>
+        </Advanced>
+      </div>
+
+      {error && <div className="text-danger-ink text-[12.5px] flex items-center gap-1.5 mt-3"><AlertCircle size={13} /> {error}</div>}
+
+      <div className="flex items-center gap-2 flex-wrap mt-4">
+        <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors">
+          {saved ? <Check size={13} /> : <Save size={13} />} {saved ? "Saved" : "Save"}
+        </button>
+        <button onClick={testSmtp} disabled={smtpTest.status === "testing"}
+          className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">
+          {smtpTest.status === "testing" ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />} {smtpTest.status === "testing" ? "Testing…" : "Test"}
+        </button>
+      </div>
+      {smtpTest.status !== "idle" && smtpTest.status !== "testing" && <div className="mt-2.5"><TestResultLine state={smtpTest} /></div>}
+    </SettingCard>
+  );
+}
+
+// ── Card 2: Inbox (unified monitored-inbox list) ──
+function InboxCard() {
   const [inboxes, setInboxes] = useState<EmailInbox[]>([]);
   const [adding, setAdding] = useState(false);
+  const [provider, setProvider] = useState("gmail");
   const [form, setForm] = useState({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
-  const [tests, setTests] = useState<Record<string, TestState>>({});
   const load = () => api.getEmailInboxes().then(setInboxes).catch(() => {});
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const h = () => load();
+    window.addEventListener("email-inboxes-changed", h);
+    return () => window.removeEventListener("email-inboxes-changed", h);
+  }, []);
+  const pickProvider = (id: string) => {
+    setProvider(id);
+    if (id !== "other") { const p = EMAIL_PROVIDERS[id]; setForm((f) => ({ ...f, host: p.imap_host, port: p.imap_port })); }
+  };
   const add = async () => {
     if (!form.host || !form.user || !form.password) return;
     await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password }).catch(() => {});
     setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
-    setAdding(false); load();
+    setProvider("gmail"); setAdding(false); load();
   };
-  const remove = async (id: string) => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(id).catch(() => {}); load(); };
-  const test = async (id: string) => {
-    setTests((t) => ({ ...t, [id]: { status: "testing" } }));
-    try {
-      const r = await api.testInboxConnection(id);
-      setTests((t) => ({ ...t, [id]: { status: r.ok ? "ok" : "fail", message: r.message } }));
-    } catch (e: any) {
-      setTests((t) => ({ ...t, [id]: { status: "fail", message: String(e) } }));
-    }
-  };
+
   return (
-    <div className="mt-8 pt-6 border-t border-line">
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Additional inboxes</h3>
-      <p className="text-[12px] text-muted mb-4">Monitor extra mailboxes — their mail loads in your Inbox and feeds automations. Sending always uses the “send from” account above.</p>
-      {inboxes.length > 0 && (
-        <div className="space-y-2 mb-3">
-          {inboxes.map((ib) => {
-            const st = tests[ib.id] || { status: "idle" as const };
-            return (
-              <div key={ib.id} className="bg-surface border border-line rounded-lg px-3 py-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusDot state={st} />
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-medium text-ink truncate">{ib.label}</div>
-                      <div className="text-[11px] text-muted truncate">{ib.user} · {ib.host}:{ib.port}</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <button onClick={() => test(ib.id)} disabled={st.status === "testing"}
-                      className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-md text-[11.5px] font-medium disabled:opacity-50 transition-colors">Test</button>
-                    <button onClick={() => remove(ib.id)} className="text-faint hover:text-danger-ink p-1.5 rounded-md hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
-                  </div>
-                </div>
-                {st.status !== "idle" && <div className="mt-1.5 pl-4"><TestResultLine state={st} /></div>}
-              </div>
-            );
-          })}
-        </div>
-      )}
+    <SettingCard icon={Inbox} title="Inbox" purpose="Mail Ecliptr reads for replies and form submissions."
+      aside={<ConnectedPill ok={inboxes.length > 0} />}>
+      {inboxes.length > 0 && <div className="space-y-2 mb-3">{inboxes.map((ib) => <InboxRow key={ib.id} ib={ib} />)}</div>}
+
       {adding ? (
-        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+        <div className="border border-line rounded-xl p-4 space-y-3">
+          <ProviderPicker value={provider} onPick={pickProvider} />
           <div className="grid grid-cols-2 gap-3">
-            <input className={inpSm} placeholder="Label (e.g. Support inbox)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
-            <input className={inpSm} placeholder="Email / username" value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} />
-            <input className={inpSm} placeholder="IMAP host" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} />
-            <input className={inpSm} type="number" placeholder="Port" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
+            <input className={inpSm} placeholder="Label (e.g. Support)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
+            <input className={inpSm} placeholder="Email address" value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} />
           </div>
-          <input className={inpSm} type="password" placeholder="IMAP password / app password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <input className={inpSm} type="password" placeholder="App password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <Advanced label="Advanced (mail server)">
+            <div className="grid grid-cols-2 gap-3">
+              <input className={inpSm} placeholder="IMAP host" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} />
+              <input className={inpSm} type="number" placeholder="Port" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
+            </div>
+          </Advanced>
           <div className="flex gap-2">
             <button onClick={add} disabled={!form.host || !form.user || !form.password} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Add inbox</button>
             <button onClick={() => setAdding(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
           </div>
         </div>
       ) : (
-        <button onClick={() => setAdding(true)} className="border border-line text-ink-2 hover:bg-surface-3 px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> Add inbox</button>
+        <button onClick={() => setAdding(true)} className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"><Plus size={14} /> Add inbox</button>
+      )}
+    </SettingCard>
+  );
+}
+
+// The parsed-customer preview, matching the approved mock: avatar + name/title/
+// company header, then contact rows, then category tags.
+function CapturedCustomerCard({ c }: { c: CapturedCustomer }) {
+  const displayName = c.name || [c.first_name, c.last_name].filter(Boolean).join(" ") || c.email || "New customer";
+  const initials = (c.name || c.first_name || c.email || "?").trim().slice(0, 2).toUpperCase();
+  const location = [c.city, c.state, c.zip, c.country].filter(Boolean).join(", ");
+  const rows: [string, string | null][] = [
+    ["Email", c.email], ["Phone", c.phone], ["Location", location || null],
+    ["Address", c.address], ["Tax ID", c.tax_id],
+  ];
+  return (
+    <div className="rounded-xl border border-line bg-surface-2/40 overflow-hidden">
+      <div className="flex items-center gap-3 p-3.5 border-b border-line-2">
+        <span className="w-10 h-10 rounded-full bg-accent/10 text-accent-hover flex items-center justify-center text-[14px] font-bold flex-shrink-0">{initials}</span>
+        <div className="min-w-0">
+          <div className="text-[14px] font-semibold text-ink truncate">{displayName}</div>
+          <div className="text-[11.5px] text-muted truncate">{[c.title, c.company].filter(Boolean).join(" · ") || "—"}</div>
+        </div>
+      </div>
+      <div className="px-3.5 py-2 divide-y divide-line-2">
+        {rows.map(([label, val]) => (
+          <div key={label} className="flex items-center justify-between gap-3 py-1.5">
+            <span className="text-[11px] text-muted">{label}</span>
+            <span className={`text-[12.5px] tabular-nums truncate ${val ? "text-ink-2" : "text-faint"}`}>{val || "—"}</span>
+          </div>
+        ))}
+      </div>
+      {c.categories.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-3.5 pb-3.5 pt-1">
+          {c.categories.map((cat) => (
+            <span key={cat} className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{cat}</span>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function EmailTab() {
-  const [settings, setSettings] = useState<EmailSettings>({
-    smtp_host: "smtp.gmail.com",
-    smtp_port: 587,
-    imap_host: "imap.gmail.com",
-    imap_port: 993,
-    user: "",
-    auth_method: "password",
-  });
-  const [smtpPass,         setSmtpPass]         = useState("");
-  const [imapPass,         setImapPass]         = useState("");
-  const [oauthClientId,    setOauthClientId]    = useState("");
-  const [oauthClientSecret,setOauthClientSecret]= useState("");
-  const [oauthConnecting,  setOauthConnecting]  = useState(false);
-  const [showSecrets,      setShowSecrets]      = useState(false);
-  const [saved,            setSaved]            = useState(false);
-  const [testing,          setTesting]          = useState(false);
-  const [testMsg,          setTestMsg]          = useState<string | null>(null);
-  const [error,            setError]            = useState<string | null>(null);
-  // Live SMTP connection test + Google account status + Cloud walkthrough.
-  const [smtpTest,   setSmtpTest]   = useState<TestState>({ status: "idle" });
-  const [gStatus,    setGStatus]    = useState<{ connected: boolean; email: string; scopes: string } | null>(null);
-  const [showGuide,  setShowGuide]  = useState(false);
+// ── Card 3: Capture form submissions (inbox-bound signup rule) ──
+function CaptureCard() {
+  const [inboxes, setInboxes] = useState<EmailInbox[]>([]);
+  const [rules, setRules] = useState<SignupRule[]>([]);
+  const [inboxId, setInboxId] = useState("");
+  const [fromPat, setFromPat] = useState("");
+  const [subjPat, setSubjPat] = useState("");
+  const [preview, setPreview] = useState<FormCapturePreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
 
-  const refreshGoogleStatus = () =>
-    api.googleEmailStatus().then(setGStatus).catch(() => setGStatus(null));
-
+  const load = () => {
+    api.getEmailInboxes().then(setInboxes).catch(() => {});
+    api.listSignupRules().then(setRules).catch(() => {});
+  };
   useEffect(() => {
-    api.getEmailSettings().then((s) => s && setSettings(s)).catch(console.error);
-    refreshGoogleStatus();
+    load();
+    const h = () => load();
+    window.addEventListener("email-inboxes-changed", h);
+    return () => window.removeEventListener("email-inboxes-changed", h);
   }, []);
 
-  const authorize = async () => {
-    setError(null);
-    setOauthConnecting(true);
+  // The rule bound to the selected inbox drives the on/off + fields. It's matched
+  // by inbox LABEL — that's what the mail scanner records as an email's `source`
+  // (previewFormCapture, by contrast, takes the inbox id).
+  const inboxLabel = inboxes.find((i) => i.id === inboxId)?.label || "";
+  const rule = rules.find((r) => r.inbox_source && r.inbox_source === inboxLabel) || null;
+  useEffect(() => {
+    if (rule) { setFromPat(rule.sender_pattern || ""); setSubjPat(rule.subject_pattern || ""); }
+  }, [rule?.id]);
+  useEffect(() => {
+    if (!inboxId && inboxes.length) setInboxId(inboxes[0].id);
+  }, [inboxes, inboxId]);
+
+  const on = !!rule?.active;
+
+  const runPreview = async () => {
+    if (!inboxId) return;
+    setPreviewing(true); setPreviewErr(null); setPreview(null);
     try {
-      // Persist the creds first so the token exchange + later sends can find them.
-      if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
-      if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
-      await api.oauthStartConsent(oauthClientId, oauthClientSecret);
-      await refreshGoogleStatus();
-    } catch (e: any) {
-      setError(e.toString());
-    } finally {
-      setOauthConnecting(false);
-    }
+      const r = await api.previewFormCapture(inboxId, fromPat || null, subjPat || null);
+      setPreview(r);
+      if (!r.found) setPreviewErr("No recent form email matched. Adjust the from/subject filters.");
+    } catch (e: any) { setPreviewErr(String(e)); }
+    finally { setPreviewing(false); }
   };
 
-  const testSmtp = async () => {
-    setSmtpTest({ status: "testing" });
+  const toggle = async () => {
+    if (!inboxId) return;
     try {
-      const r = await api.testSmtpConnection();
-      setSmtpTest({ status: r.ok ? "ok" : "fail", message: r.message });
-    } catch (e: any) {
-      setSmtpTest({ status: "fail", message: String(e) });
-    }
-  };
-
-  const save = async () => {
-    setError(null);
-    try {
-      await api.saveEmailSettings(settings);
-      if (settings.auth_method === "password") {
-        await api.saveCredential("smtp_user", settings.user);
-        if (smtpPass) await api.saveCredential("smtp_pass", smtpPass);
-        if (imapPass) await api.saveCredential("imap_pass", imapPass);
-        // Same login = same send-from everywhere: push this SMTP account to the
-        // synced per-org settings so mobile/web send from it too. Best-effort.
-        try {
-          const company = await api.getCompanyInfo().catch(() => null);
-          await api.pushDesktopSmtpToPi(company?.name || settings.user || "");
-        } catch { /* ignore — e.g. no password saved yet */ }
+      if (rule) {
+        await api.toggleSignupRule(rule.id, !rule.active);
       } else {
-        if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
-        if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
+        await api.createSignupRule({
+          name: `Form capture — ${inboxes.find((i) => i.id === inboxId)?.label || "inbox"}`,
+          sender_pattern: fromPat || null, subject_pattern: subjPat || null,
+          inbox_source: inboxLabel, active: true,
+        });
       }
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (e: any) {
-      setError(e.toString());
-    }
+      api.listSignupRules().then(setRules).catch(() => {});
+    } catch { /* ignore */ }
   };
 
-  if (showGuide) return <GoogleCloudGuide onBack={() => { setShowGuide(false); refreshGoogleStatus(); }} />;
+  const saveFilters = async () => {
+    if (!rule) return;
+    try {
+      await api.updateSignupRule(rule.id, {
+        name: rule.name, sender_pattern: fromPat || null, subject_pattern: subjPat || null,
+        inbox_source: inboxLabel, active: rule.active,
+      });
+      api.listSignupRules().then(setRules).catch(() => {});
+    } catch { /* ignore */ }
+  };
+
+  if (inboxes.length === 0) {
+    return (
+      <SettingCard icon={Wand2} title="Capture form submissions" purpose="Shopify contact-form emails become customers automatically.">
+        <div className="text-[12.5px] text-muted bg-surface-2/50 border border-line-2 rounded-xl px-4 py-3">
+          Add an inbox above first — that's the mailbox Ecliptr watches for form emails.
+        </div>
+      </SettingCard>
+    );
+  }
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <p className="text-[12px] text-muted mb-5">
-        Credentials are stored in your OS keychain — never written to disk or synced.
-      </p>
-
-      <Field label="Auth method">
-        <div className="flex gap-5">
-          {[
-            { val: "password", label: "Password / App Password" },
-            { val: "oauth2",   label: "OAuth2 (Gmail / Outlook)" },
-          ].map((opt) => (
-            <label key={opt.val} className="flex items-center gap-2 text-[14px] text-ink-2 cursor-pointer">
-              <input
-                type="radio"
-                checked={settings.auth_method === opt.val}
-                onChange={() => setSettings({ ...settings, auth_method: opt.val as "password" | "oauth2" })}
-                className="accent-accent"
-              />
-              {opt.label}
-            </label>
-          ))}
+    <SettingCard icon={Wand2} title="Capture form submissions" purpose="Shopify contact-form emails become customers automatically."
+      aside={
+        <button onClick={toggle} role="switch" aria-checked={on}
+          className={`w-11 h-6 rounded-full relative transition-colors ${on ? "bg-accent" : "bg-surface-3"}`}>
+          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+        </button>
+      }>
+      <div className="space-y-3">
+        <Field label="Watch which inbox">
+          <select value={inboxId} onChange={(e) => { setInboxId(e.target.value); setPreview(null); }}
+            className={inp}>
+            {inboxes.map((ib) => <option key={ib.id} value={ib.id}>{ib.label}</option>)}
+          </select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="From contains">
+            <input className={inpSm} value={fromPat} onChange={(e) => setFromPat(e.target.value)} placeholder="mailer@shopify.com" />
+          </Field>
+          <Field label="Subject contains">
+            <input className={inpSm} value={subjPat} onChange={(e) => setSubjPat(e.target.value)} placeholder="New contact / order" />
+          </Field>
         </div>
-      </Field>
 
-      <Field label="Email address">
-        <input className={inp} value={settings.user} onChange={(e) => setSettings({ ...settings, user: e.target.value })} />
-      </Field>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={runPreview} disabled={previewing || !inboxId}
+            className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">
+            {previewing ? <RefreshCw size={13} className="animate-spin" /> : <Sparkles size={13} />} {previewing ? "Reading…" : "Preview"}
+          </button>
+          {rule && <button onClick={saveFilters} className="text-[12.5px] text-accent hover:text-accent-hover font-medium">Save filters</button>}
+        </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="SMTP host">
-          <input className={inp} value={settings.smtp_host} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} />
-        </Field>
-        <Field label="SMTP port">
-          <input type="number" className={inp} value={settings.smtp_port} onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 587 })} />
-        </Field>
-        <Field label="IMAP host">
-          <input className={inp} value={settings.imap_host} onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })} />
-        </Field>
-        <Field label="IMAP port">
-          <input type="number" className={inp} value={settings.imap_port} onChange={(e) => setSettings({ ...settings, imap_port: parseInt(e.target.value) || 993 })} />
-        </Field>
-      </div>
-
-      {settings.auth_method === "password" ? (
-        <>
-          <SecretInput label="SMTP password" value={smtpPass} onChange={setSmtpPass} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
-          <SecretInput label="IMAP password" value={imapPass} onChange={setImapPass} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
-        </>
-      ) : (
-        <div className="mb-5 rounded-xl border border-line bg-surface-2/40 p-4">
-          <div className="flex items-start justify-between gap-3 mb-3">
-            <div className="flex items-center gap-2.5">
-              <span className="w-9 h-9 rounded-lg bg-accent/10 text-accent-hover flex items-center justify-center flex-shrink-0"><Cloud size={17} /></span>
-              <div>
-                <div className="text-[13.5px] font-semibold text-ink">Connect Google</div>
-                <div className="text-[11.5px] text-muted">The advanced OAuth path — connect Gmail without storing your password.</div>
-              </div>
-            </div>
-            {/* Live connected-account status */}
-            {gStatus?.connected ? (
-              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full flex-shrink-0"><Check size={13} /> Connected</span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface border border-line px-2.5 h-7 rounded-full flex-shrink-0"><span className="w-2 h-2 rounded-full bg-line-3" /> Not connected</span>
-            )}
+        {previewErr && <div className="text-[12px] text-muted flex items-center gap-1.5"><AlertCircle size={13} className="text-danger-ink" /> {previewErr}</div>}
+        {preview?.found && preview.customer && (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-muted mb-2">Preview — what Ecliptr would create</div>
+            <CapturedCustomerCard c={preview.customer} />
           </div>
-
-          {gStatus?.connected && (
-            <div className="mb-3 text-[12px] text-ink-2 bg-success-bg/40 border border-success-ink/15 rounded-lg px-3 py-2">
-              Connected as <span className="font-semibold text-success-ink">{gStatus.email || "your Google account"}</span>
-              {gStatus.scopes && <span className="text-muted"> · {gStatus.scopes.includes("gmail") ? "Gmail access granted" : gStatus.scopes}</span>}
-            </div>
-          )}
-
-          <SecretInput label="Google Client ID"     value={oauthClientId}     onChange={setOauthClientId}     showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
-          <SecretInput label="Google Client Secret" value={oauthClientSecret} onChange={setOauthClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
-
-          <div className="flex items-center gap-2 flex-wrap mt-1">
-            <button
-              type="button"
-              onClick={authorize}
-              disabled={oauthConnecting || !oauthClientId || !oauthClientSecret}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors"
-            >
-              {oauthConnecting
-                ? <><RefreshCw size={13} className="animate-spin" /> Connecting…</>
-                : gStatus?.connected ? <><RefreshCw size={13} /> Reconnect</> : <><Cloud size={13} /> Connect Google</>}
-            </button>
-            <button type="button" onClick={() => setShowGuide(true)}
-              className="inline-flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
-              Where do I get these? <ChevronRight size={13} />
-            </button>
-          </div>
-          <p className="text-[11.5px] text-muted mt-2.5 leading-relaxed">
-            Paste your Client ID + Secret from Google Cloud, then click Connect and approve access in the browser window that opens. New to this? Follow the <button type="button" onClick={() => setShowGuide(true)} className="text-accent hover:underline">setup walkthrough</button>.
-          </p>
-        </div>
-      )}
-
-      {error && (
-        <div className="text-danger-ink text-[13px] flex items-center gap-1.5 mt-2 mb-3">
-          <AlertCircle size={13} /> {error}
-        </div>
-      )}
-      <div className="flex items-center gap-2 flex-wrap">
-        <button
-          onClick={save}
-          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 transition-colors"
-        >
-          {saved ? <Check size={13} /> : <Save size={13} />}
-          {saved ? "Saved" : "Save Settings"}
-        </button>
-        {/* Verify the send-from account actually connects (auth + handshake). */}
-        <button
-          onClick={testSmtp}
-          disabled={smtpTest.status === "testing"}
-          className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
-        >
-          {smtpTest.status === "testing" ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
-          {smtpTest.status === "testing" ? "Testing…" : "Test connection"}
-        </button>
-        <button
-          onClick={async () => {
-            setTestMsg(null); setTesting(true);
-            try { const to = await api.sendTestEmail(); setTestMsg(`Sent — check ${to}`); }
-            catch (e: any) { setTestMsg(`Failed: ${e}`); }
-            setTesting(false);
-          }}
-          disabled={testing}
-          className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
-        >
-          <Mail size={13} /> {testing ? "Sending…" : "Send test email"}
-        </button>
-        {testMsg && (
-          <span className={`text-[12px] ${testMsg.startsWith("Failed") ? "text-danger-ink" : "text-success-ink"}`}>{testMsg}</span>
         )}
       </div>
-      {smtpTest.status !== "idle" && smtpTest.status !== "testing" && (
-        <div className="mt-2.5"><TestResultLine state={smtpTest} /></div>
-      )}
+    </SettingCard>
+  );
+}
 
-      <InboxesSection />
+function EmailTab() {
+  return (
+    <div className="max-w-2xl space-y-4">
+      <SendingCard />
+      <InboxCard />
+      <CaptureCard />
     </div>
   );
 }
@@ -1049,8 +1224,8 @@ function CompanyTab() {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      <p className="text-[12px] text-muted mb-5">This information appears on every PDF invoice.</p>
+    <div className="max-w-2xl space-y-4">
+    <SettingCard icon={Building2} title="Business details" purpose="Appears on every PDF invoice and across the app.">
 
       <Field label="Company Logo">
         <div className="flex items-center gap-4">
@@ -1129,15 +1304,17 @@ function CompanyTab() {
       <Field label="Tax ID / EIN">
         <input className={inp} value={info.tax_id ?? ""} onChange={(e) => setInfo({ ...info, tax_id: e.target.value })} />
       </Field>
+    </SettingCard>
 
-      <WhatsAppFooterField />
-
-      <div className="mt-6 pt-5 border-t border-line">
-        <InvoiceNumberingSection />
-      </div>
-      <div className="mt-6 pt-5 border-t border-line">
+    <SettingCard icon={FileText} title="Numbering & share footer" purpose="How invoice and quote numbers are generated, plus the WhatsApp share line.">
+      <InvoiceNumberingSection />
+      <div className="mt-5 pt-5 border-t border-line-2">
         <QuoteNumberingSection />
       </div>
+      <div className="mt-5 pt-5 border-t border-line-2">
+        <WhatsAppFooterField />
+      </div>
+    </SettingCard>
     </div>
   );
 }
@@ -1949,17 +2126,10 @@ function AutomationTab() {
   const actionLabels: Record<string, string> = { email: "Send email", reminder: "Create reminder", both: "Both" };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-3xl">
-      <div className="flex items-center gap-2 mb-1">
-        <Sparkles size={15} className="text-accent" />
-        <h3 className="text-[14px] font-semibold text-ink">Auto-detect Signup Emails</h3>
-        <span className="ml-auto"><GuideLink section="automations" /></span>
-      </div>
-      <p className="text-[12px] text-muted mb-4">
-        When an incoming email matches a rule, AI extracts client info from the body and
-        auto-creates a client record. Patterns are{" "}
-        <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a>.
-      </p>
+    <div className="max-w-3xl space-y-4">
+    <SettingCard icon={Sparkles} title="Turn signup emails into clients"
+      purpose="When an email matches a rule, Ecliptr reads the details and creates a client."
+      aside={<GuideLink section="automations" />}>
 
       {/* Fastest path — the direct lead form (no email setup needed). */}
       <div className="border rounded-xl p-3.5 mb-5" style={{ borderColor: "rgba(var(--c-accent-rgb,99,102,241),0.3)", background: "rgba(var(--c-accent-rgb,99,102,241),0.06)" }}>
@@ -2006,6 +2176,7 @@ function AutomationTab() {
             <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Rule name</label>
             <input className={inp} placeholder="e.g. Typeform new client signups" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
+          <p className="text-[11px] text-muted">Patterns are <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a> — at least one is required.</p>
           <div>
             <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Sender pattern (regex)</label>
             <input className={`${inp} font-mono`} placeholder="e.g. noreply@typeform\.com" value={form.sender_pattern} onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })} />
@@ -2041,16 +2212,11 @@ function AutomationTab() {
         ))}
         {rules.length === 0 && <div className="text-center text-[13px] text-muted py-10">No rules yet. Add one to start auto-importing clients from signup emails.</div>}
       </div>
+    </SettingCard>
 
-      <div className="border-t border-line pt-5">
-        <div className="flex items-center gap-2 mb-1">
-          <RefreshCw size={15} className="text-accent" />
-          <h3 className="text-[14px] font-semibold text-ink">Follow-Up Rules</h3>
-        </div>
-        <p className="text-[12px] text-muted mb-1">
-          Automatically email or remind clients based on triggers.{" "}
-          {lastRun && <span>Last checked: {(() => { const d = new Date(lastRun); const mins = Math.floor((Date.now() - d.getTime()) / 60000); return mins < 120 ? `${mins} min ago` : `${Math.floor(mins / 60)} hours ago`; })()}</span>}
-        </p>
+    <SettingCard icon={RefreshCw} title="Follow-up rules"
+      purpose="Email or remind clients automatically when a trigger fires."
+      aside={lastRun ? <span className="text-[11px] text-muted">Last run {(() => { const d = new Date(lastRun); const mins = Math.floor((Date.now() - d.getTime()) / 60000); return mins < 120 ? `${mins} min ago` : `${Math.floor(mins / 60)} hr ago`; })()}</span> : undefined}>
 
         <div className="flex items-center gap-2 mb-4">
           <button onClick={() => { setEditingFu(null); setFuForm({ name: "", trigger_type: "no_order", trigger_value: 30, action_type: "email", email_subject: "", email_body: "" }); setShowFuForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1">
@@ -2141,7 +2307,7 @@ function AutomationTab() {
             </div>
           </div>
         )}
-      </div>
+    </SettingCard>
     </div>
   );
 }
@@ -2938,6 +3104,7 @@ function SheetsTab() {
           <Field label="Google Sheet URL">
             <input className={inp} placeholder="https://docs.google.com/spreadsheets/d/..." value={config.sheet_url ?? ""} onChange={(e) => setConfig({ ...config, sheet_url: e.target.value })} />
           </Field>
+          <Advanced label="Column mapping">
           <div className="grid grid-cols-5 gap-3">
             {[
               { label: "First Name", key: "first_name_col" as const, val: config.first_name_col, hint: "F" },
@@ -2988,6 +3155,7 @@ function SheetsTab() {
             <label className="block text-[10px] font-medium text-muted mb-1">Skip header rows</label>
             <input type="number" min={0} value={config.skip_header_rows} onChange={(e) => setConfig({ ...config, skip_header_rows: Number(e.target.value) })} className={inpSm} />
           </div>
+          </Advanced>
           <button
             onClick={save}
             disabled={saving}

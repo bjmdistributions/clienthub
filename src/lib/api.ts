@@ -1100,6 +1100,7 @@ export interface SignupRule {
   name: string;
   sender_pattern: string | null;
   subject_pattern: string | null;
+  inbox_source: string | null;
   active: boolean;
   created_at: string;
 }
@@ -1108,7 +1109,33 @@ export interface SignupRuleInput {
   name: string;
   sender_pattern?: string | null;
   subject_pattern?: string | null;
+  inbox_source?: string | null;
   active: boolean;
+}
+
+// ── Form-capture preview (Settings → Email → Capture) ──
+export interface CapturedCustomer {
+  first_name: string | null;
+  last_name: string | null;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  title: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  country: string | null;
+  tax_id: string | null;
+  categories: string[];
+  extra: Record<string, string>;
+}
+export interface FormCapturePreview {
+  found: boolean;
+  customer: CapturedCustomer | null;
+  matched_from: string | null;
+  matched_subject: string | null;
 }
 
 // ── Automations dashboard summary (Automation tab) ──
@@ -1547,9 +1574,13 @@ export const api = {
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),
   createSignupRule: (input: SignupRuleInput) =>
     invoke<string>("create_signup_rule", { input }),
+  updateSignupRule: (id: string, input: SignupRuleInput) =>
+    invoke<void>("update_signup_rule", { id, input }),
   deleteSignupRule: (id: string) => invoke<void>("delete_signup_rule", { id }),
   toggleSignupRule: (id: string, active: boolean) =>
     invoke<void>("toggle_signup_rule", { id, active }),
+  previewFormCapture: (inboxId: string, senderPattern?: string | null, subjectPattern?: string | null) =>
+    invoke<FormCapturePreview>("preview_form_capture", { inboxId, senderPattern, subjectPattern }),
 
   // Payment methods
   listPaymentMethods: () => invoke<PaymentMethod[]>("list_payment_methods"),

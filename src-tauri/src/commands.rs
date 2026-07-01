@@ -8043,6 +8043,14 @@ pub async fn create_signup_rule(
 }
 
 #[tauri::command]
+pub async fn update_signup_rule(
+    id: String,
+    input: crate::signup_rules::RuleInput,
+) -> Result<(), String> {
+    crate::signup_rules::update_rule(&id, input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn delete_signup_rule(id: String) -> Result<(), String> {
     crate::signup_rules::delete_rule(&id).map_err(|e| e.to_string())
 }
@@ -8050,6 +8058,36 @@ pub async fn delete_signup_rule(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn toggle_signup_rule(id: String, active: bool) -> Result<(), String> {
     crate::signup_rules::toggle_rule(&id, active).map_err(|e| e.to_string())
+}
+
+/// Preview what a form-capture rule would extract: fetch the most recent email in
+/// `inbox_id` matching the (optional) sender/subject regexes, run the deterministic
+/// form parser, and return the structured customer. Returns
+/// `{ found, customer, matched_from, matched_subject }`.
+#[tauri::command]
+pub async fn preview_form_capture(
+    inbox_id: String,
+    sender_pattern: Option<String>,
+    subject_pattern: Option<String>,
+) -> Result<Value, String> {
+    let email = crate::email::fetch_latest_matching(&inbox_id, sender_pattern, subject_pattern)
+        .await
+        .map_err(|e| e.to_string())?;
+    match email {
+        None => Ok(json!({
+            "found": false, "customer": Value::Null,
+            "matched_from": "", "matched_subject": "",
+        })),
+        Some(em) => {
+            let customer = crate::form_parser::parse_form_email(&em.body_text);
+            Ok(json!({
+                "found": true,
+                "customer": customer,
+                "matched_from": em.from,
+                "matched_subject": em.subject,
+            }))
+        }
+    }
 }
 
 // ============================================================

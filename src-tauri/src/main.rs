@@ -7,6 +7,7 @@ mod csv_import;
 mod db;
 mod email;
 mod employees;
+mod form_parser;
 mod geocode;
 mod google_contacts;
 mod invoice;
@@ -548,8 +549,10 @@ fn main() {
             // Signup rules
             list_signup_rules,
             create_signup_rule,
+            update_signup_rule,
             delete_signup_rule,
             toggle_signup_rule,
+            preview_form_capture,
             // Payment methods
             list_payment_methods,
             create_payment_method,

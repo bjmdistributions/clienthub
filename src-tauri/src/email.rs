@@ -363,12 +363,11 @@ fn test_imap_blocking(imap_host: String, imap_port: u16, user: String, password:
     Ok(())
 }
 
-/// Test one configured inbox by id (matches `EmailInbox.id`; `"legacy"` uses the
-/// account in EmailSettings). Reuses the stored credential (`imap_pass_{id}`, or
-/// the legacy account's password/OAuth token). Ok(()) means the connection + auth
-/// succeeded.
-pub async fn test_inbox(id: &str) -> Result<()> {
-    let (host, port, user, password) = if id == "legacy" {
+/// Resolve an inbox id to its IMAP connection details + password. `"legacy"` uses
+/// the account in EmailSettings (password or OAuth token); other ids use the
+/// stored `imap_pass_{id}` credential. Also returns the inbox label (its `source`).
+async fn resolve_inbox_creds(id: &str) -> Result<(String, u16, String, String, String)> {
+    if id == "legacy" {
         let s = load_settings().context("no email account configured")?;
         if s.imap_host.is_empty() {
             return Err(anyhow!("no IMAP host configured"));
@@ -377,7 +376,7 @@ pub async fn test_inbox(id: &str) -> Result<()> {
             AuthMethod::Oauth2 => oauth2_access_token().await?,
             AuthMethod::Password => cred("imap_pass")?,
         };
-        (s.imap_host, s.imap_port, s.user, pass)
+        Ok((s.imap_host, s.imap_port, s.user.clone(), pass, s.user))
     } else {
         let ib = load_inboxes()
             .into_iter()
@@ -385,11 +384,113 @@ pub async fn test_inbox(id: &str) -> Result<()> {
             .ok_or_else(|| anyhow!("inbox not found"))?;
         let pass = cred(&format!("imap_pass_{}", id))
             .map_err(|_| anyhow!("no password stored for this inbox"))?;
-        (ib.host, ib.port, ib.user, pass)
-    };
+        Ok((ib.host, ib.port, ib.user, pass, ib.label))
+    }
+}
+
+/// Test one configured inbox by id (matches `EmailInbox.id`; `"legacy"` uses the
+/// account in EmailSettings). Reuses the stored credential (`imap_pass_{id}`, or
+/// the legacy account's password/OAuth token). Ok(()) means the connection + auth
+/// succeeded.
+pub async fn test_inbox(id: &str) -> Result<()> {
+    let (host, port, user, password, _label) = resolve_inbox_creds(id).await?;
     tokio::task::spawn_blocking(move || test_imap_blocking(host, port, user, password))
         .await
         .context("imap test task")?
+}
+
+/// Fetch the most recent email in an inbox whose From matches `sender_pattern`
+/// (regex, optional) and Subject matches `subject_pattern` (regex, optional), if
+/// any. Reuses the IMAP fetch behind `scan`. Returns the parsed email (its
+/// `source` is set to the inbox label). Scans the newest ~50 messages.
+pub async fn fetch_latest_matching(
+    inbox_id: &str,
+    sender_pattern: Option<String>,
+    subject_pattern: Option<String>,
+) -> Result<Option<ParsedEmail>> {
+    let (host, port, user, password, label) = resolve_inbox_creds(inbox_id).await?;
+    let res = tokio::task::spawn_blocking(move || {
+        fetch_latest_matching_blocking(host, port, user, password, sender_pattern, subject_pattern)
+    })
+    .await
+    .context("imap fetch task")??;
+    Ok(res.map(|mut e| {
+        e.source = label.clone();
+        e
+    }))
+}
+
+/// Synchronous side of `fetch_latest_matching`. Fetches the most recent messages,
+/// parses them newest-first, returns the first one matching the given regexes.
+fn fetch_latest_matching_blocking(
+    imap_host: String,
+    imap_port: u16,
+    user: String,
+    password: String,
+    sender_pattern: Option<String>,
+    subject_pattern: Option<String>,
+) -> Result<Option<ParsedEmail>> {
+    let sender_re = match &sender_pattern {
+        Some(p) if !p.is_empty() => Some(regex::Regex::new(p).context("invalid sender pattern")?),
+        _ => None,
+    };
+    let subject_re = match &subject_pattern {
+        Some(p) if !p.is_empty() => Some(regex::Regex::new(p).context("invalid subject pattern")?),
+        _ => None,
+    };
+
+    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
+    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
+        .context("IMAP connect")?;
+    let mut session = client
+        .login(&user, &password)
+        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    let mailbox = session.select(SCAN_FOLDER).context("select inbox")?;
+
+    // Look at the newest ~50 messages by sequence number.
+    let total = mailbox.exists;
+    if total == 0 {
+        let _ = session.logout();
+        return Ok(None);
+    }
+    let start = total.saturating_sub(49).max(1);
+    let fetch_set = format!("{}:{}", start, total);
+    let messages = session.fetch(&fetch_set, "RFC822").context("fetch")?;
+
+    // Collect (seq, ParsedEmail) so we can scan newest-first.
+    let mut parsed: Vec<(u32, ParsedEmail)> = Vec::new();
+    for msg in messages.iter() {
+        let seq = msg.message;
+        if let Some(body_bytes) = msg.body() {
+            if let Some(p) = MessageParser::default().parse(body_bytes) {
+                let from = p.from().and_then(|f| f.first()).and_then(|a| a.address()).unwrap_or("").to_string();
+                let from_name = p.from().and_then(|f| f.first()).and_then(|a| a.name()).map(|s| s.to_string());
+                let to: Vec<String> = p.to().map(|t| t.iter().filter_map(|a| a.address().map(|s| s.to_string())).collect()).unwrap_or_default();
+                let subject = p.subject().unwrap_or("(no subject)").to_string();
+                let body_text = p.body_text(0).map(|s| s.to_string()).unwrap_or_default();
+                let body_html = p.body_html(0).map(|s| s.to_string());
+                let date = p.date().and_then(|d| chrono::DateTime::<Utc>::from_timestamp(d.to_timestamp(), 0).map(|dt| dt.to_rfc3339()));
+                let message_id = p.message_id().map(|s| s.to_string());
+                let has_attachments = p.attachment_count() > 0;
+                parsed.push((seq, ParsedEmail {
+                    uid: 0, message_id, from, from_name, to, subject,
+                    body_text, body_html, date, has_attachments, source: String::new(),
+                }));
+            }
+        }
+    }
+    let _ = session.logout();
+
+    // Newest sequence number first; return the first match.
+    parsed.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_seq, e) in parsed {
+        let sender_ok = sender_re.as_ref().map(|re| re.is_match(&e.from)).unwrap_or(true);
+        let subject_ok = subject_re.as_ref().map(|re| re.is_match(&e.subject)).unwrap_or(true);
+        if sender_ok && subject_ok {
+            return Ok(Some(e));
+        }
+    }
+    Ok(None)
 }
 
 pub async fn scan() -> Result<Vec<ParsedEmail>> {
@@ -514,7 +615,7 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
     for email in emails {
         // Signup detection first
         if let Ok(Some(rule_name)) =
-            crate::signup_rules::matches_any(&email.from, &email.subject)
+            crate::signup_rules::matches_any(&email.from, &email.subject, &email.source)
         {
             tracing::info!("signup rule '{}' matched", rule_name);
             if let Err(e) = crate::signup_rules::auto_create_client(email).await {
