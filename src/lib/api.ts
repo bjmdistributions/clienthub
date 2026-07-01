@@ -1451,6 +1451,10 @@ export const api = {
   saveEmailInbox: (p: { id?: string; label: string; host: string; port: number; user: string; password?: string }) =>
     invoke<string>("save_email_inbox", p),
   deleteEmailInbox: (id: string) => invoke<void>("delete_email_inbox", { id }),
+  // Live connection tests + Google OAuth status (Settings → Email).
+  testSmtpConnection: () => invoke<{ ok: boolean; message: string }>("test_smtp_connection"),
+  testInboxConnection: (id: string) => invoke<{ ok: boolean; message: string }>("test_inbox_connection", { id }),
+  googleEmailStatus: () => invoke<{ connected: boolean; email: string; scopes: string }>("google_email_status"),
    oauthStartConsent: (clientId: string, clientSecret: string) =>
     invoke<void>("oauth_start_consent", { clientId, clientSecret }),
   googleContactsOauthStart: (clientId: string, clientSecret: string) =>

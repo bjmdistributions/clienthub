@@ -5180,6 +5180,88 @@ pub async fn send_test_email() -> Result<String, String> {
     Ok(to)
 }
 
+/// Map a low-level SMTP/IMAP error into a short, user-facing message. Keeps the
+/// test commands' `message` field human-readable regardless of the crate error.
+fn friendly_conn_error(err: &str) -> String {
+    let e = err.to_lowercase();
+    if e.contains("auth") || e.contains("username and password") || e.contains("credential")
+        || e.contains("login") || e.contains("535") || e.contains("534") || e.contains("invalid")
+    {
+        "Authentication failed — check the username / app password.".to_string()
+    } else if e.contains("dns") || e.contains("resolve") || e.contains("not known")
+        || e.contains("no such host") || e.contains("connect") || e.contains("connection refused")
+        || e.contains("timed out") || e.contains("timeout") || e.contains("unreachable")
+    {
+        "Couldn't reach the mail server — check the host and port.".to_string()
+    } else if e.contains("tls") || e.contains("certificate") || e.contains("ssl") {
+        "Secure connection (TLS) failed — check the port / security settings.".to_string()
+    } else if e.contains("not configured") || e.contains("not found") || e.contains("no imap host")
+        || e.contains("no password") || e.contains("no email")
+    {
+        // Configuration gap — surface the underlying message as-is (it's already clear).
+        err.to_string()
+    } else {
+        format!("Connection failed: {}", err)
+    }
+}
+
+/// Test the configured outbound SMTP account: open a connection and authenticate
+/// (no email is sent). Reuses the existing SMTP config loader + `email::test_smtp`.
+/// Returns `{ "ok": bool, "message": String }`.
+#[tauri::command]
+pub async fn test_smtp_connection() -> Result<Value, String> {
+    match crate::email::test_smtp().await {
+        Ok(()) => Ok(json!({ "ok": true, "message": "Connected — outbound email is working." })),
+        Err(e) => Ok(json!({ "ok": false, "message": friendly_conn_error(&e.to_string()) })),
+    }
+}
+
+/// Test one configured IMAP inbox by id: connect + LOGIN with its stored creds
+/// (reuses the IMAP client behind `scan_inbox`). Returns `{ "ok": bool, "message": String }`.
+#[tauri::command]
+pub async fn test_inbox_connection(id: String) -> Result<Value, String> {
+    match crate::email::test_inbox(&id).await {
+        Ok(()) => Ok(json!({ "ok": true, "message": "Connected — inbox reachable and login succeeded." })),
+        Err(e) => Ok(json!({ "ok": false, "message": friendly_conn_error(&e.to_string()) })),
+    }
+}
+
+/// Whether a Google OAuth token (cred_prefix "oauth") is stored, and — best-effort —
+/// which account/scopes it belongs to. Returns `{ "connected": bool, "email": String, "scopes": String }`.
+/// `email` is derived from Google's userinfo endpoint when possible; blank otherwise.
+#[tauri::command]
+pub async fn google_email_status() -> Result<Value, String> {
+    let connected = crate::email::cred_opt("oauth_refresh_token")
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
+    if !connected {
+        return Ok(json!({ "connected": false, "email": "", "scopes": "" }));
+    }
+    // The "oauth" flow always requests full-Gmail access.
+    let scopes = "https://mail.google.com/".to_string();
+    // Best-effort account email: exchange the refresh token for an access token and
+    // query Google's userinfo. Any failure just leaves the email blank.
+    let email = google_oauth_email().await.unwrap_or_default();
+    Ok(json!({ "connected": true, "email": email, "scopes": scopes }))
+}
+
+/// Best-effort: the Google account email for the stored "oauth" token, via
+/// userinfo. Returns None on any failure (no token, refresh failed, request failed).
+async fn google_oauth_email() -> Option<String> {
+    let access = crate::email::oauth2_access_token().await.ok()?;
+    let resp = reqwest::Client::new()
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .bearer_auth(access)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    body.get("email").and_then(|e| e.as_str()).map(|s| s.to_string())
+}
+
 #[tauri::command]
 pub async fn get_email_settings() -> Result<Option<crate::email::EmailSettings>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

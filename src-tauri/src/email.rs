@@ -348,6 +348,50 @@ fn scan_blocking(
     Ok((results, max_uid))
 }
 
+/// Verify an IMAP mailbox: connect + LOGIN + SELECT INBOX, then log out. Same
+/// connect/login path as `scan_blocking` (minus the fetch). Safe under
+/// spawn_blocking. Returns Ok(()) when the credentials work.
+fn test_imap_blocking(imap_host: String, imap_port: u16, user: String, password: String) -> Result<()> {
+    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
+    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
+        .context("IMAP connect")?;
+    let mut session = client
+        .login(&user, &password)
+        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    session.select(SCAN_FOLDER).context("select inbox")?;
+    let _ = session.logout();
+    Ok(())
+}
+
+/// Test one configured inbox by id (matches `EmailInbox.id`; `"legacy"` uses the
+/// account in EmailSettings). Reuses the stored credential (`imap_pass_{id}`, or
+/// the legacy account's password/OAuth token). Ok(()) means the connection + auth
+/// succeeded.
+pub async fn test_inbox(id: &str) -> Result<()> {
+    let (host, port, user, password) = if id == "legacy" {
+        let s = load_settings().context("no email account configured")?;
+        if s.imap_host.is_empty() {
+            return Err(anyhow!("no IMAP host configured"));
+        }
+        let pass = match s.auth_method {
+            AuthMethod::Oauth2 => oauth2_access_token().await?,
+            AuthMethod::Password => cred("imap_pass")?,
+        };
+        (s.imap_host, s.imap_port, s.user, pass)
+    } else {
+        let ib = load_inboxes()
+            .into_iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow!("inbox not found"))?;
+        let pass = cred(&format!("imap_pass_{}", id))
+            .map_err(|_| anyhow!("no password stored for this inbox"))?;
+        (ib.host, ib.port, ib.user, pass)
+    };
+    tokio::task::spawn_blocking(move || test_imap_blocking(host, port, user, password))
+        .await
+        .context("imap test task")?
+}
+
 pub async fn scan() -> Result<Vec<ParsedEmail>> {
     // Inbound mailboxes to monitor. If none are configured, fall back to the
     // legacy single account (in EmailSettings) so existing setups keep working.

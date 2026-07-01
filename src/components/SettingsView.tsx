@@ -70,11 +70,14 @@ import {
   CheckCheck,
   ArrowDownAZ,
   Contrast,
+  Cloud,
+  ChevronRight,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import VariablePicker from "./VariablePicker";
 import { FormsPanel } from "./FormsPanel";
+import { GoogleCloudGuide } from "./GoogleCloudGuide";
 
 // Opens the matching section of the website setup guide in the browser.
 function GuideLink({ section }: { section: string }) {
@@ -672,10 +675,28 @@ function WhatsAppTab() {
   );
 }
 
+// Inline connection-test result: idle → spinner → green ✓ / red message.
+type TestState = { status: "idle" | "testing" | "ok" | "fail"; message?: string };
+
+function StatusDot({ state }: { state: TestState }) {
+  if (state.status === "testing") return <RefreshCw size={12} className="text-muted animate-spin" />;
+  if (state.status === "ok") return <span className="w-2 h-2 rounded-full bg-success-ink" title="Connected" />;
+  if (state.status === "fail") return <span className="w-2 h-2 rounded-full bg-danger-ink" title="Failed" />;
+  return <span className="w-2 h-2 rounded-full bg-line-3" title="Untested" />;
+}
+
+function TestResultLine({ state }: { state: TestState }) {
+  if (state.status === "ok") return <span className="inline-flex items-center gap-1 text-[12px] text-success-ink"><Check size={12} /> Connected {state.message ? `— ${state.message}` : ""}</span>;
+  if (state.status === "fail") return <span className="inline-flex items-center gap-1 text-[12px] text-danger-ink"><AlertCircle size={12} /> Failed — {state.message || "could not connect"}</span>;
+  if (state.status === "testing") return <span className="inline-flex items-center gap-1 text-[12px] text-muted"><RefreshCw size={12} className="animate-spin" /> Testing…</span>;
+  return null;
+}
+
 function InboxesSection() {
   const [inboxes, setInboxes] = useState<EmailInbox[]>([]);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
+  const [tests, setTests] = useState<Record<string, TestState>>({});
   const load = () => api.getEmailInboxes().then(setInboxes).catch(() => {});
   useEffect(() => { load(); }, []);
   const add = async () => {
@@ -685,21 +706,43 @@ function InboxesSection() {
     setAdding(false); load();
   };
   const remove = async (id: string) => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(id).catch(() => {}); load(); };
+  const test = async (id: string) => {
+    setTests((t) => ({ ...t, [id]: { status: "testing" } }));
+    try {
+      const r = await api.testInboxConnection(id);
+      setTests((t) => ({ ...t, [id]: { status: r.ok ? "ok" : "fail", message: r.message } }));
+    } catch (e: any) {
+      setTests((t) => ({ ...t, [id]: { status: "fail", message: String(e) } }));
+    }
+  };
   return (
     <div className="mt-8 pt-6 border-t border-line">
       <h3 className="text-[14px] font-semibold text-ink mb-1">Additional inboxes</h3>
       <p className="text-[12px] text-muted mb-4">Monitor extra mailboxes — their mail loads in your Inbox and feeds automations. Sending always uses the “send from” account above.</p>
       {inboxes.length > 0 && (
         <div className="space-y-2 mb-3">
-          {inboxes.map((ib) => (
-            <div key={ib.id} className="flex items-center justify-between bg-surface border border-line rounded-lg px-3 py-2">
-              <div className="min-w-0">
-                <div className="text-[13px] font-medium text-ink truncate">{ib.label}</div>
-                <div className="text-[11px] text-muted truncate">{ib.user} · {ib.host}:{ib.port}</div>
+          {inboxes.map((ib) => {
+            const st = tests[ib.id] || { status: "idle" as const };
+            return (
+              <div key={ib.id} className="bg-surface border border-line rounded-lg px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <StatusDot state={st} />
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-ink truncate">{ib.label}</div>
+                      <div className="text-[11px] text-muted truncate">{ib.user} · {ib.host}:{ib.port}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => test(ib.id)} disabled={st.status === "testing"}
+                      className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-md text-[11.5px] font-medium disabled:opacity-50 transition-colors">Test</button>
+                    <button onClick={() => remove(ib.id)} className="text-faint hover:text-danger-ink p-1.5 rounded-md hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
+                  </div>
+                </div>
+                {st.status !== "idle" && <div className="mt-1.5 pl-4"><TestResultLine state={st} /></div>}
               </div>
-              <button onClick={() => remove(ib.id)} className="text-faint hover:text-danger-ink p-1 rounded-md"><Trash2 size={13} /></button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
       {adding ? (
@@ -737,28 +780,47 @@ function EmailTab() {
   const [oauthClientId,    setOauthClientId]    = useState("");
   const [oauthClientSecret,setOauthClientSecret]= useState("");
   const [oauthConnecting,  setOauthConnecting]  = useState(false);
-  const [oauthConnected,   setOauthConnected]   = useState(false);
   const [showSecrets,      setShowSecrets]      = useState(false);
   const [saved,            setSaved]            = useState(false);
   const [testing,          setTesting]          = useState(false);
   const [testMsg,          setTestMsg]          = useState<string | null>(null);
   const [error,            setError]            = useState<string | null>(null);
+  // Live SMTP connection test + Google account status + Cloud walkthrough.
+  const [smtpTest,   setSmtpTest]   = useState<TestState>({ status: "idle" });
+  const [gStatus,    setGStatus]    = useState<{ connected: boolean; email: string; scopes: string } | null>(null);
+  const [showGuide,  setShowGuide]  = useState(false);
+
+  const refreshGoogleStatus = () =>
+    api.googleEmailStatus().then(setGStatus).catch(() => setGStatus(null));
 
   useEffect(() => {
     api.getEmailSettings().then((s) => s && setSettings(s)).catch(console.error);
+    refreshGoogleStatus();
   }, []);
 
   const authorize = async () => {
     setError(null);
     setOauthConnecting(true);
     try {
+      // Persist the creds first so the token exchange + later sends can find them.
+      if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
+      if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
       await api.oauthStartConsent(oauthClientId, oauthClientSecret);
-      setOauthConnected(true);
-      setTimeout(() => setOauthConnected(false), 5000);
+      await refreshGoogleStatus();
     } catch (e: any) {
       setError(e.toString());
     } finally {
       setOauthConnecting(false);
+    }
+  };
+
+  const testSmtp = async () => {
+    setSmtpTest({ status: "testing" });
+    try {
+      const r = await api.testSmtpConnection();
+      setSmtpTest({ status: r.ok ? "ok" : "fail", message: r.message });
+    } catch (e: any) {
+      setSmtpTest({ status: "fail", message: String(e) });
     }
   };
 
@@ -786,6 +848,8 @@ function EmailTab() {
       setError(e.toString());
     }
   };
+
+  if (showGuide) return <GoogleCloudGuide onBack={() => { setShowGuide(false); refreshGoogleStatus(); }} />;
 
   return (
     <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
@@ -837,34 +901,53 @@ function EmailTab() {
           <SecretInput label="IMAP password" value={imapPass} onChange={setImapPass} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
         </>
       ) : (
-        <>
-          <SecretInput label="OAuth Client ID"     value={oauthClientId}     onChange={setOauthClientId}     showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
-          <SecretInput label="OAuth Client Secret" value={oauthClientSecret} onChange={setOauthClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
-          <div className="mb-4">
-            <label className="block text-[12px] font-medium text-muted mb-1.5">Google Authorization</label>
+        <div className="mb-5 rounded-xl border border-line bg-surface-2/40 p-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2.5">
+              <span className="w-9 h-9 rounded-lg bg-accent/10 text-accent-hover flex items-center justify-center flex-shrink-0"><Cloud size={17} /></span>
+              <div>
+                <div className="text-[13.5px] font-semibold text-ink">Connect Google</div>
+                <div className="text-[11.5px] text-muted">The advanced OAuth path — connect Gmail without storing your password.</div>
+              </div>
+            </div>
+            {/* Live connected-account status */}
+            {gStatus?.connected ? (
+              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full flex-shrink-0"><Check size={13} /> Connected</span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface border border-line px-2.5 h-7 rounded-full flex-shrink-0"><span className="w-2 h-2 rounded-full bg-line-3" /> Not connected</span>
+            )}
+          </div>
+
+          {gStatus?.connected && (
+            <div className="mb-3 text-[12px] text-ink-2 bg-success-bg/40 border border-success-ink/15 rounded-lg px-3 py-2">
+              Connected as <span className="font-semibold text-success-ink">{gStatus.email || "your Google account"}</span>
+              {gStatus.scopes && <span className="text-muted"> · {gStatus.scopes.includes("gmail") ? "Gmail access granted" : gStatus.scopes}</span>}
+            </div>
+          )}
+
+          <SecretInput label="Google Client ID"     value={oauthClientId}     onChange={setOauthClientId}     showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <SecretInput label="Google Client Secret" value={oauthClientSecret} onChange={setOauthClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+
+          <div className="flex items-center gap-2 flex-wrap mt-1">
             <button
               type="button"
               onClick={authorize}
               disabled={oauthConnecting || !oauthClientId || !oauthClientSecret}
-              className={`px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors ${
-                oauthConnected
-                  ? "bg-success hover:bg-success text-white"
-                  : "bg-accent hover:bg-accent-hover text-on-accent"
-              }`}
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors"
             >
-              {oauthConnecting ? (
-                <><RefreshCw size={13} className="animate-spin" /> Authorizing...</>
-              ) : oauthConnected ? (
-                <><Check size={13} /> Connected</>
-              ) : (
-                "Authorize with Google"
-              )}
+              {oauthConnecting
+                ? <><RefreshCw size={13} className="animate-spin" /> Connecting…</>
+                : gStatus?.connected ? <><RefreshCw size={13} /> Reconnect</> : <><Cloud size={13} /> Connect Google</>}
+            </button>
+            <button type="button" onClick={() => setShowGuide(true)}
+              className="inline-flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+              Where do I get these? <ChevronRight size={13} />
             </button>
           </div>
-          <p className="text-[12px] text-muted mb-4">
-            Enter your Client ID and Secret from Google Cloud Console, then click Authorize and approve access in your browser.
+          <p className="text-[11.5px] text-muted mt-2.5 leading-relaxed">
+            Paste your Client ID + Secret from Google Cloud, then click Connect and approve access in the browser window that opens. New to this? Follow the <button type="button" onClick={() => setShowGuide(true)} className="text-accent hover:underline">setup walkthrough</button>.
           </p>
-        </>
+        </div>
       )}
 
       {error && (
@@ -879,6 +962,15 @@ function EmailTab() {
         >
           {saved ? <Check size={13} /> : <Save size={13} />}
           {saved ? "Saved" : "Save Settings"}
+        </button>
+        {/* Verify the send-from account actually connects (auth + handshake). */}
+        <button
+          onClick={testSmtp}
+          disabled={smtpTest.status === "testing"}
+          className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+        >
+          {smtpTest.status === "testing" ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
+          {smtpTest.status === "testing" ? "Testing…" : "Test connection"}
         </button>
         <button
           onClick={async () => {
@@ -896,6 +988,9 @@ function EmailTab() {
           <span className={`text-[12px] ${testMsg.startsWith("Failed") ? "text-danger-ink" : "text-success-ink"}`}>{testMsg}</span>
         )}
       </div>
+      {smtpTest.status !== "idle" && smtpTest.status !== "testing" && (
+        <div className="mt-2.5"><TestResultLine state={smtpTest} /></div>
+      )}
 
       <InboxesSection />
     </div>
