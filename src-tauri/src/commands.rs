@@ -511,11 +511,21 @@ pub async fn set_newsletter_include_ranked(value: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn approve_client(id: String) -> Result<(), String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE clients SET approval_status='active', updated_at=?1 WHERE id=?2", rusqlite::params![Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE clients SET approval_status='active', updated_at=?1 WHERE id=?2", rusqlite::params![Utc::now().to_rfc3339(), id]).map_err(|e| e.to_string())?;
+    }
     let mut cols = Map::new();
     cols.insert("approval_status".into(), Value::String("active".into()));
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    // Write the approved lead back to the connected sheet + archive its source
+    // email (both best-effort — a failure never blocks approval).
+    match crate::sheet_writeback::append_approved_client(&id).await {
+        Ok(true) => tracing::info!("wrote approved client {} back to sheet", id),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("sheet write-back for {} failed: {}", id, e),
+    }
+    archive_source_email_for_client(&id).await;
     Ok(())
 }
 
@@ -625,6 +635,18 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
                 let mut cols = Map::new();
                 cols.insert("approval_status".into(), Value::String("active".into()));
                 sync::record_upsert("clients", eid, cols).map_err(|e| e.to_string())?;
+                // Ensure any categories captured on this client exist in the system
+                // category list (case-insensitive dedup) — idempotent if already added.
+                let cats: Vec<String> = {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    let meta: Option<String> = conn.query_row("SELECT metadata FROM clients WHERE id=?1", [eid], |r| r.get(0)).ok().flatten();
+                    meta.and_then(|m| serde_json::from_str::<Value>(&m).ok())
+                        .and_then(|v| v.get("categories").and_then(|c| c.as_array()).map(|a| {
+                            a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                        }))
+                        .unwrap_or_default()
+                };
+                if !cats.is_empty() { ensure_system_categories(&cats); }
                 // Write the approved lead back to the connected Google Sheet (new
                 // direction). Best-effort: silently skips if no sheet/token is set,
                 // and never blocks the approval on a sheet error.
@@ -633,6 +655,9 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
                     Ok(false) => {}
                     Err(e) => tracing::warn!("sheet write-back for {} failed: {}", eid, e),
                 }
+                // Archive the source email from its inbox now that the lead is
+                // approved (best-effort — never blocks approval).
+                archive_source_email_for_client(eid).await;
             }
             ("client_add", false) | ("client_delete", true) => delete_client_row(eid)?,
             _ => {}
@@ -649,6 +674,46 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
     cols.insert("status".into(), Value::String(status.into()));
     cols.insert("resolved_at".into(), Value::String(now));
     sync::record_upsert("pending_approvals", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read a captured lead's stored source-email identity from its metadata:
+/// `src_inbox` (inbox label) + `src_uid` (IMAP uid). Returns None when the client
+/// wasn't captured from an inbox (nothing to archive).
+fn client_source_email(client_id: &str) -> Option<(String, u32)> {
+    let conn = pool().get().ok()?;
+    let meta: Option<String> = conn
+        .query_row("SELECT metadata FROM clients WHERE id=?1", [client_id], |r| r.get(0))
+        .ok()
+        .flatten();
+    let v: Value = serde_json::from_str(&meta?).ok()?;
+    let inbox = v.get("src_inbox").and_then(|x| x.as_str())?.to_string();
+    let uid = v.get("src_uid").and_then(|x| x.as_u64())? as u32;
+    if inbox.is_empty() || uid == 0 { return None; }
+    Some((inbox, uid))
+}
+
+/// Archive the source email of a captured lead (best-effort). Marks the original
+/// inbox message Seen + moves it to Archive + Deleted/expunge. Never errors on an
+/// IMAP failure — approving a lead must not be blocked by mail-server issues.
+/// No-op when the client has no recorded source email.
+async fn archive_source_email_for_client(client_id: &str) {
+    let (inbox, uid) = match client_source_email(client_id) {
+        Some(x) => x,
+        None => return,
+    };
+    match crate::email::archive_source_email(&inbox, uid).await {
+        Ok(()) => tracing::info!("archived source email (uid {}) for client {}", uid, client_id),
+        Err(e) => tracing::warn!("archive source email for {} failed: {}", client_id, e),
+    }
+}
+
+/// Archive the source email of a captured lead on demand. Exposed for the UI;
+/// also invoked automatically on the approve path. Best-effort: returns Ok even
+/// when there's nothing to archive or IMAP is unreachable (the failure is logged).
+#[tauri::command]
+pub async fn archive_client_source_email(client_id: String) -> Result<(), String> {
+    archive_source_email_for_client(&client_id).await;
     Ok(())
 }
 
@@ -9021,16 +9086,21 @@ pub async fn sort_categories(desc: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Bulk-create top-level categories from a list of labels (e.g. detected from a
-/// spreadsheet column). Skips blanks and labels that already exist
-/// (case-insensitive). Returns how many were actually added.
-#[tauri::command]
-pub async fn import_categories(labels: Vec<String>) -> Result<usize, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
+/// Bulk-create top-level system categories from a list of labels, deduplicated
+/// CASE-INSENSITIVELY against existing categories (skips blanks + dupes). Each
+/// added row is synced. Returns how many were actually added. Shared by the
+/// `import_categories` command and the form-capture flow (auto-add detected
+/// categories to the system list).
+pub(crate) fn ensure_system_categories(labels: &[String]) -> usize {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return 0 };
     let mut seen: std::collections::HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT label FROM categories").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).map(|s| s.trim().to_lowercase()).collect()
+        match conn.prepare("SELECT label FROM categories") {
+            Ok(mut stmt) => stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).map(|s| s.trim().to_lowercase()).collect())
+                .unwrap_or_default(),
+            Err(_) => std::collections::HashSet::new(),
+        }
     };
     let mut max_sort: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) FROM categories", [], |r| r.get(0),
@@ -9039,18 +9109,26 @@ pub async fn import_categories(labels: Vec<String>) -> Result<usize, String> {
     for raw in labels {
         let label = raw.trim();
         if label.is_empty() { continue; }
-        let key = label.to_lowercase();
-        if !seen.insert(key) { continue; }
+        if !seen.insert(label.to_lowercase()) { continue; }
         max_sort += 1;
         let id = Uuid::new_v4().to_string();
-        conn.execute(
+        if conn.execute(
             "INSERT INTO categories (id, label, sort_order) VALUES (?1, ?2, ?3)",
             rusqlite::params![id, label, max_sort],
-        ).map_err(|e| e.to_string())?;
-        sync_category_upsert(&id, label, max_sort, None);
-        added += 1;
+        ).is_ok() {
+            sync_category_upsert(&id, label, max_sort, None);
+            added += 1;
+        }
     }
-    Ok(added)
+    added
+}
+
+/// Bulk-create top-level categories from a list of labels (e.g. detected from a
+/// spreadsheet column). Skips blanks and labels that already exist
+/// (case-insensitive). Returns how many were actually added.
+#[tauri::command]
+pub async fn import_categories(labels: Vec<String>) -> Result<usize, String> {
+    Ok(ensure_system_categories(&labels))
 }
 
 #[tauri::command]

@@ -36,8 +36,11 @@ fn spreadsheet_id(url: &str) -> Option<String> {
     if id.is_empty() { None } else { Some(id.to_string()) }
 }
 
-/// The sheet-sync column mapping we can write into: (column-letter, value) pairs.
-/// Reads the saved `sheet_sync_config` row (defaults mirror `get_sheet_sync_config`).
+/// The sheet-sync column mapping we can write into. Mirrors the READER
+/// (`sheet_sync_config` + `field_mapping_json`) so an appended row lines up with
+/// the same columns the sync reads. `field_mapping` maps a column letter → a field
+/// key (as saved by the UI, e.g. `"cf:tax_id"` or `"lead_representative"`), the
+/// same structure the reader consumes.
 struct SheetMapping {
     sheet_url: String,
     name_col: String,
@@ -47,7 +50,10 @@ struct SheetMapping {
     phone_col: String,
     company_col: String,
     category_col: String,
+    lead_status_col: String,
     notes_col: String,
+    /// column-letter → field key (custom-field / extra columns).
+    field_mapping: std::collections::BTreeMap<String, String>,
 }
 
 fn load_mapping() -> Option<SheetMapping> {
@@ -55,7 +61,8 @@ fn load_mapping() -> Option<SheetMapping> {
     let row = conn.query_row(
         "SELECT sheet_url, COALESCE(name_col,''), COALESCE(first_name_col,''), COALESCE(last_name_col,''), \
                 COALESCE(email_col,''), COALESCE(phone_col,''), COALESCE(company_col,''), \
-                COALESCE(category_col,''), COALESCE(notes_col,'') \
+                COALESCE(category_col,''), COALESCE(lead_status_col,''), COALESCE(notes_col,''), \
+                COALESCE(field_mapping_json,'{}') \
          FROM sheet_sync_config WHERE id=1",
         [],
         |r| {
@@ -63,19 +70,33 @@ fn load_mapping() -> Option<SheetMapping> {
                 r.get::<_, Option<String>>(0)?,
                 r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
-                r.get::<_, String>(7)?, r.get::<_, String>(8)?,
+                r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?,
+                r.get::<_, String>(10)?,
             ))
         },
     ).ok()?;
-    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, notes_col) = row;
+    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, field_mapping_json) = row;
     let sheet_url = sheet_url.filter(|s| !s.trim().is_empty())?;
+    // Parse the reader's custom-field mapping: { "<col letter>": "<field key>" }.
+    let field_mapping: std::collections::BTreeMap<String, String> =
+        serde_json::from_str::<serde_json::Value>(&field_mapping_json)
+            .ok()
+            .and_then(|v| v.as_object().map(|o| {
+                o.iter()
+                    .filter_map(|(col, name)| name.as_str().map(|n| (col.clone(), n.to_string())))
+                    .collect()
+            }))
+            .unwrap_or_default();
     Some(SheetMapping {
         sheet_url, name_col, first_name_col, last_name_col,
-        email_col, phone_col, company_col, category_col, notes_col,
+        email_col, phone_col, company_col, category_col, lead_status_col, notes_col,
+        field_mapping,
     })
 }
 
-/// One approved client's fields, resolved for sheet write-back.
+/// One approved client's fields, resolved for sheet write-back. `meta` carries the
+/// raw metadata so custom-field columns (tax id, rep, address parts, …) can be
+/// filled by key, matching the reader.
 pub struct ClientRow {
     pub name: String,
     pub first_name: String,
@@ -84,29 +105,71 @@ pub struct ClientRow {
     pub phone: String,
     pub company: String,
     pub category: String,
+    pub lead_status: String,
     pub notes: String,
+    pub meta: serde_json::Value,
+}
+
+impl ClientRow {
+    /// Resolve a value for a mapped field key. Handles the built-in metadata keys
+    /// used across capture (`tax_id`, `lead_representative`/`sales_rep`, address
+    /// parts, first/last name) and falls back to any metadata key of that name, so
+    /// whatever column the reader maps we can fill. `cf:` prefixes are stripped to
+    /// match the reader.
+    fn field_value(&self, raw_key: &str) -> String {
+        let key = raw_key.strip_prefix("cf:").unwrap_or(raw_key);
+        let ms = |k: &str| self.meta.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        match key {
+            "name" => self.name.clone(),
+            "first_name" => self.first_name.clone(),
+            "last_name" => self.last_name.clone(),
+            "email" => self.email.clone(),
+            "phone" => self.phone.clone(),
+            "company" => self.company.clone(),
+            "category" => self.category.clone(),
+            "lead_status" => self.lead_status.clone(),
+            "notes" => self.notes.clone(),
+            // Rep column may be mapped under either metadata key the app writes.
+            "lead_representative" | "rep" | "sales_rep" => {
+                let v = ms("lead_representative");
+                if v.is_empty() { ms("sales_rep") } else { v }
+            }
+            // Any other key → look it up directly in metadata (tax_id, street_address,
+            // city, state, zip_code, country, title, and any custom `cf:` field).
+            other => ms(other),
+        }
+    }
 }
 
 /// Load an approved client's fields (built-ins + metadata) for the sheet row.
 fn load_client_row(client_id: &str) -> Option<ClientRow> {
     let conn = pool().get().ok()?;
-    let (name, email, phone, company, notes, metadata): (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = conn.query_row(
-        "SELECT name, email, phone, company, notes, metadata FROM clients WHERE id=?1",
+    let (name, email, phone, company, lead_status, notes, metadata): (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT name, email, phone, company, lead_status, notes, metadata FROM clients WHERE id=?1",
         [client_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
     ).ok()?;
     let meta: serde_json::Value = metadata
         .and_then(|m| serde_json::from_str(&m).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     let ms = |k: &str| meta.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    // Category: first of the captured `categories` array, or the `category` field.
-    let category = meta
-        .get("categories")
-        .and_then(|v| v.as_array())
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| ms("category"));
+    // Category cell: all captured categories, comma-joined + deduped
+    // case-insensitively; falls back to the single `category` field.
+    let category = {
+        let mut seen = std::collections::HashSet::new();
+        let joined: Vec<String> = meta
+            .get("categories")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty() && seen.insert(s.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if joined.is_empty() { ms("category") } else { joined.join(", ") }
+    };
     Some(ClientRow {
         name,
         first_name: ms("first_name"),
@@ -115,12 +178,16 @@ fn load_client_row(client_id: &str) -> Option<ClientRow> {
         phone: phone.unwrap_or_default(),
         company: company.unwrap_or_default(),
         category,
+        lead_status: lead_status.unwrap_or_default(),
         notes: notes.unwrap_or_default(),
+        meta,
     })
 }
 
-/// Build a row (Vec of cell strings) positioned by the configured column letters.
-/// The vec is sized to the highest mapped column; unmapped cells are left blank.
+/// Build a row (Vec of cell strings) positioned by the configured column letters —
+/// the SAME columns the reader consumes: the built-in `*_col` fields plus every
+/// entry in `field_mapping` (custom-field / extra columns like tax id + rep). The
+/// vec is sized to the highest mapped column; unmapped cells are left blank.
 fn build_row(mapping: &SheetMapping, c: &ClientRow) -> Vec<String> {
     let mut cells: Vec<(usize, String)> = Vec::new();
     let mut push = |col: &str, val: &str| {
@@ -135,11 +202,20 @@ fn build_row(mapping: &SheetMapping, c: &ClientRow) -> Vec<String> {
     push(&mapping.phone_col, &c.phone);
     push(&mapping.company_col, &c.company);
     push(&mapping.category_col, &c.category);
+    push(&mapping.lead_status_col, &c.lead_status);
     push(&mapping.notes_col, &c.notes);
+    // Custom-field / extra columns: fill each mapped column from the client's data
+    // by the mapped field key (tax id, rep, address parts, custom fields, …).
+    for (col, field_key) in &mapping.field_mapping {
+        let val = c.field_value(field_key);
+        push(col, &val);
+    }
 
     let width = cells.iter().map(|(i, _)| *i + 1).max().unwrap_or(0);
     let mut row = vec![String::new(); width];
     for (i, v) in cells {
+        // Later pushes for the same column win (field_mapping can override a
+        // built-in column if the user mapped both — last one wins, which is fine).
         row[i] = v;
     }
     row

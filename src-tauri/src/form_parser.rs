@@ -55,6 +55,27 @@ fn norm_label(raw: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
+/// Alphanumeric-only normalization: lowercase and drop everything that isn't a
+/// letter or digit. Used for category checkbox detection where the label and value
+/// are the "same" up to punctuation/spacing, e.g. "Books Stationery" ==
+/// "Books & Stationery", "Jewelry&Accessories" == "Jewelry & Accessories".
+fn norm_alnum(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// A field is a category checkbox when its value is non-empty and the label
+/// (with a leading "category " stripped) equals the value under `norm_alnum`.
+/// So "Category Clothing"/"Clothing", "Appliances"/"Appliances", and
+/// "Pet Supplies"/"Pet Supplies" are categories, but "First Name"/"Lydia" is not.
+fn is_category_checkbox(norm_label_key: &str, value: &str) -> bool {
+    if value.trim().is_empty() {
+        return false;
+    }
+    let label_core = norm_label_key.strip_prefix("category ").unwrap_or(norm_label_key);
+    let ln = norm_alnum(label_core);
+    !ln.is_empty() && ln == norm_alnum(value)
+}
+
 /// Split the body into `(label, value)` pairs. A line ending in `:` is a label;
 /// the following non-empty line (up to the next label) is its value. Values may be
 /// blank (label immediately followed by another label or end-of-body).
@@ -139,8 +160,14 @@ pub fn parse_form_email(body: &str) -> Option<ExtractedCustomer> {
             "country" => c.country = val,
             "tax" | "tax id" | "tax number" | "vat" | "vat number" | "ein" | "resale certificate" => c.tax_id = val,
             _ => {
-                // Preserve the original (trimmed) label so nothing is lost.
-                c.extra.insert(label.trim().to_string(), val);
+                // Category checkbox: label ≈ value (e.g. "Appliances"/"Appliances",
+                // "Books Stationery"/"Books & Stationery"). Otherwise preserve the
+                // label:value in `extra` so nothing is lost.
+                if is_category_checkbox(&key, &val) {
+                    c.categories.push(val);
+                } else {
+                    c.extra.insert(label.trim().to_string(), val);
+                }
             }
         }
     }
@@ -160,6 +187,12 @@ pub fn parse_form_email(body: &str) -> Option<ExtractedCustomer> {
     // Sales rep defaults to the company name when the form didn't specify one.
     if c.sales_rep.trim().is_empty() && !c.company.trim().is_empty() {
         c.sales_rep = c.company.trim().to_string();
+    }
+
+    // De-dupe detected categories case-insensitively, keeping first-seen casing.
+    {
+        let mut seen = std::collections::HashSet::new();
+        c.categories.retain(|cat| seen.insert(cat.trim().to_lowercase()));
     }
 
     Some(c)

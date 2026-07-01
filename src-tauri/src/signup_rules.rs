@@ -153,27 +153,60 @@ pub fn toggle_rule(id: &str, active: bool) -> Result<()> {
     Ok(())
 }
 
+/// A matched signup rule, plus whether it was matched purely on its inbox binding
+/// (no sender/subject pattern). `patternless` gates the safety rule in
+/// `auto_create_client`: an inbox-only rule only creates from a real parsed form.
+#[derive(Debug, Clone)]
+pub struct RuleMatch {
+    pub name: String,
+    /// True when the rule had NO sender AND NO subject pattern (inbox-only).
+    pub patternless: bool,
+}
+
+/// Whether a rule's `inbox_source` binding matches the email's `source` (inbox
+/// label). Tolerant of the v0.14.81 bug where the UI saved the inbox ID instead of
+/// the label: matches when the binding equals the source (label) OR equals the ID
+/// of the inbox whose label == source. Empty binding = any inbox.
+fn inbox_binding_ok(inbox_source: &str, source: &str) -> bool {
+    if inbox_source.is_empty() {
+        return true; // not bound → any inbox
+    }
+    if inbox_source == source {
+        return true; // saved the label (correct)
+    }
+    // Saved the ID: resolve the inbox whose label == source and compare its id.
+    crate::email::load_inboxes()
+        .iter()
+        .any(|ib| ib.label == source && ib.id == inbox_source)
+}
+
 /// Test whether an email matches any active rule. `source` is the inbox label the
-/// email came from (`ParsedEmail.source`); a rule bound to a specific inbox only
-/// matches mail from that inbox. Returns the matching rule's name if matched.
-pub fn matches_any(from: &str, subject: &str, source: &str) -> Result<Option<String>> {
+/// email came from (`ParsedEmail.source`). A rule bound to a specific inbox only
+/// matches mail from that inbox; an inbox-bound rule with no sender/subject pattern
+/// matches on the binding alone (the inbox IS the filter). Returns the matched
+/// rule (name + whether it was patternless) if any.
+pub fn matches_any(from: &str, subject: &str, source: &str) -> Result<Option<RuleMatch>> {
     for rule in list_rules()?.iter().filter(|r| r.active) {
-        // Inbox binding: empty = any inbox; otherwise it must equal the source.
-        if !rule.inbox_source.is_empty() && rule.inbox_source != source {
+        // Inbox binding: empty = any inbox; else tolerant label/ID compare.
+        if !inbox_binding_ok(&rule.inbox_source, source) {
             continue;
         }
         let sender_ok = match &rule.sender_pattern {
-            Some(p) => Regex::new(p).map(|re| re.is_match(from)).unwrap_or(false),
-            None => true,
+            Some(p) if !p.is_empty() => Regex::new(p).map(|re| re.is_match(from)).unwrap_or(false),
+            _ => true,
         };
         let subject_ok = match &rule.subject_pattern {
-            Some(p) => Regex::new(p).map(|re| re.is_match(subject)).unwrap_or(false),
-            None => true,
+            Some(p) if !p.is_empty() => Regex::new(p).map(|re| re.is_match(subject)).unwrap_or(false),
+            _ => true,
         };
-        // At least one pattern must be specified, AND all specified must match.
-        let has_any = rule.sender_pattern.is_some() || rule.subject_pattern.is_some();
-        if has_any && sender_ok && subject_ok {
-            return Ok(Some(rule.name.clone()));
+        let has_pattern = rule.sender_pattern.as_deref().map(|p| !p.is_empty()).unwrap_or(false)
+            || rule.subject_pattern.as_deref().map(|p| !p.is_empty()).unwrap_or(false);
+        let is_inbox_bound = !rule.inbox_source.is_empty();
+        // Match when: any specified patterns match AND (there's at least one pattern
+        // OR the rule is inbox-bound). A rule with NO pattern and NO inbox binding is
+        // still ignored (it would match everything).
+        if sender_ok && subject_ok && (has_pattern || is_inbox_bound) {
+            return Ok(Some(RuleMatch { name: rule.name.clone(), patternless: !has_pattern }));
         }
     }
     Ok(None)
@@ -184,13 +217,23 @@ pub fn matches_any(from: &str, subject: &str, source: &str) -> Result<Option<Str
 /// falls back to AI extraction when the body has no recognizable label structure.
 /// Creates a PENDING client (awaiting approval), logs the email as the first
 /// interaction, and dedups by email.
-pub async fn auto_create_client(email: &crate::email::ParsedEmail) -> Result<String> {
+/// `patternless` = the matched rule had no sender/subject pattern (inbox-only). In
+/// that case we ONLY create from a real parsed form and never AI-create arbitrary
+/// mail — returns `Ok(None)` when the email isn't a recognizable form. When the
+/// rule specified patterns, the AI fallback is kept for freeform emails.
+pub async fn auto_create_client(email: &crate::email::ParsedEmail, patternless: bool) -> Result<Option<String>> {
     // 1. Deterministic path (preferred): structured contact-form email.
     if let Some(customer) = crate::form_parser::parse_form_email(&email.body_text) {
-        return create_client_from_customer(&customer, email);
+        return Ok(Some(create_client_from_customer(&customer, email)?));
     }
 
-    // 2. Fallback: AI extraction for freeform emails.
+    // Safety: an inbox-only rule (no patterns) must not turn every email into a
+    // client. Without a real parsed form, skip — no AI create.
+    if patternless {
+        return Ok(None);
+    }
+
+    // 2. Fallback: AI extraction for freeform emails (only when the rule had patterns).
     let extracted = crate::ai::extract_structured(&email.body_text)
         .await
         .context("AI extraction failed")?;
@@ -228,7 +271,7 @@ pub async fn auto_create_client(email: &crate::email::ParsedEmail) -> Result<Str
     let mut customer = crate::form_parser::ExtractedCustomer::default();
     customer.name = client_name;
     customer.email = client_email;
-    create_client_from_customer_with_notes(&customer, email, &notes)
+    Ok(Some(create_client_from_customer_with_notes(&customer, email, &notes)?))
 }
 
 /// Create a PENDING client from a parsed customer (default notes).
@@ -349,6 +392,15 @@ fn create_client_from_customer_with_notes(
     )?;
 
     log_signup_interaction(&id, email)?;
+
+    // Add every detected category to the SYSTEM category list (case-insensitive
+    // dedup) so they become selectable options everywhere.
+    if !customer.categories.is_empty() {
+        let added = crate::commands::ensure_system_categories(&customer.categories);
+        if added > 0 {
+            tracing::info!("form capture added {} new system categories", added);
+        }
+    }
 
     // Raise a pending-approval so the captured lead shows in the approvals bell for
     // a human to review (mirrors the intake path). Non-fatal if it can't be queued.

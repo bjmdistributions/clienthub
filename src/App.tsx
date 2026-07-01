@@ -206,14 +206,21 @@ export default function App() {
     if (me) api.getMyPlan().then((p) => setSuperadmin(!!p.is_superadmin)).catch(() => setSuperadmin(false));
   }, [me]);
 
-  // Poll the notification queue for the bell badge: pending customers waiting
-  // for review PLUS any role-based approval requests.
+  // Poll the notification queue for the bell badge. This MUST match exactly what
+  // the Notifications view shows when opened: pending customers awaiting review
+  // PLUS team requests that aren't plain new-customer adds. (A `client_add`
+  // request is already represented by its pending customer, so counting the raw
+  // approvals total double-counted it and made the bell read high — the "1 when
+  // nothing" bug.)
   useEffect(() => {
     if (!me?.is_admin) { setApCount(0); return; }
     const refresh = () => Promise.all([
-      api.approvalRequestsCount().catch(() => 0),
-      api.getPendingApprovals().then((p) => p.length).catch(() => 0),
-    ]).then(([reqs, pend]) => setApCount(reqs + pend)).catch(() => {});
+      api.listApprovalRequests().catch(() => []),
+      api.getPendingApprovals().catch(() => []),
+    ]).then(([reqs, pend]) => {
+      const nonAdd = reqs.filter((a) => a.kind !== "client_add").length;
+      setApCount(pend.length + nonAdd);
+    }).catch(() => {});
     refresh();
     const onChanged = () => refresh();
     window.addEventListener("approvals-changed", onChanged);

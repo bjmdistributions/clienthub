@@ -191,8 +191,10 @@ fn main() {
             // One-time background cleanup of email_in interactions that the pre-fix
             // scanner re-logged every scan (IMAP N:* bug). Guarded to run once.
             std::thread::spawn(|| email::dedup_email_interactions_once());
-            // Periodic IMAP scan every 5 minutes.
-            email::spawn_periodic_scan(300);
+            // Near-real-time inbox monitoring via IMAP IDLE (one watcher per inbox,
+            // OS notification on each new lead) + a long safety-net sweep. Replaces
+            // the old fixed 5-minute poll.
+            email::spawn_realtime_watchers(app.handle().clone());
 
             // Periodic Google Sheets sync every 10 minutes
             commands::spawn_periodic_sheet_sync(600);
@@ -259,6 +261,7 @@ fn main() {
             set_newsletter_include_ranked,
             approve_client,
             reject_client,
+            archive_client_source_email,
             get_pending_approvals,
             list_approval_requests,
             approval_requests_count,

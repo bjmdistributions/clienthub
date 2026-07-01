@@ -348,6 +348,81 @@ fn scan_blocking(
     Ok((results, max_uid))
 }
 
+/// Block on an open IMAP connection using the IDLE extension until the mailbox
+/// changes (new mail) or `timeout` elapses. Returns `Ok(true)` when the server
+/// signalled a change (caller should scan), `Ok(false)` on a plain timeout.
+/// Connect + login + SELECT INBOX happen here; the connection is closed on return
+/// so each call is a fresh, self-contained IDLE cycle (keeps it simple and robust
+/// against half-dead sockets). Safe under spawn_blocking.
+fn idle_once_blocking(
+    imap_host: String,
+    imap_port: u16,
+    user: String,
+    password: String,
+    timeout: std::time::Duration,
+) -> Result<bool> {
+    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
+    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
+        .context("IMAP connect")?;
+    let mut session = client
+        .login(&user, &password)
+        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    session.select(SCAN_FOLDER).context("select inbox")?;
+
+    let idle = session.idle().context("start IDLE")?;
+    // wait_with_timeout re-arms the read deadline internally; a MailboxChanged means
+    // new/changed mail (we then run the normal scan to fetch only genuinely-new UIDs).
+    let outcome = idle
+        .wait_with_timeout(timeout)
+        .context("IDLE wait")?;
+    let changed = matches!(outcome, imap::extensions::idle::WaitOutcome::MailboxChanged);
+    let _ = session.logout();
+    Ok(changed)
+}
+
+/// Archive a single message (by IMAP uid) out of INBOX: mark it `\Seen`, copy it
+/// to an Archive mailbox, then flag `\Deleted` + expunge so it leaves the inbox.
+/// Falls back gracefully if the server has no "Archive" folder (then it's just
+/// marked Seen + Deleted + expunged). Safe under spawn_blocking.
+fn archive_uid_blocking(
+    imap_host: String,
+    imap_port: u16,
+    user: String,
+    password: String,
+    uid: u32,
+) -> Result<()> {
+    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
+    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
+        .context("IMAP connect")?;
+    let mut session = client
+        .login(&user, &password)
+        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    session.select(SCAN_FOLDER).context("select inbox")?;
+
+    let uid_str = uid.to_string();
+    // Mark read first so it's Seen even if the later steps fail.
+    session
+        .uid_store(&uid_str, "+FLAGS (\\Seen)")
+        .context("mark seen")?;
+
+    // Try to copy into a common archive mailbox before deleting. Gmail exposes
+    // "[Gmail]/All Mail"; most others use "Archive". We try a couple and ignore
+    // failures — the message still leaves the inbox via the delete+expunge below.
+    let archived = ["Archive", "[Gmail]/All Mail"]
+        .iter()
+        .any(|folder| session.uid_copy(&uid_str, folder).is_ok());
+    if !archived {
+        tracing::info!("archive: no archive folder on {}, marking deleted only", imap_host);
+    }
+
+    session
+        .uid_store(&uid_str, "+FLAGS (\\Deleted)")
+        .context("mark deleted")?;
+    let _ = session.expunge();
+    let _ = session.logout();
+    Ok(())
+}
+
 /// Verify an IMAP mailbox: connect + LOGIN + SELECT INBOX, then log out. Same
 /// connect/login path as `scan_blocking` (minus the fetch). Safe under
 /// spawn_blocking. Returns Ok(()) when the credentials work.
@@ -386,6 +461,33 @@ async fn resolve_inbox_creds(id: &str) -> Result<(String, u16, String, String, S
             .map_err(|_| anyhow!("no password stored for this inbox"))?;
         Ok((ib.host, ib.port, ib.user, pass, ib.label))
     }
+}
+
+/// Resolve an inbox by its LABEL (what we stamp on captured clients as `src_inbox`,
+/// i.e. `ParsedEmail.source`). Falls back to the legacy account when the label
+/// matches its user. Returns the same tuple as `resolve_inbox_creds`.
+async fn resolve_inbox_creds_by_label(label: &str) -> Result<(String, u16, String, String, String)> {
+    if let Some(ib) = load_inboxes().into_iter().find(|i| i.label == label) {
+        return resolve_inbox_creds(&ib.id).await;
+    }
+    // Legacy account: its "label" is the account user.
+    if let Ok(s) = load_settings() {
+        if s.user == label && !s.imap_host.is_empty() {
+            return resolve_inbox_creds("legacy").await;
+        }
+    }
+    Err(anyhow!("no inbox matches label '{}'", label))
+}
+
+/// Archive a captured lead's source email from its inbox: mark `\Seen`, copy to an
+/// Archive folder, `\Deleted` + expunge. `inbox_label` is the client's stored
+/// `src_inbox` (the inbox label); `uid` is its stored `src_uid`. Best-effort — the
+/// caller treats a failure as non-fatal so approval is never blocked.
+pub async fn archive_source_email(inbox_label: &str, uid: u32) -> Result<()> {
+    let (host, port, user, password, _label) = resolve_inbox_creds_by_label(inbox_label).await?;
+    tokio::task::spawn_blocking(move || archive_uid_blocking(host, port, user, password, uid))
+        .await
+        .context("imap archive task")?
 }
 
 /// Test one configured inbox by id (matches `EmailInbox.id`; `"legacy"` uses the
@@ -535,27 +637,185 @@ pub async fn scan() -> Result<Vec<ParsedEmail>> {
     Ok(all)
 }
 
-// ---------- Background periodic scanner ----------
+// ---------- Real-time inbox watcher (IMAP IDLE) ----------
 
-pub fn spawn_periodic_scan(interval_secs: u64) {
-    tauri::async_runtime::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-        tick.tick().await; // skip first immediate tick — settings may not be configured yet
-        loop {
-            tick.tick().await;
-            // Skip only if nothing is configured: no legacy account AND no added inboxes.
-            if cred_opt("imap_pass").is_none() && cred_opt("oauth_refresh_token").is_none() && load_inboxes().is_empty() {
-                continue;
+/// How long a single IDLE cycle blocks before we re-issue it. Kept under the RFC
+/// 2177 29-minute ceiling so servers don't drop us; on each wake we reconnect
+/// fresh. New mail wakes us immediately regardless of this value.
+const IDLE_CYCLE: std::time::Duration = std::time::Duration::from_secs(4 * 60);
+
+/// True when at least one mailbox is configured (legacy account or an added inbox).
+fn any_inbox_configured() -> bool {
+    !(cred_opt("imap_pass").is_none()
+        && cred_opt("oauth_refresh_token").is_none()
+        && load_inboxes().is_empty())
+}
+
+/// Run the shared scan + process pipeline once and fire an OS notification for any
+/// newly-captured lead. Used by both the real-time wake path and the periodic
+/// safety-net sweep.
+async fn scan_and_notify(app: &tauri::AppHandle) {
+    match scan().await {
+        Ok(emails) if !emails.is_empty() => {
+            tracing::info!("imap scan: {} new emails", emails.len());
+            match process_new_emails(&emails).await {
+                Ok(leads) => notify_new_leads(app, &leads),
+                Err(e) => tracing::warn!("process_new_emails failed: {}", e),
             }
-            match scan().await {
-                Ok(emails) if !emails.is_empty() => {
-                    tracing::info!("imap scan: {} new emails", emails.len());
-                    if let Err(e) = process_new_emails(&emails).await {
-                        tracing::warn!("process_new_emails failed: {}", e);
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("imap scan error: {}", e),
+    }
+}
+
+/// Raise a system notification for each newly-captured lead. Best-effort.
+fn notify_new_leads(app: &tauri::AppHandle, leads: &[NewLead]) {
+    use tauri_plugin_notification::NotificationExt;
+    for lead in leads {
+        let _ = app
+            .notification()
+            .builder()
+            .title("New lead")
+            .body(format!("New lead: {}", lead.name))
+            .show();
+        tracing::info!("notified new lead {} ({})", lead.name, &lead.client_id[..8.min(lead.client_id.len())]);
+    }
+}
+
+/// Resolve the connection details + password for one inbox id, synchronously where
+/// possible. The legacy account may use OAuth (needs an async token refresh), so
+/// this is async. Returns None when the inbox has no usable credential.
+async fn inbox_conn(ib: &EmailInbox) -> Option<(String, u16, String, String)> {
+    let password = if ib.id == "legacy" {
+        match load_settings().ok().map(|s| s.auth_method) {
+            Some(AuthMethod::Oauth2) => oauth2_access_token().await.ok()?,
+            _ => cred("imap_pass").ok()?,
+        }
+    } else {
+        cred(&format!("imap_pass_{}", ib.id)).ok()?
+    };
+    Some((ib.host.clone(), ib.port, ib.user.clone(), password))
+}
+
+/// Enumerate the mailboxes to watch: every added inbox, plus the legacy account
+/// (from EmailSettings) when it has an IMAP host — mirrors `scan()`.
+fn watchable_inboxes() -> Vec<EmailInbox> {
+    let mut inboxes = load_inboxes();
+    if let Ok(s) = load_settings() {
+        if !s.imap_host.is_empty() {
+            inboxes.push(EmailInbox {
+                id: "legacy".into(),
+                label: s.user.clone(),
+                host: s.imap_host,
+                port: s.imap_port,
+                user: s.user,
+            });
+        }
+    }
+    inboxes
+}
+
+/// One resilient IDLE loop for a single inbox. Holds a connection open (via IDLE),
+/// wakes on new mail, runs the scan+process pipeline, then re-idles. Reconnects on
+/// drop with exponential backoff; backs off hardest on auth failures so we never
+/// hammer the server. Exits if the inbox is removed from config.
+fn spawn_inbox_watcher(app: tauri::AppHandle, inbox_id: String) {
+    tauri::async_runtime::spawn(async move {
+        // Backoff state: grows on error, resets on a clean IDLE cycle.
+        let mut backoff_secs: u64 = 0;
+        loop {
+            // Stop watching if this inbox no longer exists (removed in settings).
+            let ib = match watchable_inboxes().into_iter().find(|i| i.id == inbox_id) {
+                Some(ib) => ib,
+                None => {
+                    tracing::info!("inbox watcher {} exiting (inbox removed)", inbox_id);
+                    return;
+                }
+            };
+
+            if backoff_secs > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+            }
+
+            let (host, port, user, password) = match inbox_conn(&ib).await {
+                Some(c) => c,
+                None => {
+                    // No credential yet — wait a while, don't spin.
+                    backoff_secs = 60;
+                    continue;
+                }
+            };
+
+            // Do an initial sweep so anything that arrived while we were down (or
+            // before the first IDLE) is captured immediately.
+            scan_and_notify(&app).await;
+
+            let idle_res = tokio::task::spawn_blocking(move || {
+                idle_once_blocking(host, port, user, password, IDLE_CYCLE)
+            })
+            .await;
+
+            match idle_res {
+                Ok(Ok(changed)) => {
+                    backoff_secs = 0; // healthy cycle
+                    if changed {
+                        // New/changed mail signalled — fetch + process only new UIDs.
+                        scan_and_notify(&app).await;
+                    }
+                    // On a plain timeout we just loop and re-issue IDLE.
+                }
+                Ok(Err(e)) => {
+                    let msg = e.to_string();
+                    // Auth failures: back off hard (5 min) so we don't lock the account.
+                    let is_auth = msg.contains("IMAP login") || msg.to_lowercase().contains("auth");
+                    backoff_secs = if is_auth {
+                        300
+                    } else {
+                        // Exponential: 5s → 10 → 20 … capped at 2 min.
+                        (backoff_secs.max(5) * 2).min(120)
+                    };
+                    tracing::warn!("inbox {} IDLE error ({}); retrying in {}s", inbox_id, msg, backoff_secs);
+                }
+                Err(join_err) => {
+                    backoff_secs = (backoff_secs.max(5) * 2).min(120);
+                    tracing::warn!("inbox {} IDLE task join error: {}", inbox_id, join_err);
+                }
+            }
+        }
+    });
+}
+
+/// Start near-real-time inbox monitoring. Spawns one IMAP-IDLE watcher per
+/// configured inbox and a lightweight supervisor that (a) picks up inboxes added
+/// at runtime and (b) runs a periodic safety-net full scan in case a server
+/// doesn't support IDLE or an IDLE wake was missed. Replaces the old fixed-interval
+/// poll (`spawn_periodic_scan`).
+pub fn spawn_realtime_watchers(app: tauri::AppHandle) {
+    use std::collections::HashSet;
+    tauri::async_runtime::spawn(async move {
+        let mut watched: HashSet<String> = HashSet::new();
+        // Safety-net sweep interval — much longer than the old 300s poll since IDLE
+        // is doing the real work; this only catches IDLE-incapable servers.
+        let mut safety = tokio::time::interval(std::time::Duration::from_secs(600));
+        safety.tick().await; // consume immediate tick
+        loop {
+            if any_inbox_configured() {
+                for ib in watchable_inboxes() {
+                    if watched.insert(ib.id.clone()) {
+                        tracing::info!("starting real-time watcher for inbox {}", ib.id);
+                        spawn_inbox_watcher(app.clone(), ib.id.clone());
                     }
                 }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("imap scan error: {}", e),
+            }
+            // Re-check config for new inboxes every 60s; run the safety sweep on its
+            // own (longer) cadence.
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                _ = safety.tick() => {
+                    if any_inbox_configured() {
+                        scan_and_notify(&app).await;
+                    }
+                }
             }
         }
     });
@@ -610,16 +870,39 @@ pub fn dedup_email_interactions_once() {
     tracing::info!("email dedup: removed {} re-logged email_in interactions", n);
 }
 
-/// Match emails against signup rules, then known clients.
-async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
+/// A lead newly captured during a scan: its client id + display name. Returned so
+/// the real-time watcher can raise an OS notification ("New lead: <name>").
+pub struct NewLead {
+    pub client_id: String,
+    pub name: String,
+}
+
+/// Match emails against signup rules, then known clients. Returns the leads that
+/// were newly auto-created (for the caller to notify on).
+async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
+    let mut new_leads: Vec<NewLead> = Vec::new();
     for email in emails {
         // Signup detection first
-        if let Ok(Some(rule_name)) =
+        if let Ok(Some(m)) =
             crate::signup_rules::matches_any(&email.from, &email.subject, &email.source)
         {
-            tracing::info!("signup rule '{}' matched", rule_name);
-            if let Err(e) = crate::signup_rules::auto_create_client(email).await {
-                tracing::warn!("auto_create_client failed: {}", e);
+            tracing::info!("signup rule '{}' matched (patternless={})", m.name, m.patternless);
+            // A patternless (inbox-only) rule must ONLY create from a real parsed
+            // form — never AI-create arbitrary inbox mail into a client.
+            match crate::signup_rules::auto_create_client(email, m.patternless).await {
+                Ok(Some(client_id)) => {
+                    // Record the source email's identity so the client can be archived
+                    // from its inbox once approved (best-effort; never fatal).
+                    record_source_email(&client_id, email);
+                    // Only treat as a "new lead" (notify) when this scan actually
+                    // created a NEW pending client — dedup returns an existing id
+                    // that's already active, which we don't want to re-announce.
+                    if let Some(name) = pending_client_name(&client_id) {
+                        new_leads.push(NewLead { client_id, name });
+                    }
+                }
+                Ok(None) => tracing::info!("signup: skipped non-form email under inbox-only rule"),
+                Err(e) => tracing::warn!("auto_create_client failed: {}", e),
             }
             continue;
         }
@@ -714,5 +997,54 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<()> {
             });
         }
     }
-    Ok(())
+    Ok(new_leads)
+}
+
+/// Return the name of a client only if it's currently PENDING approval. Used to
+/// gate the "new lead" notification: a dedup that returned an already-active
+/// client's id shouldn't re-announce it.
+fn pending_client_name(client_id: &str) -> Option<String> {
+    let conn = pool().get().ok()?;
+    conn.query_row(
+        "SELECT name FROM clients WHERE id=?1 AND approval_status='pending'",
+        [client_id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// Stamp the source email's identity onto a captured client's metadata so the
+/// message can be archived from its inbox once the client is approved. Writes the
+/// keys `src_inbox` (inbox label / `source`), `src_uid` (IMAP uid), and
+/// `src_message_id`. Best-effort: a failure here must never abort capture.
+fn record_source_email(client_id: &str, email: &ParsedEmail) {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return };
+    // json_set the source keys; message_id is only written when present.
+    let res = if let Some(mid) = email.message_id.as_deref() {
+        conn.execute(
+            "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), \
+                '$.src_inbox', ?2, '$.src_uid', ?3, '$.src_message_id', ?4) WHERE id=?1",
+            rusqlite::params![client_id, email.source, email.uid as i64, mid],
+        )
+    } else {
+        conn.execute(
+            "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), \
+                '$.src_inbox', ?2, '$.src_uid', ?3) WHERE id=?1",
+            rusqlite::params![client_id, email.source, email.uid as i64],
+        )
+    };
+    match res {
+        Ok(_) => {
+            // Mirror the change into the sync log so peers see the source metadata.
+            let meta: Option<String> = conn
+                .query_row("SELECT metadata FROM clients WHERE id=?1", [client_id], |r| r.get(0))
+                .ok();
+            if let Some(meta) = meta {
+                let mut cols = serde_json::Map::new();
+                cols.insert("metadata".into(), serde_json::Value::String(meta));
+                let _ = crate::sync::record_upsert("clients", client_id, cols);
+            }
+        }
+        Err(e) => tracing::warn!("record_source_email for {}: {}", client_id, e),
+    }
 }

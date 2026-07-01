@@ -124,7 +124,15 @@ export default function ClientsView() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       const trimmed = searchText.trim();
-      applyFilter({ ...filter, search: trimmed || undefined });
+      // Keep the applied filter's `search` in lock-step with the box so later
+      // filter changes (category/tier/etc.) don't silently drop the query — and
+      // clearing the box restores the full list.
+      setFilter((prev) => {
+        const next = { ...prev };
+        if (trimmed) next.search = trimmed; else delete next.search;
+        applyFilter(next);
+        return next;
+      });
       if (trimmed) localStorage.setItem("clienthub_clients_search", trimmed);
       else localStorage.removeItem("clienthub_clients_search");
     }, 300);
@@ -292,7 +300,12 @@ export default function ClientsView() {
 
   if (detailId) {
     return (
-      <ClientDetailView clientId={detailId} onBack={() => { setDetailId(null); applyFilter(filter); }} />
+      <ClientDetailView
+        clientId={detailId}
+        onBack={() => { setDetailId(null); applyFilter(filter); }}
+        onEdit={(c) => { setDetailId(null); setEditing(c); setShowForm(true); applyFilter(filter); }}
+        onDeleted={() => { setDetailId(null); applyFilter(filter); loadMissingInfo(); }}
+      />
     );
   }
 
@@ -315,15 +328,15 @@ export default function ClientsView() {
       {pending.length > 0 && (
         <button
           onClick={() => setReviewId(pending[0].id)}
-          className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-amber-200 bg-amber-50 text-left hover:bg-amber-100/70 transition-colors"
+          className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-accent/25 bg-gradient-to-r from-accent/10 to-accent/[0.03] text-left hover:from-accent/15 hover:to-accent/5 transition-colors"
         >
           <span className="flex items-center gap-2.5">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-500 text-white text-[12px] font-bold">{pending.length}</span>
-            <span className="text-[13px] font-medium text-amber-800">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent text-on-accent text-[12px] font-bold">{pending.length}</span>
+            <span className="text-[13px] font-medium text-ink-2">
               {pending.length === 1 ? "1 new customer is" : `${pending.length} new customers are`} awaiting your approval
             </span>
           </span>
-          <span className="text-[12px] font-semibold text-amber-700">Review &rarr;</span>
+          <span className="text-[12px] font-semibold text-accent-hover">Review &rarr;</span>
         </button>
       )}
       {/* Header */}
@@ -484,8 +497,17 @@ export default function ClientsView() {
             placeholder="Search by name, company, or email..."
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
-            className="border border-line w-full pl-9 pr-3 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            className="border border-line w-full pl-9 pr-9 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
           />
+          {searchText && (
+            <button
+              onClick={() => setSearchText("")}
+              title="Clear search"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-ink-2 p-0.5 rounded-md hover:bg-surface-3 transition-colors"
+            >
+              <X size={13} />
+            </button>
+          )}
         </div>
         <select
           value={filter.category ?? ""}
@@ -691,9 +713,9 @@ export default function ClientsView() {
                       {c.name}
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
                       {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Blacklisted — excluded from all sends">Blacklisted</span>}
-                      {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-warning-ink bg-warning-bg border border-warning-ink/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
+                      {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
                       {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
-                      {c.approval_status === "pending" && <span className="text-[8px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
+                      {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
                       {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
                       {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}
                       {!c.street_address && <MapPin size={10} className="text-faint flex-shrink-0" />}
@@ -728,19 +750,24 @@ export default function ClientsView() {
                   <td className="px-4 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
                     {fmtAmount(c.total_revenue || 0)}
                   </td>
-                  <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={async (ev) => { ev.stopPropagation(); const val = await api.toggleClientBlacklist(c.id); const updated = clients.find(x => x.id === c.id); if (updated) updated.is_blacklisted = val; setClients([...clients]); }} title={c.is_blacklisted ? "Unblacklist" : "Blacklist"}
-                      className="text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors">
-                      <Ban size={13} />
-                    </button>
-                    <button onClick={() => { setEditing(c); setShowForm(true); }} title="Edit"
-                      className="text-faint hover:text-ink-2 p-1 rounded-md hover:bg-surface-3 transition-colors">
-                      <Edit2 size={13} />
-                    </button>
-                    <button onClick={() => handleDelete(c.id)} title="Delete"
-                      className="text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors">
-                      <Trash2 size={13} />
-                    </button>
+                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                    {/* Tidy, contained action cluster — one segmented pill, consistent
+                        hit targets, quiet by default and legible on hover. */}
+                    <div className="inline-flex items-center rounded-lg border border-line-2 bg-surface-2/50 overflow-hidden divide-x divide-line-2">
+                      <button onClick={async (ev) => { ev.stopPropagation(); const val = await api.toggleClientBlacklist(c.id); const updated = clients.find(x => x.id === c.id); if (updated) updated.is_blacklisted = val; setClients([...clients]); }}
+                        title={c.is_blacklisted ? "Remove from blacklist" : "Blacklist"}
+                        className={`flex items-center justify-center w-8 h-7 transition-colors ${c.is_blacklisted ? "text-danger-ink bg-danger-bg" : "text-faint hover:text-danger-ink hover:bg-danger-bg"}`}>
+                        <Ban size={13} />
+                      </button>
+                      <button onClick={() => { setEditing(c); setShowForm(true); }} title="Edit"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent-hover hover:bg-accent/10 transition-colors">
+                        <Edit2 size={13} />
+                      </button>
+                      <button onClick={() => handleDelete(c.id)} title="Delete"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

@@ -59,7 +59,7 @@ function FlowIllustration() {
               <div className="text-[12px] font-semibold text-ink">New pending lead</div>
               <div className="text-[10.5px] text-muted">jane@acme.com · from your website</div>
             </div>
-            <span className="ml-auto text-[9px] font-bold uppercase tracking-wide text-warning-ink bg-warning-bg px-1.5 py-0.5 rounded">Pending</span>
+            <span className="ml-auto text-[9px] font-bold uppercase tracking-wide text-accent-hover bg-accent/10 px-1.5 py-0.5 rounded">Pending</span>
           </div>
         </MockWindow>
       </div>
@@ -206,7 +206,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-6 h-6 rounded-md bg-success-bg text-success-ink flex items-center justify-center text-[12px] font-bold">A</span>
+              <span className="w-6 h-6 rounded-md bg-accent/10 text-accent-hover flex items-center justify-center text-[12px] font-bold">A</span>
               <span className="text-[13px] font-semibold text-ink">Customer signups (automatic)</span>
             </div>
             <p className="text-[12px] text-muted leading-relaxed">
@@ -216,7 +216,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-6 h-6 rounded-md bg-warning-bg text-warning-ink flex items-center justify-center text-[12px] font-bold">B</span>
+              <span className="w-6 h-6 rounded-md bg-gradient-to-br from-accent/20 to-accent/5 text-accent-hover flex items-center justify-center text-[12px] font-bold">B</span>
               <span className="text-[13px] font-semibold text-ink">Contact / lead forms on your storefront</span>
             </div>
             <p className="text-[12px] text-muted leading-relaxed mb-3">

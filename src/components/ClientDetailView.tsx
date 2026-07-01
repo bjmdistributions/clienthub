@@ -20,11 +20,19 @@ import {
   Inbox,
   Clock,
   Tag,
+  Pencil,
+  Trash2,
+  AlertTriangle,
+  X,
 } from "lucide-react";
 
 interface Props {
   clientId: string;
   onBack: () => void;
+  /** Open the full edit form for this client (handled by the parent list view). */
+  onEdit?: (client: Client) => void;
+  /** Called after the client is deleted so the parent can refresh + leave. */
+  onDeleted?: () => void;
 }
 
 const kindColor = (kind: string): string => {
@@ -53,18 +61,52 @@ const leadStatusColor = (s: string): string => {
   return "bg-accent/10 text-accent-hover border border-accent/20";
 };
 
-// A clear labeled on/off switch (replaces the old mystery pill buttons).
-function FlagSwitch({ label, on, onToggle, title, danger }: { label: string; on: boolean; onToggle: () => void | Promise<void>; title?: string; danger?: boolean }) {
-  const onCls = danger ? "bg-danger-bg text-danger-ink border-danger-ink/30" : "bg-accent/10 text-accent border-accent/30";
-  const knobCls = on ? (danger ? "bg-danger-ink" : "bg-accent") : "bg-line-3";
+// A premium labeled on/off switch. `tone` colours the ON state: accent for a
+// positive flag (high-value), neutral for a quiet flag (no-bulk), danger for a
+// caution flag (blacklist). Off is a calm muted rail. An internal pending guard
+// swallows rapid double-clicks so the visible state can't desync from the server.
+function FlagSwitch({ label, on, onToggle, title, tone = "accent" }: {
+  label: string;
+  on: boolean;
+  onToggle: () => void | Promise<void>;
+  title?: string;
+  tone?: "accent" | "neutral" | "danger";
+}) {
+  const [busy, setBusy] = useState(false);
+  const trackOn =
+    tone === "danger" ? "bg-danger border-danger" :
+    tone === "neutral" ? "bg-ink-2 border-ink-2" :
+    "bg-accent border-accent";
+  const click = () => {
+    if (busy) return;
+    setBusy(true);
+    Promise.resolve(onToggle()).finally(() => setBusy(false));
+  };
   return (
-    <button onClick={onToggle} role="switch" aria-checked={on} title={title}
-      className={`inline-flex items-center justify-between gap-2 w-full min-w-[136px] pl-2.5 pr-1.5 h-7 rounded-full text-[11px] font-medium border transition-colors ${
-        on ? onCls : "bg-surface-2 text-muted border-line hover:text-ink-2"
-      }`}>
-      <span>{label}</span>
-      <span className={`relative w-7 h-4 rounded-full transition-colors flex-shrink-0 ${knobCls}`}>
-        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[14px]" : "translate-x-0.5"}`} />
+    <button
+      onClick={click}
+      role="switch"
+      aria-checked={on}
+      aria-busy={busy}
+      title={title}
+      disabled={busy}
+      className={`group inline-flex items-center justify-between gap-3 w-[168px] pl-3 pr-2 h-8 rounded-lg border text-[12px] font-medium transition-colors disabled:opacity-70 ${
+        on
+          ? "bg-surface-2 border-line-3 text-ink"
+          : "bg-surface border-line text-muted hover:text-ink-2 hover:border-line-3"
+      }`}
+    >
+      <span className="truncate">{label}</span>
+      <span
+        className={`relative w-9 h-5 rounded-full flex-shrink-0 border transition-colors ${
+          on ? trackOn : "bg-surface-3 border-line-3"
+        }`}
+      >
+        <span
+          className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-all ${
+            on ? "left-[18px]" : "left-[3px]"
+          }`}
+        />
       </span>
     </button>
   );
@@ -86,8 +128,9 @@ function SubHeading({ icon, children }: { icon: React.ReactNode; children: React
   return <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">{icon}{children}</div>;
 }
 
-export default function ClientDetailView({ clientId, onBack }: Props) {
+export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }: Props) {
   const [client, setClient] = useState<Client | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
@@ -186,6 +229,17 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
 
   return (
     <div>
+      {confirmDelete && (
+        <DeleteClientModal
+          name={client.name}
+          onClose={() => setConfirmDelete(false)}
+          onConfirm={async () => {
+            await api.deleteClient(client.id);
+            setConfirmDelete(false);
+            if (onDeleted) onDeleted(); else onBack();
+          }}
+        />
+      )}
       {/* Back */}
       <button
         onClick={onBack}
@@ -222,18 +276,44 @@ export default function ClientDetailView({ clientId, onBack }: Props) {
 
           {/* Flag switches — clear on/off */}
           <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-            <FlagSwitch label="High-value"
-              on={client.high_value ?? !!client.metadata?.high_value}
+            {/* Edit / Delete — restored after the profile redesign. Delete is a
+                deliberate two-step (type-the-name) confirm to prevent data loss. */}
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <button
+                onClick={() => onEdit?.(client)}
+                className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+              >
+                <Pencil size={13} /> Edit
+              </button>
+              <button
+                onClick={() => setConfirmDelete(true)}
+                title="Delete client"
+                className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-line text-faint hover:text-danger-ink hover:border-danger hover:bg-danger-bg transition-colors"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+            <FlagSwitch label="High-value" tone="accent"
+              on={!!(client.high_value || client.metadata?.high_value)}
               title="A positive label for your best buyers. Purely a tag — it does not change who receives newsletters."
-              onToggle={async () => { const val = await api.toggleClientHighValue(client.id); setClient({ ...client, high_value: val, metadata: { ...(client.metadata || {}), high_value: val } }); }} />
-            <FlagSwitch label="No bulk email"
-              on={client.exclusive ?? !!client.metadata?.exclusive}
+              onToggle={async () => {
+                const val = await api.toggleClientHighValue(client.id);
+                setClient((c) => c ? { ...c, high_value: val, metadata: { ...(c.metadata || {}), high_value: val } } : c);
+              }} />
+            <FlagSwitch label="No bulk email" tone="neutral"
+              on={!!(client.exclusive || client.metadata?.exclusive)}
               title="Keeps this client off mass newsletters and auto-add — for people you don't want to bulk-email."
-              onToggle={async () => { const val = await api.toggleClientExclusive(client.id); setClient({ ...client, exclusive: val, metadata: { ...(client.metadata || {}), exclusive: val } }); }} />
-            <FlagSwitch label="Blacklisted" danger
-              on={client.is_blacklisted}
+              onToggle={async () => {
+                const val = await api.toggleClientExclusive(client.id);
+                setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
+              }} />
+            <FlagSwitch label="Blacklisted" tone="danger"
+              on={!!client.is_blacklisted}
               title="Blacklisted clients are excluded from all sends."
-              onToggle={async () => { const val = await api.toggleClientBlacklist(client.id); client.is_blacklisted = val; setClient({ ...client }); }} />
+              onToggle={async () => {
+                const val = await api.toggleClientBlacklist(client.id);
+                setClient((c) => c ? { ...c, is_blacklisted: val } : c);
+              }} />
           </div>
         </div>
 
@@ -696,6 +776,57 @@ function NoteForm({ clientId, onClose }: { clientId: string; onClose: () => void
         >
           {saving ? "Saving..." : "Save"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Deliberate two-step delete: the operator must type the client's exact name
+// before the destructive action unlocks. Deletion cascades to interactions, so
+// Jack wants this to always be intentional.
+function DeleteClientModal({ name, onClose, onConfirm }: { name: string; onClose: () => void; onConfirm: () => void | Promise<void> }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const match = typed.trim() === name.trim();
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-5 pt-5 pb-3">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-danger-bg text-danger-ink flex-shrink-0"><AlertTriangle size={17} /></span>
+            <div>
+              <h2 className="text-[16px] font-semibold text-ink">Delete client</h2>
+              <p className="text-[12px] text-muted mt-0.5">This permanently removes the client and all their interactions.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>
+        </div>
+        <div className="px-5 pb-4">
+          <p className="text-[13px] text-ink-2 mb-2">
+            To confirm, type <span className="font-semibold text-ink">{name}</span> below.
+          </p>
+          <input
+            autoFocus
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && match && !busy) { setBusy(true); Promise.resolve(onConfirm()).finally(() => setBusy(false)); } }}
+            placeholder={name}
+            className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-danger/40 focus:border-danger transition-colors"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">
+          <button onClick={onClose} disabled={busy}
+            className="px-4 h-9 rounded-lg border border-line text-ink-2 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={() => { setBusy(true); Promise.resolve(onConfirm()).finally(() => setBusy(false)); }}
+            disabled={!match || busy}
+            className="inline-flex items-center gap-1.5 px-4 h-9 rounded-lg bg-danger text-white text-[13px] font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+          >
+            <Trash2 size={14} /> {busy ? "Deleting…" : "Delete client"}
+          </button>
+        </div>
       </div>
     </div>
   );

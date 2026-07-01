@@ -284,7 +284,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
               <p className="text-[12px] text-muted mt-0.5">{active.desc}</p>
             </div>
             <div className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 h-7 rounded-full flex-shrink-0 ${
-              saveState === "saving" ? "bg-amber-50 text-amber-600"
+              saveState === "saving" ? "bg-accent/10 text-accent-hover"
               : saveState === "error" ? "bg-red-50 text-red-600"
               : "bg-emerald-50 text-emerald-600"}`}>
               {saveState === "saving" ? "Saving…"
