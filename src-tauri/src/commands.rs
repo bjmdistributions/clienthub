@@ -138,8 +138,8 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                 total_revenue: r.get(13)?,
                 category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
-                is_blacklisted: false,
-                approval_status: "active".into(),
+                is_blacklisted: r.get::<_, i64>(14)? != 0,
+                approval_status: r.get(15)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1087,7 +1087,9 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE(c.is_blacklisted,0),
+                COALESCE(c.approval_status,'active')
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          WHERE LOWER(c.name) LIKE ?1 OR LOWER(c.email) LIKE ?1 OR LOWER(c.company) LIKE ?1 OR LOWER(c.metadata) LIKE ?1
@@ -1106,8 +1108,8 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
                 total_revenue: r.get(13)?,
             category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
             needs_review,
-            is_blacklisted: false,
-            approval_status: "active".into(),
+            is_blacklisted: r.get::<_, i64>(14)? != 0,
+            approval_status: r.get(15)?,
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1395,8 +1397,20 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
 
     let invoice_map: std::collections::HashMap<String, (f64, i64)> = invoice_data.into_iter().map(|(id, p, s)| (id, (p, s))).collect();
 
+    // Quotes count per client — must match buyer_tiers() so the filter tier equals
+    // the displayed tier (a quote-only client is "C", not "Prospect").
+    let quotes_map: std::collections::HashMap<String, i64> = {
+        let mut qs = conn.prepare(
+            "SELECT client_id, COUNT(*) FROM quotes WHERE status IN ('sent','accepted','declined','expired') GROUP BY client_id"
+        ).map_err(|e| e.to_string())?;
+        let rows = qs.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     for (client_id, meta_str) in &clients {
         let (actual_paid, invoices_sent) = invoice_map.get(client_id).copied().unwrap_or((0.0, 0));
+        let quotes_sent = quotes_map.get(client_id).copied().unwrap_or(0);
         let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
         let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
         let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
@@ -1409,7 +1423,7 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
         let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
         else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
         else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
-        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 { "C" }
+        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
         else { "Prospect" };
         map.insert(client_id.clone(), tier.to_string());
     }
@@ -1432,7 +1446,9 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE(c.is_blacklisted,0),
+                COALESCE(c.approval_status,'active')
          FROM clients c
          WHERE {}", where_clause
     );
@@ -1445,7 +1461,7 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
             lead_status: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
             metadata: meta, invoice_count: r.get(11)?, last_contact_at: None,
-            total_revenue: r.get(12)?,
+            total_revenue: r.get(13)?,
                 category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
                 needs_review,
                 is_blacklisted: r.get::<_, i64>(14).unwrap_or(0) != 0,
