@@ -13,12 +13,12 @@ const FIELDS = [
   { key: "phone",   label: "Phone" },
   { key: "company", label: "Company" },
   { key: "notes",   label: "Notes" },
-  { key: "street_address", label: "Street Address" },
+  { key: "street_address", label: "Street address" },
   { key: "city",    label: "City" },
   { key: "state",   label: "State" },
-  { key: "zip_code", label: "Zip Code" },
+  { key: "zip_code", label: "Zip code" },
   { key: "category", label: "Category" },
-  { key: "lead_status", label: "Lead Status" },
+  { key: "lead_status", label: "Lead status" },
 ];
 
 export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
@@ -174,7 +174,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   </button>
                 ))}
                 <button onClick={() => setEmailSkipped(true)}
-                  className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${emailSkipped ? "bg-gray-600 text-white border-gray-600" : "bg-surface text-ink-2 border-line hover:bg-surface-2"}`}>
+                  className={`px-3 h-8 rounded-lg text-[12px] font-medium border transition-colors ${emailSkipped ? "bg-surface-3 text-ink border-line-3" : "bg-surface text-ink-2 border-line hover:bg-surface-2"}`}>
                   Skip email
                 </button>
               </div>
@@ -192,7 +192,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   )}
                   <div className="flex items-center gap-3 pt-1">
                     <button onClick={testEmail} disabled={emailTesting} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50 flex items-center gap-1.5">
-                      {emailTesting ? "Testing..." : "Test Connection"}
+                      {emailTesting ? "Testing…" : "Test connection"}
                     </button>
                     {emailTested === "ok" && <span className="text-success-ink text-[12px] font-medium flex items-center gap-1"><Check size={13} /> Connected</span>}
                     {emailTested === "fail" && (
@@ -226,7 +226,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   </div>
                   {csvPreview && !importSummary && (
                     <div className="space-y-2">
-                      <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Map Columns</p>
+                      <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Map columns</p>
                       {FIELDS.map((f) => (
                         <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
                           <label className="text-[12px] text-ink-2">{f.label}</label>
@@ -245,7 +245,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     </div>
                   ) : (
                     <button onClick={runImport} disabled={importing || !csvMapping.name} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[12px] font-medium disabled:opacity-50">
-                      {importing ? "Importing..." : `Import ${csvPreview?.total_rows ?? 0} clients`}
+                      {importing ? "Importing…" : `Import ${csvPreview?.total_rows ?? 0} clients`}
                     </button>
                   )}
                 </>

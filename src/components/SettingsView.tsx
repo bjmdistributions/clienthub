@@ -77,6 +77,8 @@ import {
   Inbox,
   Send,
   Wand2,
+  BookOpen,
+  Lock,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -88,8 +90,8 @@ import { GoogleCloudGuide } from "./GoogleCloudGuide";
 function GuideLink({ section }: { section: string }) {
   return (
     <button onClick={() => api.openExternal(`https://ecliptr.app/guide#${section}`)}
-      className="text-[12px] text-accent hover:underline inline-flex items-center gap-1 whitespace-nowrap">
-      📖 Setup guide →
+      className="text-[12px] text-accent hover:underline inline-flex items-center gap-1.5 whitespace-nowrap">
+      <BookOpen size={13} /> Setup guide
     </button>
   );
 }
@@ -720,10 +722,10 @@ function SettingCard({ icon: Icon, title, purpose, aside, children }: {
 }
 
 // Connected / not-connected pill (calm, reused).
-function ConnectedPill({ ok }: { ok: boolean }) {
+function ConnectedPill({ ok, onLabel = "Connected", offLabel = "Not set up" }: { ok: boolean; onLabel?: string; offLabel?: string }) {
   return ok
-    ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full"><Check size={13} /> Connected</span>
-    : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><span className="w-2 h-2 rounded-full bg-line-3" /> Not set up</span>;
+    ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full"><Check size={13} /> {onLabel}</span>
+    : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><span className="w-2 h-2 rounded-full bg-line-3" /> {offLabel}</span>;
 }
 
 // A quiet "Advanced" disclosure for technical/rare fields.
@@ -1323,6 +1325,7 @@ function AiTab() {
   const [models,  setModels]  = useState<OllamaModel[]>([]);
   const [selected,setSelected]= useState("");
   const [online,  setOnline]  = useState<boolean | null>(null);
+  const [saved,   setSaved]   = useState(false);
 
   useEffect(() => {
     api.aiHealthCheck().then(setOnline);
@@ -1330,54 +1333,52 @@ function AiTab() {
   }, []);
 
   const save = async () => {
-    if (selected) await api.aiSetModel(selected);
+    if (!selected) return;
+    await api.aiSetModel(selected);
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl">
-      {/* Status indicator */}
-      <div className="flex items-center gap-2 mb-5 pb-5 border-b border-line-2">
-        <span className="text-[13px] font-medium text-ink-2">Ollama status</span>
-        {online === null ? (
-          <span className="text-[13px] text-muted">checking...</span>
-        ) : (
-          <span className={`flex items-center gap-1.5 text-[13px] font-medium ${online ? "text-success-ink" : "text-danger-ink"}`}>
-            <span className={`w-2 h-2 rounded-full ${online ? "bg-success shadow-[0_0_6px_rgba(16,185,129,0.5)]" : "bg-danger"}`} />
-            {online ? "Online" : (
-              <>offline — start with <code className="bg-surface-3 px-1.5 py-0.5 rounded-md text-[12px] ml-1">ollama serve</code></>
-            )}
-          </span>
+    <div className="max-w-2xl">
+      <SettingCard icon={Bot} title="Local AI" purpose="A local Ollama model reads emails and drafts text — nothing leaves your machine."
+        aside={online !== null ? <ConnectedPill ok={online} onLabel="Online" offLabel="Offline" /> : undefined}>
+        {online === false && (
+          <div className="text-[12.5px] text-muted bg-surface-2/50 border border-line-2 rounded-xl px-4 py-3 mb-4">
+            Ollama isn't running — start it with <code className="bg-surface-3 px-1.5 py-0.5 rounded-md text-[12px]">ollama serve</code>, then reopen this section.
+          </div>
         )}
-      </div>
 
-      <Field label="Active model">
-        <select
-          className={inp}
-          value={selected}
-          onChange={(e) => setSelected(e.target.value)}
+        <Field label="Active model">
+          <select
+            className={inp}
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+          >
+            <option value="">— pick a model —</option>
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}{m.size ? ` (${(m.size / 1e9).toFixed(1)} GB)` : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <button
+          onClick={save}
+          disabled={!selected}
+          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-2"
         >
-          <option value="">— pick a model —</option>
-          {models.map((m) => (
-            <option key={m.name} value={m.name}>
-              {m.name}{m.size ? ` (${(m.size / 1e9).toFixed(1)} GB)` : ""}
-            </option>
-          ))}
-        </select>
-      </Field>
+          {saved ? <Check size={13} /> : null} {saved ? "Saved" : "Set active model"}
+        </button>
 
-      <p className="text-[12px] text-muted mb-5">
-        Recommended: <code className="bg-surface-3 px-1 rounded">llama3.1:8b</code> for general use,{" "}
-        <code className="bg-surface-3 px-1 rounded">qwen2.5:14b</code> for better extraction quality.
-        Pull with <code className="bg-surface-3 px-1.5 py-0.5 rounded">ollama pull &lt;model&gt;</code>.
-      </p>
-
-      <button
-        onClick={save}
-        disabled={!selected}
-        className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
-      >
-        Set Active Model
-      </button>
+        <Advanced label="Model suggestions">
+          <p className="text-[12px] text-muted">
+            <code className="bg-surface-3 px-1 rounded">llama3.1:8b</code> works well for general use;{" "}
+            <code className="bg-surface-3 px-1 rounded">qwen2.5:14b</code> extracts customer details more accurately.
+            Download one with <code className="bg-surface-3 px-1.5 py-0.5 rounded">ollama pull &lt;model&gt;</code>.
+          </p>
+        </Advanced>
+      </SettingCard>
     </div>
   );
 }
@@ -1413,6 +1414,7 @@ function SyncTab() {
     finally { setNBusy(false); }
   };
   const disconnectNet = async () => {
+    if (!confirm("Disconnect this desktop from cloud sync?")) return;
     setNBusy(true);
     try { await api.netsyncDisconnect(); setNMsg(null); await refreshNet(); }
     finally { setNBusy(false); }
@@ -1449,147 +1451,124 @@ function SyncTab() {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-2xl space-y-6">
-      {/* Status */}
-      <div>
-        <SectionLabel>Sync Status</SectionLabel>
-        <div className="bg-surface-2/80 border border-line rounded-xl px-4 py-3 space-y-1.5 mt-2">
-          <div className="flex justify-between text-[13px]">
-            <span className="text-muted">Events applied</span>
-            <span className="font-mono text-ink">{status?.events_applied ?? 0}</span>
-          </div>
-          <div className="flex justify-between text-[13px]">
-            <span className="text-muted">Last applied</span>
-            <span className="font-mono text-ink">
-              {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "—"}
-            </span>
-          </div>
-        </div>
-        <button
-          onClick={replay}
-          disabled={replaying}
-          className="mt-3 bg-surface border border-line hover:bg-surface-2 text-ink-2 px-5 h-9 rounded-lg text-[13px] transition-colors disabled:opacity-50"
-        >
-          {replaying ? "Replaying..." : "Replay All Events"}
-        </button>
-      </div>
-
-      {/* Cloud network sync — connect this desktop to the central server */}
-      <div className="border-t border-line pt-5">
-        <SectionLabel>Cloud Sync</SectionLabel>
+    <div className="max-w-2xl space-y-4">
+      {/* Cloud sync — the main thing on this page */}
+      <SettingCard icon={Cloud} title="Cloud sync" purpose="Keeps this desktop in step with your Ecliptr workspace."
+        aside={<ConnectedPill ok={!!net?.connected} />}>
         {net?.connected ? (
-          <div className="mt-2 space-y-3">
-            <div className="bg-surface-2/80 border border-line rounded-xl px-4 py-3 space-y-1.5">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-success shadow-[0_0_6px_rgba(16,185,129,0.4)]" />
-                <p className="text-[13px] text-success-ink font-medium truncate">Connected to {net.url}</p>
+          <div className="space-y-3">
+            <div className="rounded-xl border border-line bg-surface-2/40 px-4 divide-y divide-line-2">
+              <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+                <span className="text-muted">Server</span>
+                <span className="text-ink truncate">{net.url}</span>
               </div>
-              <div className="flex justify-between text-[13px]">
-                <span className="text-muted">Pending to push</span>
-                <span className="font-mono text-ink">{net.pending_push}</span>
-              </div>
-              <div className="flex justify-between text-[13px]">
-                <span className="text-muted">Pull position</span>
-                <span className="font-mono text-ink">{net.pull_cursor}</span>
+              <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+                <span className="text-muted">Waiting to upload</span>
+                <span className="text-ink tabular-nums">{net.pending_push}</span>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <button
                 onClick={syncNow}
                 disabled={nBusy}
-                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-2"
               >
-                {nBusy ? "Syncing…" : "Sync now"}
+                {nBusy && <RefreshCw size={13} className="animate-spin" />} {nBusy ? "Syncing…" : "Sync now"}
               </button>
               <button
                 onClick={disconnectNet}
                 disabled={nBusy}
-                className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-5 h-9 rounded-lg text-[13px] transition-colors disabled:opacity-50"
+                className="border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50"
               >
                 Disconnect
               </button>
             </div>
             {nMsg && <p className="text-[12px] text-muted">{nMsg}</p>}
             {nErr && (
-              <div className="text-danger-ink text-[13px] flex items-center gap-1.5">
+              <div className="text-danger-ink text-[12.5px] flex items-center gap-1.5">
                 <AlertCircle size={13} /> {nErr}
               </div>
             )}
+            <Advanced>
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="text-muted">Pull position</span>
+                <span className="font-mono text-ink-2 tabular-nums">{net.pull_cursor}</span>
+              </div>
+            </Advanced>
           </div>
         ) : (
-          <div className="mt-2">
-            <p className="text-[12px] text-muted mb-3">
-              Connect this desktop to your Ecliptr workspace to sync over the internet — no shared
-              folder needed. Sign in with your team account.
+          <div>
+            <p className="text-[12.5px] text-muted mb-4">
+              Sign in with your team account to sync over the internet — no shared folder needed.
             </p>
-            <div className="space-y-2 max-w-sm">
-              <input
-                value={nUrl}
-                onChange={(e) => setNUrl(e.target.value)}
-                placeholder="Server URL"
-                className={inp}
-              />
-              <input
-                value={nEmail}
-                onChange={(e) => setNEmail(e.target.value)}
-                placeholder="Email"
-                autoComplete="username"
-                className={inp}
-              />
-              <input
-                type="password"
-                value={nPass}
-                onChange={(e) => setNPass(e.target.value)}
-                placeholder="Password"
-                autoComplete="current-password"
-                onKeyDown={(e) => { if (e.key === "Enter") connectNet(); }}
-                className={inp}
-              />
+            <div className="space-y-3 max-w-sm">
+              <Field label="Email">
+                <input
+                  value={nEmail}
+                  onChange={(e) => setNEmail(e.target.value)}
+                  placeholder="you@company.com"
+                  autoComplete="username"
+                  className={inp}
+                />
+              </Field>
+              <Field label="Password">
+                <input
+                  type="password"
+                  value={nPass}
+                  onChange={(e) => setNPass(e.target.value)}
+                  autoComplete="current-password"
+                  onKeyDown={(e) => { if (e.key === "Enter") connectNet(); }}
+                  className={inp}
+                />
+              </Field>
               <button
                 onClick={connectNet}
                 disabled={nBusy || !nUrl.trim() || !nEmail.trim() || !nPass}
-                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+                className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-2"
               >
-                {nBusy ? "Connecting…" : "Connect"}
+                {nBusy && <RefreshCw size={13} className="animate-spin" />} {nBusy ? "Connecting…" : "Connect"}
               </button>
             </div>
             {nErr && (
-              <div className="text-danger-ink text-[13px] mt-2 flex items-center gap-1.5">
+              <div className="text-danger-ink text-[12.5px] mt-3 flex items-center gap-1.5">
                 <AlertCircle size={13} /> {nErr}
               </div>
             )}
+            <Advanced label="Advanced (server)">
+              <Field label="Server URL">
+                <input
+                  value={nUrl}
+                  onChange={(e) => setNUrl(e.target.value)}
+                  placeholder="https://ecliptr.app"
+                  className={inpSm}
+                />
+              </Field>
+            </Advanced>
           </div>
         )}
-      </div>
+      </SettingCard>
 
       {/* Updates */}
-      <div className="border-t border-line pt-5">
-        <SectionLabel>App Updates</SectionLabel>
-        <div className="mt-2">
-          <UpdateButton />
-        </div>
-      </div>
+      <SettingCard icon={Download} title="App updates" purpose="Get the latest version of Ecliptr.">
+        <UpdateButton />
+      </SettingCard>
 
       {/* Encryption */}
-      <div className="border-t border-line pt-5">
-        <SectionLabel>Encryption</SectionLabel>
+      <SettingCard icon={Lock} title="Encryption" purpose="Protect synced data with a passphrase only your devices know."
+        aside={encrypted !== null ? <ConnectedPill ok={encrypted} onLabel="Encrypted" offLabel="Not encrypted" /> : undefined}>
         {encrypted === null ? (
-          <p className="text-[13px] text-muted mt-2">checking...</p>
+          <div className="h-9 w-48 bg-surface-2 rounded-lg animate-pulse" />
         ) : encrypted ? (
-          <div className="flex items-center gap-2 mt-2">
-            <span className="w-2 h-2 rounded-full bg-success shadow-[0_0_6px_rgba(16,185,129,0.4)]" />
-            <p className="text-[13px] text-success-ink font-medium">Sync events are encrypted at rest</p>
-          </div>
+          <p className="text-[12.5px] text-muted">Sync events are encrypted at rest on every device.</p>
         ) : (
-          <div className="mt-2">
-            <p className="text-[12px] text-muted mb-3">
-              Protect your sync data with a passphrase. All sync event files will be encrypted with
-              ChaCha20-Poly1305. Enter the same passphrase on every device.
+          <div>
+            <p className="text-[12.5px] text-muted mb-3">
+              Pick a passphrase and enter the same one on every device. Once set, sync files are unreadable without it.
             </p>
-            <div className="flex gap-2">
+            <div className="flex gap-2 max-w-sm">
               <input
                 type="password"
-                placeholder="Enter passphrase..."
+                placeholder="Passphrase"
                 value={passphrase}
                 onChange={(e) => setPassphrase(e.target.value)}
                 className={`${inp} flex-1`}
@@ -1599,33 +1578,58 @@ function SyncTab() {
                 disabled={settingPassphrase || !passphrase.trim()}
                 className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-10 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
               >
-                {settingPassphrase ? "Setting..." : "Enable"}
+                {settingPassphrase ? "Setting…" : "Enable"}
               </button>
             </div>
             {encryptError && (
-              <div className="text-danger-ink text-[13px] mt-2 flex items-center gap-1.5">
+              <div className="text-danger-ink text-[12.5px] mt-2 flex items-center gap-1.5">
                 <AlertCircle size={13} /> {encryptError}
               </div>
             )}
+            <Advanced label="How it's encrypted">
+              <p className="text-[12px] text-muted">
+                Sync event files are encrypted with ChaCha20-Poly1305. The passphrase never leaves your device.
+              </p>
+            </Advanced>
           </div>
         )}
-      </div>
+      </SettingCard>
 
-      {/* How sync works */}
-      <div className="border-t border-line pt-5">
-        <SectionLabel>How Sync Works</SectionLabel>
-        <p className="text-[12px] text-muted mt-2 mb-2">
-          Ecliptr uses an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
-        </p>
-        <code className="block bg-surface-2 border border-line px-4 py-3 rounded-xl text-[11px] font-mono text-muted">
-          ~/Library/Application Support/com.bjmdistributions.clienthub/sync/ (macOS)<br />
-          %APPDATA%\com.bjmdistributions.clienthub\sync\ (Windows)
-        </code>
-        <p className="text-[12px] text-muted mt-2">
-          Point Syncthing or another file-sync tool at this folder. Conflict-free merging is handled
-          automatically per-column with last-write-wins semantics.
-        </p>
-      </div>
+      {/* Local event log — status + technical tools */}
+      <SettingCard icon={RefreshCw} title="Sync activity" purpose="What this device has applied from the shared event log.">
+        <div className="rounded-xl border border-line bg-surface-2/40 px-4 divide-y divide-line-2">
+          <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+            <span className="text-muted">Events applied</span>
+            <span className="text-ink tabular-nums">{status?.events_applied ?? 0}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+            <span className="text-muted">Last applied</span>
+            <span className="text-ink tabular-nums">
+              {status?.last_applied ? new Date(status.last_applied).toLocaleString() : "—"}
+            </span>
+          </div>
+        </div>
+        <Advanced label="Advanced (event log)">
+          <button
+            onClick={replay}
+            disabled={replaying}
+            className="border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+          >
+            {replaying && <RefreshCw size={13} className="animate-spin" />} {replaying ? "Replaying…" : "Replay all events"}
+          </button>
+          <p className="text-[12px] text-muted mt-3 mb-2">
+            Ecliptr keeps an append-only event log with Hybrid Logical Clocks. Every write produces a JSON event in:
+          </p>
+          <code className="block bg-surface-2 border border-line px-4 py-3 rounded-xl text-[11px] font-mono text-muted">
+            ~/Library/Application Support/com.bjmdistributions.clienthub/sync/ (macOS)<br />
+            %APPDATA%\com.bjmdistributions.clienthub\sync\ (Windows)
+          </code>
+          <p className="text-[12px] text-muted mt-2">
+            Point Syncthing or another file-sync tool at this folder. Merging is conflict-free,
+            handled per-column with last-write-wins.
+          </p>
+        </Advanced>
+      </SettingCard>
     </div>
   );
 }
@@ -1633,15 +1637,17 @@ function SyncTab() {
 function ImportTab() {
   const [subTab, setSubTab] = useState<"csv" | "contacts">("csv");
   return (
-    <div>
-      <div className="flex items-center gap-1 mb-5 border-b border-line">
-        {(["csv", "contacts"] as const).map(t => (
-          <button key={t} onClick={() => setSubTab(t)}
-            className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${subTab === t ? "border-accent text-accent-hover" : "border-transparent text-muted hover:text-ink-2"}`}>
-            {t === "csv" ? "From CSV" : "From Google Contacts"}
-          </button>
-        ))}
-        <span className="ml-auto pb-2"><GuideLink section="import" /></span>
+    <div className="max-w-3xl">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit">
+          {([["csv", "From CSV"], ["contacts", "From Google Contacts"]] as const).map(([t, label]) => (
+            <button key={t} onClick={() => setSubTab(t)}
+              className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${subTab === t ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <GuideLink section="import" />
       </div>
       {subTab === "csv" ? <CsvImportSection /> : <GoogleContactsSection />}
     </div>
@@ -1660,18 +1666,18 @@ function CsvImportSection() {
   useEffect(() => { api.getIntakeFields().then((fs) => setCustomFields(fs.filter((f) => f.value.startsWith("cf:")))).catch(() => {}); }, []);
 
   const CORE_FIELDS = [
-    { key: "first_name", label: "First Name *" },
-    { key: "last_name",  label: "Last Name" },
+    { key: "first_name", label: "First name *" },
+    { key: "last_name",  label: "Last name" },
     { key: "email",      label: "Email" },
     { key: "phone",      label: "Phone" },
-    { key: "company",    label: "Company Name" },
+    { key: "company",    label: "Company" },
     { key: "notes",      label: "Notes" },
-    { key: "street_address", label: "Street Address" },
+    { key: "street_address", label: "Street address" },
     { key: "city",       label: "City" },
     { key: "state",      label: "State" },
-    { key: "zip_code",   label: "Zip Code" },
+    { key: "zip_code",   label: "Zip code" },
     { key: "category",   label: "Category" },
-    { key: "lead_status", label: "Lead Status" },
+    { key: "lead_status", label: "Lead status" },
   ];
 
   const pickFile = async () => {
@@ -1709,21 +1715,20 @@ function CsvImportSection() {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-3xl">
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Import from Google Sheets / CSV</h3>
-      <p className="text-[12px] text-muted mb-5">
-        Export your sheet as CSV (File → Download → CSV in Google Sheets), then upload it here.
-        Existing clients are deduplicated by email.
-      </p>
-
+    <SettingCard icon={Upload} title="Import from CSV" purpose="Upload a spreadsheet export — existing clients are skipped by email.">
       <button
         onClick={pickFile}
-        className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-2 mb-4 transition-colors"
+        className="border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 mb-4 transition-colors"
       >
         <Upload size={13} /> {path ? "Change file" : "Choose CSV file"}
       </button>
 
-      {path && <div className="text-[12px] text-muted mb-4 font-mono">{path}</div>}
+      {!path && (
+        <p className="text-[12px] text-muted">
+          In Google Sheets: File → Download → CSV, then pick that file here.
+        </p>
+      )}
+      {path && <div className="text-[12px] text-muted mb-4 font-mono truncate">{path}</div>}
 
       {preview && (
         <>
@@ -1732,7 +1737,7 @@ function CsvImportSection() {
             <div className="text-[12px] text-muted">Headers: {preview.headers.join(", ")}</div>
           </div>
 
-          <SectionLabel>Map Columns</SectionLabel>
+          <SectionLabel>Map columns</SectionLabel>
           <div className="space-y-2 mt-2 mb-5">
             {CORE_FIELDS.map((f) => (
               <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
@@ -1751,7 +1756,7 @@ function CsvImportSection() {
 
           {customFields.length > 0 && (
             <>
-              <SectionLabel>Custom Fields</SectionLabel>
+              <SectionLabel>Custom fields</SectionLabel>
               <div className="space-y-2 mt-2 mb-5">
                 {customFields.map((f) => (
                   <div key={f.value} className="grid grid-cols-3 gap-2 items-center">
@@ -1770,7 +1775,7 @@ function CsvImportSection() {
             </>
           )}
 
-          <SectionLabel>Extra Fields → Metadata ({metaKeys.length} selected)</SectionLabel>
+          <SectionLabel>Extra columns → metadata ({metaKeys.length} selected)</SectionLabel>
           <div className="flex flex-wrap gap-2 mt-2 mb-5">
             {preview.headers
               .filter((h) => !Object.values(mapping).includes(h))
@@ -1816,15 +1821,15 @@ function CsvImportSection() {
             disabled={importing || (!mapping.first_name && !mapping.last_name)}
             className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
           >
-            {importing ? "Importing..." : `Import ${preview.total_rows} clients`}
+            {importing ? "Importing…" : `Import ${preview.total_rows} clients`}
           </button>
         </>
       )}
 
       {summary && (
         <div className="mt-5 p-4 bg-success-bg border border-success rounded-xl">
-          <div className="text-[13px] font-medium text-success-ink">
-            ✓ Imported {summary.imported} clients
+          <div className="text-[13px] font-medium text-success-ink flex items-center gap-1.5">
+            <Check size={14} /> Imported {summary.imported} clients
           </div>
           {summary.skipped > 0 && (
             <div className="text-[12px] text-ink-2 mt-1">
@@ -1847,7 +1852,7 @@ function CsvImportSection() {
           <AlertCircle size={13} /> {error}
         </div>
       )}
-    </div>
+    </SettingCard>
   );
 }
 
@@ -1858,28 +1863,31 @@ function GoogleContactsSection() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportSummary | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [showSecrets, setShowSecrets] = useState(false);
 
   useEffect(() => {
     api.googleContactsList().then(() => setConnected(true)).catch(() => {});
   }, []);
 
   const connect = async () => {
-    const id = prompt("Google Client ID:");
-    if (!id) return;
-    const secret = prompt("Google Client Secret:");
-    if (!secret) return;
-    setBusy(true);
-    try { await api.googleContactsOauthStart(id, secret); setConnected(true); } catch (e: any) { alert(e); }
+    if (!clientId.trim() || !clientSecret.trim()) return;
+    setBusy(true); setErr(null);
+    try { await api.googleContactsOauthStart(clientId.trim(), clientSecret.trim()); setConnected(true); }
+    catch (e: any) { setErr(String(e)); }
     setBusy(false);
   };
 
   const fetch = async () => {
-    setBusy(true);
-    try { setContacts(await api.googleContactsList()); } catch (e: any) { alert(e); }
+    setBusy(true); setErr(null);
+    try { setContacts(await api.googleContactsList()); } catch (e: any) { setErr(String(e)); }
     setBusy(false);
   };
 
   const disconnect = () => {
+    if (!confirm("Disconnect Google Contacts?")) return;
     setConnected(false);
     setContacts([]);
     setSelected(new Set());
@@ -1887,9 +1895,9 @@ function GoogleContactsSection() {
 
   const importContacts = async () => {
     if (selected.size === 0) return;
-    setBusy(true);
+    setBusy(true); setErr(null);
     const toImport = contacts.filter(c => selected.has(c.resource_name));
-    try { setResult(await api.googleContactsImport(toImport)); } catch (e: any) { alert(e); }
+    try { setResult(await api.googleContactsImport(toImport)); } catch (e: any) { setErr(String(e)); }
     setBusy(false);
   };
 
@@ -1905,38 +1913,37 @@ function GoogleContactsSection() {
   );
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-3xl">
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Google Contacts</h3>
-      <p className="text-[12px] text-muted mb-5">
-        Import clients from your Google Contacts. Duplicates are skipped by email or name.
-      </p>
-
+    <SettingCard icon={Users} title="Google Contacts" purpose="Bring contacts in from your Google account — duplicates are skipped."
+      aside={<ConnectedPill ok={connected} />}>
       {!connected ? (
-        <button onClick={connect} disabled={busy}
-          className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
-          {busy ? "Connecting..." : "Connect Google Account"}
-        </button>
+        <div className="max-w-sm">
+          <SecretInput label="Google Client ID" value={clientId} onChange={setClientId} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <SecretInput label="Google Client Secret" value={clientSecret} onChange={setClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <button onClick={connect} disabled={busy || !clientId.trim() || !clientSecret.trim()}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors">
+            {busy && <RefreshCw size={13} className="animate-spin" />} {busy ? "Connecting…" : "Connect Google"}
+          </button>
+        </div>
       ) : (
         <>
           <div className="flex items-center gap-2 mb-4">
-            <span className="text-[12px] text-success-ink font-medium">● Connected</span>
             <button onClick={fetch} disabled={busy}
-              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
-              {busy ? "Loading..." : contacts.length > 0 ? "Refresh Contacts" : "Fetch Contacts"}
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 flex items-center gap-2 transition-colors">
+              {busy && <RefreshCw size={13} className="animate-spin" />} {busy ? "Loading…" : contacts.length > 0 ? "Refresh" : "Fetch contacts"}
             </button>
-            <button onClick={disconnect} className="text-[11px] text-muted hover:text-danger-ink">Disconnect</button>
+            <button onClick={disconnect} className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">Disconnect</button>
           </div>
 
           {contacts.length > 0 && (
             <>
               <div className="flex items-center gap-3 mb-3">
-                <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)}
+                <input placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)}
                   className="border border-line h-9 px-3 rounded-lg text-[13px] w-[200px] focus:outline-none focus:ring-2 focus:ring-accent/40" />
-                <button onClick={toggleAll} className="text-[12px] text-accent hover:text-accent-hover">
-                  {selected.size === filtered.length ? "Deselect All" : "Select All"}
+                <button onClick={toggleAll} className="text-[12px] text-accent hover:text-accent-hover font-medium">
+                  {selected.size === filtered.length ? "Deselect all" : "Select all"}
                 </button>
                 <div className="flex-1" />
-                <span className="text-[12px] text-muted">{selected.size} selected</span>
+                <span className="text-[12px] text-muted tabular-nums">{selected.size} selected</span>
               </div>
 
               <div className="border border-line rounded-xl overflow-hidden mb-4 max-h-[400px] overflow-y-auto">
@@ -1970,8 +1977,8 @@ function GoogleContactsSection() {
 
               {selected.size > 0 && (
                 <button onClick={importContacts} disabled={busy}
-                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
-                  {busy ? "Importing..." : `Import ${selected.size} selected`}
+                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors">
+                  {busy ? "Importing…" : `Import ${selected.size} selected`}
                 </button>
               )}
             </>
@@ -1985,7 +1992,12 @@ function GoogleContactsSection() {
           )}
         </>
       )}
-    </div>
+      {err && (
+        <div className="mt-4 text-danger-ink text-[12.5px] flex items-center gap-1.5">
+          <AlertCircle size={13} /> {err}
+        </div>
+      )}
+    </SettingCard>
   );
 }
 
@@ -2154,10 +2166,9 @@ function AutomationTab() {
                 <button
                   disabled={on || enabling === p.name}
                   onClick={() => enablePremade(p)}
-                  className={`h-8 rounded-lg text-[12px] font-medium transition-colors ${on ? "cursor-default" : "bg-accent hover:bg-accent-hover text-on-accent"}`}
-                  style={on ? { background: "rgba(16,185,129,0.12)", color: "rgb(var(--c-success))" } : undefined}
+                  className={`h-8 rounded-lg text-[12px] font-medium transition-colors ${on ? "cursor-default bg-success-bg text-success-ink" : "bg-accent hover:bg-accent-hover text-on-accent"}`}
                 >
-                  {on ? "✓ Enabled" : enabling === p.name ? "Enabling…" : "Enable"}
+                  {on ? "Enabled" : enabling === p.name ? "Enabling…" : "Enable"}
                 </button>
               </div>
             );
@@ -2339,7 +2350,7 @@ function UpdateButton() {
         disabled={checking}
         className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-5 h-9 rounded-lg text-[13px] disabled:opacity-50 transition-colors"
       >
-        {checking ? "Checking..." : "Check for Updates"}
+        {checking ? "Checking…" : "Check for updates"}
       </button>
       {status && <p className="text-[12px] text-muted mt-2">{status}</p>}
     </div>
@@ -2572,18 +2583,16 @@ function PaymentsTab() {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 max-w-3xl">
-      <div className="flex items-center justify-between mb-1">
-        <h3 className="text-[14px] font-semibold text-ink">Payment Methods</h3>
+    <div className="max-w-3xl">
+     <SettingCard icon={CreditCard} title="Payment methods" purpose="How customers can pay you — these print on every invoice."
+      aside={
         <button
           onClick={() => { setEditing(null); setForm({ kind: "ACH", label: "", details: "" }); setShowForm(true); }}
           className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors"
         >
           <Plus size={13} /> Add
         </button>
-      </div>
-      <p className="text-[12px] text-muted mb-5">Active methods appear on every invoice.</p>
-
+      }>
       {showForm && (
         <div className="border border-line rounded-xl p-4 mb-5 bg-surface-2/80 space-y-3">
           <Field label="Type">
@@ -2662,12 +2671,22 @@ function PaymentsTab() {
             </div>
           </div>
         ))}
-        {methods.length === 0 && (
-          <div className="text-center text-[13px] text-muted py-10">
-            No payment methods yet. Add one to display options on your invoices.
+        {methods.length === 0 && !showForm && (
+          <div className="py-10 flex flex-col items-center">
+            <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
+              <CreditCard size={18} />
+            </div>
+            <div className="text-[13px] text-muted mb-3">No payment methods yet</div>
+            <button
+              onClick={() => { setEditing(null); setForm({ kind: "ACH", label: "", details: "" }); setShowForm(true); }}
+              className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors"
+            >
+              <Plus size={14} /> Add your first method
+            </button>
           </div>
         )}
       </div>
+     </SettingCard>
     </div>
   );
 }
@@ -3444,10 +3463,10 @@ function TeamTab() {
   const [sub, setSub] = useState<"people" | "roles" | "approvals" | "invites" | "payouts">("people");
   return (
     <div className="max-w-3xl">
-      <div className="flex gap-0 border-b border-line mb-5">
+      <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-4">
         {(["people", "roles", "approvals", "invites", "payouts"] as const).map((s) => (
           <button key={s} onClick={() => setSub(s)}
-            className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px transition-colors capitalize ${sub === s ? "border-accent text-accent-hover font-medium" : "border-transparent text-muted hover:text-ink"}`}>
+            className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors capitalize ${sub === s ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             {s}
           </button>
         ))}
@@ -3617,15 +3636,15 @@ function PeoplePanel() {
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+    <div className="space-y-4">
       {rp && (
-        <div className="px-4 py-3 border-b border-line space-y-3">
+        <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-3">
           <label className="flex items-center justify-between cursor-pointer gap-3">
             <div>
               <div className="font-medium text-ink text-[13px]">Rep payouts</div>
               <div className="text-[11.5px] text-muted">Pay reps a cut of completed deals; owners split the rest.</div>
             </div>
-            <input type="checkbox" checked={!!rp.enabled} onChange={(e) => saveRp({ enabled: e.target.checked })} />
+            <input type="checkbox" checked={!!rp.enabled} onChange={(e) => saveRp({ enabled: e.target.checked })} className="accent-accent" />
           </label>
           {rp.enabled && (
             <div className="flex items-center gap-3 text-[12px] border-t border-line pt-3">
@@ -3646,6 +3665,7 @@ function PeoplePanel() {
           )}
         </div>
       )}
+      <div className="bg-surface border border-line rounded-xl overflow-hidden">
       <table className="w-full text-[13px]">
         <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
           {["Member", "Role", "Pay cut", "Status", ""].map((h, i) => (
@@ -3718,6 +3738,7 @@ function PeoplePanel() {
           {staff.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-[12px] text-muted">No team members yet. Create an invite under the Invites tab.</td></tr>}
         </tbody>
       </table>
+      </div>
       {viewing && <ProfileModal u={viewing} roleName={roles.find((r) => r.id === viewing.role_id)?.name || viewing.role_name || "—"} onClose={() => setViewing(null)} />}
     </div>
   );
@@ -3859,7 +3880,7 @@ function InvitesPanel() {
     const res = await api.createInvite(roleId, email.trim() || null, 7);
     setCreated(res); setEmail(""); load();
   };
-  const revoke = async (token: string) => { await api.revokeInvite(token); load(); };
+  const revoke = async (token: string) => { if (!confirm("Delete this invite? Its link stops working.")) return; await api.revokeInvite(token); load(); };
   const reopen = async (token: string) => { await api.reopenInvite(token); load(); };
 
   const status = (i: InviteRow) => i.used_at ? "Used" : (new Date(i.expires_at) < new Date() ? "Expired" : "Pending");
@@ -3867,7 +3888,8 @@ function InvitesPanel() {
   return (
     <div className="space-y-4">
       <div className="bg-surface border border-line rounded-xl p-4">
-        <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Create invite link</p>
+        <p className="text-[13px] font-semibold text-ink">Invite someone</p>
+        <p className="text-[12px] text-muted mb-3">Pick a role, create the link, and share it — it works once and expires in 7 days.</p>
         <div className="flex gap-2">
           <select value={roleId} onChange={(e) => setRoleId(e.target.value)} className="border border-line px-2 h-9 rounded-lg text-[13px] bg-surface">
             {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}

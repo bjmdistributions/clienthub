@@ -132,7 +132,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           <button onClick={() => {
             if (brief) {
               const subj = `Weekly Brief: ${brief.week_start} to ${brief.week_end}`;
-              const body = `Revenue: ${fmtAmount(brief.revenue_this_week)} | Profit: ${fmtAmount(brief.profit_this_week)} | Deals Closed: ${brief.deals_closed_this_week}`;
+              const body = `Revenue: ${fmtAmount(brief.revenue_this_week)} | Profit: ${fmtAmount(brief.profit_this_week)} | Deals closed: ${brief.deals_closed_this_week}`;
               alert(`To email this brief, configure email in Settings > Email.\n\nSubject: ${subj}\n\n${body}`);
             }
           }}
@@ -146,7 +146,13 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
       </div>
 
       {loading ? (
-        <div className="text-[14px] text-muted text-center py-20">Generating brief...</div>
+        <div className="space-y-4 py-2">
+          <div className="h-16 bg-surface-2 rounded-xl animate-pulse" />
+          <div className="grid grid-cols-4 gap-3">
+            {[0, 1, 2, 3].map((i) => <div key={i} className="h-24 bg-surface-2 rounded-xl animate-pulse" />)}
+          </div>
+          <div className="h-48 bg-surface-2 rounded-xl animate-pulse" />
+        </div>
       ) : brief ? (
         <div className="space-y-6">
 
@@ -161,13 +167,13 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Section 1: At-a-Glance */}
           <div>
-            <h2 className="text-[15px] font-semibold text-ink mb-3">This Week At-a-Glance</h2>
+            <h2 className="text-[15px] font-semibold text-ink mb-3">This week at a glance</h2>
             <div className="grid grid-cols-4 gap-3">
               <StatCard label="Revenue"     value={fmtAmount(brief.revenue_this_week)} change={changePct(brief.revenue_change_pct)} />
               <StatCard label="Profit"      value={fmtAmount(brief.profit_this_week)}  change={changePct(brief.profit_change_pct)}
                 sub={`${brief.avg_margin_this_week.toFixed(1)}% margin`} />
-              <StatCard label="Deals Closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} />
-              <StatCard label="Win Rate"    value={`${brief.win_rate_this_week.toFixed(0)}%`} />
+              <StatCard label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} />
+              <StatCard label="Win rate"    value={`${brief.win_rate_this_week.toFixed(0)}%`} />
             </div>
           </div>
 
@@ -187,7 +193,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
             <div className="rounded-xl p-5 space-y-4" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
               {/* Net profit */}
               <div className="flex items-center justify-between">
-                <div className="text-[13px] text-muted">Net Profit</div>
+                <div className="text-[13px] text-muted">Net profit</div>
                 <div className="flex items-center gap-2">
                   <span className={`text-[26px] font-bold ${brief.net_profit_this_week >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                     {fmtAmount(brief.net_profit_this_week)}
@@ -305,12 +311,12 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           {/* Section 4: Highlights */}
           {(brief.best_margin_deal || brief.worst_margin_deal || brief.biggest_invoice) && (
             <div>
-              <h2 className="text-[15px] font-semibold text-ink mb-3">This Week's Highlights</h2>
+              <h2 className="text-[15px] font-semibold text-ink mb-3">This week's highlights</h2>
               <div className="grid grid-cols-3 gap-3">
                 {brief.best_margin_deal && (
                   <HighlightCard
                     accent="emerald"
-                    title="Best Margin"
+                    title="Best margin"
                     name={brief.best_margin_deal.title}
                     sub={brief.best_margin_deal.client_name}
                     stat={`${brief.best_margin_deal.margin_pct.toFixed(1)}%`}
@@ -319,7 +325,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 {brief.worst_margin_deal && (
                   <HighlightCard
                     accent="amber"
-                    title="Lowest Margin"
+                    title="Lowest margin"
                     name={brief.worst_margin_deal.title}
                     sub={brief.worst_margin_deal.client_name}
                     stat={`${brief.worst_margin_deal.margin_pct.toFixed(1)}%`}
@@ -328,7 +334,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 {brief.biggest_invoice && (
                   <HighlightCard
                     accent="indigo"
-                    title="Biggest Invoice"
+                    title="Biggest invoice"
                     name={brief.biggest_invoice.number}
                     sub={brief.biggest_invoice.client_name}
                     stat={fmtAmount(brief.biggest_invoice.total)}
@@ -340,7 +346,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Section 5: Activity */}
           <div>
-            <h2 className="text-[15px] font-semibold text-ink mb-3">Activity This Week</h2>
+            <h2 className="text-[15px] font-semibold text-ink mb-3">Activity this week</h2>
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl p-4 flex items-center gap-4"
                 style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>

@@ -50,7 +50,7 @@ export default function TiersView() {
       {/* Header */}
       <div className="flex items-start justify-between mb-1">
         <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Client Tiers</h2>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Client tiers</h2>
           <p className="text-[12px] text-muted mt-0.5">
             Ranked by spend potential and actual purchasing history.
           </p>
@@ -90,7 +90,7 @@ export default function TiersView() {
         <button
           onClick={() => setFilter("all")}
           className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
-            filter === "all" ? "bg-gray-900 text-white" : "bg-surface border border-line text-ink-2 hover:border-line-3"
+            filter === "all" ? "bg-accent text-on-accent" : "bg-surface border border-line text-ink-2 hover:border-line-3"
           }`}
         >
           All tiers
@@ -127,11 +127,11 @@ export default function TiersView() {
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Tier</th>
               <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Spend / Freq.</th>
-              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Actually Paid</th>
+              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Actually paid</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Invoices</th>
               <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Quotes</th>
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Reliability</th>
-              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Avg Margin</th>
+              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Avg margin</th>
               <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Frequency</th>
             </tr>
           </thead>

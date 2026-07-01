@@ -103,7 +103,7 @@ export default function RecurringView() {
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Template</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Frequency</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Next Due</th>
+                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Next due</th>
                 <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Status</th>
                 <th className="px-4 py-3"></th>
               </tr>
@@ -175,7 +175,7 @@ export default function RecurringView() {
                 <input className={inp} type="number" step="0.1" value={taxRate || ""} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} placeholder="0" />
               </div>
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Line Items</label>
+                <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Line items</label>
                 <div className="space-y-2">
                   {items.map((li, i) => (
                     <div key={i} className="flex items-center gap-2">

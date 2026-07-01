@@ -13,7 +13,7 @@ export function FeedbackModal({ me, onClose }: { me: { display_name?: string; em
     setBusy(true); setMsg("");
     try {
       await api.submitFeedback(kind, title.trim(), body.trim(), me?.display_name, me?.email);
-      setMsg("Thanks! 🙌"); setTitle(""); setBody("");
+      setMsg("Thanks — sent."); setTitle(""); setBody("");
       setTimeout(onClose, 1100);
     } catch (e) {
       setMsg("Failed to send — check your connection.");
@@ -31,14 +31,14 @@ export function FeedbackModal({ me, onClose }: { me: { display_name?: string; em
         <p className="text-[12px] text-muted mb-4">Request a feature or report a bug — it goes straight to the team.</p>
         <select value={kind} onChange={(e) => setKind(e.target.value)}
           className="w-full bg-surface-2 border border-line rounded-lg h-9 px-3 text-[13px] text-ink mb-3">
-          <option value="feature">💡 Feature request</option>
-          <option value="bug">🐞 Bug report</option>
+          <option value="feature">Feature request</option>
+          <option value="bug">Bug report</option>
         </select>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short title" maxLength={160}
           className="w-full bg-surface-2 border border-line rounded-lg h-9 px-3 text-[13px] text-ink mb-3 focus:outline-none focus:ring-2 focus:ring-accent/40" />
         <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={4} placeholder="Details"
           className="w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink mb-2 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40" />
-        <div className="text-[12px] mb-2 min-h-[18px]" style={{ color: msg.startsWith("Thanks") ? "#34d399" : "#f87171" }}>{msg}</div>
+        <div className={`text-[12px] mb-2 min-h-[18px] ${msg.startsWith("Thanks") ? "text-success-ink" : "text-danger-ink"}`}>{msg}</div>
         <button disabled={busy} onClick={send}
           className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
           {busy ? "Sending…" : "Send feedback"}

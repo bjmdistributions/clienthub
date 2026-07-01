@@ -20,7 +20,10 @@ export default function HealthView() {
   return (
     <div>
       <div className="flex justify-between items-center mb-5">
-        <h2 className="text-[18px] font-semibold text-ink">Customer Health</h2>
+        <div>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Customer health</h2>
+          <p className="text-[12px] text-muted mt-0.5">Which customers are slipping, and why.</p>
+        </div>
         <button onClick={load} className="flex items-center gap-1.5 text-[13px] text-muted hover:text-ink-2">
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
@@ -29,16 +32,15 @@ export default function HealthView() {
       <div className="flex items-center gap-2 mb-4">
         {["all", "healthy", "watch", "at_risk", "critical"].map((f) => (
           <button key={f} onClick={() => setFilter(f)}
-            className={`px-3 h-8 rounded-full text-[12px] font-medium transition-colors ${
+            className={`px-3 h-8 rounded-full text-[12px] font-medium transition-colors border ${
               filter === f
-                ? f === "critical" ? "bg-danger text-white" :
-                  f === "at_risk" ? "bg-warning text-white" :
-                  f === "watch" ? "bg-warning text-white" :
-                  f === "healthy" ? "bg-success text-white" :
-                  "bg-accent text-on-accent"
-                : "bg-surface-3 text-ink-2 hover:bg-surface-3"
+                ? f === "critical" ? "bg-danger-bg text-danger-ink border-danger" :
+                  f === "at_risk" || f === "watch" ? "bg-warning-bg text-warning-ink border-warning" :
+                  f === "healthy" ? "bg-success-bg text-success-ink border-success" :
+                  "bg-accent text-on-accent border-accent"
+                : "bg-surface-2 text-ink-2 border-line hover:bg-surface-3"
             }`}>
-            {f === "all" ? "All" : f.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            {f === "all" ? "All" : f.replace("_", " ").replace(/^\w/, (c) => c.toUpperCase())}
             {f !== "all" && <span className="ml-1 opacity-70">({scores.filter((s) => s.risk_level === f).length})</span>}
           </button>
         ))}
@@ -52,7 +54,7 @@ export default function HealthView() {
               <th className="text-center px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Score</th>
               <th className="text-center px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Risk</th>
               <th className="text-center px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Trend</th>
-              <th className="text-left px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Risk Factors</th>
+              <th className="text-left px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Risk factors</th>
             </tr>
           </thead>
           <tbody>

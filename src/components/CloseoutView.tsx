@@ -58,7 +58,7 @@ export default function CloseoutView() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Completed Deals</h2>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Completed deals</h2>
           <p className="text-[12px] text-muted mt-0.5">
             {flows.length} deal{flows.length !== 1 ? "s" : ""} closed
           </p>

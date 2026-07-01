@@ -30,7 +30,7 @@ function flowStageSi(stage?: string | null): number {
   return FLOW_STAGES.indexOf(stage);
 }
 
-const FLOW_LABELS = ["Invoiced", "Payment In", "Supplier Paid", "Complete"];
+const FLOW_LABELS = ["Invoiced", "Payment in", "Supplier paid", "Complete"];
 
 // 4-dot deal flow progress indicator — red → amber → lime → green gradient
 function FlowDots({ stage }: { stage?: string | null }) {
@@ -144,6 +144,14 @@ export default function InvoicesView() {
   };
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
+  // The status tab filters the table (recurring renders its own view).
+  const visible = invoices.filter((i) => {
+    const lo = i.status.toLowerCase();
+    if (viewTab === "drafts") return lo === "draft";
+    if (viewTab === "sent")   return lo === "sent" || lo === "deposit_pending" || lo === "overdue";
+    if (viewTab === "paid")   return lo === "paid";
+    return true;
+  });
   const outstanding   = invoices.filter((i) => i.status !== "paid").reduce((s, i) => s + i.total, 0);
   const overdueCount  = invoices.filter((i) => i.status === "overdue").length;
   const paidCount     = invoices.filter((i) => i.status === "paid").length;
@@ -166,25 +174,27 @@ export default function InvoicesView() {
       <div className="flex justify-between items-center mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Invoices</h2>
-          <p className="text-[12px] text-muted mt-0.5">{invoices.length} total</p>
+          <p className="text-[12px] text-muted mt-0.5">{invoices.length} total · {fmtAmount(outstanding)} outstanding</p>
         </div>
-        <button
-          onClick={() => { setEditing(null); setShowForm(true); }}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
-        >
-          <Plus size={14} /> New Invoice
-        </button>
-        <button onClick={handleExportInvoices}
-          className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
-          <FileDown size={13} /> Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleExportInvoices}
+            className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors">
+            <FileDown size={13} /> Export CSV
+          </button>
+          <button
+            onClick={() => { setEditing(null); setShowForm(true); }}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+          >
+            <Plus size={14} /> New invoice
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 mb-5 border-b border-line">
+      <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-5">
         {(["all", "drafts", "sent", "paid", "recurring"] as const).map((t) => (
           <button key={t} onClick={() => setViewTab(t)}
-            className={`px-4 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-[1px] capitalize ${viewTab === t ? "border-accent text-accent-hover" : "border-transparent text-muted hover:text-ink-2"}`}>
+            className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors capitalize ${viewTab === t ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             {t}
           </button>
         ))}
@@ -202,7 +212,7 @@ export default function InvoicesView() {
           { label: "Paid",           value: paidCount - completedCount, color: (paidCount - completedCount) > 0 ? "text-warning-ink" : "text-muted" },
           { label: "Sent",           value: sentCount,                color: sentCount > 0 ? "text-info-ink" : "text-muted" },
           { label: "Overdue",        value: overdueCount,             color: overdueCount > 0 ? "text-danger-ink" : "text-muted" },
-          { label: "Total Profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-success-ink" : "text-danger-ink" },
+          { label: "Total profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-success-ink" : "text-danger-ink" },
         ].map((s) => (
           <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
             <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">{s.label}</p>
@@ -228,7 +238,7 @@ export default function InvoicesView() {
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setPayModal(null)}>
           <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] animate-fade-up" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
-              <h3 className="text-[14px] font-semibold text-ink">Mark as Paid</h3>
+              <h3 className="text-[14px] font-semibold text-ink">Mark as paid</h3>
               <button onClick={() => setPayModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
                 <X size={16} />
               </button>
@@ -253,7 +263,7 @@ export default function InvoicesView() {
                 <button onClick={() => setPayModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
                 <button onClick={confirmPay} disabled={busy === payModal}
                   className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-                  {busy === payModal ? "Saving..." : "Confirm"}
+                  {busy === payModal ? "Saving…" : "Confirm"}
                 </button>
               </div>
             </div>
@@ -277,7 +287,7 @@ export default function InvoicesView() {
             </tr>
           </thead>
           <tbody>
-            {invoices.map((inv) => {
+            {visible.map((inv) => {
               // Completed → actual profit. In-progress deal flow → projected
               // (revenue − supplier costs entered so far). Else fall back to costs.
               const df = flowMap[inv.id];
@@ -319,49 +329,52 @@ export default function InvoicesView() {
                       <FlowDots stage={inv.is_complete ? "complete" : inv.deal_flow_stage} />
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right space-x-0.5" onClick={(e) => e.stopPropagation()}>
-                    <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
-                      className="text-faint hover:text-ink-2 p-1 rounded-md hover:bg-surface-3 transition-colors">
-                      <Edit2 size={13} />
-                    </button>
-                    <button title="Delete" onClick={() => handleDelete(inv.id)}
-                      className={confirmDelete === inv.id
-                        ? "text-danger-ink font-semibold text-[11px] px-2 py-0.5 rounded-md bg-danger-bg"
-                        : "text-faint hover:text-danger-ink p-1 rounded-md hover:bg-danger-bg transition-colors"}>
-                      {confirmDelete === inv.id ? "Sure?" : <Trash2 size={13} />}
-                    </button>
-                    <button title="Generate PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
-                      className="text-faint hover:text-accent p-1 rounded-md hover:bg-accent/10 disabled:opacity-40 transition-colors">
-                      {busy === inv.id ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
-                    </button>
-                    {inv.is_complete && inv.deal_flow_id && (
-                      <button
-                        title="Reopen deal"
-                        onClick={async () => {
-                          if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
-                          try {
-                            await api.uncompleteDealFlow(inv.deal_flow_id!);
-                            await load();
-                          } catch (e: any) { alert(e); }
-                        }}
-                        className="text-faint hover:text-warning-ink p-1 rounded-md hover:bg-warning-bg transition-colors"
-                      >
-                        <RotateCcw size={13} />
+                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                    {/* One segmented pill per row — consistent hit targets, quiet by default. */}
+                    <div className="inline-flex items-center rounded-lg border border-line-2 bg-surface-2/50 overflow-hidden divide-x divide-line-2">
+                      <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors">
+                        <Edit2 size={13} />
                       </button>
-                    )}
-                    {inv.status.toLowerCase() !== "paid" && (
-                      <>
-                        <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                          className="text-faint hover:text-info-ink p-1 rounded-md hover:bg-info-bg transition-colors"><Send size={13} /></button>
-                        <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                          className="text-faint hover:text-success-ink p-1 rounded-md hover:bg-success-bg transition-colors"><Check size={13} /></button>
-                      </>
-                    )}
+                      <button title="Save PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent hover:bg-accent/10 disabled:opacity-40 transition-colors">
+                        {busy === inv.id ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
+                      </button>
+                      {inv.is_complete && inv.deal_flow_id && (
+                        <button
+                          title="Reopen deal"
+                          onClick={async () => {
+                            if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
+                            try {
+                              await api.uncompleteDealFlow(inv.deal_flow_id!);
+                              await load();
+                            } catch (e: any) { alert(e); }
+                          }}
+                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"
+                        >
+                          <RotateCcw size={13} />
+                        </button>
+                      )}
+                      {inv.status.toLowerCase() !== "paid" && (
+                        <>
+                          <button title="Send invoice" onClick={() => handleSend(inv.id)}
+                            className="flex items-center justify-center w-8 h-7 text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
+                          <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
+                            className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
+                        </>
+                      )}
+                      <button title="Delete" onClick={() => handleDelete(inv.id)}
+                        className={`flex items-center justify-center h-7 transition-colors ${confirmDelete === inv.id
+                          ? "px-2 text-danger-ink font-semibold text-[11px] bg-danger-bg"
+                          : "w-8 text-faint hover:text-danger-ink hover:bg-danger-bg"}`}>
+                        {confirmDelete === inv.id ? "Sure?" : <Trash2 size={13} />}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
             })}
-            {invoices.length === 0 && (
+            {invoices.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-16 text-center">
                   <div className="w-10 h-10 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
@@ -371,8 +384,14 @@ export default function InvoicesView() {
                   <p className="text-[13px] text-muted mb-4">Create your first invoice to send to a client</p>
                   <button onClick={() => { setEditing(null); setShowForm(true); }}
                     className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 transition-colors">
-                    <Plus size={13} /> Create Invoice
+                    <Plus size={13} /> Create invoice
                   </button>
+                </td>
+              </tr>
+            ) : visible.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-4 py-10 text-center text-[13px] text-muted">
+                  No {viewTab === "drafts" ? "draft" : viewTab} invoices
                 </td>
               </tr>
             )}
@@ -478,7 +497,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   return (
     <div className="bg-surface border border-line rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
       <div className="flex justify-between items-center mb-5">
-        <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit Invoice" : "New Invoice"}</h3>
+        <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit invoice" : "New invoice"}</h3>
         <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
       </div>
 
@@ -494,7 +513,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
               </div>
             ) : (
               <>
-                <input className={inp} placeholder="Type to search clients..." value={clientSearch}
+                <input className={inp} placeholder="Type to search clients…" value={clientSearch}
                   onChange={(e) => { setClientSearch(e.target.value); }}
                   onFocus={() => setShowClientPicker(true)} />
                 {showClientPicker && (
@@ -615,7 +634,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <div className="flex-1">
             <label className="block text-[11px] font-medium text-muted mb-1.5">Notes</label>
             <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-              placeholder="Shipping instructions, payment terms..." value={notes} onChange={(e) => setNotes(e.target.value)} />
+              placeholder="Shipping instructions, payment terms…" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
           <div>
             <label className="block text-[11px] font-medium text-muted mb-1.5">Recurring</label>
@@ -649,11 +668,11 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
         <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
         <button onClick={handlePreview} disabled={previewing || items.length === 0}
           className="bg-surface-3 hover:bg-surface-3 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors">
-          <Eye size={13} /> {previewing ? "Opening..." : "Preview"}
+          <Eye size={13} /> {previewing ? "Opening…" : "Preview"}
         </button>
         <button onClick={submit} disabled={submitting || (!createNew && !clientId) || items.length === 0}
           className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-          {submitting ? "Saving..." : initial ? "Save Changes" : "Create Invoice"}
+          {submitting ? "Saving…" : initial ? "Save changes" : "Create invoice"}
         </button>
       </div>
     </div>
@@ -702,7 +721,7 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
         <div className="flex gap-3">
           <button onClick={onCancel} className="px-4 h-9 rounded-lg text-[13px] text-muted hover:bg-surface-3 transition-colors">Cancel</button>
           <button onClick={save} disabled={saving} className="px-5 h-9 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50 transition-colors">
-            {saving ? "Saving..." : "Update Tax"}
+            {saving ? "Saving…" : "Update tax"}
           </button>
         </div>
       </div>
@@ -778,8 +797,8 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
 
           <div className="grid grid-cols-2 gap-4">
             {[
-              { label: "Issue Date", val: invoice.issue_date.slice(0, 10) },
-              { label: "Due Date",   val: invoice.due_date.slice(0, 10) },
+              { label: "Issue date", val: invoice.issue_date.slice(0, 10) },
+              { label: "Due date",   val: invoice.due_date.slice(0, 10) },
               ...(invoice.sent_at ? [{ label: "Sent", val: new Date(invoice.sent_at).toLocaleDateString() }] : []),
             ].map((r) => (
               <div key={r.label}>
@@ -791,7 +810,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
 
           {/* Line items */}
           <div>
-            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line Items</div>
+            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line items</div>
             <table className="w-full text-[13px]">
               <thead className="bg-surface-2 rounded-lg">
                 <tr>
@@ -828,7 +847,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             <button onClick={() => setEditingCosts(!editingCosts)}
               className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2 hover:text-ink w-full transition-colors">
               <ChevronDown size={13} className={`transition-transform ${editingCosts ? "rotate-180" : ""}`} />
-              Cost & Profit
+              Cost &amp; profit
             </button>
             {editingCosts && (
               dealFlow ? (
@@ -845,7 +864,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               ) : (
                 /* Editable for invoices not yet in a Deal Flow */
                 <div className="mt-3 space-y-2">
-                  <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Cost Items</div>
+                  <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Cost items</div>
                   {costs.map((ci, i) => (
                     <div key={i} className="flex items-center gap-2">
                       <input className="flex-1 border border-line px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors" placeholder="Description"
@@ -871,7 +890,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   </div>
                   <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); } setSavingCosts(false); }}
                     className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
-                    {savingCosts ? "Saving..." : "Save Costs"}
+                    {savingCosts ? "Saving…" : "Save costs"}
                   </button>
                 </div>
               )
@@ -894,7 +913,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   {[
                     { label: "Carrier", key: "carrier" as const, type: "text", placeholder: "UPS / FedEx / etc." },
                     { label: "Tracking #", key: "tracking_number" as const, type: "text", placeholder: "1Z..." },
-                    { label: "Pickup Date", key: "pickup_date" as const, type: "date", placeholder: "" },
+                    { label: "Pickup date", key: "pickup_date" as const, type: "date", placeholder: "" },
                   ].map((f) => (
                     <div key={f.key}>
                       <label className="text-[10px] font-medium text-muted uppercase tracking-widest">{f.label}</label>
@@ -905,7 +924,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     </div>
                   ))}
                   <div>
-                    <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Shipping Charged</label>
+                    <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Shipping charged</label>
                     <div className="relative mt-0.5">
                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
                       <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
@@ -914,13 +933,13 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   </div>
                 </div>
                 <div>
-                  <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Delivery Date</label>
+                  <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Delivery date</label>
                   <input type="date" className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                     value={shipping.delivery_date || ""} onChange={(e) => setShipping({ ...shipping, delivery_date: e.target.value })} />
                 </div>
                 <button onClick={async () => { setSavingShipping(true); try { await api.saveInvoiceShipping(invoice.id, shipping); } catch (e: any) { alert(e); } setSavingShipping(false); }}
                   className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
-                  {savingShipping ? "Saving..." : "Save Shipping"}
+                  {savingShipping ? "Saving…" : "Save shipping"}
                 </button>
               </div>
             )}

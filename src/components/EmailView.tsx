@@ -47,12 +47,13 @@ export default function EmailView() {
   return (
     <div>
       {/* Header */}
-      <div className="flex justify-between items-center mb-1">
-        <h2 className="text-[18px] font-semibold text-ink">Newsletter</h2>
+      <div className="mb-4">
+        <h2 className="text-[18px] font-semibold text-ink tracking-tight">Newsletter</h2>
+        <p className="text-[12px] text-muted mt-0.5">Send newsletters, read replies, and manage drafts.</p>
       </div>
 
-      {/* Underline tabs */}
-      <div className="flex gap-0 border-b border-line mb-5">
+      {/* Section tabs */}
+      <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-5">
         {(["newsletter", "recurring", "inbox", "drafts", "compose"] as const).map((m) => {
           const icons = { inbox: Inbox, drafts: FileEdit, compose: Mail, newsletter: Megaphone, recurring: Repeat };
           const labels = { inbox: "Inbox", drafts: "Drafts", compose: "Compose", newsletter: "Newsletter", recurring: "Recurring" };
@@ -61,16 +62,14 @@ export default function EmailView() {
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-[14px] border-b-2 -mb-px transition-colors ${
-                mode === m
-                  ? "border-accent text-accent-hover font-medium"
-                  : "border-transparent text-muted hover:text-ink"
+              className={`flex items-center gap-1.5 px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${
+                mode === m ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"
               }`}
             >
-              <Icon size={14} />
+              <Icon size={13} />
               {labels[m]}
               {m === "drafts" && draftCount > 0 && (
-                <span className="bg-accent text-on-accent text-[11px] font-medium rounded-full px-1.5 py-0.5 leading-none ml-0.5">
+                <span className="bg-accent text-on-accent text-[10px] font-semibold rounded-full px-1.5 py-0.5 leading-none">
                   {draftCount}
                 </span>
               )}
@@ -91,7 +90,7 @@ export default function EmailView() {
               className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50 transition-colors"
             >
               <RefreshCw size={14} className={scanning ? "animate-spin" : ""} />
-              {scanning ? "Scanning..." : "Scan Inbox"}
+              {scanning ? "Scanning…" : "Scan inbox"}
             </button>
           </div>
 
@@ -128,8 +127,11 @@ export default function EmailView() {
                   </button>
                 ))}
                 {emails.length === 0 && !scanning && (
-                  <div className="px-4 py-10 text-center text-[13px] text-muted">
-                    No emails. Configure SMTP/IMAP in Settings, then scan.
+                  <div className="px-4 py-12 flex flex-col items-center">
+                    <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
+                      <Inbox size={18} />
+                    </div>
+                    <div className="text-[13px] text-muted">No emails yet — connect an inbox in Settings, then scan.</div>
                   </div>
                 )}
               </div>
@@ -254,7 +256,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       {/* Draft reply */}
       {draft && (
         <div className="mb-4">
-          <label className="block text-[12px] font-medium text-ink-2 mb-1">Draft Reply</label>
+          <label className="block text-[12px] font-medium text-ink-2 mb-1">Draft reply</label>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -267,7 +269,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
             className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mt-2"
           >
             <Send size={12} />
-            {sending ? "Sending..." : sent ? "Sent!" : "Send Reply"}
+            {sending ? "Sending…" : sent ? "Sent" : "Send reply"}
           </button>
         </div>
       )}
@@ -275,7 +277,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       {/* Extracted data */}
       {extracted && (
         <div>
-          <label className="block text-[12px] font-medium text-ink-2 mb-1">Extracted Data</label>
+          <label className="block text-[12px] font-medium text-ink-2 mb-1">Extracted data</label>
           <pre className="bg-surface-2 border border-line px-4 py-3 rounded-lg text-[12px] overflow-auto">
             {JSON.stringify(extracted, null, 2)}
           </pre>
@@ -400,7 +402,7 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
                       className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-md text-[13px] font-medium flex items-center gap-1 disabled:opacity-50"
                     >
                       <Send size={12} />
-                      {loading === d.id ? "Sending..." : "Send"}
+                      {loading === d.id ? "Sending…" : "Send"}
                     </button>
                     <button
                       onClick={() => handleEdit(d)}
@@ -467,7 +469,7 @@ function ComposeView() {
         <div>
           <label className="block text-[12px] font-medium text-muted mb-1">Message</label>
           <textarea
-            placeholder="Write your message..."
+            placeholder="Write your message…"
             rows={12}
             className="w-full border border-line rounded-lg px-3 py-2.5 text-[14px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
             value={body}
@@ -480,7 +482,7 @@ function ComposeView() {
           className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
         >
           <Send size={14} />
-          {sending ? "Sending..." : sent ? "Sent!" : "Send"}
+          {sending ? "Sending…" : sent ? "Sent" : "Send"}
         </button>
       </div>
     </div>
@@ -811,7 +813,7 @@ function NewsletterTab() {
             onChange={(e) => setRecipientCategoryFilter(e.target.value || null)}
             className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
           >
-            <option value="">All Categories</option>
+            <option value="">All categories</option>
             {categoryLabels.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
@@ -819,7 +821,7 @@ function NewsletterTab() {
         <div className="px-3 py-2 border-b border-line">
           <input
             type="text"
-            placeholder="Search clients by name or email..."
+            placeholder="Search clients by name or email…"
             value={clientSearch}
             onChange={(e) => setClientSearch(e.target.value)}
             className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -944,7 +946,7 @@ function NewsletterTab() {
           </div>
           <div className="flex gap-1.5">
             <input
-              placeholder="Or type an email address..."
+              placeholder="Or type an email address…"
               type="email"
               value={manualEmail}
               onChange={(e) => setManualEmail(e.target.value)}
@@ -1060,7 +1062,7 @@ function NewsletterTab() {
               )}
               {!attachmentPath && attachmentSearch && (
                 <input
-                  placeholder="Or paste file path..."
+                  placeholder="Or paste file path…"
                   value={attachmentSearch}
                   onChange={(e) => { setAttachmentSearch(e.target.value); if (e.target.value) setAttachmentPath(e.target.value); }}
                   className="flex-1 border border-line-3 h-9 px-3 rounded-md text-[12px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -1074,7 +1076,7 @@ function NewsletterTab() {
               </summary>
               <div className="px-3 pb-3 flex items-center gap-2">
                 <input
-                  placeholder="Describe what this newsletter is about..."
+                  placeholder="Describe what this newsletter is about…"
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
                   className="flex-1 border border-line-3 px-3 h-9 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -1089,7 +1091,7 @@ function NewsletterTab() {
                 </div>
                 <button onClick={generateAI} disabled={aiLoading || !aiPrompt.trim()}
                   className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap">
-                  <Sparkles size={13} /> {aiLoading ? "Writing..." : "Generate"}
+                  <Sparkles size={13} /> {aiLoading ? "Writing…" : "Generate"}
                 </button>
               </div>
             </details>
@@ -1123,7 +1125,7 @@ function NewsletterTab() {
                 <div className="flex"><span className="text-muted w-10">Subj:</span><span className="text-ink font-medium">{previewSubject || "No subject"}</span></div>
               </div>
               <div className="p-3 text-[13px] text-ink-2 whitespace-pre-wrap overflow-y-auto flex-1 bg-surface">
-                {previewBody || "Start writing..."}
+                {previewBody || "Start writing…"}
               </div>
             </div>
           </div>
@@ -1185,7 +1187,7 @@ function NewsletterTab() {
               )}
               <button onClick={handleSchedule} disabled={scheduling}
                 className="w-full bg-accent hover:bg-accent-hover text-on-accent rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
-                {scheduling ? "Scheduling..." : "Schedule"}
+                {scheduling ? "Scheduling…" : "Schedule"}
               </button>
             </div>
           )}
@@ -1193,7 +1195,7 @@ function NewsletterTab() {
           {activeScheduled.length > 0 && (
             <div className="mt-3 border border-line rounded-md p-3 bg-info-bg space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[12px] font-medium text-info-ink">Scheduled Sends</span>
+                <span className="text-[12px] font-medium text-info-ink">Scheduled sends</span>
                 <button onClick={refreshScheduledSends} className="text-[11px] text-info-ink hover:text-info-ink">Refresh</button>
               </div>
               {activeScheduled.map((job) => (

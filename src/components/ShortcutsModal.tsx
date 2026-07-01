@@ -15,7 +15,7 @@ export default function ShortcutsModal({ onClose }: Props) {
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
       <div className="bg-surface rounded-2xl shadow-xl w-[420px] overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-line flex items-center justify-between">
-          <h2 className="text-[14px] font-semibold text-ink">Keyboard Shortcuts</h2>
+          <h2 className="text-[14px] font-semibold text-ink">Keyboard shortcuts</h2>
           <kbd className="text-[10px] text-muted bg-surface-3 px-1.5 py-0.5 rounded font-mono">?</kbd>
         </div>
         <div className="p-2">

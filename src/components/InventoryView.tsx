@@ -163,7 +163,7 @@ export default function InventoryView() {
                 <FileDown size={13} /> Export
               </button>
               <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
-                <Plus size={14} /> Add Lot
+                <Plus size={14} /> Add lot
               </button>
             </>
           )}
@@ -180,10 +180,10 @@ export default function InventoryView() {
           <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-danger-ink border border-danger px-2.5 h-8 rounded-lg hover:bg-danger-bg disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
           <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
           <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
-          <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-white bg-danger hover:bg-danger px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
+          <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-danger-ink bg-danger-bg border border-danger px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
           <button onClick={() => {
             window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: Array.from(selected) }));
-          }} disabled={!selected.size} className="text-[12px] text-white bg-success hover:bg-success px-2.5 h-8 rounded-lg disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
+          }} disabled={!selected.size} className="text-[12px] text-success-ink bg-success-bg border border-success px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
         </div>
       )}
 
@@ -191,7 +191,7 @@ export default function InventoryView() {
         <button onClick={() => setShowManifest(!showManifest)} className="w-full flex items-center justify-between px-5 py-3 hover:bg-surface-2/50 transition-colors">
           <div className="flex items-center gap-2">
             <BarChart3 size={15} className="text-accent" />
-            <h3 className="text-[13px] font-semibold text-ink">Manifest Analyzer</h3>
+            <h3 className="text-[13px] font-semibold text-ink">Manifest analyzer</h3>
           </div>
           <ChevronDown size={13} className={`text-muted transition-transform ${showManifest ? "rotate-180" : ""}`} />
         </button>
@@ -206,17 +206,17 @@ export default function InventoryView() {
                 try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { alert(e); }
                 setManifestBusy(false);
               }} disabled={manifestBusy} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
-                <Upload size={12} /> {manifestBusy ? "Analyzing..." : "Upload CSV"}
+                <Upload size={12} /> {manifestBusy ? "Analyzing…" : "Upload CSV"}
               </button>
             )}
             {manifest && (
               <div>
                 <div className="grid grid-cols-4 gap-3 mb-4">
                   {[
-                    { label: "Total Items", value: manifest.total_items },
-                    { label: "Total Retail", value: fmtAmount(manifest.total_retail) },
-                    { label: "Avg Margin", value: `${manifest.overall_margin_pct.toFixed(0)}%` },
-                    { label: "Suggested Bid", value: fmtAmount(manifest.suggested_bid) },
+                    { label: "Total items", value: manifest.total_items },
+                    { label: "Total retail", value: fmtAmount(manifest.total_retail) },
+                    { label: "Avg margin", value: `${manifest.overall_margin_pct.toFixed(0)}%` },
+                    { label: "Suggested bid", value: fmtAmount(manifest.suggested_bid) },
                   ].map((s) => (
                     <div key={s.label} className="bg-surface-2 rounded-lg px-3 py-2.5">
                       <p className="text-[9px] font-semibold text-muted uppercase tracking-widest">{s.label}</p>
@@ -243,7 +243,7 @@ export default function InventoryView() {
                 <div className="flex gap-2">
                   <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => showToast("Suggested bid copied — paste into your deal."))}
                     className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
-                    <Clipboard size={11} /> Copy Bid
+                    <Clipboard size={11} /> Copy bid
                   </button>
                   <button onClick={() => { setManifest(null); }} className="text-[11px] text-muted hover:text-ink-2 px-3 h-8 rounded-lg hover:bg-surface-2">
                     Clear
@@ -364,7 +364,7 @@ export default function InventoryView() {
                 <div className="flex items-center gap-0.5 mt-2 pt-2.5 border-t border-line" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => { setEditing(lot); setShowForm(true); }} className="text-[11px] text-muted hover:text-ink px-2 py-1 rounded-md hover:bg-surface-3 transition-colors">Edit</button>
                   {lot.status !== "sold" && (
-                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-muted hover:text-success-ink px-2 py-1 rounded-md hover:bg-success-bg transition-colors">Mark Sold</button>
+                    <button onClick={() => setStatus(lot, "sold")} className="text-[11px] text-muted hover:text-success-ink px-2 py-1 rounded-md hover:bg-success-bg transition-colors">Mark sold</button>
                   )}
                   {lot.status !== "archived" ? (
                     <button onClick={() => setStatus(lot, "archived")} className="text-[11px] text-muted hover:text-warning-ink px-2 py-1 rounded-md hover:bg-warning-bg transition-colors">Unavailable</button>
@@ -410,7 +410,7 @@ export default function InventoryView() {
       {linkModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-[3px]" onClick={() => setLinkModal(null)}>
           <div className="bg-surface rounded-xl shadow-xl w-80 p-5" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-[14px] font-semibold text-ink mb-3">Link to Deal</h3>
+            <h3 className="text-[14px] font-semibold text-ink mb-3">Link to deal</h3>
             <div className="space-y-1 max-h-60 overflow-y-auto">
               {deals.filter(d => d.stage !== "lost" && d.stage !== "won").map((d) => (
                 <button key={d.id} onClick={async () => { try { await api.linkLotToDeal(linkModal, d.id); setLinkModal(null); load(); } catch (e: any) { alert(e); } }}
@@ -498,7 +498,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
       <div className="bg-surface rounded-2xl shadow-xl w-[440px] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit Lot" : "New Lot"}</h3>
+          <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
         <div className="space-y-3">
@@ -535,14 +535,14 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Cost Price</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Cost price</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} />
               </div>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Selling Price</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Selling price</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} />
@@ -550,12 +550,12 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
             </div>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Price Type</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Price type</label>
             <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5">
               {(["per_unit", "total"] as const).map(pt => (
                 <button key={pt} onClick={() => setPriceType(pt)}
                   className={`flex-1 text-[12px] font-medium py-1.5 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                  {pt === "per_unit" ? "Per Unit" : "Total"}
+                  {pt === "per_unit" ? "Per unit" : "Total"}
                 </button>
               ))}
             </div>
@@ -566,11 +566,11 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
           </div>
           <div className="flex items-center gap-5 pt-0.5">
             <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-emerald-600" checked={sentWa} onChange={(e) => setSentWa(e.target.checked)} />
+              <input type="checkbox" className="accent-accent" checked={sentWa} onChange={(e) => setSentWa(e.target.checked)} />
               <MessageCircle size={13} className="text-success-ink" /> Sent on WhatsApp
             </label>
             <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-blue-600" checked={sentEmail} onChange={(e) => setSentEmail(e.target.checked)} />
+              <input type="checkbox" className="accent-accent" checked={sentEmail} onChange={(e) => setSentEmail(e.target.checked)} />
               <Mail size={13} className="text-info-ink" /> Emailed
             </label>
           </div>
@@ -629,7 +629,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
           <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
-            {saving ? "Saving..." : initial ? "Save" : "Create Lot"}
+            {saving ? "Saving…" : initial ? "Save" : "Create lot"}
           </button>
         </div>
       </div>
@@ -735,19 +735,19 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
             <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uCost)}</p></div>
             <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uAsk)}</p></div>
             <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{marginStr}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Profit Total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(profit)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Profit total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(profit)}</p></div>
           </div>
           {lot.price_type === "total" && lot.quantity > 1 && (
             <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
               <div className={inp + " text-[11px] text-muted bg-surface-2 flex items-center justify-center rounded-lg"}>×{lot.quantity} units</div>
             </div>
           )}
           {lot.price_type === "per_unit" && (
             <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask Total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
             </div>
           )}
 

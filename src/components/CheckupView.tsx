@@ -144,7 +144,7 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         {/* 1 — To reach out */}
-        <Column accent="#94a3b8" label="To reach out" count={todo.length}>
+        <Column accent="rgb(var(--c-faint))" label="To reach out" count={todo.length}>
           {todo.length === 0 ? <Empty text="Everyone's been contacted." /> : todo.map((it) => (
             <div key={it.id} className="bg-surface border border-line rounded-xl p-3.5 shadow-sm">
               <div className="text-[14px] font-semibold text-ink">{it.name}</div>
@@ -157,27 +157,27 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
         </Column>
 
         {/* 2 — Reached out (notes live here) */}
-        <Column accent="#f59e0b" label="Reached out" count={reached.length}>
+        <Column accent="rgb(var(--c-warning))" label="Reached out" count={reached.length}>
           {reached.length === 0 ? <Empty text="Nobody in progress yet." /> : reached.map((it) => (
-            <div key={it.id} className="bg-surface border border-amber-300/60 rounded-xl p-3.5 shadow-sm">
+            <div key={it.id} className="bg-surface border border-warning/60 rounded-xl p-3.5 shadow-sm">
               <div className="text-[14px] font-semibold text-ink">{it.name}</div>
               <Contact it={it} />
               <textarea defaultValue={it.note} onChange={(e) => { drafts.current[it.id] = e.target.value; }} onBlur={() => saveNote(it)} rows={3}
                 placeholder="How did it go? (saved to their profile)"
-                className="mt-2.5 w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[12.5px] text-ink resize-none focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
+                className="mt-2.5 w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[12.5px] text-ink resize-none focus:outline-none focus:ring-2 focus:ring-warning/40" />
               <div className="mt-2 flex gap-2">
                 <button disabled={busy} onClick={() => move(it, 0)} title="Back to to-do" className="h-8 px-2.5 rounded-lg border border-line text-ink-2 hover:bg-surface-2 text-[12px] inline-flex items-center gap-1"><Undo2 size={13} /></button>
-                <button disabled={busy} onClick={() => move(it, 2)} className="flex-1 h-8 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-50"><Check size={14} /> Submit to done</button>
+                <button disabled={busy} onClick={() => move(it, 2)} className="flex-1 h-8 rounded-lg bg-success hover:opacity-90 text-on-accent text-[12.5px] font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-50"><Check size={14} /> Submit to done</button>
               </div>
             </div>
           ))}
         </Column>
 
         {/* 3 — Done */}
-        <Column accent="#10b981" label="Done" count={done.length}>
+        <Column accent="rgb(var(--c-success))" label="Done" count={done.length}>
           {done.length === 0 ? <Empty text="Submitted clients land here." /> : done.map((it) => (
             <div key={it.id} className="bg-surface/70 border border-line rounded-xl p-3.5">
-              <div className="text-[14px] font-medium text-ink-2 flex items-center gap-1.5"><Check size={14} className="text-emerald-500 flex-shrink-0" />{it.name}</div>
+              <div className="text-[14px] font-medium text-ink-2 flex items-center gap-1.5"><Check size={14} className="text-success-ink flex-shrink-0" />{it.name}</div>
               {it.note && <div className="text-[12px] text-muted mt-1.5 whitespace-pre-wrap">{it.note}</div>}
               <button disabled={busy} onClick={() => move(it, 1)} className="mt-2.5 text-[11.5px] text-muted hover:text-ink inline-flex items-center gap-1"><Undo2 size={12} /> Reopen</button>
             </div>
@@ -192,7 +192,7 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
             <p className="text-[13px] text-muted mt-1.5 leading-relaxed">This permanently removes “{data?.name}” and its review progress. This can’t be undone. (Clients already reached out to keep their logged contact.)</p>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setConfirmDel(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
-              <button onClick={doDelete} className="bg-red-600 hover:bg-red-700 text-white px-4 h-9 rounded-lg text-[13px] font-medium">Delete session</button>
+              <button onClick={doDelete} className="bg-danger hover:opacity-90 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Delete session</button>
             </div>
           </div>
         </div>

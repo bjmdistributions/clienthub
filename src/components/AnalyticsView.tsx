@@ -97,9 +97,9 @@ const today = new Date().toISOString().slice(0, 10);
 const firstDayOfMonth = today.slice(0, 7) + "-01";
 const firstDayOfYear  = today.slice(0, 4) + "-01-01";
 const PRESETS = [
-  { label: "All Time",    start: "", end: "" },
-  { label: "This Year",   start: firstDayOfYear, end: today },
-  { label: "This Month",  start: firstDayOfMonth, end: today },
+  { label: "All time",    start: "", end: "" },
+  { label: "This year",   start: firstDayOfYear, end: today },
+  { label: "This month",  start: firstDayOfMonth, end: today },
 ] as const;
 
 // ─── Main view ───────────────────────────────────────────────────
@@ -115,7 +115,7 @@ export default function AnalyticsView() {
   const [tiers,     setTiers]     = useState<any[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [bars,      setBars]      = useState(false);
-  const [preset,    setPreset]    = useState<string>("All Time");
+  const [preset,    setPreset]    = useState<string>("All time");
   const [startDate, setStartDate] = useState("");
   const [endDate,   setEndDate]   = useState("");
 
@@ -272,7 +272,7 @@ export default function AnalyticsView() {
                         animate-fade-up [animation-fill-mode:backwards]
                         hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
           <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-3">
-            Revenue {preset === "All Time" ? "All Time" : preset}
+            Revenue {preset === "All time" ? "All time" : preset}
           </div>
           <div className="text-[32px] font-bold text-accent tabular-nums leading-none tracking-tight">
             {fmtAmount(aRevenue)}
@@ -280,12 +280,12 @@ export default function AnalyticsView() {
           <div className="text-[11px] text-muted mt-2">Total closed deal revenue</div>
         </div>
 
-        <StatCard label="Net Profit"   delay={65}
+        <StatCard label="Net profit"   delay={65}
           color={(displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose}>
           {fmtAmount(aProfit)}
         </StatCard>
 
-        <StatCard label="Avg Margin"   delay={130}>{aMargin.toFixed(1)}%</StatCard>
+        <StatCard label="Avg margin"   delay={130}>{aMargin.toFixed(1)}%</StatCard>
 
         <StatCard label="Outstanding"  delay={195}
           color={stats.outstanding > 0 ? CLR.amber : undefined}>
@@ -343,7 +343,7 @@ export default function AnalyticsView() {
         {/* Profit Trend — area */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Profit Trend</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Profit trend</h3>
           <p className="text-[11px] text-muted mb-5">Net profit by month</p>
           {monthly.length > 0 ? (
             <ResponsiveContainer width="100%" height={240}>
@@ -369,7 +369,7 @@ export default function AnalyticsView() {
         {/* Client Mix — donut */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client Mix</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client mix</h3>
           <p className="text-[11px] text-muted mb-5">Share of clients by tier</p>
           {totalCl > 0 ? (
             <ResponsiveContainer width="100%" height={240}>
@@ -395,7 +395,7 @@ export default function AnalyticsView() {
         {/* Invoice Status */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice Status</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice status</h3>
           <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices</p>
 
           {stats.invoice_status_breakdown.length > 0 ? (
@@ -436,7 +436,7 @@ export default function AnalyticsView() {
         {/* Top Spenders */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top Spenders</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top spenders</h3>
           <p className="text-[11px] text-muted mb-4">By total revenue collected</p>
 
           {stats.top_spenders.length > 0 ? (
@@ -487,7 +487,7 @@ export default function AnalyticsView() {
         {/* Client Tiers */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client Tiers</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client tiers</h3>
           <p className="text-[11px] text-muted mb-5">{totalCl} clients</p>
 
           {totalCl > 0 ? (
@@ -539,7 +539,7 @@ export default function AnalyticsView() {
         {/* Category breakdown */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category Breakdown</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category breakdown</h3>
           <p className="text-[11px] text-muted mb-5">Revenue by client category</p>
 
           {cats.length > 0 ? (
@@ -582,7 +582,7 @@ export default function AnalyticsView() {
         {/* Most Profitable */}
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-2">
-          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Most Profitable</h3>
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Most profitable</h3>
           <p className="text-[11px] text-muted mb-5">By net profit margin</p>
 
           {((rangeData?.top_clients_by_profit ?? stats.top_clients_by_profit) as any[]).length > 0 ? (
@@ -627,13 +627,13 @@ export default function AnalyticsView() {
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             {[
-              { label: "Total Revenue",  value: fmtAmount(stats.paid_ytd),         clr: "var(--t-tx1)" },
-              { label: "Total Cost",     value: fmtAmount(stats.total_cost),        clr: "var(--t-tx1)" },
-              { label: "Net Profit",     value: fmtAmount(stats.total_profit),
+              { label: "Total revenue",  value: fmtAmount(stats.paid_ytd),         clr: "var(--t-tx1)" },
+              { label: "Total cost",     value: fmtAmount(stats.total_cost),        clr: "var(--t-tx1)" },
+              { label: "Net profit",     value: fmtAmount(stats.total_profit),
                 clr: stats.total_profit >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Avg Margin",     value: `${stats.avg_margin.toFixed(1)}%`, clr: "var(--t-tx1)" },
+              { label: "Avg margin",     value: `${stats.avg_margin.toFixed(1)}%`, clr: "var(--t-tx1)" },
               { label: "Outstanding",    value: fmtAmount(stats.outstanding),       clr: CLR.amber },
-              { label: "Open Closeouts", value: String(stats.incomplete_shipping),  clr: "var(--t-tx1)" },
+              { label: "Open closeouts", value: String(stats.incomplete_shipping),  clr: "var(--t-tx1)" },
             ].map((item) => (
               <div key={item.label}>
                 <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">

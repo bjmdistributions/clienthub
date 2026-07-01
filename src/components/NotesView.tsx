@@ -111,6 +111,7 @@ export default function NotesView() {
     api.updateNote(id, { pinned }).catch(() => {});
   };
   const remove = (id: string) => {
+    if (!confirm("Delete this note?")) return;
     setNotes((prev) => prev.filter((n) => n.id !== id));
     api.deleteNote(id).catch(() => {});
   };

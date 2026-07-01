@@ -24,7 +24,7 @@ export default function GettingStarted({ onDone }: { onDone: () => void }) {
         </div>
         <div className="px-8 pt-1 text-center">
           <div className="mx-auto mb-5 w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
-            <Icon size={26} className="text-white" />
+            <Icon size={26} className="text-on-accent" />
           </div>
           <h2 className="text-[18px] font-semibold text-ink mb-2 tracking-tight">{step.title}</h2>
           <p className="text-[13.5px] text-muted leading-relaxed">{step.body}</p>

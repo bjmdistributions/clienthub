@@ -137,25 +137,30 @@ export default function DealsView() {
   return (
     <div>
       <div className="flex justify-between items-center mb-5">
-        <h2 className="text-[18px] font-semibold text-ink">Deals</h2>
-        <button onClick={() => {
-          setSelectedDeal(null);
-          setEditingDeal({
-            client_id: clients[0]?.id ?? "",
-            title: "",
-            line_items: [{ description: "", qty: 1, rate: 0, amount: 0 }],
-            supplier_costs: [],
-            shipping_cost: 0, other_costs: 0, asking_price: 0,
-          });
-          setShowForm(true);
-        }}
-          className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium transition-colors">
-          <Plus size={16} /> New Deal
-        </button>
-        <button onClick={handleExportDeals}
-          className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
-          <FileDown size={13} /> Export CSV
-        </button>
+        <div>
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Deals</h2>
+          <p className="text-[12px] text-muted mt-0.5">{deals.length} deal{deals.length !== 1 ? "s" : ""} · drag cards between stages</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={handleExportDeals}
+            className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors">
+            <FileDown size={13} /> Export CSV
+          </button>
+          <button onClick={() => {
+            setSelectedDeal(null);
+            setEditingDeal({
+              client_id: clients[0]?.id ?? "",
+              title: "",
+              line_items: [{ description: "", qty: 1, rate: 0, amount: 0 }],
+              supplier_costs: [],
+              shipping_cost: 0, other_costs: 0, asking_price: 0,
+            });
+            setShowForm(true);
+          }}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+            <Plus size={14} /> New deal
+          </button>
+        </div>
       </div>
 
       {/* Lost reason modal */}
@@ -163,7 +168,7 @@ export default function DealsView() {
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => { setShowLostReason(false); setSelectedDeal(null); }}>
           <div className="absolute inset-0 bg-black/40" />
           <div className="relative bg-surface rounded-xl p-6 shadow-xl w-[400px]" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-[16px] font-semibold text-ink mb-1">Lost Deal</h3>
+            <h3 className="text-[16px] font-semibold text-ink mb-1">Lost deal</h3>
             <p className="text-[13px] text-muted mb-4">Why was "{selectedDeal?.title}" lost?</p>
             <textarea
               autoFocus
@@ -171,13 +176,13 @@ export default function DealsView() {
               className="border border-line-3 px-3 py-2 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent resize-none"
               value={lostReason}
               onChange={(e) => setLostReason(e.target.value)}
-              placeholder="Reason for losing this deal..."
+              placeholder="Reason for losing this deal…"
             />
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => { setShowLostReason(false); setSelectedDeal(null); }}
                 className="px-4 h-9 text-[14px] text-ink-2 hover:text-ink border border-line rounded-md">Cancel</button>
               <button onClick={saveLost} disabled={!lostReason.trim()}
-                className="px-4 h-9 bg-danger hover:bg-danger text-white rounded-md text-[14px] font-medium disabled:opacity-40">Mark Lost</button>
+                className="px-4 h-9 border border-danger bg-danger-bg text-danger-ink hover:opacity-90 rounded-md text-[14px] font-medium disabled:opacity-40">Mark lost</button>
             </div>
           </div>
         </div>
@@ -245,13 +250,13 @@ export default function DealsView() {
 
         {/* Lost toggle */}
         {!showLost && (
-          <button onClick={() => setShowLost(true)}
+          <button onClick={() => setShowLost(true)} title="Show lost deals"
             className="flex-shrink-0 w-[40px] flex items-center justify-center bg-surface-2 border border-line rounded-lg text-muted hover:text-danger-ink hover:border-danger transition-colors">
             <Trash2 size={16} />
           </button>
         )}
         {showLost && (
-          <button onClick={() => setShowLost(false)}
+          <button onClick={() => setShowLost(false)} title="Hide lost deals"
             className="flex-shrink-0 w-[40px] flex items-center justify-center bg-danger-bg border border-danger rounded-lg text-danger-ink hover:text-danger-ink transition-colors">
             <X size={16} />
           </button>
@@ -326,9 +331,9 @@ function DealDetailPanel({
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" />
       <div className="relative w-[540px] bg-surface shadow-xl h-full overflow-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="sticky top-0 bg-surface border-b px-6 py-4 flex items-center justify-between z-10">
+        <div className="sticky top-0 bg-surface border-b border-line px-6 py-4 flex items-center justify-between z-10">
           <h3 className="text-[16px] font-semibold text-ink">
-            {deal ? "Edit Deal" : "New Deal"}
+            {deal ? "Edit deal" : "New deal"}
           </h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={18} /></button>
         </div>
@@ -338,7 +343,7 @@ function DealDetailPanel({
           <div>
             <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Client</label>
             <input
-              placeholder="Search client..."
+              placeholder="Search client…"
               value={clients.find((c) => c.id === input.client_id)?.name || clientSearch}
               onChange={(e) => {
                 setClientSearch(e.target.value);
@@ -360,7 +365,7 @@ function DealDetailPanel({
           {/* Title + Stage */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Deal Title</label>
+              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Deal title</label>
               <input className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent"
                 value={input.title} onChange={(e) => onChange({ ...input, title: e.target.value })} />
             </div>
@@ -375,7 +380,7 @@ function DealDetailPanel({
 
           {/* Line Items */}
           <div>
-            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Line Items</label>
+            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Line items</label>
             <div className="mt-2 space-y-2">
               {input.line_items.map((it, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2">
@@ -403,7 +408,7 @@ function DealDetailPanel({
 
           {/* Supplier Costs */}
           <div>
-            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Supplier Costs</label>
+            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Supplier costs</label>
             <div className="mt-2 space-y-2">
               {input.supplier_costs.map((sc, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2">
@@ -448,7 +453,7 @@ function DealDetailPanel({
               </div>
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Other Costs</label>
+              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Other costs</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line-3 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -456,7 +461,7 @@ function DealDetailPanel({
               </div>
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Asking Price</label>
+              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Asking price</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line-3 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -494,12 +499,12 @@ function DealDetailPanel({
           {/* Optional fields */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Payment Terms</label>
+              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Payment terms</label>
               <input className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent"
                 value={input.payment_terms || ""} onChange={(e) => onChange({ ...input, payment_terms: e.target.value })} />
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Expected Close</label>
+              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Expected close</label>
               <input type="date" className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent"
                 value={input.expected_close_date || ""} onChange={(e) => onChange({ ...input, expected_close_date: e.target.value })} />
             </div>
@@ -512,16 +517,16 @@ function DealDetailPanel({
         </div>
 
         {/* Footer */}
-        <div className="sticky bottom-0 bg-surface border-t px-6 py-4 flex gap-3">
+        <div className="sticky bottom-0 bg-surface border-t border-line px-6 py-4 flex gap-3">
           <button onClick={async () => { setSaving(true); await onSave(); setSaving(false); }}
             disabled={!input.title || !input.client_id}
             className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex-1 disabled:opacity-40 transition-colors">
-            {saving ? "Saving..." : "Save"}
+            {saving ? "Saving…" : "Save"}
           </button>
           {deal && deal.stage === "won" && !deal.converted_invoice_id && (
             <button onClick={onConvert}
-              className="bg-success hover:bg-success text-white px-4 h-9 rounded-md text-[14px] font-medium transition-colors flex items-center gap-1.5">
-              <Check size={14} /> Convert to Invoice
+              className="border border-success bg-success-bg text-success-ink hover:opacity-90 px-4 h-9 rounded-md text-[14px] font-medium transition-colors flex items-center gap-1.5">
+              <Check size={14} /> Convert to invoice
             </button>
           )}
           {deal && (

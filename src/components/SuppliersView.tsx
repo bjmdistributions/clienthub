@@ -102,9 +102,9 @@ export default function SuppliersView() {
         </div>
         <button
           onClick={createNew}
-          className="flex items-center gap-1.5 px-3 h-9 bg-ink hover:opacity-90 text-surface rounded-lg text-[13px] font-medium transition-colors"
+          className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
         >
-          <Plus size={14} /> New Supplier
+          <Plus size={14} /> New supplier
         </button>
       </div>
 
@@ -115,7 +115,7 @@ export default function SuppliersView() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search suppliers or contacts..."
+            placeholder="Search suppliers or contacts…"
             className="w-full pl-8 pr-3 h-9 text-[13px] border border-line rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
         </div>
@@ -208,7 +208,7 @@ export default function SuppliersView() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-line sticky top-0 bg-surface z-10">
               <div>
                 <h3 className="text-[15px] font-semibold text-ink">
-                  {selected ? selected.name : "New Supplier"}
+                  {selected ? selected.name : "New supplier"}
                 </h3>
                 {selected?.contact_name && (
                   <p className="text-[12px] text-muted mt-0.5">{selected.contact_name}</p>
@@ -224,10 +224,10 @@ export default function SuppliersView() {
               {selected && (
                 <div className="grid grid-cols-4 gap-2">
                   {[
-                    { label: "Total Paid", value: fmtAmount(selected.total_paid) },
+                    { label: "Total paid", value: fmtAmount(selected.total_paid) },
                     { label: "Deals",      value: String(selected.deal_count) },
-                    { label: "Avg Deal",   value: fmtAmount(selected.avg_deal_amount) },
-                    { label: "Last Deal",  value: selected.last_deal_date
+                    { label: "Avg deal",   value: fmtAmount(selected.avg_deal_amount) },
+                    { label: "Last deal",  value: selected.last_deal_date
                         ? new Date(selected.last_deal_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                         : "None" },
                   ].map((st) => (
@@ -241,7 +241,7 @@ export default function SuppliersView() {
 
               {/* Core info */}
               <div className="space-y-3">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Supplier Info</p>
+                <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Supplier info</p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Supplier name *">
                     <input value={input.name} onChange={(e) => setInput({ ...input, name: e.target.value })} className="field-input" />
@@ -296,7 +296,7 @@ export default function SuppliersView() {
                     className="w-full flex items-center justify-between text-left"
                   >
                     <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">
-                      Completed Deals ({supplierDeals.length})
+                      Completed deals ({supplierDeals.length})
                     </p>
                     <ChevronDown size={13} className={`text-muted transition-transform ${dealsOpen ? "rotate-180" : ""}`} />
                   </button>
@@ -363,7 +363,7 @@ export default function SuppliersView() {
               {/* Price history */}
               {selected && history.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Price History</p>
+                  <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Price history</p>
                   <div className="border border-line rounded-lg overflow-hidden">
                     <div className="grid grid-cols-4 px-3 py-2 bg-surface-2 text-[10px] font-semibold text-muted uppercase tracking-widest">
                       <span>Date</span><span>Item</span><span>Qty</span><span>Price</span>
@@ -388,7 +388,7 @@ export default function SuppliersView() {
                 disabled={saving || !input.name.trim()}
                 className="flex-1 flex items-center justify-center gap-1.5 h-10 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
               >
-                <Save size={14} /> {saving ? "Saving…" : "Save Supplier"}
+                <Save size={14} /> {saving ? "Saving…" : "Save supplier"}
               </button>
               {selected && (
                 <>

@@ -75,7 +75,7 @@ export default function QuickLogModal({ onClose }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-line">
           <div className="flex items-center gap-2.5">
-            <h3 className="text-[15px] font-semibold text-ink">Quick Log</h3>
+            <h3 className="text-[15px] font-semibold text-ink">Quick log</h3>
             <span className="text-[10px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded-md">L</span>
           </div>
           <button
@@ -94,7 +94,7 @@ export default function QuickLogModal({ onClose }: Props) {
             <input
               ref={inputRef}
               className="border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-              placeholder="Type client name..."
+              placeholder="Type client name…"
               value={clientQuery}
               onChange={(e) => { setClientQuery(e.target.value); setSelected(null); }}
               onKeyDown={handleKey}
@@ -147,7 +147,7 @@ export default function QuickLogModal({ onClose }: Props) {
             <textarea
               rows={5}
               className="border border-line px-3 py-2.5 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-none"
-              placeholder="What happened..."
+              placeholder="What happened…"
               value={body}
               onChange={(e) => setBody(e.target.value)}
               onKeyDown={(e) => {
@@ -185,7 +185,7 @@ export default function QuickLogModal({ onClose }: Props) {
               className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 disabled:opacity-40 transition-colors"
             >
               <Send size={13} />
-              {submitting ? "Saving..." : "Log"}
+              {submitting ? "Saving…" : "Log"}
             </button>
           </div>
         </div>

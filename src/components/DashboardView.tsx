@@ -172,19 +172,19 @@ export default function DashboardView({ onNavigate }: Props) {
   };
 
   const kpis: KpiDef[] = [
-    { label: "Total Clients",    sub: "in account",           displayValue: <AnimatedStat value={stats?.clients ?? 0} />,          icon: Users,      tab: "clients",   accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
+    { label: "Total clients",    sub: "in account",           displayValue: <AnimatedStat value={stats?.clients ?? 0} />,          icon: Users,      tab: "clients",   accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
     { label: "Outstanding",      sub: "awaiting payment",     displayValue: <CompactAmount value={stats?.outstanding ?? 0} />,      icon: DollarSign, tab: "invoices",  accent: "kpi-accent-amber",   iconBg: "icon-bg-amber"   },
     { label: "Revenue MTD",      sub: "closed this month",    displayValue: <CompactAmount value={revenueMtd} />,                   icon: TrendingUp, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald" },
     { label: "Profit MTD",       sub: "closed this month",    displayValue: <CompactAmount value={profitMtd} />,                    icon: TrendingUp, tab: "analytics", accent: profitMtd >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: profitMtd >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
     { label: "All-Time Revenue", sub: "from closed deals",    displayValue: <CompactAmount value={allTimeRev} />,                   icon: DollarSign, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald"  },
     { label: "All-Time Profit",  sub: "from closed deals",    displayValue: <CompactAmount value={allTimeProfit} />,                 icon: TrendingUp, tab: "analytics", accent: allTimeProfit >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: allTimeProfit >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
     { label: "Deals MTD",        sub: "completed this month", displayValue: <AnimatedStat value={stats?.deals_mtd ?? 0} />,         icon: FileText,   tab: "deals",     accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
-    { label: "Active Deals",     sub: "in pipeline",          displayValue: <AnimatedStat value={stats?.pipeline_count ?? 0} />,    icon: FileText,   tab: "dealflow",  accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
+    { label: "Active deals",     sub: "in pipeline",          displayValue: <AnimatedStat value={stats?.pipeline_count ?? 0} />,    icon: FileText,   tab: "dealflow",  accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
   ];
 
   const weekStats = [
     { label: "Revenue",      value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "rgb(var(--c-success))" },
-    { label: "New Clients",  value: String(stats?.clients_this_week ?? 0),                   color: "rgb(var(--c-accent))" },
+    { label: "New clients",  value: String(stats?.clients_this_week ?? 0),                   color: "rgb(var(--c-accent))" },
     { label: "Interactions", value: String(stats?.interactions_this_week ?? 0),              color: "rgb(var(--c-accent))" },
   ];
 
@@ -287,7 +287,7 @@ export default function DashboardView({ onNavigate }: Props) {
           }}>
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Profit Projection</h3>
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Profit projection</h3>
                 <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
                   Estimated month-end profit based on pipeline
                 </p>
@@ -436,7 +436,7 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="lg:col-span-2 flex flex-col gap-4">
 
             <div className="rounded-xl p-5 flex-1 animate-fade-up stagger-3" style={cardStyle}>
-              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top Clients</h3>
+              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top clients</h3>
               <p className="text-[11px] mb-3" style={{ color: "var(--t-tx4)" }}>Ranked by net profit</p>
               {stats?.top_clients_by_profit && stats.top_clients_by_profit.length > 0 ? (
                 <div className="space-y-0.5">
@@ -459,7 +459,7 @@ export default function DashboardView({ onNavigate }: Props) {
             </div>
 
             <div className="rounded-xl p-5 flex-1 animate-fade-up stagger-4" style={cardStyle}>
-              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top Suppliers</h3>
+              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top suppliers</h3>
               <p className="text-[11px] mb-3" style={{ color: "var(--t-tx4)" }}>By total spend on closed deals</p>
               {stats?.top_suppliers && stats.top_suppliers.length > 0 ? (
                 <div className="space-y-0.5">
@@ -488,7 +488,7 @@ export default function DashboardView({ onNavigate }: Props) {
         <div className="rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Newsletters Sent</h3>
+              <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Newsletters sent</h3>
               <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Recent campaigns and how many went out</p>
             </div>
             <button
@@ -530,7 +530,7 @@ export default function DashboardView({ onNavigate }: Props) {
           <div className="xl:col-span-2 rounded-xl overflow-hidden flex flex-col animate-fade-up stagger-3" style={cardStyle}>
             <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
               <div>
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Recent Invoices</h3>
+                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Recent invoices</h3>
                 <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Latest billing activity</p>
               </div>
               <button
@@ -599,7 +599,7 @@ export default function DashboardView({ onNavigate }: Props) {
 
             {/* This Week */}
             <div className="rounded-xl p-5 animate-fade-up stagger-4" style={cardStyle}>
-              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>This Week</h3>
+              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>This week</h3>
               <p className="text-[11px] mb-4" style={{ color: "var(--t-tx4)" }}>Last 7 days</p>
               <div className="space-y-3">
                 {weekStats.map((w) => (
@@ -640,7 +640,7 @@ export default function DashboardView({ onNavigate }: Props) {
             {/* Top Buyers */}
             {topBuyers.length > 0 && (
               <div className="rounded-xl p-5 animate-fade-up stagger-5" style={cardStyle}>
-                <h3 className="text-[13px] font-semibold tracking-tight mb-4" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top Buyers</h3>
+                <h3 className="text-[13px] font-semibold tracking-tight mb-4" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top buyers</h3>
                 <div className="space-y-1.5">
                   {topBuyers.map((h) => (
                     <div key={h.client_id} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
@@ -706,13 +706,13 @@ export default function DashboardView({ onNavigate }: Props) {
         {/* Quick Actions */}
         <div className="rounded-xl overflow-hidden animate-fade-up stagger-5" style={cardStyle}>
           <div className="px-5 py-2.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
-            <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Quick Actions</p>
+            <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Quick actions</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line-2">
             {[
-              { label: "Add Client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "var(--accent-600)", dotBg: "var(--accent-tint)"  },
-              { label: "New Invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "rgb(var(--c-accent))", dotBg: "rgb(var(--c-accent) / 0.1)"  },
-              { label: "Scan Inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "rgb(var(--c-success))", dotBg: "rgba(16,185,129,0.1)"  },
+              { label: "Add client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "var(--accent-600)", dotBg: "var(--accent-tint)"  },
+              { label: "New invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "rgb(var(--c-accent))", dotBg: "rgb(var(--c-accent) / 0.1)"  },
+              { label: "Scan inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "rgb(var(--c-success))", dotBg: "rgba(16,185,129,0.1)"  },
             ].map((a) => {
               const Icon = a.icon;
               return (
@@ -743,7 +743,7 @@ export default function DashboardView({ onNavigate }: Props) {
               <div className="rounded-xl p-5 flex flex-col flex-1 animate-fade-up stagger-7" style={cardStyle}>
                 <div className="flex items-center justify-between mb-4">
                   <div>
-                    <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Pending Approvals</h3>
+                    <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Pending approvals</h3>
                     <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Sign-ups waiting for review</p>
                   </div>
                   <span className="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0"

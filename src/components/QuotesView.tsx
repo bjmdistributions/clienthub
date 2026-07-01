@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Quote, Client, LineItem } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check } from "lucide-react";
+import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban } from "lucide-react";
 
 interface Props { onNavigate?: (t: any) => void; }
 
@@ -102,7 +102,7 @@ export default function QuotesView({ onNavigate }: Props) {
           <p className="text-[12px] text-muted mt-0.5">{counts.all} quotes · estimates for reaching out to customers</p>
         </div>
         <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
-          <Plus size={14} /> New Quote
+          <Plus size={14} /> New quote
         </button>
       </div>
 
@@ -119,7 +119,7 @@ export default function QuotesView({ onNavigate }: Props) {
         <table className="w-full">
           <thead>
             <tr className="border-b border-line">
-              {["Quote #", "Client", "Issued", "Valid Until", "Total", "Status", ""].map((h, i) => (
+              {["Quote #", "Client", "Issued", "Valid until", "Total", "Status", ""].map((h, i) => (
                 <th key={h} className={`text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted ${i >= 4 ? "text-right" : ""} ${i === 2 ? "hidden md:table-cell" : ""}`}>{h}</th>
               ))}
             </tr>
@@ -137,21 +137,28 @@ export default function QuotesView({ onNavigate }: Props) {
                   <td className="px-4 py-3 text-right">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusStyle(ds)}`}>{ds}</span>
                   </td>
-                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-end gap-1">
-                      <button disabled={busy === q.id} onClick={() => handlePdf(q.id)} title="Generate PDF" className="p-1.5 rounded-md text-muted hover:text-ink-2 hover:bg-surface-3"><FileDown size={14} /></button>
-                      <button disabled={busy === q.id} onClick={() => handleSend(q.id)} title="Email quote" className="p-1.5 rounded-md text-muted hover:text-accent hover:bg-accent/10"><Send size={14} /></button>
+                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                    {/* One segmented pill per row — consistent hit targets, quiet by default. */}
+                    <div className="inline-flex items-center rounded-lg border border-line-2 bg-surface-2/50 overflow-hidden divide-x divide-line-2">
+                      <button disabled={busy === q.id} onClick={() => handlePdf(q.id)} title="Save PDF"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors disabled:opacity-50"><FileDown size={13} /></button>
+                      <button disabled={busy === q.id} onClick={() => handleSend(q.id)} title="Email quote"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-50"><Send size={13} /></button>
                       {q.status !== "accepted" && (
-                        <button disabled={busy === q.id} onClick={() => convert(q)} title="Convert to invoice" className="p-1.5 rounded-md text-success-ink hover:text-success-ink hover:bg-success-bg"><ArrowRightCircle size={14} /></button>
+                        <button disabled={busy === q.id} onClick={() => convert(q)} title="Convert to invoice"
+                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors disabled:opacity-50"><ArrowRightCircle size={13} /></button>
                       )}
                       {q.converted_invoice_id && (
-                        <span title="Converted to an invoice" className="p-1.5 text-success-ink"><Check size={14} /></span>
+                        <span title="Converted to an invoice" className="flex items-center justify-center w-8 h-7 text-success-ink"><Check size={13} /></span>
                       )}
-                      <button onClick={() => { setEditing(q); setShowForm(true); }} className="px-2 py-1 text-[11px] text-muted hover:text-ink-2 rounded hover:bg-surface-2">Edit</button>
+                      <button onClick={() => { setEditing(q); setShowForm(true); }} title="Edit"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors"><Edit2 size={13} /></button>
                       {ds === "sent" && (
-                        <button onClick={() => setStatus(q.id, "declined")} className="px-2 py-1 text-[11px] text-danger-ink hover:text-danger-ink rounded hover:bg-danger-bg">Decline</button>
+                        <button onClick={() => setStatus(q.id, "declined")} title="Mark declined"
+                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"><Ban size={13} /></button>
                       )}
-                      <button onClick={() => del(q.id)} title="Delete" className="p-1.5 rounded-md text-faint hover:text-danger-ink hover:bg-danger-bg"><Trash2 size={14} /></button>
+                      <button onClick={() => del(q.id)} title="Delete"
+                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
                     </div>
                   </td>
                 </tr>
@@ -223,7 +230,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
           <div className="grid grid-cols-2 gap-4">
             {[
               { label: "Issued", val: quote.issue_date.slice(0, 10) },
-              { label: "Valid Until", val: quote.valid_until.slice(0, 10) },
+              { label: "Valid until", val: quote.valid_until.slice(0, 10) },
               ...(quote.sent_at ? [{ label: "Sent", val: new Date(quote.sent_at).toLocaleDateString() }] : []),
             ].map((r) => (
               <div key={r.label}>
@@ -234,7 +241,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
           </div>
 
           <div>
-            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line Items</div>
+            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line items</div>
             <table className="w-full text-[13px]">
               <thead className="bg-surface-2">
                 <tr>
@@ -275,10 +282,10 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
             <button onClick={onPdf} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><FileDown size={13} /> PDF</button>
             <button onClick={onSend} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Send size={13} /> Email</button>
             {quote.status !== "accepted" && (
-              <button onClick={onConvert} className="flex items-center gap-1.5 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><ArrowRightCircle size={13} /> Convert to Invoice</button>
+              <button onClick={onConvert} className="flex items-center gap-1.5 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><ArrowRightCircle size={13} /> Convert to invoice</button>
             )}
             {displayStatus === "sent" && (
-              <button onClick={onDecline} className="border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg">Mark Declined</button>
+              <button onClick={onDecline} className="border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg">Mark declined</button>
             )}
             <button onClick={onDelete} className="flex items-center gap-1.5 border border-line text-muted hover:text-danger-ink hover:border-danger px-3 h-9 rounded-lg text-[12px]"><Trash2 size={13} /> Delete</button>
           </div>
@@ -333,7 +340,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[7vh] bg-black/30 backdrop-blur-[3px] overflow-y-auto" onClick={onClose}>
       <div className="bg-surface rounded-2xl shadow-xl w-[620px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center p-5 border-b border-line">
-          <h3 className="text-[15px] font-semibold text-ink">{initial ? `Edit Quote ${initial.number}` : "New Quote"}</h3>
+          <h3 className="text-[15px] font-semibold text-ink">{initial ? `Edit quote ${initial.number}` : "New quote"}</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={18} /></button>
         </div>
 
@@ -347,14 +354,14 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
               </select>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Valid Until</label>
+              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Valid until</label>
               <input type="date" className={inp} value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
             </div>
           </div>
 
           {/* Line items */}
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1.5">Line Items</label>
+            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1.5">Line items</label>
             <div className="space-y-2">
               {items.map((it, i) => (
                 <div key={i} className="flex gap-2 items-center">
@@ -390,7 +397,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
         <div className="flex justify-end gap-2 p-5 border-t border-line">
           <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
           <button onClick={submit} disabled={!canSave || saving} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
-            {saving ? "Saving…" : initial ? "Save" : "Create Quote"}
+            {saving ? "Saving…" : initial ? "Save" : "Create quote"}
           </button>
         </div>
       </div>

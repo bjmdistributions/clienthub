@@ -21,8 +21,8 @@ function si(s: string): number { return STAGES.indexOf(s as Stage); }
 
 const NODE_LABELS: Record<Stage, string> = {
   invoiced:         "Invoiced",
-  payment_received: "Payment In",
-  supplier_paid:    "Supplier Paid",
+  payment_received: "Payment in",
+  supplier_paid:    "Supplier paid",
   complete:         "Complete",
 };
 
@@ -153,17 +153,19 @@ export default function DealFlowView() {
             {active.length} active deal{active.length !== 1 ? "s" : ""}
             {totalCompleted > 0 ? ` · ${totalCompleted} completed` : ""}
           </p>
-          </div>
+        </div>
+        <div className="flex items-center gap-2">
           <button
-          onClick={load}
-          className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-3 transition-colors"
-        >
-          <RefreshCw size={13} /> Refresh
-        </button>
-        <button onClick={handleExportDealFlows}
-          className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-8 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
-          <FileDown size={13} /> Export
-        </button>
+            onClick={load}
+            className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg hover:bg-surface-3 transition-colors"
+          >
+            <RefreshCw size={13} /> Refresh
+          </button>
+          <button onClick={handleExportDealFlows}
+            className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-8 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors">
+            <FileDown size={13} /> Export
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -197,7 +199,7 @@ export default function DealFlowView() {
           >
             <div className="flex items-center gap-2.5">
               <CheckCircle2 size={14} className="text-success-ink" />
-              <span className="text-[13px] font-semibold text-ink">Completed Deals</span>
+              <span className="text-[13px] font-semibold text-ink">Completed deals</span>
               <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">
                 {totalCompleted}
               </span>
@@ -272,10 +274,15 @@ export default function DealFlowView() {
 
       {/* ── Active deals ──────────────────────────────────────────────── */}
       {active.length === 0 ? (
-        <div className="text-center py-24 text-[13px] text-faint">
-          {search
-            ? "No active deals match your search"
-            : "No active deals — deals appear automatically when invoices are sent"}
+        <div className="bg-surface border border-line rounded-xl py-16 flex flex-col items-center">
+          <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
+            <CheckCircle2 size={18} />
+          </div>
+          <div className="text-[13px] text-muted">
+            {search
+              ? "No active deals match your search"
+              : "No active deals — deals appear automatically when invoices are sent"}
+          </div>
         </div>
       ) : (
         <div className="space-y-4">
@@ -487,7 +494,7 @@ function DealFlowCard({
           {invItems.length > 0 && (
             <div className="px-5 pb-4 border-t border-line">
               <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mt-3 mb-2">
-                Invoice Breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
+                Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
               </div>
               <table className="w-full text-[12px]">
                 <thead>
@@ -720,7 +727,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
 
   return (
     <div className="space-y-4">
-      <SectionLabel>{isDone ? "Payment Received" : "Add Supplier & Receive Payment"}</SectionLabel>
+      <SectionLabel>{isDone ? "Payment received" : "Add supplier & receive payment"}</SectionLabel>
 
       {/* Existing supplier payments */}
       {existingPayments.length > 0 && (
@@ -1030,10 +1037,10 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
             <button
               onClick={handleMarkReceived}
               disabled={saving || !hasSuppliers}
-              className="flex items-center gap-2 bg-success hover:bg-success text-white
-                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+              className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent
+                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"
             >
-              <DollarSign size={14} /> Mark Payment Received
+              <DollarSign size={14} /> Mark payment received
             </button>
           </div>
         </>
@@ -1280,7 +1287,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg
                        text-[14px] font-medium disabled:opacity-40 transition-colors"
           >
-            Complete Deal
+            Complete deal
           </button>
         </div>
       )}
@@ -1298,8 +1305,8 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShipHold("shipping")}
-              className="flex items-center gap-1.5 bg-warning hover:bg-warning text-white
-                         px-4 h-9 rounded-lg text-[13px] font-medium transition-colors"
+              className="flex items-center gap-1.5 bg-warning hover:opacity-90 text-on-accent
+                         px-4 h-9 rounded-lg text-[13px] font-medium transition-all"
             >
               <Truck size={13} /> Yes, track shipping
             </button>
@@ -1327,7 +1334,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         <div className="bg-surface border border-warning rounded-xl p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Truck size={14} className="text-warning-ink" />
-            <span className="text-[13px] font-semibold text-ink">Shipping Hold</span>
+            <span className="text-[13px] font-semibold text-ink">Shipping hold</span>
             <span className="ml-auto text-[11px] text-warning-ink bg-warning-bg border border-warning
                              px-2 py-0.5 rounded-full font-medium">
               Awaiting delivery
@@ -1354,7 +1361,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               />
             </div>
             <div>
-              <label className="block text-[11px] text-muted font-medium mb-1">Pickup Date</label>
+              <label className="block text-[11px] text-muted font-medium mb-1">Pickup date</label>
               <input
                 type="date"
                 className={inp}
@@ -1363,7 +1370,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               />
             </div>
             <div>
-              <label className="block text-[11px] text-muted font-medium mb-1">Delivery Date</label>
+              <label className="block text-[11px] text-muted font-medium mb-1">Delivery date</label>
               <input
                 type="date"
                 className={inp}
@@ -1377,10 +1384,10 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
             <button
               onClick={handleShippingComplete}
               disabled={saving}
-              className="flex items-center gap-1.5 bg-success hover:bg-success text-white
-                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+              className="flex items-center gap-1.5 bg-success hover:opacity-90 text-on-accent
+                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"
             >
-              <Check size={13} /> Confirm Delivery & Complete
+              <Check size={13} /> Confirm delivery & complete
             </button>
             <button
               onClick={() => setShipHold("idle")}
@@ -1445,7 +1452,7 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
           { label: "Revenue",                                    value: fmtAmount(flow.gross_revenue), clr: "text-ink"   },
-          { label: "Total Costs",                                value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
+          { label: "Total costs",                                value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
           {
             label: flow.net_profit >= 0 ? "Profit" : "Loss",
             value: fmtAmount(flow.net_profit),
