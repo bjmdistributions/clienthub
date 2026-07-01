@@ -427,6 +427,13 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
   useEffect(() => { api.listLineItemTemplates().then(setTemplates).catch(() => {}); }, []);
 
+  // Credit guardrail: for a NEW invoice, warn if it would push the buyer over limit.
+  const [credit, setCredit] = useState<{ credit_limit: number; exposure: number } | null>(null);
+  useEffect(() => {
+    if (initial || createNew || !clientId) { setCredit(null); return; }
+    api.getClientCreditStatus(clientId).then(setCredit).catch(() => setCredit(null));
+  }, [clientId, createNew, initial]);
+
   const updateItem = (i: number, field: keyof LineItem, val: any) => {
     const copy = [...items];
     (copy[i] as any)[field] = val;
@@ -437,6 +444,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const subtotal = items.reduce((s, it) => s + it.amount, 0);
   const tax = subtotal * (taxRate / 100);
   const total = subtotal + tax;
+  const overLimit = !!(credit && credit.credit_limit > 0 && credit.exposure + total > credit.credit_limit);
 
   const handlePreview = async () => {
     if (items.length === 0) return;
@@ -630,6 +638,13 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Row label="Total" value={total} bold />
         </div>
       </div>
+      {overLimit && credit && (
+        <div className="mt-4 bg-danger-bg border border-danger-ink/25 rounded-lg px-4 py-3">
+          <span className="text-[13px] text-danger-ink">
+            <strong>Over credit limit.</strong> This invoice ({fmtAmount(total)}) puts this buyer's open exposure at {fmtAmount(credit.exposure + total)}, above their {fmtAmount(credit.credit_limit)} limit. You can still create it.
+          </span>
+        </div>
+      )}
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
         <button onClick={handlePreview} disabled={previewing || items.length === 0}
