@@ -13,7 +13,11 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 const ORG_ID: &str = "org_default";
-const ORG_NAME: &str = "BJM Distributions";
+// Generic default for a freshly-seeded local org_default row — never a personal /
+// company name. The real workspace name comes from the signed-in account / server
+// (materialized on login and via sync). Jack's existing org_default row already
+// stores his real name and is NOT changed (the seed is INSERT OR IGNORE).
+const ORG_NAME: &str = "";
 pub const MODULES: [&str; 9] = [
     "clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "settings", "admin",
 ];
@@ -354,7 +358,7 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
     //    server to learn this account's org id. If it belongs to a DIFFERENT org
     //    than the one that owns the active store, we must NOT mix its data in —
     //    route it to its own per-account store and ask the app to restart there.
-    let (_, org_id) = match crate::netsync::probe_login(SERVER_URL, &email, &password).await {
+    let (_, identity) = match crate::netsync::probe_login(SERVER_URL, &email, &password).await {
         Ok(v) => v,
         Err(e) => {
             let msg = e.to_string();
@@ -365,6 +369,7 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
             };
         }
     };
+    let org_id = identity.org_id.clone();
 
     if let Some(store_org) = crate::db::active_store_org() {
         if !org_id.is_empty() && org_id != store_org {
@@ -376,10 +381,18 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
     }
 
     // 3. Same org as this store (or store unclaimed) → connect, pull the org down,
-    //    claim the store, then complete the login locally against the synced account.
+    //    claim the store, then complete the login locally. Crucially, we MATERIALIZE
+    //    the account (staff row + its role) from the authoritative server login body
+    //    FIRST, so login never depends on the async pull restoring the RBAC rows
+    //    (which is exactly the "Could not load account" failure on a fresh install).
+    //    The pull still runs to restore all business data; this just guarantees the
+    //    identity is present regardless of pull timing.
     match crate::netsync::connect(SERVER_URL, &email, &password).await {
-        Ok(returned_org) => {
-            crate::db::claim_active_store_org(if returned_org.is_empty() { &org_id } else { &returned_org });
+        Ok(returned) => {
+            let claim_org = if returned.org_id.is_empty() { &org_id } else { &returned.org_id };
+            crate::db::claim_active_store_org(claim_org);
+            // Additive materialization — never clears anything (data-safety).
+            materialize_account(&returned, &password);
             employee_login(email, password)
         }
         Err(e) => {
@@ -391,6 +404,65 @@ pub async fn login(email: String, password: String) -> Result<Me, String> {
             }
         }
     }
+}
+
+/// Write a server-authenticated account into the local store so `employee_login`
+/// / `load_me` resolve immediately on a fresh install — independent of when (or
+/// whether) the netsync pull restores the RBAC rows. Purely ADDITIVE and data-safe:
+///
+///   - `orgs` and `roles` use INSERT OR IGNORE (never overwrite an existing local
+///     role's permissions or an org's name),
+///   - `staff_accounts` upserts ONLY this account's identity columns (id keyed),
+///     storing a fresh bcrypt hash of the just-verified password so future OFFLINE
+///     logins work. No other row is touched; nothing is ever deleted.
+///
+/// The server login body doesn't carry the password hash (correctly), so we hash
+/// the password the user just authenticated with.
+fn materialize_account(ident: &crate::netsync::ServerIdentity, password: &str) {
+    if ident.id.is_empty() || ident.email.is_empty() {
+        return; // nothing authoritative to write; leave the store untouched
+    }
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return };
+    let now = now_rfc3339();
+
+    // Org row (name unknown from the login body — use org_id as a placeholder;
+    // the real org/company name arrives via pull / is read from the server).
+    if !ident.org_id.is_empty() {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO orgs (id,name,created_at) VALUES (?1,?2,?3)",
+            rusqlite::params![ident.org_id, ident.org_id, now],
+        );
+    }
+
+    // Role row so load_me's staff⋈roles JOIN resolves. INSERT OR IGNORE keeps any
+    // existing local role (e.g. a seeded default) exactly as-is.
+    if !ident.role_id.is_empty() {
+        let perms = serde_json::to_string(&ident.permissions).unwrap_or_else(|_| "[]".into());
+        let role_name = if ident.role_name.is_empty() { "Member" } else { &ident.role_name };
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO roles (id,org_id,name,permissions_json,is_system,created_at) VALUES (?1,?2,?3,?4,1,?5)",
+            rusqlite::params![ident.role_id, ident.org_id, role_name, perms, now],
+        );
+    }
+
+    // The account itself. Hash the just-verified password for offline sign-in.
+    let hash = match bcrypt::hash(password, bcrypt::DEFAULT_COST) {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let _ = conn.execute(
+        "INSERT INTO staff_accounts (id,org_id,email,password_hash,display_name,role_id,status,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,'active',?7,?7)
+         ON CONFLICT(id) DO UPDATE SET org_id=excluded.org_id, email=excluded.email,
+             password_hash=excluded.password_hash, display_name=excluded.display_name,
+             role_id=excluded.role_id, status='active', updated_at=excluded.updated_at",
+        rusqlite::params![ident.id, ident.org_id, ident.email.to_lowercase(), hash, ident.display_name, ident.role_id, now],
+    );
+    // Optional profile fields (best-effort; columns exist on the desktop schema).
+    let _ = conn.execute(
+        "UPDATE staff_accounts SET avatar=?1, title=?2, phone=?3 WHERE id=?4",
+        rusqlite::params![ident.avatar, ident.title, ident.phone, ident.id],
+    );
 }
 
 /// Restart the app so it re-opens against the store the pointer now targets. Used

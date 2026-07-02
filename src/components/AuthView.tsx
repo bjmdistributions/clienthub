@@ -1,24 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Me } from "../lib/api";
 
+// Accounts are created on the website — the desktop only ever signs in. A
+// website-created account signing in on a fresh device is restored (account +
+// data) from the server, so we show a calm "Restoring…" state, not an error.
+const REGISTER_URL = "https://ecliptr.app/register";
+
+// The backend returns this sentinel when the credentials belong to a different
+// workspace than the one this device is bound to — switching means wiping local
+// state and pulling the other org, so it needs a confirm + restart.
+const SWITCH_PREFIX = "__SWITCH_WORKSPACE__:";
+
 /**
- * Full-screen animated Ecliptr auth. Shows "Create owner account" (bootstrap) when
- * no accounts exist yet, otherwise a sign-in form. On success it returns the
- * signed-in `Me` to the app.
+ * Full-screen animated Ecliptr sign-in. On success it returns the signed-in
+ * `Me` to the app.
  */
 export default function AuthView({
-  mode,
   onAuthed,
 }: {
-  mode: "bootstrap" | "login";
   onAuthed: (me: Me) => void;
 }) {
-  const [orgName, setOrgName] = useState("");
   const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const starRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -58,27 +64,36 @@ export default function AuthView({
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
   }, []);
 
-  useEffect(() => {
-    api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
-    if (mode === "bootstrap") {
-      // Pre-fill the owner email from company info if we have it.
-      api.getCompanyInfo().then((c) => { if (c?.email) setEmail(c.email); }).catch(() => {});
-    }
-  }, [mode]);
-
   const submit = async () => {
+    if (!email.trim() || !password) return;
     setError(null);
     setBusy(true);
+    // A fresh device restores account + data from the server on sign-in; show a
+    // calm "Restoring…" state after a short delay so quick logins don't flash it.
+    const restoreTimer = setTimeout(() => setRestoring(true), 900);
     try {
-      const me = mode === "bootstrap"
-        ? await api.employeeBootstrap(name.trim(), email.trim(), password)
-        : await api.login(email.trim(), password);
+      const me = await api.login(email.trim(), password);
+      clearTimeout(restoreTimer);
       onAuthed(me);
     } catch (e: any) {
-      setError(typeof e === "string" ? e : (e?.message || "Something went wrong"));
-      setBusy(false);
+      clearTimeout(restoreTimer);
+      const msg = typeof e === "string" ? e : (e?.message || "Something went wrong");
+      // Different-workspace credentials: confirm, then wipe + restart into it.
+      if (msg.startsWith(SWITCH_PREFIX)) {
+        const org = msg.slice(SWITCH_PREFIX.length) || "another workspace";
+        if (confirm(`These credentials belong to ${org}. Switch this device to that workspace? The app will restart.`)) {
+          try { const { relaunch } = await import("@tauri-apps/plugin-process"); await relaunch(); return; }
+          catch { /* fall through to reset busy state */ }
+        }
+        setBusy(false); setRestoring(false);
+        return;
+      }
+      setError(msg);
+      setBusy(false); setRestoring(false);
     }
   };
+
+  const openRegister = () => { api.openExternal(REGISTER_URL).catch(() => {}); };
 
   const inp = "w-full h-11 px-3.5 rounded-xl text-[14px] bg-white/5 border border-white/12 text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-white/25 transition";
 
@@ -95,29 +110,21 @@ export default function AuthView({
             <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-10 w-10" />
           </div>
           <p className="text-[16px] font-semibold tracking-tight text-white/90 mb-2">Ecliptr</p>
-          <h1 className="text-[26px] font-bold tracking-tight text-white">
-            {mode === "bootstrap" ? "Create your account" : "Welcome back"}
-          </h1>
-          <p className="text-[13px] text-white/55 mt-1.5 max-w-[300px]">
-            {mode === "bootstrap"
-              ? `Set up the owner account for ${orgName || "your organization"}. This becomes your login on web and mobile too.`
-              : "Sign in to Ecliptr."}
-          </p>
+          <h1 className="text-[26px] font-bold tracking-tight text-white">Welcome back</h1>
+          <p className="text-[13px] text-white/55 mt-1.5 max-w-[300px]">Sign in to your workspace.</p>
         </div>
 
         <div className="space-y-3">
-          {mode === "bootstrap" && (
-            <input className={inp} placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
-          )}
-          <input className={inp} type="email" autoCapitalize="off" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input className={inp} type="email" autoCapitalize="off" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} disabled={busy} />
           <div className="relative">
             <input
               className={inp}
               type={showPw ? "text" : "password"}
-              placeholder={mode === "bootstrap" ? "Create a password (8+ chars)" : "Password"}
+              placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !busy) submit(); }}
+              disabled={busy}
               style={{ paddingRight: 56 }}
             />
             <button
@@ -138,14 +145,20 @@ export default function AuthView({
           <button
             onClick={submit}
             disabled={busy}
-            className="w-full h-11 rounded-xl text-[14px] font-semibold text-white transition-all duration-150 disabled:opacity-50 hover:-translate-y-px"
+            className="w-full h-11 rounded-xl text-[14px] font-semibold text-white transition-all duration-150 disabled:opacity-60 hover:-translate-y-px flex items-center justify-center gap-2"
             style={{ background: "linear-gradient(135deg, #3B82F6, #2563EB)", boxShadow: "0 8px 24px rgba(37,99,235,0.35)" }}
           >
-            {busy ? "Please wait…" : mode === "bootstrap" ? "Create account" : "Sign in"}
+            {busy && <span className="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />}
+            {restoring ? "Restoring your account…" : busy ? "Signing in…" : "Sign in"}
           </button>
         </div>
 
-        <p className="text-center text-[11px] text-white/30 mt-8">Ecliptr</p>
+        <p className="text-center text-[12px] text-white/45 mt-6">
+          Don't have an account?{" "}
+          <button onClick={openRegister} className="text-white/80 hover:text-white font-medium underline underline-offset-2">
+            Sign up at ecliptr.app →
+          </button>
+        </p>
       </div>
 
       <style>{`

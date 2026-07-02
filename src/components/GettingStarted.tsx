@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { X, ArrowRight, ArrowLeft, Users, GitBranch, Truck, Mail, Sparkles } from "lucide-react";
+import { X, ArrowRight, ArrowLeft, Users, GitBranch, Truck, Mail } from "lucide-react";
 
 const STEPS = [
-  { icon: Sparkles, title: "Welcome to Ecliptr", body: "Run your whole brokerage in one place — clients, deals, suppliers, invoicing and newsletters. Here's a quick tour of how the pieces fit together." },
+  { icon: null, title: "Welcome to Ecliptr", body: "Run your whole brokerage in one place — clients, deals, suppliers, invoicing and newsletters. Here's a quick tour of how the pieces fit together." },
   { icon: Users, title: "Clients & leads", body: "Every client lives here. New leads from your website forms, Shopify, or imports arrive as pending — you review and approve them before they're added." },
   { icon: GitBranch, title: "Deal flow", body: "Deals move from invoiced → payment received → supplier paid → closed. Ecliptr works out the profit and each rep's pay split automatically as you advance them." },
   { icon: Truck, title: "Suppliers & inventory", body: "Track who you source from and what's in stock. Supplier costs flow into each deal's profit, so your numbers stay accurate." },
@@ -23,9 +23,17 @@ export default function GettingStarted({ onDone }: { onDone: () => void }) {
           <button onClick={finish} className="text-muted hover:text-ink transition-colors text-[12px] flex items-center gap-1"><X size={14} /> Skip</button>
         </div>
         <div className="px-8 pt-1 text-center">
-          <div className="mx-auto mb-5 w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
-            <Icon size={26} className="text-on-accent" />
-          </div>
+          {Icon ? (
+            <div className="mx-auto mb-5 w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+              <Icon size={26} className="text-on-accent" />
+            </div>
+          ) : (
+            // Welcome step leads with THE app mark (same asset as auth/sidebar).
+            <div className="mx-auto mb-5 w-14 h-14 rounded-2xl flex items-center justify-center"
+              style={{ background: "radial-gradient(circle at 50% 42%, #12162A 0%, #070912 68%, #030305 100%)", boxShadow: "inset 0 0 0 1px rgba(150,190,255,0.12)" }}>
+              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="w-8 h-8" />
+            </div>
+          )}
           <h2 className="text-[18px] font-semibold text-ink mb-2 tracking-tight">{step.title}</h2>
           <p className="text-[13.5px] text-muted leading-relaxed">{step.body}</p>
         </div>

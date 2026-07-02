@@ -332,6 +332,7 @@ fn main() {
             save_invoice_costs,
             save_invoice_shipping,
             set_invoice_sent_date,
+            set_invoice_void,
             // Invoice numbering
             get_invoice_numbering_config,
             save_invoice_numbering_config,

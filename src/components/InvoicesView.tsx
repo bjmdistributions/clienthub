@@ -2,14 +2,17 @@ import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, ProfitSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle } from "lucide-react";
 import RecurringView from "./RecurringView";
 import CostProfitPanel from "./CostProfitPanel";
 import { toast } from "./Toast";
 
+const isVoided = (inv: Invoice): boolean => inv.status.toLowerCase() === "void";
+
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
   const lo = s.toLowerCase();
+  if (lo === "void")                    return "bg-surface-3 text-muted line-through";
   if (lo === "paid" && inv.is_complete) return "bg-success-bg text-success-ink";
   if (lo === "paid")                    return "bg-warning-bg text-warning-ink";
   if (lo === "sent" || lo === "deposit_pending") return "bg-info-bg text-info-ink";
@@ -19,6 +22,7 @@ const statusColor = (inv: Invoice): string => {
 
 const statusLabel = (inv: Invoice): string => {
   const lo = inv.status.toLowerCase();
+  if (lo === "void") return "Void";
   if (lo === "paid" && inv.is_complete) return "Completed";
   if (lo === "paid") return "Paid";
   if (lo === "deposit_pending") return "Sent";
@@ -142,8 +146,16 @@ export default function InvoicesView() {
     catch (e: any) { toast(String(e), "error"); }
   };
 
+  // Void ("deal fell through") — two-step confirm; un-void reverses it.
+  const handleVoid = async (id: string, voided: boolean) => {
+    if (voided && !confirm("Mark this deal as fallen through? The invoice is voided — it drops out of receivables and owed totals, but nothing is deleted.")) return;
+    try { await api.setInvoiceVoid(id, voided); toast(voided ? "Invoice voided" : "Invoice restored"); load(); }
+    catch (e: any) { toast(String(e), "error"); }
+  };
+
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
-  // The status tab filters the table (recurring renders its own view).
+  // The status tab filters the table (recurring renders its own view). Voided
+  // invoices only show under "all" so they stay out of the working lists.
   const visible = invoices.filter((i) => {
     const lo = i.status.toLowerCase();
     if (viewTab === "drafts") return lo === "draft";
@@ -151,14 +163,15 @@ export default function InvoicesView() {
     if (viewTab === "paid")   return lo === "paid";
     return true;
   });
-  const outstanding   = invoices.filter((i) => i.status !== "paid").reduce((s, i) => s + i.total, 0);
+  // Voided invoices are excluded from all money totals.
+  const outstanding   = invoices.filter((i) => i.status !== "paid" && !isVoided(i)).reduce((s, i) => s + i.total, 0);
   const overdueCount  = invoices.filter((i) => i.status === "overdue").length;
   const paidCount     = invoices.filter((i) => i.status === "paid").length;
   const completedCount = invoices.filter((i) => i.is_complete).length;
   const sentCount     = invoices.filter((i) => i.status === "sent").length;
   const draftCount    = invoices.filter((i) => i.status === "draft").length;
-  // Only count profit once a deal is fully closed (is_complete = true)
-  const totalProfit   = invoices.filter((i) => i.is_complete).reduce((s, i) => s + (i.profit ?? 0), 0);
+  // Only count profit once a deal is fully closed (is_complete = true); voided out.
+  const totalProfit   = invoices.filter((i) => i.is_complete && !isVoided(i)).reduce((s, i) => s + (i.profit ?? 0), 0);
 
   const handleExportInvoices = async () => {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "invoices.csv" });
@@ -297,14 +310,15 @@ export default function InvoicesView() {
               } else {
                 profit = null;
               }
+              const voided = isVoided(inv);
               return (
-                <tr key={inv.id} className="border-b border-line-2 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors" onClick={() => openDetail(inv.id)}>
+                <tr key={inv.id} className={`border-b border-line-2 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
                   <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(inv.client_id)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.due_date.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(inv.total)}</td>
-                  <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${profit != null ? (profit >= 0 ? "text-success-ink" : "text-danger-ink") : "text-faint"}`}>
+                  <td className={`px-4 py-3 text-[13px] font-semibold text-ink tabular-nums ${voided ? "line-through" : ""}`}>{fmtAmount(inv.total)}</td>
+                  <td className={`px-4 py-3 text-[13px] font-semibold tabular-nums ${voided ? "text-faint" : profit != null ? (profit >= 0 ? "text-success-ink" : "text-danger-ink") : "text-faint"}`}>
                     {profit != null ? (
                       <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit — revenue minus costs entered so far" : undefined}>
                         {fmtAmount(profit)}
@@ -332,27 +346,36 @@ export default function InvoicesView() {
                         className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent hover:bg-accent/10 disabled:opacity-40 transition-colors">
                         {busy === inv.id ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
                       </button>
-                      {inv.is_complete && inv.deal_flow_id && (
-                        <button
-                          title="Reopen deal"
-                          onClick={async () => {
-                            if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
-                            try {
-                              await api.uncompleteDealFlow(inv.deal_flow_id!);
-                              await load();
-                            } catch (e: any) { toast(String(e), "error"); }
-                          }}
-                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"
-                        >
-                          <RotateCcw size={13} />
-                        </button>
-                      )}
-                      {inv.status.toLowerCase() !== "paid" && (
+                      {voided ? (
+                        <button title="Un-void — restore this invoice" onClick={() => handleVoid(inv.id, false)}
+                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><RotateCcw size={13} /></button>
+                      ) : (
                         <>
-                          <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                            className="flex items-center justify-center w-8 h-7 text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
-                          <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                            className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
+                          {inv.is_complete && inv.deal_flow_id && (
+                            <button
+                              title="Reopen deal"
+                              onClick={async () => {
+                                if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
+                                try {
+                                  await api.uncompleteDealFlow(inv.deal_flow_id!);
+                                  await load();
+                                } catch (e: any) { toast(String(e), "error"); }
+                              }}
+                              className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"
+                            >
+                              <RotateCcw size={13} />
+                            </button>
+                          )}
+                          {inv.status.toLowerCase() !== "paid" && (
+                            <>
+                              <button title="Send invoice" onClick={() => handleSend(inv.id)}
+                                className="flex items-center justify-center w-8 h-7 text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
+                              <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
+                                className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
+                            </>
+                          )}
+                          <button title="Mark deal fell through (void)" onClick={() => handleVoid(inv.id, true)}
+                            className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"><XCircle size={13} /></button>
                         </>
                       )}
                       <button title="Delete" onClick={() => handleDelete(inv.id)}
@@ -405,6 +428,10 @@ export default function InvoicesView() {
             }
           }}
           onCostSaved={() => { setDetailInvoice(null); api.getInvoice(detailInvoice.id).then(setDetailInvoice); }}
+          onVoid={async (voided) => {
+            await handleVoid(detailInvoice.id, voided);
+            api.getInvoice(detailInvoice.id).then(setDetailInvoice).catch(() => {});
+          }}
           clientName={clientName(detailInvoice.client_id)}
         />
       )}
@@ -738,10 +765,12 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onDelete, onCostSaved }: {
+function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onDelete, onCostSaved, onVoid }: {
   invoice: Invoice; clientName: string; onClose: () => void;
   onPdf: () => void; onResend: () => void; onDelete: () => void; onCostSaved: () => void;
+  onVoid: (voided: boolean) => void;
 }) {
+  const voided = isVoided(invoice);
   const items: LineItem[]  = JSON.parse(invoice.line_items_json || "[]");
   const costItems: CostItem[] = JSON.parse(invoice.cost_items_json || "[]");
   const [editingCosts, setEditingCosts]   = useState(false);
@@ -762,6 +791,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   }, [invoice.id]);
 
   const statCol = (s: string) => {
+    if (s === "void")    return "bg-surface-3 text-muted";
     if (s === "paid")    return invoice.is_complete ? "bg-success-bg text-success-ink" : "bg-warning-bg text-warning-ink";
     if (s === "sent")    return "bg-info-bg text-info-ink";
     if (s === "overdue") return "bg-danger-bg text-danger-ink";
@@ -778,9 +808,16 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
         </div>
 
         <div className="px-6 py-5 space-y-5">
-          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statCol(invoice.status)}`}>
-            {invoice.status.replace(/_/g, " ")}
+          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statCol(invoice.status.toLowerCase())}`}>
+            {statusLabel(invoice)}
           </span>
+
+          {voided && (
+            <div className="flex items-center gap-2 bg-surface-2 border border-line rounded-xl px-4 py-3 text-[12.5px] text-ink-2">
+              <XCircle size={15} className="text-muted flex-shrink-0" />
+              <span>This deal fell through — the invoice is voided and excluded from receivables. Nothing was deleted; you can restore it.</span>
+            </div>
+          )}
 
           <div>
             <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-0.5">Client</div>
@@ -949,21 +986,40 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
             <Download size={15} /> Download PDF
           </button>
-          <div className="flex gap-2.5">
-            <button onClick={onResend}
-              className="flex-1 bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
-              <Send size={13} /> Resend
-            </button>
-            <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { toast(String(e), "error"); } }}
-              className="flex-1 bg-surface border border-line hover:bg-accent/10 hover:border-accent/30 text-accent h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5"
-              title="Request payment via Stripe">
-              <CreditCard size={13} /> Pay
-            </button>
-            <button onClick={onDelete}
-              className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
-              <Trash2 size={13} /> Delete
-            </button>
-          </div>
+          {voided ? (
+            <div className="flex gap-2.5">
+              <button onClick={() => onVoid(false)}
+                className="flex-1 bg-surface border border-line hover:bg-success-bg hover:border-success text-ink-2 hover:text-success-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                <RotateCcw size={13} /> Un-void invoice
+              </button>
+              <button onClick={onDelete}
+                className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                <Trash2 size={13} /> Delete
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="flex gap-2.5">
+                <button onClick={onResend}
+                  className="flex-1 bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                  <Send size={13} /> Resend
+                </button>
+                <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { toast(String(e), "error"); } }}
+                  className="flex-1 bg-surface border border-line hover:bg-accent/10 hover:border-accent/30 text-accent h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5"
+                  title="Request payment via Stripe">
+                  <CreditCard size={13} /> Pay
+                </button>
+                <button onClick={onDelete}
+                  className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                  <Trash2 size={13} /> Delete
+                </button>
+              </div>
+              <button onClick={() => onVoid(true)}
+                className="w-full bg-surface border border-line hover:bg-warning-bg hover:border-warning text-muted hover:text-warning-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
+                <XCircle size={13} /> Mark deal fell through
+              </button>
+            </>
+          )}
         </div>
       </div>
     </>

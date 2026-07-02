@@ -139,10 +139,10 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
           {step === 1 && (
             <div className="space-y-3">
               <Field label="Business name *">
-                <input className={inp} value={biz.company} onChange={(e) => setBiz({ ...biz, company: e.target.value })} placeholder="BJM Distributions" />
+                <input className={inp} value={biz.company} onChange={(e) => setBiz({ ...biz, company: e.target.value })} placeholder="Your company" />
               </Field>
               <Field label="Your name *">
-                <input className={inp} value={biz.user} onChange={(e) => setBiz({ ...biz, user: e.target.value })} placeholder="Jack" />
+                <input className={inp} value={biz.user} onChange={(e) => setBiz({ ...biz, user: e.target.value })} placeholder="Your name" />
               </Field>
               <Field label="Business email">
                 <input className={inp} type="email" value={biz.email} onChange={(e) => setBiz({ ...biz, email: e.target.value })} placeholder="you@company.com" />

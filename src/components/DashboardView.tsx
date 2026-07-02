@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging } from "../lib/api";
+import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging, Me } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
   Users, FileText, Mail, ArrowRight, ArrowUpRight, CheckCircle2,
@@ -7,9 +7,11 @@ import {
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import PendingReviewModal from "./PendingReviewModal";
+import { can } from "../lib/permissions";
 
 interface Props {
   onNavigate: (t: any) => void;
+  me: Me | null | undefined;
 }
 
 const invStatusCls = (s: string): string => {
@@ -51,7 +53,11 @@ function Delta({ now, then }: { now: number; then: number | null }) {
   );
 }
 
-export default function DashboardView({ onNavigate }: Props) {
+export default function DashboardView({ onNavigate, me }: Props) {
+  // Org money (cash position, revenue, profit) is hidden from reps/viewers
+  // unless they hold deal_flow:view_numbers. Admins/owners carry "*" and pass.
+  const showMoney = can(me, "deal_flow:view_numbers");
+
   const [stats, setStats]               = useState<DashboardStats | null>(null);
   const [ar, setAr]                     = useState<ReceivablesAging | null>(null);
   const [ap, setAp]                     = useState<PayablesAging | null>(null);
@@ -66,11 +72,13 @@ export default function DashboardView({ onNavigate }: Props) {
   const [chartMetric, setChartMetric]   = useState<"profit" | "revenue">("profit");
 
   const loadAll = () => {
+    api.dueFollowups().then(setFollowups).catch(() => {});
+    api.getPendingApprovals().then(setPending).catch(() => {});
+    // Money-bearing data is only fetched for users who may see it.
+    if (!showMoney) return;
     api.dashboardStats().then(setStats).catch(console.error);
     api.getReceivablesAging().then(setAr).catch(() => setAr(null));
     api.getPayablesAging().then(setAp).catch(() => setAp(null));
-    api.dueFollowups().then(setFollowups).catch(() => {});
-    api.getPendingApprovals().then(setPending).catch(() => {});
     api.listInvoices().then((inv) => setRecent(inv.slice(0, 6))).catch(() => {});
 
     // Last month, cut at today's day-of-month, for an honest MTD comparison.
@@ -116,9 +124,9 @@ export default function DashboardView({ onNavigate }: Props) {
   useEffect(() => {
     loadAll();
     api.listClients().then(setClients).catch(console.error);
-    loadProfitMonth(profitMonth);
+    if (showMoney) loadProfitMonth(profitMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [showMoney]);
 
   const changeMonth = (dir: 1 | -1) => {
     const [y, m] = profitMonth.split("-").map(Number);
@@ -181,8 +189,8 @@ export default function DashboardView({ onNavigate }: Props) {
 
       <div className="flex-1 p-6 flex flex-col gap-5 max-w-[1200px] w-full mx-auto">
 
-        {/* ── Hero: cash position + this month ───────────── */}
-        {heroLoading ? (
+        {/* ── Hero: cash position + this month (money — gated) ─ */}
+        {showMoney && (heroLoading ? (
           <div className="h-[104px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
           <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up">
@@ -240,7 +248,7 @@ export default function DashboardView({ onNavigate }: Props) {
               </div>
             </div>
           </div>
-        )}
+        ))}
 
         {/* ── Today: everything that needs a decision ────── */}
         <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-2">
@@ -294,8 +302,8 @@ export default function DashboardView({ onNavigate }: Props) {
                 </button>
               )}
 
-              {/* Overdue money — the broker's #1 chase */}
-              {overdueCount > 0 && (
+              {/* Overdue money — the broker's #1 chase (money — gated) */}
+              {showMoney && overdueCount > 0 && (
                 <button onClick={() => onNavigate("receivables")}
                   className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors group">
                   <span className="w-8 h-8 rounded-lg bg-danger-bg text-danger-ink flex items-center justify-center flex-shrink-0"><CalendarClock size={14} /></span>
@@ -345,7 +353,8 @@ export default function DashboardView({ onNavigate }: Props) {
           )}
         </div>
 
-        {/* ── Trend + recent activity ────────────────────── */}
+        {/* ── Trend + recent activity (money — gated) ────── */}
+        {showMoney && (
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
 
           {/* Cumulative month chart */}
@@ -455,13 +464,15 @@ export default function DashboardView({ onNavigate }: Props) {
             )}
           </div>
         </div>
+        )}
 
         {/* ── Quick actions ──────────────────────────────── */}
         <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line-2">
+          <div className={`grid grid-cols-1 divide-y sm:divide-y-0 sm:divide-x divide-line-2 ${showMoney ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
             {[
               { label: "Add client",  sub: "Create a new client profile",  icon: Users,    tab: "clients"  },
-              { label: "New invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices" },
+              // Only surface the invoice action to users who can see the money.
+              ...(showMoney ? [{ label: "New invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices" }] : []),
               { label: "Newsletter",  sub: "Reach your client list",       icon: Mail,     tab: "email"    },
             ].map((a) => {
               const Icon = a.icon;

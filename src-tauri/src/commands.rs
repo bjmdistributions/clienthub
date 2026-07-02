@@ -54,6 +54,20 @@ pub struct Client {
 /// emailed by us. Correlated `NOT EXISTS` subqueries — no N+1. Append as
 /// `, {FIRST_CONTACT_SQL} AS first_contact` to any `... FROM clients c` select and
 /// read with `r.get::<_, i64>("first_contact")? != 0`.
+/// Deal-flow stages considered COMMITTED for the DASHBOARD cash-position math: the
+/// deal has progressed past the speculative start (`none` / `invoiced`) so its
+/// money is real. Jack's complaint was that early speculative invoices (still at
+/// `invoiced`) inflate the "owed / you owe" hero. Change this ONE list to move the
+/// threshold. Void invoices are excluded separately. The detailed Receivables /
+/// Payables VIEWS still show everything — only the dashboard summary uses this.
+/// Used for AP (deal-flow payables): you owe a supplier only once the deal is real.
+const COMMITTED_DEAL_STAGES: &str = "'supplier_paid','payment_received','complete'";
+/// AR (invoices) variant. Invoices default to `deal_flow_stage='none'` when they are
+/// standalone bills NOT tied to a deal-flow pipeline — those are REAL receivables, so
+/// `none` counts as committed. The ONLY speculative AR stage is `invoiced` (a deal-flow
+/// quote whose customer has not paid yet). So AR-committed = everything except `invoiced`.
+const COMMITTED_AR_STAGES: &str = "'none','supplier_paid','payment_received','complete'";
+
 const FIRST_CONTACT_SQL: &str = "CASE WHEN \
     NOT EXISTS (SELECT 1 FROM newsletter_sends ns WHERE ns.client_id=c.id AND ns.status='sent') \
     AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.client_id=c.id AND COALESCE(iv.sent_at,'') <> '') \
@@ -444,7 +458,7 @@ pub async fn get_client_credit_status(id: String) -> Result<Value, String> {
     let limit = serde_json::from_str::<Value>(&meta).ok()
         .and_then(|m| m.get("credit_limit").and_then(|v| v.as_f64())).unwrap_or(0.0);
     let exposure: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status IN ('sent','overdue')",
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status IN ('sent','overdue') AND COALESCE(voided,0)=0",
         [&id], |r| r.get(0)).unwrap_or(0.0);
     Ok(json!({
         "credit_limit": limit, "exposure": exposure,
@@ -1148,8 +1162,8 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws1.write_string(1, 0, format!("Generated: {}", Utc::now().format("%Y-%m-%d %H:%M UTC"))).map_err(|e| e.to_string())?;
     let total_clients: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
     let total_invoices: i64 = conn.query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0)).unwrap_or(0);
-    let outstanding: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue')", [], |r| r.get(0)).unwrap_or(0.0);
-    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND issue_date >= ?1", [format!("{}-01-01",Utc::now().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
+    let outstanding: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
+    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND issue_date >= ?1", [format!("{}-01-01",Utc::now().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
     let pipeline_val: f64 = conn.query_row("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)).unwrap_or(0.0);
     let pipeline_cnt: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)).unwrap_or(0);
 
@@ -2806,6 +2820,22 @@ pub async fn set_invoice_sent_date(invoice_id: String, sent_date: String) -> Res
     Ok(())
 }
 
+/// Mark an invoice VOID (the deal fell through) or clear the flag. A void invoice
+/// is kept (never deleted) but excluded from receivables/AR "owed", the dashboard
+/// cash position, and revenue/profit rollups. The original `status` is untouched,
+/// so unvoiding restores the invoice exactly. Synced.
+#[tauri::command]
+pub async fn set_invoice_void(invoice_id: String, void: bool) -> Result<(), String> {
+    let flag = if void { 1 } else { 0 };
+    let mut cols = Map::new();
+    cols.insert("voided".into(), Value::from(flag));
+    sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE invoices SET voided=?1 WHERE id=?2", rusqlite::params![flag, invoice_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ============================================================
 //  Deals (deal pipeline — synced)
 // ============================================================
@@ -4128,7 +4158,7 @@ fn read_profit_split_shares() -> Vec<(String, f64, bool)> {
             }
         }
     }
-    let s = read_profit_split().unwrap_or(ProfitSplit { business_pct: 40.0, jack_pct: 30.0, ben_pct: 30.0, jack_name: "Jack".into(), ben_name: "Ben".into() });
+    let s = read_profit_split().unwrap_or(ProfitSplit { business_pct: 40.0, jack_pct: 30.0, ben_pct: 30.0, jack_name: "Partner 1".into(), ben_name: "Partner 2".into() });
     vec![(s.jack_name, s.jack_pct, false), (s.ben_name, s.ben_pct, false), ("Business".to_string(), s.business_pct, true)]
 }
 
@@ -5013,8 +5043,8 @@ fn read_profit_split() -> Result<ProfitSplit, String> {
         business_pct: get("profit_split_business", "40").parse::<f64>().unwrap_or(40.0),
         jack_pct: get("profit_split_jack", "30").parse::<f64>().unwrap_or(30.0),
         ben_pct: get("profit_split_ben", "30").parse::<f64>().unwrap_or(30.0),
-        jack_name: get("profit_split_jack_name", "Jack"),
-        ben_name: get("profit_split_ben_name", "Ben"),
+        jack_name: get("profit_split_jack_name", "Partner 1"),
+        ben_name: get("profit_split_ben_name", "Partner 2"),
     })
 }
 
@@ -5515,15 +5545,31 @@ pub async fn get_onboarding_status() -> Result<bool, String> {
     let val: Option<String> = conn
         .query_row("SELECT value FROM settings WHERE key='onboarding_completed'", [], |r| r.get(0))
         .ok();
-    Ok(val.as_deref() == Some("true") || {
-        let cc: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
-        if cc > 0 {
-            let _ = conn.execute(
-                "INSERT INTO settings (key,value) VALUES ('onboarding_completed','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [],
-            );
-            true
-        } else { false }
-    })
+    if val.as_deref() == Some("true") {
+        return Ok(true);
+    }
+    // Skip onboarding for any signed-in SaaS store: if the store is claimed to a
+    // server org, or an active staff account exists locally, this is a
+    // website-created account (its company info already lives server-side and is
+    // pulled) — the "Welcome to Ecliptr" company-info wizard must NOT run.
+    if crate::db::active_store_org().map(|o| !o.is_empty()).unwrap_or(false) {
+        return Ok(true);
+    }
+    let has_account: i64 = conn
+        .query_row("SELECT COUNT(*) FROM staff_accounts WHERE status='active'", [], |r| r.get(0))
+        .unwrap_or(0);
+    if has_account > 0 {
+        return Ok(true);
+    }
+    // Fallback: an existing store with clients is already set up.
+    let cc: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
+    if cc > 0 {
+        let _ = conn.execute(
+            "INSERT INTO settings (key,value) VALUES ('onboarding_completed','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [],
+        );
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -6944,9 +6990,18 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let total_invoices: i64 = conn
         .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
         .unwrap_or(0);
+    // Dashboard "owed to you" (AR / cash position): open invoices that are NOT
+    // void AND whose deal has committed (past the speculative `invoiced` stage).
+    // Speculative early invoices no longer inflate the hero. The detailed
+    // Receivables VIEW still shows everything.
     let outstanding: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue')",
+            &format!(
+                "SELECT COALESCE(SUM(total),0) FROM invoices
+                 WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0
+                   AND COALESCE(deal_flow_stage,'none') IN ({stages})",
+                stages = COMMITTED_AR_STAGES
+            ),
             [],
             |r| r.get(0),
         )
@@ -6954,7 +7009,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let paid_this_year: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(total),0) FROM invoices
-             WHERE status='paid' AND issue_date >= ?1",
+             WHERE status='paid' AND COALESCE(voided,0)=0 AND issue_date >= ?1",
             [format!("{}-01-01", Utc::now().format("%Y"))],
             |r| r.get(0),
         )
@@ -6963,7 +7018,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let revenue_this_week: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(total),0) FROM invoices
-             WHERE status='paid' AND paid_at >= date('now', '-7 days')",
+             WHERE status='paid' AND COALESCE(voided,0)=0 AND paid_at >= date('now', '-7 days')",
             [],
             |r| r.get(0),
         )
@@ -6987,21 +7042,21 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let total_cost: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE is_complete=1",
+            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let total_profit: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE is_complete=1",
+            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let avg_margin: f64 = conn
         .query_row(
-            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE is_complete=1 AND profit IS NOT NULL",
+            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0 AND profit IS NOT NULL",
             [],
             |r| r.get(0),
         )
@@ -7254,28 +7309,37 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
 #[tauri::command]
 pub async fn get_receivables_aging() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // The VIEW shows every open, non-void invoice. Void invoices (deal fell through)
+    // are excluded entirely. `deal_flow_stage` is carried so we can also compute a
+    // committed-only total for the dashboard hero without changing the view total.
     let mut stmt = conn.prepare(
-        "SELECT i.id, i.number, i.deal_flow_id, i.client_id, COALESCE(c.name,'(unknown)'), COALESCE(i.due_date,''), i.total
+        "SELECT i.id, i.number, i.deal_flow_id, i.client_id, COALESCE(c.name,'(unknown)'), COALESCE(i.due_date,''), i.total, COALESCE(i.deal_flow_stage,'none')
          FROM invoices i LEFT JOIN clients c ON c.id=i.client_id
-         WHERE i.status IN ('sent','overdue')",
+         WHERE i.status IN ('sent','overdue') AND COALESCE(i.voided,0)=0",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok((
         r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
         r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, f64>(6)?,
+        r.get::<_, String>(7)?,
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
+    // AR committed = everything except the speculative `invoiced` deal-flow quote.
+    // Standalone invoices (`none`) are real bills and count (mirrors COMMITTED_AR_STAGES).
+    let committed_stages = ["none", "supplier_paid", "payment_received", "complete"];
     // client_id -> (name, [current,1-30,31-60,61-90,90+], oldest_days)
     let mut map: std::collections::HashMap<String, (String, [f64; 5], i64)> = std::collections::HashMap::new();
     let mut items: Vec<Value> = Vec::new();
     let mut tot = [0f64; 5];
     let mut due_soon = 0f64; // open invoices coming due within the next 7 days
+    let mut committed_total = 0f64; // dashboard hero: only committed deals count
     let mut count = 0i64;
-    for (inv_id, inv_number, deal_flow_id, cid, cname, due, amt) in rows.filter_map(|x| x.ok()) {
+    for (inv_id, inv_number, deal_flow_id, cid, cname, due, amt, df_stage) in rows.filter_map(|x| x.ok()) {
         let days = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
         if days >= -7 && days <= 0 { due_soon += amt; }
+        if committed_stages.contains(&df_stage.as_str()) { committed_total += amt; }
         let idx = if days <= 0 { 0 } else if days <= 30 { 1 } else if days <= 60 { 2 } else if days <= 90 { 3 } else { 4 };
         let bucket = ["current", "d1_30", "d31_60", "d61_90", "d90_plus"][idx];
         items.push(json!({
@@ -7283,6 +7347,10 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
             "client_id": cid, "client_name": cname, "amount": amt,
             "due_date": if due.is_empty() { Value::Null } else { json!(due) },
             "days_overdue": days.max(0), "bucket": bucket,
+            // Committed = deal past the speculative start. The detailed VIEW defaults
+            // to committed-only with a toggle to reveal speculative (early) invoices.
+            "committed": committed_stages.contains(&df_stage.as_str()),
+            "deal_flow_stage": df_stage,
         }));
         let e = map.entry(cid).or_insert((cname, [0.0; 5], 0));
         e.1[idx] += amt;
@@ -7301,7 +7369,9 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
     let total: f64 = tot.iter().sum();
     let summary = json!({
         "current": tot[0], "d1_30": tot[1], "d31_60": tot[2], "d61_90": tot[3], "d90_plus": tot[4],
-        "total": total, "open_count": count, "due_soon": due_soon,
+        // `total` = everything open (the VIEW). `committed_total` = only committed
+        // deals (dashboard hero — speculative early invoices excluded).
+        "total": total, "committed_total": committed_total, "open_count": count, "due_soon": due_soon,
     });
     Ok(json!({
         "summary": summary,
@@ -7327,7 +7397,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
                 COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
                 df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
                 i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
-                json_extract(sp.value,'$.id') AS payment_id \
+                json_extract(sp.value,'$.id') AS payment_id, df.stage AS df_stage \
          FROM deal_flows df \
          JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
@@ -7346,15 +7416,20 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         r.get::<_, Option<String>>(6)?,
         r.get::<_, Option<String>>(7)?,
         r.get::<_, Option<String>>(8)?,
+        r.get::<_, Option<String>>(9)?.unwrap_or_default(),
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
+    // Committed = deal past the speculative start (mirrors COMMITTED_DEAL_STAGES).
+    let committed_stages = ["supplier_paid", "payment_received", "complete"];
     // payee -> ([≤30,31-60,61-90,90+], oldest_days)
     let mut map: std::collections::HashMap<String, ([f64; 4], i64)> = std::collections::HashMap::new();
     let mut items: Vec<Value> = Vec::new();
     let mut tot = [0f64; 4];
+    let mut committed_total = 0f64; // dashboard hero: only committed deals count
     let mut count = 0i64;
-    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id) in rows.filter_map(|x| x.ok()) {
+    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id, df_stage) in rows.filter_map(|x| x.ok()) {
+        if committed_stages.contains(&df_stage.as_str()) { committed_total += amount; }
         let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
@@ -7366,6 +7441,10 @@ pub async fn get_payables_aging() -> Result<Value, String> {
             "payee": payee, "amount": amount, "client_id": client_id, "client_name": client_name,
             "anchor_date": if anchor.is_empty() { Value::Null } else { json!(anchor) },
             "days": days, "bucket": bucket,
+            // Committed = deal past the speculative start. The detailed VIEW defaults
+            // to committed-only with a toggle to reveal speculative (early) payables.
+            "committed": committed_stages.contains(&df_stage.as_str()),
+            "deal_flow_stage": df_stage,
         }));
         let e = map.entry(payee).or_insert(([0.0; 4], 0));
         e.0[idx] += amount;
@@ -7384,7 +7463,9 @@ pub async fn get_payables_aging() -> Result<Value, String> {
     let total: f64 = tot.iter().sum();
     let summary = json!({
         "d0_30": tot[0], "d31_60": tot[1], "d61_90": tot[2], "d90_plus": tot[3],
-        "total": total, "open_count": count,
+        // `total` = everything owed (the VIEW). `committed_total` = only committed
+        // deals (dashboard hero — speculative early payables excluded).
+        "total": total, "committed_total": committed_total, "open_count": count,
     });
     Ok(json!({
         "summary": summary,
@@ -7393,7 +7474,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         // Legacy aggregate fields (kept so nothing regresses).
         "suppliers": by_payee,
         "d0_30": tot[0], "d31_60": tot[1], "d61_90": tot[2], "d90_plus": tot[3],
-        "total": total, "open_count": count,
+        "total": total, "committed_total": committed_total, "open_count": count,
     }))
 }
 

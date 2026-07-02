@@ -487,6 +487,9 @@ export interface ARItem {
   due_date: string;
   days_overdue: number;
   bucket: string;
+  /** true = deal past the speculative stage; false = speculative early invoice. */
+  committed: boolean;
+  deal_flow_stage: string | null;
 }
 export interface ReceivablesAging {
   summary: ReceivablesSummary;
@@ -524,6 +527,9 @@ export interface APItem {
   anchor_date: string;
   days: number;
   bucket: string;
+  /** true = deal past the speculative stage; false = speculative early payable. */
+  committed: boolean;
+  deal_flow_stage: string | null;
 }
 export interface PayablesAging {
   summary: PayablesSummary;
@@ -1284,6 +1290,10 @@ export const api = {
     invoke<void>("save_quote_numbering_config", { prefix, nextNumber, padding }),
   markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
+  // Void / un-void an invoice ("deal fell through"). Voided invoices drop out of
+  // receivables and owed totals; nothing is deleted, so it can be reversed.
+  setInvoiceVoid: (invoiceId: string, voided: boolean) =>
+    invoke<void>("set_invoice_void", { invoiceId, void: voided }),
   saveInvoiceCosts: (invoiceId: string, costItems: CostItem[]) =>
     invoke<void>("save_invoice_costs", { invoiceId, costItems }),
   saveInvoiceShipping: (invoiceId: string, info: ShippingInfo) =>

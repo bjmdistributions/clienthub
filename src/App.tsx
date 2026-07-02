@@ -189,7 +189,6 @@ export default function App() {
   const [superadmin, setSuperadmin] = useState(false);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
-  const [hasAccounts, setHasAccounts] = useState<boolean>(true);
   const [orgName, setOrgName] = useState<string>("");
   const [apCount, setApCount] = useState<number>(0);
   const [fbOpen, setFbOpen] = useState<boolean>(false);
@@ -235,20 +234,27 @@ export default function App() {
   }, [me?.is_admin]);
 
   useEffect(() => {
-    api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
     api.getOrganizationName().then((n) => setOrgName((n || "").trim())).catch(() => {});
   }, []);
 
+  // Auth is the gate — resolved independent of onboarding. Accounts are created
+  // on the website, so the desktop only signs in; a fresh reinstall shows the
+  // sign-in screen, never the onboarding/company wizard.
   useEffect(() => {
-    if (onboarded !== true) return;
     api.employeeStatus()
       .then((s) => {
-        setHasAccounts(s.has_accounts);
         if (s.signed_in) api.employeeMe().then((u) => setMe(u)).catch(() => setMe(null));
         else setMe(null);
       })
       .catch(() => setMe(null));
-  }, [onboarded]);
+  }, []);
+
+  // Onboarding is only ever relevant AFTER sign-in. A signed-in (website-created)
+  // account returns onboarded=true, so the wizard never pops on reinstall.
+  useEffect(() => {
+    if (!me) { setOnboarded(null); return; }
+    api.getOnboardingStatus().then(setOnboarded).catch(() => setOnboarded(true));
+  }, [me]);
 
   const signOut = async () => {
     try { await api.employeeLogout(); } catch {}
@@ -387,7 +393,7 @@ export default function App() {
   // Renders a tab's content without the outer scroll/background chrome, so it
   // can be dropped into either the single main area or a split pane.
   const paneContent = (t: Tab) => {
-    if (t === "dashboard") return <DashboardView onNavigate={setTab} />;
+    if (t === "dashboard") return <DashboardView onNavigate={setTab} me={me} />;
     if (t === "globe") return <GlobeView />;
     if (t === "notes") return <NotesView />;
     if (t === "approvals") return <ApprovalsView />;
@@ -416,11 +422,13 @@ export default function App() {
     );
   };
 
-  if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
-  if (onboarded === null) return null;
-
+  // Auth gates everything: not signed in → sign-in screen (accounts are made on
+  // the website). Onboarding is only considered once signed in, and only if the
+  // account genuinely hasn't completed it — never on a fresh reinstall.
   if (me === undefined) return null; // loading session
-  if (me === null) return <AuthView mode={hasAccounts ? "login" : "bootstrap"} onAuthed={(u) => setMe(u)} />;
+  if (me === null) return <AuthView onAuthed={(u) => setMe(u)} />;
+  if (onboarded === null) return null; // resolving onboarding status for this account
+  if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
 
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>

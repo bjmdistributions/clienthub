@@ -1200,4 +1200,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
             AND json_extract(metadata,'$.exclusive') IN (1, 'true');
         "#,
     ),
+    (
+        55,
+        // Invoice VOID flag: a deal that fell through. Kept (never deleted) but
+        // excluded from receivables/AR "owed", the dashboard cash position, and
+        // revenue/profit rollups. Original `status` is preserved so unvoiding is
+        // lossless. Synced like any other invoice column.
+        r#"
+        ALTER TABLE invoices ADD COLUMN voided INTEGER NOT NULL DEFAULT 0;
+        "#,
+    ),
 ];

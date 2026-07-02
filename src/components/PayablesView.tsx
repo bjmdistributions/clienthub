@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, PayablesAging, APItem } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { api, PayablesAging, APItem, PayableSupplier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, ArrowUpRight, Inbox, Check } from "lucide-react";
 
@@ -49,18 +49,49 @@ function AgingBar({ row }: { row: Record<string, number> }) {
   );
 }
 
+// Committed-only view rederives total, buckets, and the by-payee breakdown from
+// the visible items so every number on screen matches the list shown.
+function deriveFromItems(items: APItem[]): { total: number; buckets: Record<string, number>; byPayee: PayableSupplier[] } {
+  const buckets: Record<string, number> = { d0_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+  const byKey: Record<string, PayableSupplier> = {};
+  let total = 0;
+  for (const it of items) {
+    total += it.amount;
+    if (buckets[it.bucket] !== undefined) buckets[it.bucket] += it.amount;
+    const name = it.payee || "(unnamed)";
+    const p = byKey[name] || (byKey[name] = {
+      payee: it.payee, total: 0, oldest_days: 0,
+      d0_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0,
+    } as PayableSupplier);
+    p.total += it.amount;
+    if ((p as any)[it.bucket] !== undefined) (p as any)[it.bucket] += it.amount;
+    if (it.days > p.oldest_days) p.oldest_days = it.days;
+  }
+  const byPayee = Object.values(byKey).sort((a, b) => b.total - a.total);
+  return { total, buckets, byPayee };
+}
+
 export default function PayablesView() {
   const [data, setData] = useState<PayablesAging | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"chase" | "payee">("chase");
   const [payingKey, setPayingKey] = useState<string | null>(null);
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
+  // Default hides speculative early-stage payables — they don't count until a
+  // deal is near closing. "Show speculative" reveals them (full behavior).
+  const [showSpec, setShowSpec] = useState(false);
 
   const load = () => {
     setLoading(true);
     api.getPayablesAging().then(setData).catch(() => setData(null)).finally(() => setLoading(false));
   };
   useEffect(load, []);
+
+  // Committed-only view derives aggregates from filtered items so totals match.
+  const allItems = data?.items ?? [];
+  const specCount = useMemo(() => allItems.filter((i) => !i.committed).length, [allItems]);
+  const items = useMemo(() => (showSpec ? allItems : allItems.filter((i) => i.committed)), [allItems, showSpec]);
+  const derived = useMemo(() => deriveFromItems(items), [items]);
 
   // Mark one AP item paid: the aging item carries the deal-flow id but not the
   // supplier-payment id, so fetch the flow and match the unpaid line by payee +
@@ -108,7 +139,7 @@ export default function PayablesView() {
     );
   }
 
-  const s = data.summary;
+  const openCount = items.length;
 
   return (
     <div className="p-6 space-y-4 max-w-[1100px]">
@@ -116,7 +147,7 @@ export default function PayablesView() {
         <div>
           <h2 className="text-[18px] font-bold text-ink">You owe</h2>
           <p className="text-[12px] text-muted mt-0.5">
-            <span className="font-semibold text-ink tabular-nums">{fmtAmount(s.total)}</span> across {s.open_count} unpaid cost{s.open_count !== 1 ? "s" : ""} · suppliers, freight &amp; wires
+            <span className="font-semibold text-ink tabular-nums">{fmtAmount(derived.total)}</span> across {openCount} unpaid cost{openCount !== 1 ? "s" : ""} · suppliers, freight &amp; wires
           </p>
         </div>
         <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink transition-colors">
@@ -124,13 +155,31 @@ export default function PayablesView() {
         </button>
       </div>
 
-      {/* Compact aging strip */}
-      {s.total > 0 && (
+      {/* Committed-only toggle + explanation of the default. */}
+      {specCount > 0 && (
+        <div className="flex items-start justify-between gap-3 bg-surface border border-line rounded-xl px-4 py-2.5">
+          <p className="text-[11.5px] text-muted leading-snug">
+            {showSpec
+              ? `Showing all ${allItems.length} unpaid — ${specCount} speculative early-stage cost${specCount !== 1 ? "s" : ""} included.`
+              : `Speculative early-stage deals hidden — they don't count until a deal is near closing. ${specCount} hidden.`}
+          </p>
+          <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
+            <span className="text-[12px] text-ink-2">Show speculative</span>
+            <button onClick={() => setShowSpec((v) => !v)} role="switch" aria-checked={showSpec}
+              className={`w-9 h-5 rounded-full relative transition-colors ${showSpec ? "bg-accent" : "bg-surface-3"}`}>
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showSpec ? "translate-x-[18px]" : "translate-x-0.5"}`} />
+            </button>
+          </label>
+        </div>
+      )}
+
+      {/* Compact aging strip — derived from the visible items. */}
+      {derived.total > 0 && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <AgingBar row={s as any} />
+          <AgingBar row={derived.buckets} />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2">
             {BUCKETS.map((b) => {
-              const v = num((s as any)[b.key]);
+              const v = num(derived.buckets[b.key]);
               if (v <= 0) return null;
               return (
                 <span key={b.key} className="inline-flex items-center gap-1.5 text-[11px] tabular-nums text-muted">
@@ -145,7 +194,7 @@ export default function PayablesView() {
 
       {/* Chase list / grouped toggle */}
       <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit">
-        {([["chase", `Pay list${data.items.length ? ` · ${data.items.length}` : ""}`], ["payee", "By payee"]] as [typeof view, string][]).map(([v, label]) => (
+        {([["chase", `Pay list${items.length ? ` · ${items.length}` : ""}`], ["payee", "By payee"]] as [typeof view, string][]).map(([v, label]) => (
           <button key={v} onClick={() => setView(v)}
             className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${view === v ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             {label}
@@ -154,11 +203,11 @@ export default function PayablesView() {
       </div>
 
       {view === "chase" ? (
-        data.items.length === 0 ? (
+        items.length === 0 ? (
           <EmptyState label="Nothing to pay right now — every cost is settled." />
         ) : (
           <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
-            {chaseSort(data.items).map((it, i) => {
+            {chaseSort(items).map((it, i) => {
               const key = itemKey(it, i);
               const meta = bucketMeta(it.bucket);
               const drillTerm = it.invoice_number || it.client_name || "";
@@ -168,12 +217,15 @@ export default function PayablesView() {
                 ? (it.invoice_number ? `${it.client_name} · #${it.invoice_number}` : it.client_name)
                 : (it.invoice_number ? `#${it.invoice_number}` : "Unlinked cost");
               return (
-                <div key={key} className="px-5 py-3 hover:bg-surface-2/40 transition-colors">
+                <div key={key} className={`px-5 py-3 hover:bg-surface-2/40 transition-colors ${it.committed ? "" : "opacity-60"}`}>
                   <div className="flex items-center gap-3">
                     <span className="w-1.5 h-9 rounded-full flex-shrink-0" style={{ background: meta?.color || "var(--c-line-3)" }} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-[13px] font-semibold text-ink truncate">{it.payee || "(unnamed)"}</span>
+                        {!it.committed && (
+                          <span className="text-[9px] font-bold uppercase tracking-wide text-muted bg-surface-2 border border-line px-1.5 py-0.5 rounded flex-shrink-0" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</span>
+                        )}
                         <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${it.days > 90 ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
                           {owedWords(it.days)}
                         </span>
@@ -205,19 +257,19 @@ export default function PayablesView() {
           </div>
         )
       ) : (
-        <ByPayee data={data} />
+        <ByPayee payees={derived.byPayee} />
       )}
     </div>
   );
 }
 
-function ByPayee({ data }: { data: PayablesAging }) {
-  if (data.by_payee.length === 0) {
+function ByPayee({ payees }: { payees: PayableSupplier[] }) {
+  if (payees.length === 0) {
     return <EmptyState label="Nothing to pay right now — every cost is settled." />;
   }
   return (
     <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
-      {data.by_payee.map((p, i) => (
+      {payees.map((p, i) => (
         <div key={p.payee + i} className="px-5 py-3.5 hover:bg-surface-2/50 transition-colors">
           <div className="flex items-center justify-between gap-3 mb-2">
             <div className="flex items-center gap-2 min-w-0">

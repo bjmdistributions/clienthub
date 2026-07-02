@@ -215,7 +215,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   accent="#34D399"
                   accentBg="rgba(16,185,129,0.08)"
                   accentBorder="rgba(16,185,129,0.2)"
-                  label={`${split?.jack_name ?? "Jack"} ${split?.jack_pct ?? 30}%`}
+                  label={`${split?.jack_name || "Partner 1"} ${split?.jack_pct ?? 30}%`}
                   value={fmtAmount(brief.profit_jack_this_week)}
                   labelColor="#10B981"
                 />
@@ -223,7 +223,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   accent="#60A5FA"
                   accentBg="rgba(59,130,246,0.08)"
                   accentBorder="rgba(59,130,246,0.2)"
-                  label={`${split?.ben_name ?? "Ben"} ${split?.ben_pct ?? 30}%`}
+                  label={`${split?.ben_name || "Partner 2"} ${split?.ben_pct ?? 30}%`}
                   value={fmtAmount(brief.profit_ben_this_week)}
                   labelColor="#3B82F6"
                 />
@@ -237,9 +237,9 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                     This month: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
                   </span>
                   <span>
-                    {split?.jack_name ?? "Jack"} MTD: <span className="font-medium text-ink-2">{fmtAmount(brief.profit_jack_this_month)}</span>
+                    {split?.jack_name || "Partner 1"} MTD: <span className="font-medium text-ink-2">{fmtAmount(brief.profit_jack_this_month)}</span>
                     <span className="mx-1.5">&middot;</span>
-                    {split?.ben_name ?? "Ben"} MTD: <span className="font-medium text-ink-2">{fmtAmount(brief.profit_ben_this_month)}</span>
+                    {split?.ben_name || "Partner 2"} MTD: <span className="font-medium text-ink-2">{fmtAmount(brief.profit_ben_this_month)}</span>
                   </span>
                 </div>
               )}

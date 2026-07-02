@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, ReceivablesAging, ARItem, Client, PaymentMethod } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { api, ReceivablesAging, ARItem, ARClient, Client, PaymentMethod } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, ArrowUpRight, CalendarClock, Inbox, X, Check } from "lucide-react";
 
@@ -68,6 +68,28 @@ function AgingBar({ row }: { row: Record<string, number> }) {
       })}
     </div>
   );
+}
+
+// When "committed only" is on we can't trust summary.total (it covers ALL
+// items) — every on-screen number is rederived from the visible items so the
+// total, buckets, and by-client breakdown all agree with the list.
+function deriveFromItems(items: ARItem[]): { total: number; buckets: Record<string, number>; byClient: ARClient[] } {
+  const buckets: Record<string, number> = { current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+  const byId: Record<string, ARClient> = {};
+  let total = 0;
+  for (const it of items) {
+    total += it.amount;
+    if (buckets[it.bucket] !== undefined) buckets[it.bucket] += it.amount;
+    const c = byId[it.client_id] || (byId[it.client_id] = {
+      client_id: it.client_id, client_name: it.client_name, total: 0, oldest_days: 0,
+      current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0,
+    } as ARClient);
+    c.total += it.amount;
+    if ((c as any)[it.bucket] !== undefined) (c as any)[it.bucket] += it.amount;
+    if (it.days_overdue > c.oldest_days) c.oldest_days = it.days_overdue;
+  }
+  const byClient = Object.values(byId).sort((a, b) => b.total - a.total);
+  return { total, buckets, byClient };
 }
 
 // Record a payment against an invoice — same flow the Invoices view uses.
@@ -140,6 +162,9 @@ export default function ReceivablesView() {
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"chase" | "client">("chase");
   const [paying, setPaying] = useState<ARItem | null>(null);
+  // Default hides speculative early-stage items — they don't count until a deal
+  // is near closing. "Show speculative" reveals them (today's full behavior).
+  const [showSpec, setShowSpec] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -147,6 +172,13 @@ export default function ReceivablesView() {
     api.listClients().then(setClients).catch(() => {});
   };
   useEffect(load, []);
+
+  // Committed-only view derives every aggregate from the filtered items so the
+  // total, buckets, and by-client breakdown match what's actually listed.
+  const allItems = data?.items ?? [];
+  const specCount = useMemo(() => allItems.filter((i) => !i.committed).length, [allItems]);
+  const items = useMemo(() => (showSpec ? allItems : allItems.filter((i) => i.committed)), [allItems, showSpec]);
+  const derived = useMemo(() => deriveFromItems(items), [items]);
 
   if (loading && !data) {
     return (
@@ -168,8 +200,9 @@ export default function ReceivablesView() {
     );
   }
 
-  const s = data.summary;
   const lastContact = (clientId: string) => clients.find((c) => c.id === clientId)?.last_contact_at;
+  const openCount = items.length;
+  const dueSoon = data.summary.due_soon; // "lands in 7 days" is committed already
 
   return (
     <div className="p-6 space-y-4 max-w-[1100px]">
@@ -177,7 +210,7 @@ export default function ReceivablesView() {
         <div>
           <h2 className="text-[18px] font-bold text-ink">Owed to you</h2>
           <p className="text-[12px] text-muted mt-0.5">
-            <span className="font-semibold text-ink tabular-nums">{fmtAmount(s.total)}</span> across {s.open_count} open invoice{s.open_count !== 1 ? "s" : ""} · most urgent first
+            <span className="font-semibold text-ink tabular-nums">{fmtAmount(derived.total)}</span> across {openCount} open invoice{openCount !== 1 ? "s" : ""} · most urgent first
           </p>
         </div>
         <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink transition-colors">
@@ -185,13 +218,31 @@ export default function ReceivablesView() {
         </button>
       </div>
 
-      {/* Compact aging strip — the shape of the debt at a glance. */}
-      {s.total > 0 && (
+      {/* Committed-only toggle + explanation of the default. */}
+      {specCount > 0 && (
+        <div className="flex items-start justify-between gap-3 bg-surface border border-line rounded-xl px-4 py-2.5">
+          <p className="text-[11.5px] text-muted leading-snug">
+            {showSpec
+              ? `Showing all ${allItems.length} open — ${specCount} speculative early-stage deal${specCount !== 1 ? "s" : ""} included.`
+              : `Speculative early-stage deals hidden — they don't count until a deal is near closing. ${specCount} hidden.`}
+          </p>
+          <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
+            <span className="text-[12px] text-ink-2">Show speculative</span>
+            <button onClick={() => setShowSpec((v) => !v)} role="switch" aria-checked={showSpec}
+              className={`w-9 h-5 rounded-full relative transition-colors ${showSpec ? "bg-accent" : "bg-surface-3"}`}>
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showSpec ? "translate-x-[18px]" : "translate-x-0.5"}`} />
+            </button>
+          </label>
+        </div>
+      )}
+
+      {/* Compact aging strip — derived from the visible items. */}
+      {derived.total > 0 && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <AgingBar row={s as any} />
+          <AgingBar row={derived.buckets} />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2">
             {BUCKETS.map((b) => {
-              const v = num((s as any)[b.key]);
+              const v = num(derived.buckets[b.key]);
               if (v <= 0) return null;
               return (
                 <span key={b.key} className="inline-flex items-center gap-1.5 text-[11px] tabular-nums text-muted">
@@ -200,9 +251,9 @@ export default function ReceivablesView() {
                 </span>
               );
             })}
-            {s.due_soon > 0 && (
+            {dueSoon > 0 && (
               <span className="inline-flex items-center gap-1.5 text-[11px] text-success-ink ml-auto">
-                <CalendarClock size={12} /> {fmtAmount(s.due_soon)} lands in the next 7 days
+                <CalendarClock size={12} /> {fmtAmount(dueSoon)} lands in the next 7 days
               </span>
             )}
           </div>
@@ -211,7 +262,7 @@ export default function ReceivablesView() {
 
       {/* Chase list / grouped toggle */}
       <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit">
-        {([["chase", `Chase list${data.items.length ? ` · ${data.items.length}` : ""}`], ["client", "By client"]] as [typeof view, string][]).map(([v, label]) => (
+        {([["chase", `Chase list${items.length ? ` · ${items.length}` : ""}`], ["client", "By client"]] as [typeof view, string][]).map(([v, label]) => (
           <button key={v} onClick={() => setView(v)}
             className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${view === v ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             {label}
@@ -220,8 +271,8 @@ export default function ReceivablesView() {
       </div>
 
       {view === "chase"
-        ? <ChaseList items={chaseSort(data.items)} lastContact={lastContact} onRecord={setPaying} />
-        : <ByClient data={data} />}
+        ? <ChaseList items={chaseSort(items)} lastContact={lastContact} onRecord={setPaying} />
+        : <ByClient clients={derived.byClient} />}
 
       {paying && (
         <RecordPaymentModal
@@ -249,11 +300,14 @@ function ChaseList({ items, lastContact, onRecord }: {
         const due = dueWords(it);
         const canDrill = !!it.deal_flow_id;
         return (
-          <div key={it.invoice_id} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2/40 transition-colors">
+          <div key={it.invoice_id} className={`flex items-center gap-3 px-5 py-3 hover:bg-surface-2/40 transition-colors ${it.committed ? "" : "opacity-60"}`}>
             <span className="w-1.5 h-9 rounded-full flex-shrink-0" style={{ background: meta?.color || "var(--c-line-3)" }} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="text-[13px] font-semibold text-ink truncate">{it.client_name}</span>
+                {!it.committed && (
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-muted bg-surface-2 border border-line px-1.5 py-0.5 rounded flex-shrink-0" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</span>
+                )}
                 <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${due.overdue ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
                   {due.text}
                 </span>
@@ -283,13 +337,13 @@ function ChaseList({ items, lastContact, onRecord }: {
   );
 }
 
-function ByClient({ data }: { data: ReceivablesAging }) {
-  if (data.by_client.length === 0) {
+function ByClient({ clients }: { clients: ARClient[] }) {
+  if (clients.length === 0) {
     return <EmptyState label="Nothing owed to you right now — all invoices are paid." />;
   }
   return (
     <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
-      {data.by_client.map((c) => (
+      {clients.map((c) => (
         <div key={c.client_id} className="px-5 py-3.5 hover:bg-surface-2/50 transition-colors">
           <div className="flex items-center justify-between gap-3 mb-2">
             <div className="flex items-center gap-2 min-w-0">
