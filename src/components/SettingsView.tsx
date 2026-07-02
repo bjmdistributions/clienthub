@@ -5,6 +5,7 @@ import {
   EmailInbox,
   EmailSettings,
   CompanyInfo,
+  InvoiceTemplate,
   OllamaModel,
   CsvPreview,
   ImportSummary,
@@ -79,9 +80,14 @@ import {
   Wand2,
   BookOpen,
   Lock,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  ExternalLink,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { toast } from "./Toast";
 import VariablePicker from "./VariablePicker";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
@@ -152,7 +158,7 @@ const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:ou
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 type SettingsTab =
-  | "account" | "appearance" | "company" | "categories" | "customfields"
+  | "account" | "appearance" | "company" | "invoice" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
   | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "webforms"
   | "sync" | "splits" | "backup" | "team";
@@ -167,6 +173,7 @@ const SETTINGS_GROUPS: {
       { id: "account",      label: "My Account",     icon: Users,             desc: "Your name, photo & contact info" },
       { id: "appearance",   label: "Appearance",    icon: Palette,           desc: "Theme, accent color & display" },
       { id: "company",      label: "Company",        icon: Building2,         desc: "Business details & invoice logo" },
+      { id: "invoice",      label: "Invoice",        icon: Receipt,           desc: "Invoice branding & preview" },
       { id: "categories",   label: "Categories",     icon: Tag,               desc: "Client & deal categories" },
       { id: "customfields", label: "Custom Fields",  icon: SlidersHorizontal, desc: "Extra fields on client records" },
     ],
@@ -301,6 +308,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "email"       && <EmailTab />}
           {tab === "whatsapp"    && <WhatsAppTab />}
           {tab === "company"     && <CompanyTab />}
+          {tab === "invoice"     && <InvoiceTab />}
           {tab === "categories"  && <CategoriesTab />}
           {tab === "ai"          && <AiTab />}
           {tab === "sync"        && <SyncTab />}
@@ -1317,6 +1325,309 @@ function CompanyTab() {
         <WhatsAppFooterField />
       </div>
     </SettingCard>
+    </div>
+  );
+}
+
+// ── Invoice branding studio ─────────────────────────────────────────────────
+const TEMPLATE_DEFAULT: InvoiceTemplate = {
+  logo_placement: "left",
+  logo_size: "medium",
+  show_company_name: true,
+  show_address: true,
+  show_email: true,
+  show_phone: true,
+  show_tax_id: true,
+  accent_color: "#111827",
+  title_label: "INVOICE",
+  footer_note: "",
+};
+
+const ACCENT_PRESETS = ["#111827", "#2563EB", "#0F766E", "#7C3AED", "#B91C1C", "#B45309"];
+
+// A small segmented control (reused for logo placement + size).
+function Segmented<T extends string>({ value, onChange, options }: {
+  value: T; onChange: (v: T) => void; options: { value: T; label: string; icon?: typeof AlignLeft }[];
+}) {
+  return (
+    <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-full">
+      {options.map((o) => {
+        const Icon = o.icon;
+        return (
+          <button key={o.value} onClick={() => onChange(o.value)}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${value === o.value ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+            {Icon && <Icon size={13} />} {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function InvoiceTab() {
+  const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
+  const [tpl, setTpl] = useState<InvoiceTemplate>(TEMPLATE_DEFAULT);
+  const [ready, setReady] = useState(false);
+  const [logoError, setLogoError] = useState(false);
+  const [logoVersion, setLogoVersion] = useState(0);
+  const [rendering, setRendering] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api.getCompanyInfo().then((c) => { if (c) setInfo(c); }).catch(() => {}),
+      api.getInvoiceTemplate().then((t) => { if (t) setTpl(t); }).catch(() => {}),
+    ]).finally(() => setReady(true));
+  }, []);
+
+  // Two independent stores: the logo lives in company_info, everything else in
+  // the template. Both autosave through the shared SaveStatus pill.
+  useAutosave(info, () => api.saveCompanyInfo(info), ready);
+  useAutosave(tpl, () => api.saveInvoiceTemplate(tpl), ready);
+
+  const setT = (patch: Partial<InvoiceTemplate>) => setTpl((t) => ({ ...t, ...patch }));
+
+  const pickLogo = async () => {
+    const selected = await openDialog({ multiple: false, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }] });
+    if (typeof selected === "string") {
+      setLogoError(false);
+      setLogoVersion((v) => v + 1);
+      setInfo({ ...info, logo_path: selected });
+    }
+  };
+
+  const viewPdf = async () => {
+    setRendering(true);
+    // The backend renders the sample, opens it in the OS viewer, and returns
+    // its path (same mechanism as invoice preview) — we just await it.
+    try { await api.renderSampleInvoicePdf(); }
+    catch (e: any) { toast(String(e), "error"); }
+    finally { setRendering(false); }
+  };
+
+  const Check2 = ({ label, k }: { label: string; k: keyof InvoiceTemplate }) => (
+    <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none">
+      <input type="checkbox" className="accent-accent" checked={!!tpl[k]} onChange={(e) => setT({ [k]: e.target.checked } as any)} />
+      {label}
+    </label>
+  );
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-5 items-start">
+      {/* Controls */}
+      <div className="w-full lg:w-[380px] lg:flex-shrink-0 space-y-4">
+        <SettingCard icon={Image} title="Logo" purpose="Shown at the top of every invoice.">
+          <div className="flex items-center gap-4">
+            {info.logo_path ? (
+              <div className="relative group">
+                <div className="h-20 w-32 border border-line rounded-xl bg-[repeating-conic-gradient(#f3f4f6_0%_25%,#ffffff_0%_50%)] bg-[length:14px_14px] flex items-center justify-center overflow-hidden p-2">
+                  <img key={info.logo_path} src={`${convertFileSrc(info.logo_path)}?t=${logoVersion}`} alt="Logo preview"
+                    className="max-h-full max-w-full object-contain"
+                    onLoad={() => setLogoError(false)} onError={() => setLogoError(true)} />
+                </div>
+                <button onClick={() => { setInfo({ ...info, logo_path: null }); setLogoError(false); }}
+                  className="absolute -top-2 -right-2 bg-danger text-white rounded-full p-1 shadow-sm transition-colors" title="Remove logo">
+                  <X size={11} />
+                </button>
+              </div>
+            ) : (
+              <div className="h-20 w-32 border border-dashed border-line rounded-xl bg-surface-2 flex flex-col items-center justify-center gap-1 text-faint">
+                <Image size={22} />
+                <span className="text-[10px] text-muted">No logo</span>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <button onClick={pickLogo}
+                className="bg-surface border border-line hover:bg-surface-2 text-ink-2 px-3.5 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors">
+                <Upload size={13} /> {info.logo_path ? "Change logo" : "Choose logo"}
+              </button>
+              {logoError && <p className="text-[11px] text-danger-ink flex items-center gap-1"><AlertCircle size={11} /> Couldn't load image</p>}
+              {!info.logo_path && <p className="text-[11px] text-muted">PNG or JPG</p>}
+            </div>
+          </div>
+
+          <label className="mt-4 flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none">
+            <input type="checkbox" className="accent-accent" checked={tpl.show_company_name}
+              onChange={(e) => setT({ show_company_name: e.target.checked })} />
+            Show company name on invoices
+            <span className="text-[11px] text-muted">(off if your logo has it)</span>
+          </label>
+
+          <div className="mt-4 space-y-3">
+            <Field label="Placement">
+              <Segmented value={tpl.logo_placement} onChange={(v) => setT({ logo_placement: v })}
+                options={[
+                  { value: "left", label: "Left", icon: AlignLeft },
+                  { value: "center", label: "Center", icon: AlignCenter },
+                  { value: "right", label: "Right", icon: AlignRight },
+                ]} />
+            </Field>
+            <Field label="Size">
+              <Segmented value={tpl.logo_size} onChange={(v) => setT({ logo_size: v })}
+                options={[
+                  { value: "small", label: "Small" },
+                  { value: "medium", label: "Medium" },
+                  { value: "large", label: "Large" },
+                ]} />
+            </Field>
+          </div>
+        </SettingCard>
+
+        <SettingCard icon={Palette} title="Brand accent" purpose="Colors the title, divider, table header, and total.">
+          <div className="flex items-center gap-3">
+            <input type="color" value={tpl.accent_color} onChange={(e) => setT({ accent_color: e.target.value })}
+              className="w-11 h-9 rounded-lg border border-line bg-surface cursor-pointer p-0.5" title="Pick a color" />
+            <input value={tpl.accent_color} onChange={(e) => setT({ accent_color: e.target.value })}
+              className={`${inpSm} font-mono w-32`} placeholder="#111827" />
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {ACCENT_PRESETS.map((c) => (
+                <button key={c} onClick={() => setT({ accent_color: c })} title={c}
+                  className={`w-6 h-6 rounded-full border transition-transform hover:scale-110 ${tpl.accent_color.toLowerCase() === c.toLowerCase() ? "border-ink ring-2 ring-accent/30" : "border-line"}`}
+                  style={{ background: c }} />
+              ))}
+            </div>
+          </div>
+        </SettingCard>
+
+        <SettingCard icon={FileText} title="Details & text" purpose="What appears on the invoice.">
+          <div className="space-y-2.5 mb-4">
+            <div className="text-[11px] font-semibold text-muted uppercase tracking-wide">Show on invoice</div>
+            <div className="grid grid-cols-2 gap-2">
+              <Check2 label="Address" k="show_address" />
+              <Check2 label="Email" k="show_email" />
+              <Check2 label="Phone" k="show_phone" />
+              <Check2 label="Tax ID" k="show_tax_id" />
+            </div>
+          </div>
+          <Field label="Title label">
+            <input className={inpSm} value={tpl.title_label} placeholder="INVOICE"
+              onChange={(e) => setT({ title_label: e.target.value })} />
+          </Field>
+          <Field label="Footer note">
+            <textarea rows={2} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+              value={tpl.footer_note} placeholder="Payment terms, thank-you note…"
+              onChange={(e) => setT({ footer_note: e.target.value })} />
+          </Field>
+        </SettingCard>
+      </div>
+
+      {/* Live preview */}
+      <div className="w-full lg:flex-1 lg:sticky lg:top-4">
+        <div className="flex items-center justify-between mb-2.5">
+          <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Live preview</div>
+          <button onClick={viewPdf} disabled={rendering}
+            className="inline-flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors">
+            {rendering ? <RefreshCw size={13} className="animate-spin" /> : <ExternalLink size={13} />} View actual PDF
+          </button>
+        </div>
+        <InvoicePreview info={info} tpl={tpl} logoVersion={logoVersion} />
+        <p className="text-[11px] text-muted mt-2 text-center">A close approximation — the PDF is the ground truth.</p>
+      </div>
+    </div>
+  );
+}
+
+// Visual A4-proportion sample invoice — mirrors the backend PDF layout.
+function InvoicePreview({ info, tpl, logoVersion }: { info: CompanyInfo; tpl: InvoiceTemplate; logoVersion: number }) {
+  const accent = tpl.accent_color || "#111827";
+  const logoH = tpl.logo_size === "small" ? 30 : tpl.logo_size === "large" ? 64 : 44;
+  const align = tpl.logo_placement === "center" ? "items-center text-center" : tpl.logo_placement === "right" ? "items-end text-right" : "items-start text-left";
+
+  const companyLines = [
+    tpl.show_address && info.address,
+    tpl.show_email && info.email,
+    tpl.show_phone && (info.phone || ""),
+    tpl.show_tax_id && info.tax_id && `Tax ID: ${info.tax_id}`,
+  ].filter(Boolean) as string[];
+
+  const rows = [
+    { d: "Consulting services", q: 10, r: 150 },
+    { d: "Setup & onboarding", q: 1, r: 500 },
+    { d: "Monthly support", q: 3, r: 200 },
+  ];
+  const subtotal = rows.reduce((s, r) => s + r.q * r.r, 0);
+  const tax = subtotal * 0.08;
+  const total = subtotal + tax;
+  const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return (
+    // A4 portrait ratio (1 : 1.414). White paper regardless of app theme.
+    <div className="w-full mx-auto rounded-lg overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,0.14)] border border-line"
+      style={{ background: "#ffffff", color: "#1f2937", aspectRatio: "1 / 1.414", maxWidth: 620 }}>
+      <div className="h-full w-full p-[6%] flex flex-col text-[10px] leading-snug">
+
+        {/* Header: brand block (left/center/right) + title top-right */}
+        <div className="flex items-start justify-between gap-4">
+          <div className={`flex flex-col min-w-0 ${align}`}>
+            {info.logo_path
+              ? <img src={`${convertFileSrc(info.logo_path)}?t=${logoVersion}`} alt="" style={{ height: logoH, maxWidth: "60%", objectFit: "contain" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+              : <div className="rounded flex items-center justify-center text-[8px] font-medium" style={{ height: logoH, width: logoH * 1.6, background: "#f3f4f6", color: "#9ca3af" }}>Logo</div>}
+            {tpl.show_company_name && info.name && <div className="mt-1.5 font-bold text-[12px]" style={{ color: "#111827" }}>{info.name}</div>}
+            {companyLines.length > 0 && (
+              <div className="mt-0.5" style={{ color: "#6b7280" }}>
+                {companyLines.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+            )}
+          </div>
+          <div className="text-right flex-shrink-0">
+            <div className="font-extrabold tracking-wide text-[18px]" style={{ color: accent }}>{tpl.title_label || "INVOICE"}</div>
+            <div className="mt-0.5" style={{ color: "#6b7280" }}># INV-0001</div>
+          </div>
+        </div>
+
+        {/* Accent divider */}
+        <div className="mt-3 mb-4" style={{ height: 2, background: accent }} />
+
+        {/* Bill-to + dates */}
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <div className="uppercase tracking-wide font-semibold" style={{ color: "#9ca3af", fontSize: 8 }}>Bill to</div>
+            <div className="mt-0.5 font-semibold" style={{ color: "#111827" }}>Sample Client</div>
+            <div style={{ color: "#6b7280" }}>123 Example St</div>
+          </div>
+          <div className="text-right">
+            <div><span style={{ color: "#9ca3af" }}>Issue </span><span style={{ color: "#374151" }}>Jan 1, 2025</span></div>
+            <div><span style={{ color: "#9ca3af" }}>Due </span><span style={{ color: "#374151" }}>Jan 15, 2025</span></div>
+          </div>
+        </div>
+
+        {/* Line items table */}
+        <table className="w-full border-collapse">
+          <thead>
+            <tr style={{ background: accent, color: "#ffffff" }}>
+              <th className="text-left px-2 py-1.5 font-semibold rounded-l">Description</th>
+              <th className="text-right px-2 py-1.5 font-semibold">Qty</th>
+              <th className="text-right px-2 py-1.5 font-semibold">Rate</th>
+              <th className="text-right px-2 py-1.5 font-semibold rounded-r">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid #f0f0f2" }}>
+                <td className="px-2 py-1.5" style={{ color: "#374151" }}>{r.d}</td>
+                <td className="px-2 py-1.5 text-right" style={{ color: "#6b7280" }}>{r.q}</td>
+                <td className="px-2 py-1.5 text-right" style={{ color: "#6b7280" }}>{money(r.r)}</td>
+                <td className="px-2 py-1.5 text-right font-medium" style={{ color: "#111827" }}>{money(r.q * r.r)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {/* Totals */}
+        <div className="mt-3 flex justify-end">
+          <div className="w-1/2 space-y-1">
+            <div className="flex justify-between" style={{ color: "#6b7280" }}><span>Subtotal</span><span>{money(subtotal)}</span></div>
+            <div className="flex justify-between" style={{ color: "#6b7280" }}><span>Tax (8%)</span><span>{money(tax)}</span></div>
+            <div className="flex justify-between pt-1.5 mt-1 font-bold text-[12px]" style={{ borderTop: `2px solid ${accent}`, color: accent }}>
+              <span>TOTAL</span><span>{money(total)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer note */}
+        {tpl.footer_note.trim() && (
+          <div className="mt-auto pt-4 text-center whitespace-pre-wrap" style={{ color: "#9ca3af" }}>{tpl.footer_note}</div>
+        )}
+      </div>
     </div>
   );
 }

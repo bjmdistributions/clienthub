@@ -931,6 +931,21 @@ export interface CompanyInfo {
   show_company_name?: boolean | null;
 }
 
+// Invoice branding template — drives the generated PDF (and the live preview).
+// Defaults keep today's look.
+export interface InvoiceTemplate {
+  logo_placement: "left" | "center" | "right";
+  logo_size: "small" | "medium" | "large";
+  show_company_name: boolean;
+  show_address: boolean;
+  show_email: boolean;
+  show_phone: boolean;
+  show_tax_id: boolean;
+  accent_color: string;   // hex
+  title_label: string;    // default "INVOICE"
+  footer_note: string;
+}
+
 export interface DashboardStats {
   clients: number;
   invoices: number;
@@ -1537,6 +1552,10 @@ export const api = {
   getEmailSettings: () => invoke<EmailSettings | null>("get_email_settings"),
   saveCompanyInfo: (info: CompanyInfo) => invoke<void>("save_company_info", { info }),
   getCompanyInfo: () => invoke<CompanyInfo | null>("get_company_info"),
+  // Invoice branding template + sample render (backend opens the PDF and returns its path).
+  getInvoiceTemplate: () => invoke<InvoiceTemplate>("get_invoice_template"),
+  saveInvoiceTemplate: (template: InvoiceTemplate) => invoke<void>("save_invoice_template", { template }),
+  renderSampleInvoicePdf: () => invoke<string>("render_sample_invoice_pdf"),
 
   getOnboardingStatus: () => invoke<boolean>("get_onboarding_status"),
   completeOnboarding: () => invoke<void>("complete_onboarding"),

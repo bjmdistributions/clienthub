@@ -2646,6 +2646,34 @@ pub async fn generate_invoice_pdf(invoice_id: String) -> Result<String, String> 
         .map_err(|e| e.to_string())
 }
 
+// ── Invoice branding / template ─────────────────────────────────────────────
+
+/// Current invoice branding template (defaults if unset; `show_company_name`
+/// migrates from company_info when the template key is absent).
+#[tauri::command]
+pub async fn get_invoice_template() -> Result<crate::invoice::InvoiceTemplate, String> {
+    Ok(crate::invoice::load_template())
+}
+
+/// Save the invoice branding template (upsert into settings `invoice_template`).
+/// Does NOT touch company_info.
+#[tauri::command]
+pub async fn save_invoice_template(template: crate::invoice::InvoiceTemplate) -> Result<(), String> {
+    crate::invoice::save_template(&template).map_err(|e| e.to_string())
+}
+
+/// Render a sample invoice PDF (current company_info + template + dummy data) and
+/// return its path, so the branding editor can open the actual PDF.
+#[tauri::command]
+pub async fn render_sample_invoice_pdf(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let path = crate::invoice::render_sample_pdf().map_err(|e| e.to_string())?;
+    // Open it in the OS viewer, mirroring preview_invoice_pdf — the frontend just
+    // awaits and expects the PDF to appear (no separate open step on that side).
+    use tauri_plugin_shell::ShellExt;
+    app_handle.shell().open(path.clone(), None).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInput) -> Result<String, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

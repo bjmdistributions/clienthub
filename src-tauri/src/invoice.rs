@@ -50,6 +50,130 @@ pub struct ClientAddress {
     pub lines: Vec<String>,
 }
 
+// ---------- Invoice branding / template ----------
+
+/// User-configurable invoice branding, stored as JSON in settings key
+/// `invoice_template`. Container-level `#[serde(default)]` fills ANY missing field
+/// from the `Default` impl below, so old/partial saved JSON (and an absent key)
+/// always yields the documented defaults — which are chosen so invoices look
+/// ~identical to today until the user changes something.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InvoiceTemplate {
+    /// "left" | "center" | "right"
+    pub logo_placement: String,
+    /// "small" | "medium" | "large"
+    pub logo_size: String,
+    /// Print the company name text (migrated from company_info.show_company_name
+    /// when the template key is absent — see `load_template`).
+    pub show_company_name: bool,
+    pub show_address: bool,
+    pub show_email: bool,
+    pub show_phone: bool,
+    pub show_tax_id: bool,
+    /// Hex accent color, e.g. "#111827" (near-black → looks like today).
+    pub accent_color: String,
+    /// Top-right title, default "INVOICE".
+    pub title_label: String,
+    /// Optional muted note at the page bottom.
+    pub footer_note: String,
+}
+
+impl Default for InvoiceTemplate {
+    fn default() -> Self {
+        InvoiceTemplate {
+            logo_placement: "left".into(),
+            logo_size: "medium".into(),
+            show_company_name: true,
+            show_address: true,
+            show_email: true,
+            show_phone: true,
+            show_tax_id: true,
+            accent_color: "#111827".into(),
+            title_label: "INVOICE".into(),
+            footer_note: String::new(),
+        }
+    }
+}
+
+impl InvoiceTemplate {
+    /// Logo box scale factor for the configured size.
+    fn logo_size_factor(&self) -> f32 {
+        match self.logo_size.as_str() {
+            "small" => 0.7,
+            "large" => 1.4,
+            _ => 1.0, // medium / anything unknown
+        }
+    }
+    /// Accent color parsed to a printpdf fill/outline color (near-black on bad input).
+    fn accent(&self) -> Color {
+        parse_hex_color(&self.accent_color)
+    }
+}
+
+/// Parse `#RRGGBB` / `RRGGBB` (and short `#RGB`) into a printpdf RGB Color with
+/// components in 0..1. Falls back to near-black (`#111827`) on anything invalid, so
+/// a bad value can never break rendering.
+fn parse_hex_color(s: &str) -> Color {
+    fn near_black() -> Color { Color::Rgb(Rgb::new(0.067, 0.094, 0.153, None)) } // #111827
+    let hex = s.trim().trim_start_matches('#');
+    let full = match hex.len() {
+        6 => hex.to_string(),
+        3 => hex.chars().flat_map(|c| [c, c]).collect::<String>(), // #abc -> #aabbcc
+        _ => return near_black(),
+    };
+    let comp = |i: usize| u8::from_str_radix(&full[i..i + 2], 16).ok().map(|v| v as f32 / 255.0);
+    match (comp(0), comp(2), comp(4)) {
+        (Some(r), Some(g), Some(b)) => Color::Rgb(Rgb::new(r, g, b, None)),
+        _ => near_black(),
+    }
+}
+
+/// Load the invoice branding template. Precedence:
+///   - settings `invoice_template` present → parse it (missing fields → defaults);
+///     if that JSON has NO `show_company_name` key, migrate it from
+///     `company_info.show_company_name`.
+///   - settings key absent entirely → defaults, with `show_company_name` taken
+///     from `company_info.show_company_name` (backwards-compatible migration).
+/// Never fails — returns defaults on any error.
+pub fn load_template() -> InvoiceTemplate {
+    let raw: Option<String> = pool().get().ok().and_then(|conn| {
+        conn.query_row("SELECT value FROM settings WHERE key='invoice_template'", [], |r| r.get::<_, String>(0)).ok()
+    });
+    // The template's own `show_company_name` default is true; migrate from
+    // company_info only when the template didn't specify it.
+    let company_scn = load_company().ok().and_then(|c| c.show_company_name);
+    match raw {
+        Some(json) => {
+            let mut tpl: InvoiceTemplate = serde_json::from_str(&json).unwrap_or_default();
+            let has_key = serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|v| v.get("show_company_name").cloned())
+                .is_some();
+            if !has_key {
+                if let Some(scn) = company_scn { tpl.show_company_name = scn; }
+            }
+            tpl
+        }
+        None => {
+            let mut tpl = InvoiceTemplate::default();
+            if let Some(scn) = company_scn { tpl.show_company_name = scn; }
+            tpl
+        }
+    }
+}
+
+pub fn save_template(tpl: &InvoiceTemplate) -> Result<()> {
+    let conn = pool().get()?;
+    let json = serde_json::to_string(tpl)?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('invoice_template',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [json],
+    )?;
+    Ok(())
+}
+
 // ---------- Settings loaders ----------
 
 pub fn load_company() -> Result<CompanyInfo> {
@@ -104,6 +228,12 @@ const CONTENT_R: f32 = PAGE_W - MARGIN_R; // 195.9
 const LOGO_MAX_W: f32 = 70.6;
 const LOGO_MAX_H: f32 = 28.2;
 const LOGO_TOP: f32 = 268.0;
+
+/// Left x of the top-right title block ("INVOICE" / "# number"). The logo is kept
+/// clear of this so branding can never overlap the title (see `logo_x_for`).
+const TITLE_X: f32 = 150.0;
+/// The logo's right edge must stay left of this (a 5 mm gap before the title).
+const LOGO_SAFE_R: f32 = TITLE_X - 5.0; // 145.0
 
 const ROW_HEIGHT: f32 = 7.0;
 const COL_DESC_X: f32 = 22.0;
@@ -198,7 +328,20 @@ pub fn build_pdf_bytes(
     // swaps the title, the due→valid-until label, drops payment options for
     // a validity note, and omits paid/overdue watermarks.
     let is_quote = kind == "quote";
-    let title = if is_quote { "QUOTE" } else { "INVOICE" };
+    // Branding template (defaults keep invoices looking identical). Loaded here so
+    // ALL render paths (real invoice, quote, preview, sample) get it for free.
+    let tpl = load_template();
+    let accent = tpl.accent();
+    let black = Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None));
+    // Quotes keep their "QUOTE" title; invoices use the configurable title_label
+    // (falling back to "INVOICE" when blank).
+    let title: &str = if is_quote {
+        "QUOTE"
+    } else if !tpl.title_label.trim().is_empty() {
+        tpl.title_label.trim()
+    } else {
+        "INVOICE"
+    };
     let (doc, page1, layer1) = PdfDocument::new(
         format!("{} {}", if is_quote { "Quote" } else { "Invoice" }, number),
         Mm(PAGE_W),
@@ -247,7 +390,7 @@ pub fn build_pdf_bytes(
 
     let logo_rendered = if let Some(logo_path) = company.logo_path.as_deref() {
         if std::path::Path::new(logo_path).exists() {
-            render_logo(&layer, logo_path).unwrap_or(None)
+            render_logo(&layer, logo_path, &tpl.logo_placement, tpl.logo_size_factor()).unwrap_or(None)
         } else {
             None
         }
@@ -255,37 +398,50 @@ pub fn build_pdf_bytes(
         None
     };
 
-    let text_y_top = if let Some(logo_bottom) = logo_rendered {
-        logo_bottom - 5.0
-    } else {
-        LOGO_TOP
+    // Company text block: left-aligned under the logo (so it follows placement),
+    // or at the left margin when there's no logo. It stacks below the logo band,
+    // so it never shares the title's y-band regardless of placement.
+    let (text_x, text_y_top) = match &logo_rendered {
+        Some(lr) => (lr.x, lr.bottom_y - 5.0),
+        None => (MARGIN_L, LOGO_TOP),
     };
 
+    // Build the header text lines honoring the field toggles, so hidden rows leave
+    // no gap. When there's no logo the company NAME is the large 18pt heading;
+    // with a logo it's an optional 11pt line (show_company_name).
+    let mut y = text_y_top;
     if logo_rendered.is_none() {
-        layer.use_text(&company.name, 18.0, Mm(MARGIN_L), Mm(text_y_top), &font_bold);
-        layer.use_text(&company.address, 9.0, Mm(MARGIN_L), Mm(text_y_top - 7.0), &font_regular);
-        layer.use_text(&company.email, 9.0, Mm(MARGIN_L), Mm(text_y_top - 11.0), &font_regular);
-        if let Some(phone) = &company.phone {
-            layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(text_y_top - 15.0), &font_regular);
-        }
-    } else {
-        // Logo present. Optionally print the company name as text too — some
-        // logos already contain the name, so showing it twice looks off.
-        let mut y = text_y_top;
-        if company.show_company_name.unwrap_or(true) {
-            layer.use_text(&company.name, 11.0, Mm(MARGIN_L), Mm(y), &font_bold);
+        // No logo → the name is always the heading (independent of show_company_name,
+        // matching prior behavior where a nameless header would be blank).
+        layer.use_text(&company.name, 18.0, Mm(text_x), Mm(y), &font_bold);
+        y -= 7.0;
+    } else if tpl.show_company_name {
+        layer.use_text(&company.name, 11.0, Mm(text_x), Mm(y), &font_bold);
+        y -= 4.0;
+    }
+    if tpl.show_address && !company.address.trim().is_empty() {
+        layer.use_text(&company.address, 9.0, Mm(text_x), Mm(y), &font_regular);
+        y -= 4.0;
+    }
+    if tpl.show_email && !company.email.trim().is_empty() {
+        layer.use_text(&company.email, 9.0, Mm(text_x), Mm(y), &font_regular);
+        y -= 4.0;
+    }
+    if tpl.show_phone {
+        if let Some(phone) = company.phone.as_deref().filter(|p| !p.trim().is_empty()) {
+            layer.use_text(phone, 9.0, Mm(text_x), Mm(y), &font_regular);
             y -= 4.0;
         }
-        layer.use_text(&company.address, 9.0, Mm(MARGIN_L), Mm(y), &font_regular);
-        layer.use_text(&company.email, 9.0, Mm(MARGIN_L), Mm(y - 4.0), &font_regular);
-        if let Some(phone) = &company.phone {
-            layer.use_text(phone, 9.0, Mm(MARGIN_L), Mm(y - 8.0), &font_regular);
-        }
     }
+    let _ = y;
 
-    layer.use_text(title, 28.0, Mm(150.0), Mm(263.0), &font_bold);
-    layer.use_text(format!("# {}", number), 11.0, Mm(150.0), Mm(255.0), &font_regular);
+    // Title + number, top-right, in the accent color.
+    layer.set_fill_color(accent.clone());
+    layer.use_text(title, 28.0, Mm(TITLE_X), Mm(263.0), &font_bold);
+    layer.set_fill_color(black.clone());
+    layer.use_text(format!("# {}", number), 11.0, Mm(TITLE_X), Mm(255.0), &font_regular);
 
+    // Header divider — accent stroke.
     let div = Line {
         points: vec![
             (Point::new(Mm(MARGIN_L), Mm(divider_y)), false),
@@ -293,8 +449,10 @@ pub fn build_pdf_bytes(
         ],
         is_closed: false,
     };
+    layer.set_outline_color(accent.clone());
     layer.set_outline_thickness(0.5);
     layer.add_line(div);
+    layer.set_outline_color(black.clone());
 
     // Bill To
     layer.use_text("BILL TO", 9.0, Mm(MARGIN_L), Mm(bill_top), &font_bold);
@@ -322,7 +480,7 @@ pub fn build_pdf_bytes(
     layer.use_text(short_date(due), 10.0, Mm(170.0), Mm(bill_top - 6.0), &font_regular);
 
     // Table header
-    render_table_header(&layer, table_top, &font_regular, &font_bold);
+    render_table_header(&layer, table_top, &font_regular, &font_bold, &accent);
 
     // Items on page 1
     let p1_items = &page_layers[0].2;
@@ -350,7 +508,7 @@ pub fn build_pdf_bytes(
         cont_layer.set_outline_thickness(0.3);
         cont_layer.add_line(cont_div);
 
-        render_table_header(&cont_layer, PAGE_H - 45.0, &font_regular, &font_bold);
+        render_table_header(&cont_layer, PAGE_H - 45.0, &font_regular, &font_bold, &accent);
 
         let mut cy = PAGE_H - 57.0;
         for &iidx in item_indices {
@@ -379,7 +537,7 @@ pub fn build_pdf_bytes(
         }
     };
 
-    // Totals divider
+    // Totals divider — accent stroke.
     let totals_div = Line {
         points: vec![
             (Point::new(Mm(120.0), Mm(last_row_y)), false),
@@ -387,9 +545,12 @@ pub fn build_pdf_bytes(
         ],
         is_closed: false,
     };
+    last_layer.set_outline_color(accent.clone());
     last_layer.set_outline_thickness(0.5);
     last_layer.add_line(totals_div);
+    last_layer.set_outline_color(black.clone());
 
+    // Subtotal / Tax stay black (readability); the TOTAL label + amount are accent.
     last_row_y -= 6.0;
     last_layer.use_text("Subtotal", 10.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_regular);
     text_right(&last_layer, &fmt_dollar(subtotal), 10.0, TOTALS_VAL_X, last_row_y, &font_regular, false);
@@ -397,8 +558,10 @@ pub fn build_pdf_bytes(
     last_layer.use_text("Tax", 10.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_regular);
     text_right(&last_layer, &fmt_dollar(tax), 10.0, TOTALS_VAL_X, last_row_y, &font_regular, false);
     last_row_y -= 7.0;
+    last_layer.set_fill_color(accent.clone());
     last_layer.use_text("TOTAL", 12.0, Mm(TOTALS_LABEL_X), Mm(last_row_y), &font_bold);
     text_right(&last_layer, &fmt_dollar(total), 12.0, TOTALS_VAL_X, last_row_y, &font_bold, true);
+    last_layer.set_fill_color(black.clone());
 
     let mut next_y = last_row_y - 10.0;
     if is_quote {
@@ -444,8 +607,16 @@ pub fn build_pdf_bytes(
 
     // Footer
     last_layer.use_text("Thank you for your business.", 9.0, Mm(MARGIN_L), Mm(18.0), &font_regular);
-    if let Some(tax_id) = &company.tax_id {
-        last_layer.use_text(format!("Tax ID: {}", tax_id), 8.0, Mm(MARGIN_L), Mm(13.0), &font_regular);
+    if tpl.show_tax_id {
+        if let Some(tax_id) = company.tax_id.as_deref().filter(|t| !t.trim().is_empty()) {
+            last_layer.use_text(format!("Tax ID: {}", tax_id), 8.0, Mm(MARGIN_L), Mm(13.0), &font_regular);
+        }
+    }
+    // Optional branding footer note, centered in muted gray at the very bottom.
+    if !tpl.footer_note.trim().is_empty() {
+        last_layer.set_fill_color(Color::Rgb(Rgb::new(0.5, 0.5, 0.5, None)));
+        text_center(&last_layer, tpl.footer_note.trim(), 8.0, PAGE_W / 2.0, 7.0, &font_regular, false);
+        last_layer.set_fill_color(black.clone());
     }
 
     // Page numbers
@@ -491,6 +662,7 @@ fn render_table_header(
     ttop: f32,
     _font_regular: &IndirectFontRef,
     font_bold: &IndirectFontRef,
+    accent: &Color,
 ) {
     layer.set_fill_color(Color::Rgb(Rgb::new(0.95, 0.95, 0.95, None)));
     let pts = vec![
@@ -504,12 +676,26 @@ fn render_table_header(
         mode: path::PaintMode::Fill,
         winding_order: path::WindingOrder::NonZero,
     });
-    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
 
+    // Header labels in the accent color, plus a thin accent rule under the row.
+    layer.set_fill_color(accent.clone());
     layer.use_text("DESCRIPTION", 9.0, Mm(COL_DESC_X), Mm(ttop - 2.0), font_bold);
     text_center(layer, "QTY", 9.0, COL_QTY_X, ttop - 2.0, font_bold, true);
     text_right(layer, "UNIT PRICE", 9.0, COL_RATE_X, ttop - 2.0, font_bold, true);
     text_right(layer, "AMOUNT", 9.0, COL_AMT_X, ttop - 2.0, font_bold, true);
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+
+    let rule = Line {
+        points: vec![
+            (Point::new(Mm(MARGIN_L), Mm(ttop - 5.0)), false),
+            (Point::new(Mm(CONTENT_R), Mm(ttop - 5.0)), false),
+        ],
+        is_closed: false,
+    };
+    layer.set_outline_color(accent.clone());
+    layer.set_outline_thickness(0.4);
+    layer.add_line(rule);
+    layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
 }
 
 fn render_item_row(
@@ -552,7 +738,36 @@ fn draw_watermark(layer: &PdfLayerReference, font: &IndirectFontRef, paid: bool)
 
 // ---------- Logo rendering ----------
 
-fn render_logo(layer: &PdfLayerReference, logo_path: &str) -> Result<Option<f32>> {
+/// The rendered logo's box: its left x and bottom y (mm). The drawn width is used
+/// internally (in `logo_x_for`) to place the box, so it isn't returned.
+pub struct LogoRender {
+    pub x: f32,
+    pub bottom_y: f32,
+}
+
+/// Left x of the logo for a placement + drawn width `w`. Uses the placement
+/// formulas (left=MARGIN_L, center=(PAGE_W-w)/2, right=CONTENT_R-w), then clamps so
+/// the logo's RIGHT edge never crosses `LOGO_SAFE_R` (keeping it clear of the
+/// top-right title). Never returns < MARGIN_L. This is the exact math the HTML
+/// preview must mirror.
+fn logo_x_for(placement: &str, w: f32) -> f32 {
+    let raw = match placement {
+        "center" => (PAGE_W - w) / 2.0,
+        "right" => CONTENT_R - w,
+        _ => MARGIN_L, // left / unknown
+    };
+    raw.min(LOGO_SAFE_R - w).max(MARGIN_L)
+}
+
+/// Draw the logo scaled to a `size_factor`-scaled max box and positioned by
+/// `placement`. Returns the box (x, w, bottom_y) so the company text can stack
+/// beneath it.
+fn render_logo(
+    layer: &PdfLayerReference,
+    logo_path: &str,
+    placement: &str,
+    size_factor: f32,
+) -> Result<Option<LogoRender>> {
     let bytes = std::fs::read(logo_path)?;
     let dyn_img = printpdf::image_crate::load_from_memory(&bytes)
         .context("decode logo image")?;
@@ -569,14 +784,20 @@ fn render_logo(layer: &PdfLayerReference, logo_path: &str) -> Result<Option<f32>
         raw.push((b as f32 * alpha + 255.0 * inv).round().clamp(0.0, 255.0) as u8);
     }
 
+    // Scale the max logo box by the size factor (small 0.7 / medium 1.0 / large 1.4).
+    let max_w = LOGO_MAX_W * size_factor;
+    let max_h = LOGO_MAX_H * size_factor;
+
     let px_per_mm: f32 = 72.0 / 25.4;
     let native_w_mm = w as f32 / px_per_mm;
     let native_h_mm = h as f32 / px_per_mm;
-    let scale = (LOGO_MAX_W / native_w_mm)
-        .min(LOGO_MAX_H / native_h_mm)
+    let scale = (max_w / native_w_mm)
+        .min(max_h / native_h_mm)
         .min(1.0);
+    let logo_w_mm = native_w_mm * scale;
     let logo_h_mm = native_h_mm * scale;
     let logo_y_bottom = LOGO_TOP - logo_h_mm;
+    let logo_x = logo_x_for(placement, logo_w_mm);
 
     let xobj = printpdf::ImageXObject {
         width: printpdf::Px(w as usize),
@@ -593,7 +814,7 @@ fn render_logo(layer: &PdfLayerReference, logo_path: &str) -> Result<Option<f32>
     pimg.add_to_layer(
         layer.clone(),
         ImageTransform {
-            translate_x: Some(Mm(MARGIN_L)),
+            translate_x: Some(Mm(logo_x)),
             translate_y: Some(Mm(logo_y_bottom)),
             scale_x: Some(scale),
             scale_y: Some(scale),
@@ -601,7 +822,7 @@ fn render_logo(layer: &PdfLayerReference, logo_path: &str) -> Result<Option<f32>
             dpi: Some(72.0),
         },
     );
-    Ok(Some(logo_y_bottom))
+    Ok(Some(LogoRender { x: logo_x, bottom_y: logo_y_bottom }))
 }
 
 // ---------- Payment methods loader ----------
@@ -669,6 +890,42 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
     )?;
 
     Ok(pdf_path.to_string_lossy().to_string())
+}
+
+/// Render a SAMPLE invoice PDF using the current company_info + invoice_template
+/// and dummy data (a "Sample Client" + a few realistic line items). Reuses the real
+/// `build_pdf_bytes` path so it is byte-for-byte the real layout — this backs the
+/// branding editor's "View actual PDF". Writes to app-data and returns the path.
+pub fn render_sample_pdf() -> Result<String> {
+    let company = load_company()?;
+    let items = vec![
+        LineItem { description: "Website design & build".into(), qty: 1.0, rate: 2400.00, amount: 2400.00 },
+        LineItem { description: "Monthly hosting & maintenance".into(), qty: 3.0, rate: 120.00, amount: 360.00 },
+        LineItem { description: "Content migration (per page)".into(), qty: 12.0, rate: 25.00, amount: 300.00 },
+        LineItem { description: "Priority support add-on".into(), qty: 1.0, rate: 150.00, amount: 150.00 },
+    ];
+    let (subtotal, tax, total) = compute_totals(&items, 0.08);
+    let client_address = Some(ClientAddress {
+        lines: vec!["100 Market Street, Suite 200".into(), "San Francisco, CA 94105".into(), "United States".into()],
+    });
+    let now = Utc::now().to_rfc3339();
+    let due = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+
+    let pdf_bytes = build_pdf_bytes(
+        "SAMPLE-001", &now, &due, &items, subtotal, tax, total,
+        "Sample Client",
+        &Some("sample@client.com".into()),
+        &Some("Acme Retail Co.".into()),
+        &client_address, &company,
+        "Thanks for reviewing this sample. Line items and totals here are illustrative.",
+        "draft", "invoice",
+    )?;
+
+    let dir = crate::db::app_data_dir().join("preview");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("sample_invoice.pdf");
+    std::fs::write(&path, pdf_bytes)?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 pub async fn send_invoice(invoice_id: &str) -> Result<()> {
