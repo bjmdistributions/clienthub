@@ -686,24 +686,37 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
 
   const handleAddSupplier = async () => {
     if (!suppName.trim()) return;
+    const filledItems = items.filter((it) => parseAmt(it.myRate) > 0);
+    // Allow a ZERO-cost deal (free goods / consignment): instead of blocking, confirm
+    // once so a forgotten rate doesn't silently book $0, then record a single $0
+    // supplier payment. Any positive rate → normal per-item flow (unchanged).
+    const zeroCost = filledItems.length === 0;
+    if (zeroCost && !confirm("Submit $0 as the supplier cost for this deal? Your profit will equal the full revenue. Are you sure?")) {
+      return;
+    }
     setSaving(true);
     try {
-      const filledItems = items.filter((it) => parseAmt(it.myRate) > 0);
-      if (filledItems.length === 0) {
-        toast("Enter at least one item rate before adding the supplier", "error");
-        setSaving(false);
-        return;
-      }
-      for (const it of filledItems) {
-        const rate = parseAmt(it.myRate);
+      if (zeroCost) {
         await api.addSupplierPayment(flow.id, {
           supplier_name: suppName.trim(),
           supplier_id:   selSupplier?.id || null,
-          amount:        it.qty * rate,
-          quantity:      it.qty,
-          unit_price:    rate,
+          amount:        0,
+          quantity:      items.reduce((s, it) => s + it.qty, 0) || 1,
+          unit_price:    0,
           method:        selSupplier?.payment_method || null,
         });
+      } else {
+        for (const it of filledItems) {
+          const rate = parseAmt(it.myRate);
+          await api.addSupplierPayment(flow.id, {
+            supplier_name: suppName.trim(),
+            supplier_id:   selSupplier?.id || null,
+            amount:        it.qty * rate,
+            quantity:      it.qty,
+            unit_price:    rate,
+            method:        selSupplier?.payment_method || null,
+          });
+        }
       }
       setSuppName(""); setSelSupplier(null); setSuppResults([]);
       setItems((prev) => prev.map((it) => ({ ...it, myRate: "" })));
