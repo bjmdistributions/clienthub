@@ -191,7 +191,7 @@ export default function InventoryView() {
         </button>
         {showManifest && (
           <div className="px-5 pb-4 border-t border-line">
-            <p className="text-[11px] text-muted mt-3 mb-3">Upload a manifest CSV to analyze categories, estimate margins, and calculate a suggested bid.</p>
+            <p className="text-[11px] text-muted mt-3 mb-3">Upload a manifest CSV to break down items & retail by the manifest's own categories and brands, estimate margins, and calculate a suggested bid.</p>
             {!manifest && (
               <button onClick={async () => {
                 const f = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
@@ -220,20 +220,45 @@ export default function InventoryView() {
                 </div>
                 <p className="text-[10px] text-muted mb-3 bg-warning-bg border border-warning px-3 py-2 rounded-lg">{manifest.formula}</p>
                 {manifest.skipped_rows > 0 && <p className="text-[11px] text-warning-ink mb-3">{manifest.skipped_rows} rows skipped (missing price).</p>}
-                <table className="w-full text-[12px] mb-3">
+                {/* By category — grouped by the manifest's OWN category column when present */}
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-[11px] font-semibold text-ink-2">By category</p>
+                  <span className="text-[9.5px] text-muted">{manifest.categories_from_manifest ? "from manifest" : "estimated — no category column found"}</span>
+                </div>
+                <table className="w-full text-[12px] mb-4">
                   <thead className="bg-surface-2">
                     <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Retail</th></tr>
                   </thead>
                   <tbody>
                     {manifest.categories.map((c) => (
-                      <tr key={c.category} className="border-t border-line">
-                        <td className="px-3 py-2 font-medium text-ink-2">{c.category}</td>
+                      <tr key={c.name} className="border-t border-line">
+                        <td className="px-3 py-2 font-medium text-ink-2">{c.name}</td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted">{c.items}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(c.total_retail)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                {/* By brand — only shown when the manifest actually has a brand column */}
+                {manifest.brands.length > 0 && (
+                  <>
+                    <p className="text-[11px] font-semibold text-ink-2 mb-1.5">By brand <span className="text-[9.5px] font-normal text-muted">from manifest</span></p>
+                    <table className="w-full text-[12px] mb-3">
+                      <thead className="bg-surface-2">
+                        <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Brand</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Retail</th></tr>
+                      </thead>
+                      <tbody>
+                        {manifest.brands.map((b) => (
+                          <tr key={b.name} className="border-t border-line">
+                            <td className="px-3 py-2 font-medium text-ink-2">{b.name}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted">{b.items}</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(b.total_retail)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
                 <div className="flex gap-2">
                   <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => toast("Suggested bid copied — paste into your deal."))}
                     className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">

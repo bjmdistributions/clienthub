@@ -1028,14 +1028,16 @@ export interface FollowUpLogEntry {
   details: string | null;
 }
 
-export interface ManifestCategory {
-  category: string;
+export interface ManifestGroup {
+  name: string;
   items: number;
   total_retail: number;
 }
 
 export interface ManifestAnalysis {
-  categories: ManifestCategory[];
+  categories: ManifestGroup[];        // by the manifest's category column, else keyword guess
+  brands: ManifestGroup[];            // by the manifest's brand column; empty if none
+  categories_from_manifest: boolean;  // false = fell back to keyword guess
   suggested_bid: number;
   total_retail: number;
   overall_margin_pct: number;
