@@ -5,6 +5,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download } from "lucide-react";
 import RecurringView from "./RecurringView";
 import CostProfitPanel from "./CostProfitPanel";
+import { toast } from "./Toast";
 
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
@@ -67,7 +68,6 @@ export default function InvoicesView() {
   const [editing, setEditing]           = useState<Invoice | null>(null);
   const [busy, setBusy]                 = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [toast, setToast]               = useState<string | null>(null);
   const [viewTab, setViewTab]            = useState<"all" | "drafts" | "sent" | "paid" | "recurring">("all");
   const [payModal, setPayModal]         = useState<string | null>(null);
   const [payDate, setPayDate]           = useState(new Date().toISOString().slice(0, 10));
@@ -99,10 +99,9 @@ export default function InvoicesView() {
     setBusy(id);
     try {
       await api.generateInvoicePdf(id);
-      setToast("PDF saved — check your invoices folder");
-      setTimeout(() => setToast(null), 3000);
+      toast("PDF saved — check your invoices folder");
       load();
-    } catch (e: any) { alert(`Error: ${e}`); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setBusy(null); }
   };
 
@@ -110,7 +109,7 @@ export default function InvoicesView() {
     if (!confirm("Send invoice via email?")) return;
     setBusy(id);
     try { await api.sendInvoice(id); load(); }
-    catch (e: any) { alert(`Error: ${e}`); }
+    catch (e: any) { toast(String(e), "error"); }
     finally { setBusy(null); }
   };
 
@@ -128,7 +127,7 @@ export default function InvoicesView() {
       await api.markInvoicePaid(payModal, payDate, payMethod || undefined, payRef || undefined);
       setPayModal(null);
       load();
-    } catch (e: any) { alert(`Error: ${e}`); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setBusy(null); }
   };
 
@@ -140,7 +139,7 @@ export default function InvoicesView() {
     }
     setConfirmDelete(null);
     try { await api.deleteInvoice(id); load(); }
-    catch (e: any) { alert(`Error: ${e}`); }
+    catch (e: any) { toast(String(e), "error"); }
   };
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
@@ -165,7 +164,7 @@ export default function InvoicesView() {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "invoices.csv" });
     if (!path) return;
     const count = await api.exportInvoicesCsv(path as string);
-    alert(`Exported ${count} invoices to CSV.`);
+    toast(`Exported ${count} invoice${count !== 1 ? "s" : ""} to CSV`);
   };
 
   return (
@@ -220,13 +219,6 @@ export default function InvoicesView() {
           </div>
         ))}
       </div>
-
-      {/* Toast */}
-      {toast && (
-        <div className="fixed bottom-5 right-5 bg-ink text-surface px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 flex items-center gap-2 animate-fade-in">
-          <Check size={12} className="text-success-ink" /> {toast}
-        </div>
-      )}
 
       {/* Invoice form */}
       {showForm && (
@@ -348,7 +340,7 @@ export default function InvoicesView() {
                             try {
                               await api.uncompleteDealFlow(inv.deal_flow_id!);
                               await load();
-                            } catch (e: any) { alert(e); }
+                            } catch (e: any) { toast(String(e), "error"); }
                           }}
                           className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"
                         >
@@ -470,7 +462,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
     setPreviewing(true);
     try {
       await api.previewInvoicePdf({ client_id: createNew ? clientId : clientId, due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined });
-    } catch (e: any) { alert(`Preview error: ${e}`); }
+    } catch (e: any) { toast(`Preview failed: ${e}`, "error"); }
     finally { setPreviewing(false); }
   };
 
@@ -480,7 +472,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
     try {
       let cid = clientId;
       if (createNew) {
-        if (!newClient.name.trim()) { alert("Client name required."); setSubmitting(false); return; }
+        if (!newClient.name.trim()) { toast("Client name required", "error"); setSubmitting(false); return; }
         const created = await api.createClient({ name: newClient.name.trim(), email: newClient.email.trim() || undefined, phone: newClient.phone.trim() || undefined, company: newClient.company.trim() || undefined });
         cid = created.id;
       }
@@ -488,7 +480,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       if (initial) await api.updateInvoice(initial.id, data);
       else await api.createInvoice({ ...data, client_id: cid });
       onClose();
-    } catch (e: any) { alert(`Error: ${e}`); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setSubmitting(false); }
   };
 
@@ -698,7 +690,7 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
         notes: invoice.notes || undefined,
       });
       onSaved();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -888,7 +880,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                       <span>Profit</span><span className="tabular-nums">{fmtAmount(invoice.total - costs.reduce((s, c) => s + c.amount, 0))}</span>
                     </div>
                   </div>
-                  <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { alert(e); } setSavingCosts(false); }}
+                  <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { toast(String(e), "error"); } setSavingCosts(false); }}
                     className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
                     {savingCosts ? "Saving…" : "Save costs"}
                   </button>
@@ -937,7 +929,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   <input type="date" className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                     value={shipping.delivery_date || ""} onChange={(e) => setShipping({ ...shipping, delivery_date: e.target.value })} />
                 </div>
-                <button onClick={async () => { setSavingShipping(true); try { await api.saveInvoiceShipping(invoice.id, shipping); } catch (e: any) { alert(e); } setSavingShipping(false); }}
+                <button onClick={async () => { setSavingShipping(true); try { await api.saveInvoiceShipping(invoice.id, shipping); } catch (e: any) { toast(String(e), "error"); } setSavingShipping(false); }}
                   className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
                   {savingShipping ? "Saving…" : "Save shipping"}
                 </button>
@@ -962,7 +954,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               className="flex-1 bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
               <Send size={13} /> Resend
             </button>
-            <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { alert(e); } }}
+            <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { toast(String(e), "error"); } }}
               className="flex-1 bg-surface border border-line hover:bg-accent/10 hover:border-accent/30 text-accent h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5"
               title="Request payment via Stripe">
               <CreditCard size={13} /> Pay

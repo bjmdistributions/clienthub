@@ -8,6 +8,7 @@ import {
   ResponsiveContainer, Cell,
 } from "recharts";
 import TierBadge from "./TierBadge";
+import { toast } from "./Toast";
 
 // ─── Theme-aware chart palette ────────────────────────────────────
 // Charts read the same brand tokens as the rest of the app, so they stay
@@ -169,9 +170,22 @@ export default function AnalyticsView() {
     if (!loading && stats) setTimeout(() => setBars(true), 120);
   }, [loading, stats]);
 
+  // Skeleton mirrors the real layout: header, hero row, big chart, chart pair.
   if (loading) return (
-    <div className="flex items-center justify-center py-32">
-      <RefreshCw size={15} className="text-faint animate-spin" />
+    <div className="space-y-5">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="h-6 w-28 bg-surface-2 rounded-md animate-pulse" />
+          <div className="h-3.5 w-44 bg-surface-2 rounded animate-pulse mt-2" />
+        </div>
+        <div className="h-8 w-64 bg-surface-2 rounded-lg animate-pulse" />
+      </div>
+      <div className="h-[108px] bg-surface-2 rounded-2xl animate-pulse" />
+      <div className="h-[300px] bg-surface-2 rounded-xl animate-pulse" />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="h-56 bg-surface-2 rounded-xl animate-pulse" />
+        <div className="h-56 bg-surface-2 rounded-xl animate-pulse" />
+      </div>
     </div>
   );
   if (!stats) return (
@@ -198,12 +212,12 @@ export default function AnalyticsView() {
     const path = await saveDialog({ filters: [{ name: "Excel", extensions: ["xlsx"] }], defaultPath: "analytics.xlsx" });
     if (!path) return;
     await api.exportAnalyticsXlsx(path as string);
-    alert("Exported analytics to Excel.");
+    toast("Exported analytics to Excel");
   };
 
   // ── Layout ───────────────────────────────────────────────────
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
 
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -260,37 +274,43 @@ export default function AnalyticsView() {
         </div>
       </div>
 
-      {/* ── KPI row ──────────────────────────────────────────────
-          Revenue spans 2 cols and gets the indigo top-accent treatment.
-          All other cards are neutral white — numbers carry the weight.
+      {/* ── Hero: the headline read for the selected range ─────────
+          One calm divided row (mirrors the dashboard hero) — revenue
+          leads, profit/margin/outstanding read left to right.
       ─────────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-
-        {/* Revenue hero */}
-        <div className="col-span-2 md:col-span-2 lg:col-span-2 bg-surface rounded-xl p-5
-                        border border-line border-t-[3px] border-t-accent
-                        animate-fade-up [animation-fill-mode:backwards]
-                        hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-3">
-            Revenue {preset === "All time" ? "All time" : preset}
+      <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up [animation-fill-mode:backwards]">
+        <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-line">
+          <div className="p-5">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+              Revenue · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
+            </div>
+            <div className="text-[26px] font-bold text-accent tabular-nums mt-1.5 leading-none tracking-tight">
+              {fmtAmount(aRevenue)}
+            </div>
+            <div className="text-[11px] text-faint mt-1.5">closed deal revenue</div>
           </div>
-          <div className="text-[32px] font-bold text-accent tabular-nums leading-none tracking-tight">
-            {fmtAmount(aRevenue)}
+          <div className="p-5">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">Net profit</div>
+            <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
+              style={{ color: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose }}>
+              {fmtAmount(aProfit)}
+            </div>
+            <div className="text-[11px] text-faint mt-1.5">after all costs</div>
           </div>
-          <div className="text-[11px] text-muted mt-2">Total closed deal revenue</div>
+          <div className="p-5 border-t border-line lg:border-t-0">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">Avg margin</div>
+            <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{aMargin.toFixed(1)}%</div>
+            <div className="text-[11px] text-faint mt-1.5">across closed deals</div>
+          </div>
+          <div className="p-5 border-t border-line lg:border-t-0">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">Outstanding</div>
+            <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
+              style={{ color: stats.outstanding > 0 ? CLR.amber : "var(--t-tx1)" }}>
+              {fmtAmount(aOutstanding)}
+            </div>
+            <div className="text-[11px] text-faint mt-1.5">awaiting payment</div>
+          </div>
         </div>
-
-        <StatCard label="Net profit"   delay={65}
-          color={(displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose}>
-          {fmtAmount(aProfit)}
-        </StatCard>
-
-        <StatCard label="Avg margin"   delay={130}>{aMargin.toFixed(1)}%</StatCard>
-
-        <StatCard label="Outstanding"  delay={195}
-          color={stats.outstanding > 0 ? CLR.amber : undefined}>
-          {fmtAmount(aOutstanding)}
-        </StatCard>
       </div>
 
       {/* ── Monthly Revenue vs Profit ──────────────────────────────
@@ -301,7 +321,7 @@ export default function AnalyticsView() {
                       animate-fade-up [animation-fill-mode:backwards] stagger-2">
         <div className="flex items-start justify-between mb-5">
           <div>
-            <h3 className="text-[13px] font-semibold text-ink">Monthly Revenue vs Profit</h3>
+            <h3 className="text-[13px] font-semibold text-ink">Monthly revenue vs profit</h3>
             <p className="text-[11px] text-muted mt-0.5">
               {monthly.length > 0 ? `Last ${monthly.length} month${monthly.length !== 1 ? "s" : ""}` : "No data"}
             </p>
@@ -623,7 +643,7 @@ export default function AnalyticsView() {
         <div className="bg-surface border border-line rounded-xl p-5
                         animate-fade-up [animation-fill-mode:backwards] stagger-3">
           <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-5">
-            Financial Snapshot
+            Financial snapshot
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             {[
@@ -654,34 +674,6 @@ export default function AnalyticsView() {
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────
-
-function StatCard({
-  label, children, color, delay = 0,
-}: {
-  label: string;
-  children: React.ReactNode;
-  color?: string;
-  delay?: number;
-}) {
-  return (
-    <div
-      className="bg-surface border border-line rounded-xl p-4
-                 animate-fade-up [animation-fill-mode:backwards]
-                 hover:shadow-[0_4px_14px_rgba(0,0,0,0.06)] transition-shadow"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-2.5">
-        {label}
-      </div>
-      <div
-        className="text-[22px] font-bold tabular-nums leading-none"
-        style={{ color: color ?? "var(--t-tx1)" }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
 
 function Legend({ color, label }: { color: string; label: string }) {
   return (

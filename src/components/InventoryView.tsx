@@ -4,6 +4,7 @@ import { fmtAmount } from "../lib/format";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { toast } from "./Toast";
 
 const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as const;
 type StatusFilter = typeof STATUS_FILTERS[number] | "all";
@@ -31,8 +32,6 @@ export default function InventoryView() {
   const [manifest, setManifest] = useState<ManifestAnalysis | null>(null);
   const [manifestBusy, setManifestBusy] = useState(false);
   const [showManifest, setShowManifest] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   const [suppliers, setSuppliers] = useState<string[]>([]);
   const [mediaBase, setMediaBase] = useState("");
@@ -46,7 +45,7 @@ export default function InventoryView() {
 
   const setStatus = async (lot: Lot, status: string) => {
     try { await api.setLotStatus(lot.id, status); load(); }
-    catch (e: any) { alert(e); }
+    catch (e: any) { toast(String(e), "error"); }
   };
 
   // Toggle the "sent on WhatsApp / email" flags right from the card.
@@ -57,7 +56,7 @@ export default function InventoryView() {
     const next = !lot[prop];
     setLots((prev) => prev.map((l) => (l.id === lot.id ? { ...l, [prop]: next } : l)));
     try { await api.updateLot(lot.id, { [arg]: next }); }
-    catch (e: any) { alert(e); load(); }
+    catch (e: any) { toast(String(e), "error"); load(); }
   };
 
   const openLink = async (lotId: string) => {
@@ -75,25 +74,25 @@ export default function InventoryView() {
 
   const deleteOne = async (lot: Lot) => {
     if (!confirm(`Delete "${lot.name}"? This cannot be undone.`)) return;
-    try { await api.deleteLot(lot.id); setDetailId(null); load(); } catch (e: any) { alert(e); }
+    try { await api.deleteLot(lot.id); setDetailId(null); load(); } catch (e: any) { toast(String(e), "error"); }
   };
   const bulkDelete = async () => {
     if (selected.size === 0) return;
     if (!confirm(`Delete ${selected.size} selected lot${selected.size !== 1 ? "s" : ""}? This cannot be undone.`)) return;
-    try { await api.deleteLots([...selected]); exitSelect(); load(); } catch (e: any) { alert(e); }
+    try { await api.deleteLots([...selected]); exitSelect(); load(); } catch (e: any) { toast(String(e), "error"); }
   };
   const bulkStatus = async (status: string) => {
     if (selected.size === 0) return;
-    try { for (const id of selected) await api.setLotStatus(id, status); exitSelect(); load(); } catch (e: any) { alert(e); }
+    try { for (const id of selected) await api.setLotStatus(id, status); exitSelect(); load(); } catch (e: any) { toast(String(e), "error"); }
   };
   const bulkSent = async (channel: "whatsapp" | "email", val: boolean) => {
     if (selected.size === 0) return;
     const arg = channel === "whatsapp" ? "sentWhatsapp" : "sentEmail";
-    try { for (const id of selected) await api.updateLot(id, { [arg]: val }); exitSelect(); load(); } catch (e: any) { alert(e); }
+    try { for (const id of selected) await api.updateLot(id, { [arg]: val }); exitSelect(); load(); } catch (e: any) { toast(String(e), "error"); }
   };
   const resync = async () => {
-    try { const n = await api.resyncInventory(); showToast(`Re-synced ${n} lot${n !== 1 ? "s" : ""} to your devices`); }
-    catch (e: any) { alert(e); }
+    try { const n = await api.resyncInventory(); toast(`Re-synced ${n} lot${n !== 1 ? "s" : ""} to your devices`); }
+    catch (e: any) { toast(String(e), "error"); }
   };
   // In select mode the card click selects instead of opening detail.
   const onCardOpen = (id: string) => { if (selectMode) toggleSelect(id); else setDetailId(id); };
@@ -128,16 +127,11 @@ export default function InventoryView() {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "inventory.csv" });
     if (!path) return;
     const count = await api.exportInventoryCsv(filter === "all" ? null : filter, path as string);
-    alert(`Exported ${count} inventory lots to CSV.`);
+    toast(`Exported ${count} inventory lot${count !== 1 ? "s" : ""} to CSV`);
   };
 
   return (
     <div>
-      {toast && (
-        <div className="fixed bottom-5 right-5 bg-ink text-surface px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">
-          {toast}
-        </div>
-      )}
       <div className="flex flex-wrap justify-between items-center gap-3 mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Inventory</h2>
@@ -203,7 +197,7 @@ export default function InventoryView() {
                 const f = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
                 if (typeof f !== "string") return;
                 setManifestBusy(true);
-                try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { alert(e); }
+                try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { toast(String(e), "error"); }
                 setManifestBusy(false);
               }} disabled={manifestBusy} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium flex items-center gap-1.5 disabled:opacity-50">
                 <Upload size={12} /> {manifestBusy ? "Analyzing…" : "Upload CSV"}
@@ -241,7 +235,7 @@ export default function InventoryView() {
                   </tbody>
                 </table>
                 <div className="flex gap-2">
-                  <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => showToast("Suggested bid copied — paste into your deal."))}
+                  <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => toast("Suggested bid copied — paste into your deal."))}
                     className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
                     <Clipboard size={11} /> Copy bid
                   </button>
@@ -413,7 +407,7 @@ export default function InventoryView() {
             <h3 className="text-[14px] font-semibold text-ink mb-3">Link to deal</h3>
             <div className="space-y-1 max-h-60 overflow-y-auto">
               {deals.filter(d => d.stage !== "lost" && d.stage !== "won").map((d) => (
-                <button key={d.id} onClick={async () => { try { await api.linkLotToDeal(linkModal, d.id); setLinkModal(null); load(); } catch (e: any) { alert(e); } }}
+                <button key={d.id} onClick={async () => { try { await api.linkLotToDeal(linkModal, d.id); setLinkModal(null); load(); } catch (e: any) { toast(String(e), "error"); } }}
                   className="w-full text-left px-3 py-2 rounded-lg hover:bg-accent/10 text-[13px] text-ink-2">{d.title}</button>
               ))}
             </div>
@@ -446,14 +440,14 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
     const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
     if (typeof f !== "string") return;
     if (initial) {
-      try { const rel = await api.attachLotManifest(initial.id, f); setManifestPath(rel); } catch (e: any) { alert(e); }
+      try { const rel = await api.attachLotManifest(initial.id, f); setManifestPath(rel); } catch (e: any) { toast(String(e), "error"); }
     } else {
       setNewManifestFile(f);
     }
   };
   const clearManifest = async () => {
     if (initial && manifestPath) {
-      try { await api.removeLotManifest(initial.id); setManifestPath(null); } catch (e: any) { alert(e); }
+      try { await api.removeLotManifest(initial.id); setManifestPath(null); } catch (e: any) { toast(String(e), "error"); }
     } else {
       setNewManifestFile(null);
     }
@@ -489,7 +483,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
         if (sentWa || sentEmail) await api.updateLot(lot.id, { sentWhatsapp: sentWa, sentEmail: sentEmail });
       }
       onClose();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -582,7 +576,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
                   <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-line cursor-pointer hover:border-accent transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
                    <button onClick={async () => {
                      if (initial) {
-                       try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { alert(e); }
+                       try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { toast(String(e), "error"); }
                      }
                      setPhotos(photos.filter((_, idx) => idx !== i));
                    }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-danger text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
@@ -599,7 +593,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
                   } else {
                     setPhotos([...photos, ...picked]);
                   }
-                } catch (e: any) { alert(e); }
+                } catch (e: any) { toast(String(e), "error"); }
               }} className="w-[72px] h-[72px] border-2 border-dashed border-line-3 rounded-lg flex items-center justify-center hover:border-accent hover:bg-accent/10 transition-colors group">
                 <Plus size={18} className="text-muted group-hover:text-accent transition-colors" />
               </button>
@@ -660,12 +654,12 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
     const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
     if (typeof f !== "string") return;
     setMBusy(true);
-    try { await api.attachLotManifest(lot.id, f); onChanged(); } catch (e: any) { alert(e); }
+    try { await api.attachLotManifest(lot.id, f); onChanged(); } catch (e: any) { toast(String(e), "error"); }
     setMBusy(false);
   };
   const removeManifest = async () => {
     setMBusy(true);
-    try { await api.removeLotManifest(lot.id); onChanged(); } catch (e: any) { alert(e); }
+    try { await api.removeLotManifest(lot.id); onChanged(); } catch (e: any) { toast(String(e), "error"); }
     setMBusy(false);
   };
   const manifestName = lot.manifest_path ? (lot.manifest_path.split(/[/\\]/).pop() || "manifest") : "";

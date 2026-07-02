@@ -207,8 +207,11 @@ pub async fn pull_apply() -> Result<usize> {
 }
 
 /// Background loop: push then pull every POLL_SECS. Safe to spawn unconditionally —
-/// it no-ops while no connection is configured.
-pub fn spawn_loop() {
+/// it no-ops while no connection is configured. When a pull APPLIES changes (e.g. a
+/// pending client / approval was resolved on another device), emit `netsync-applied`
+/// so the UI can refresh views like the approvals bell to post-sync state.
+pub fn spawn_loop(app: tauri::AppHandle) {
+    use tauri::Emitter;
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(POLL_SECS));
         loop {
@@ -219,9 +222,30 @@ pub fn spawn_loop() {
             if let Err(e) = push_pending().await {
                 tracing::warn!("netsync push: {}", e);
             }
-            if let Err(e) = pull_apply().await {
-                tracing::warn!("netsync pull: {}", e);
+            match pull_apply().await {
+                Ok(n) if n > 0 => {
+                    // Remote changes landed locally — nudge the front-end to re-read
+                    // (bell counts, approvals list, client list) from post-sync state.
+                    let _ = app.emit("netsync-applied", n);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("netsync pull: {}", e),
             }
+        }
+    });
+}
+
+/// Fire-and-forget an immediate push of queued local events. Called right after a
+/// user action that must reach the server promptly (e.g. resolving an approval) so
+/// other devices see the resolution without waiting for the next poll tick. No-op
+/// when no server connection is configured.
+pub fn push_now() {
+    if !is_enabled() {
+        return;
+    }
+    tauri::async_runtime::spawn(async {
+        if let Err(e) = push_pending().await {
+            tracing::warn!("netsync push_now: {}", e);
         }
     });
 }

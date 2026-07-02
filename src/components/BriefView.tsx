@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, WeeklyBrief, ProfitSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { toast } from "./Toast";
 import {
   TrendingUp, TrendingDown, Minus, RefreshCw, Send, Printer,
   AlertCircle, Users, Target, GitBranch,
@@ -37,7 +38,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
       ]);
       setBrief(b);
       setSplit(s);
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setLoading(false);
   };
   useEffect(() => {
@@ -48,7 +49,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
   // Persist a new cadence and regenerate the brief immediately.
   const changeFreq = async (days: number) => {
     setFreq(days);
-    try { await api.setBriefFrequency(days); } catch (e: any) { alert(e); }
+    try { await api.setBriefFrequency(days); } catch (e: any) { toast(String(e), "error"); }
     load(anchorDate);
   };
 
@@ -130,11 +131,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
             <Printer size={14} /> Print
           </button>
           <button onClick={() => {
-            if (brief) {
-              const subj = `Weekly Brief: ${brief.week_start} to ${brief.week_end}`;
-              const body = `Revenue: ${fmtAmount(brief.revenue_this_week)} | Profit: ${fmtAmount(brief.profit_this_week)} | Deals closed: ${brief.deals_closed_this_week}`;
-              alert(`To email this brief, configure email in Settings > Email.\n\nSubject: ${subj}\n\n${body}`);
-            }
+            if (brief) toast("Emailing briefs isn't set up yet — connect email in Settings → Email", "error");
           }}
             className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] text-ink-2 transition-colors"
             style={{ border: "1px solid var(--t-b1)" }}
@@ -158,31 +155,33 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Header */}
           <div className="text-center pb-6" style={{ borderBottom: "1px solid var(--t-b1)" }}>
-            <h1 className="text-[24px] font-bold text-ink">{periodLabel} Brief</h1>
+            <h1 className="text-[24px] font-bold text-ink">{periodLabel} brief</h1>
             <p className="text-[14px] text-muted mt-2">{brief.week_start} &mdash; {brief.week_end}</p>
             <p className="text-[11px] text-muted mt-1">
               Generated {new Date(brief.generated_at).toLocaleString()}
             </p>
           </div>
 
-          {/* Section 1: At-a-Glance */}
+          {/* Section 1: At-a-glance hero — one calm divided row (mirrors the dashboard) */}
           <div>
             <h2 className="text-[15px] font-semibold text-ink mb-3">This week at a glance</h2>
-            <div className="grid grid-cols-4 gap-3">
-              <StatCard label="Revenue"     value={fmtAmount(brief.revenue_this_week)} change={changePct(brief.revenue_change_pct)} />
-              <StatCard label="Profit"      value={fmtAmount(brief.profit_this_week)}  change={changePct(brief.profit_change_pct)}
-                sub={`${brief.avg_margin_this_week.toFixed(1)}% margin`} />
-              <StatCard label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} />
-              <StatCard label="Win rate"    value={`${brief.win_rate_this_week.toFixed(0)}%`} />
+            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
+              <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-line">
+                <HeroCell label="Revenue" value={fmtAmount(brief.revenue_this_week)} extra={changePct(brief.revenue_change_pct)} />
+                <HeroCell label="Profit" value={fmtAmount(brief.profit_this_week)} extra={changePct(brief.profit_change_pct)}
+                  sub={`${brief.avg_margin_this_week.toFixed(1)}% margin`} />
+                <HeroCell label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} />
+                <HeroCell label="Win rate" value={`${brief.win_rate_this_week.toFixed(0)}%`} />
+              </div>
             </div>
           </div>
 
-          {/* Section 2: Profit from Deal Flows */}
+          {/* Section 2: Profit from deal flows */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-[15px] font-semibold text-ink flex items-center gap-2">
                 <GitBranch size={15} className="text-accent" />
-                Profit from Deal Flows
+                Profit from deal flows
               </h2>
               <span className="text-[11px] font-medium text-muted px-2 py-0.5 rounded-full"
                 style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
@@ -380,15 +379,20 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 }
 
 // ─── Stat card (at-a-glance row) ─────────────────────────────────────────────
-function StatCard({
-  label, value, change, sub,
-}: { label: string; value: string; change?: React.ReactNode; sub?: string }) {
+// One cell of the at-a-glance hero row (the row card owns the border).
+function HeroCell({
+  label, value, extra, sub,
+}: { label: string; value: string; extra?: React.ReactNode; sub?: string }) {
   return (
-    <div className="rounded-xl p-4" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-      <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">{label}</div>
-      <div className="text-[22px] font-bold text-ink leading-none">{value}</div>
-      {change && <div className="text-[12px] mt-1.5">{change}</div>}
-      {sub && <div className="text-[11px] text-muted mt-1">{sub}</div>}
+    <div className="p-5">
+      <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">{label}</div>
+      <div className="text-[24px] font-bold text-ink tabular-nums mt-1.5 leading-none">{value}</div>
+      {(extra || sub) && (
+        <div className="mt-1.5 flex items-center gap-2 text-[12px]">
+          {extra}
+          {sub && <span className="text-[11px] text-faint">{sub}</span>}
+        </div>
+      )}
     </div>
   );
 }

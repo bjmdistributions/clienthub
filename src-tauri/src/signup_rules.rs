@@ -310,16 +310,31 @@ fn create_client_from_customer_with_notes(
         email.from.clone()
     };
 
-    // Dedup by email → just log the interaction on the existing client.
+    // Dedup against EXISTING clients (ANY approval_status) → just log the contact as
+    // an interaction on that client and return its id. No new pending client, no
+    // approval-queue row, no notification (the caller only notifies when a genuinely
+    // new PENDING client is created). Match on trimmed+lowercased email; when there's
+    // no email at all, fall back to an exact trimmed (case-insensitive) name match so
+    // repeat no-email submissions from the same person don't create duplicates.
     let conn = pool().get()?;
-    if !client_email.is_empty() {
-        let exists: Option<String> = conn
-            .query_row("SELECT id FROM clients WHERE LOWER(email)=LOWER(?1)", [&client_email], |r| r.get(0))
-            .ok();
-        if let Some(existing_id) = exists {
-            log_signup_interaction(&existing_id, email)?;
-            return Ok(existing_id);
-        }
+    let existing: Option<String> = if !client_email.trim().is_empty() {
+        conn.query_row(
+            "SELECT id FROM clients WHERE LOWER(TRIM(email))=LOWER(TRIM(?1)) LIMIT 1",
+            [&client_email],
+            |r| r.get(0),
+        ).ok()
+    } else if !name.trim().is_empty() {
+        conn.query_row(
+            "SELECT id FROM clients WHERE LOWER(TRIM(name))=LOWER(TRIM(?1)) LIMIT 1",
+            [&name],
+            |r| r.get(0),
+        ).ok()
+    } else {
+        None
+    };
+    if let Some(existing_id) = existing {
+        log_signup_interaction(&existing_id, email)?;
+        return Ok(existing_id);
     }
 
     // Build metadata: address parts, title, tax_id, categories, extra, source.

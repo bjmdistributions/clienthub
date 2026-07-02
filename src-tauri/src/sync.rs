@@ -445,6 +445,18 @@ fn apply_upsert(
     let conn = pool().get()?;
     let pk = primary_key(table);
 
+    // Column names are interpolated into the SQL below and can originate from a
+    // server pull (ultimately another org member's push), so reject anything that
+    // isn't a plain identifier before it reaches the query text.
+    for col in columns.keys() {
+        if col.is_empty()
+            || col.as_bytes()[0].is_ascii_digit()
+            || !col.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric())
+        {
+            anyhow::bail!("unsafe column name in sync event for {}: {:?}", table, col);
+        }
+    }
+
     // Per-column LWW: only apply columns whose existing clock is older.
     let mut winning: Vec<(String, serde_json::Value)> = Vec::new();
     for (col, val) in columns {

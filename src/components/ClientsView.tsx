@@ -60,6 +60,8 @@ export default function ClientsView() {
   const [sortDir, setSortDir]               = useState<1 | -1>(1);
   const [reps, setReps]                     = useState<string[]>([]);
   const [reviewId, setReviewId]             = useState<string | null>(null);
+  // Client-side "never emailed" filter — reads the first_contact flag.
+  const [fcOnly, setFcOnly]                 = useState(false);
   const tierDropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -156,7 +158,7 @@ export default function ClientsView() {
     applyFilter(next);
   };
 
-  const clearAll = () => { setFilter({}); setSearchText(""); applyFilter({}); };
+  const clearAll = () => { setFilter({}); setSearchText(""); setFcOnly(false); applyFilter({}); };
 
   const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.rep;
 
@@ -183,6 +185,10 @@ export default function ClientsView() {
     if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
     else { setSortKey(key); setSortDir(1); }
   };
+
+  // "No contact yet" is filtered client-side off the first_contact flag.
+  const fcCount = clients.filter((c) => c.first_contact).length;
+  const displayed = fcOnly ? sorted.filter((c) => c.first_contact) : sorted;
 
   const chips: { label: string; key: keyof ClientFilter }[] = [];
   const tierLabels: Record<string, string> = { S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect" };
@@ -551,6 +557,17 @@ export default function ClientsView() {
             </div>
           )}
         </div>
+        {fcCount > 0 && (
+          <button
+            onClick={() => setFcOnly((v) => !v)}
+            title="Clients you've never emailed"
+            className={`h-10 px-3 rounded-lg text-[13px] font-medium border transition-colors whitespace-nowrap ${
+              fcOnly ? "border-accent bg-accent/10 text-accent-hover" : "border-line text-ink-2 hover:bg-surface-2"
+            }`}
+          >
+            No contact yet · {fcCount}
+          </button>
+        )}
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
           className={`flex items-center gap-1.5 h-10 px-3 rounded-lg text-[13px] font-medium border transition-colors ${
@@ -697,7 +714,7 @@ export default function ClientsView() {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((c) => {
+            {displayed.map((c) => {
               const bt = buyerTiers.find((t) => t.client_id === c.id);
               return (
                 <tr
@@ -715,6 +732,7 @@ export default function ClientsView() {
                       {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Blacklisted — excluded from all sends">Blacklisted</span>}
                       {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
                       {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
+                      {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Never been sent an email — introduce yourself">No contact yet</span>}
                       {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
                       {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
                       {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}

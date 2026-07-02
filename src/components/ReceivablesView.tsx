@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, ReceivablesAging, ARItem } from "../lib/api";
+import { api, ReceivablesAging, ARItem, Client, PaymentMethod } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw, ArrowUpRight, CalendarClock, Inbox } from "lucide-react";
+import { RefreshCw, ArrowUpRight, CalendarClock, Inbox, X, Check } from "lucide-react";
 
 // Aging buckets, oldest-money on the right; a calm → alarming ramp.
 const BUCKETS = [
@@ -22,6 +22,36 @@ function openDeal(searchTerm: string) {
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "deals" }));
 }
 
+// "34 days overdue" / "due in 3 days" — dates in words a broker acts on.
+function dueWords(it: ARItem): { text: string; overdue: boolean } {
+  if (it.days_overdue > 0) return { text: `${it.days_overdue} day${it.days_overdue !== 1 ? "s" : ""} overdue`, overdue: true };
+  const due = new Date(it.due_date.slice(0, 10) + "T00:00:00").getTime();
+  const today = new Date(new Date().toDateString()).getTime();
+  const days = Math.round((due - today) / 86400000);
+  if (days <= 0) return { text: "due today", overdue: false };
+  if (days === 1) return { text: "due tomorrow", overdue: false };
+  return { text: `due in ${days} days`, overdue: false };
+}
+
+function lastContactWords(iso: string | null | undefined): string {
+  if (!iso) return "no contact logged";
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (isNaN(days)) return "no contact logged";
+  if (days <= 0) return "contacted today";
+  if (days === 1) return "contacted yesterday";
+  return `last contact ${days}d ago`;
+}
+
+// Chase priority: big money that's been overdue longest floats to the top;
+// not-yet-due invoices follow, soonest due first.
+function chaseSort(items: ARItem[]): ARItem[] {
+  const overdue = items.filter((i) => i.days_overdue > 0)
+    .sort((a, b) => b.amount * (1 + b.days_overdue / 30) - a.amount * (1 + a.days_overdue / 30));
+  const upcoming = items.filter((i) => i.days_overdue <= 0)
+    .sort((a, b) => a.due_date.localeCompare(b.due_date));
+  return [...overdue, ...upcoming];
+}
+
 // A single proportional aging bar — the aging read at a glance, not just numbers.
 function AgingBar({ row }: { row: Record<string, number> }) {
   const total = BUCKETS.reduce((s, b) => s + num(row[b.key]), 0);
@@ -40,16 +70,81 @@ function AgingBar({ row }: { row: Record<string, number> }) {
   );
 }
 
+// Record a payment against an invoice — same flow the Invoices view uses.
+function RecordPaymentModal({ item, onClose, onSaved }: { item: ARItem; onClose: () => void; onSaved: () => void }) {
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [method, setMethod] = useState("");
+  const [reference, setReference] = useState("");
+  const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+
+  useEffect(() => {
+    api.listPaymentMethods().then((m) => setMethods(m.filter((p) => p.active))).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api.markInvoicePaid(item.invoice_id, date, method || undefined, reference || undefined);
+      onSaved();
+    } catch (e: any) { setErr(String(e)); setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl shadow-xl w-[420px] max-w-[94vw]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
+          <div>
+            <h3 className="text-[14px] font-semibold text-ink">Record payment</h3>
+            <p className="text-[11.5px] text-muted mt-0.5">
+              {item.client_name} · {item.invoice_number ? `#${item.invoice_number}` : "invoice"} · {fmtAmount(item.amount)}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
+        </div>
+        <div className="px-5 py-4 space-y-3.5">
+          <div>
+            <label className="block text-[11px] font-medium text-muted mb-1.5">Date received</label>
+            <input type="date" className={inp} value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-muted mb-1.5">Method</label>
+            <select className={inp} value={method} onChange={(e) => setMethod(e.target.value)}>
+              <option value="">— select —</option>
+              {methods.map((m) => <option key={m.id} value={m.label}>{m.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-muted mb-1.5">Reference (optional)</label>
+            <input className={inp} placeholder="e.g. wire confirmation #" value={reference} onChange={(e) => setReference(e.target.value)} />
+          </div>
+          {err && <div className="text-[12px] text-danger-ink">{err}</div>}
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+            <button onClick={save} disabled={busy}
+              className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5">
+              {busy ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />} {busy ? "Saving…" : "Record payment"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReceivablesView() {
   const [data, setData] = useState<ReceivablesAging | null>(null);
-  const [ap, setAp] = useState<number | null>(null);
+  const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<"client" | "items">("client");
+  const [view, setView] = useState<"chase" | "client">("chase");
+  const [paying, setPaying] = useState<ARItem | null>(null);
 
   const load = () => {
     setLoading(true);
     api.getReceivablesAging().then(setData).catch(() => setData(null)).finally(() => setLoading(false));
-    api.getPayablesAging().then((p) => setAp(p.summary.total)).catch(() => setAp(null));
+    api.listClients().then(setClients).catch(() => {});
   };
   useEffect(load, []);
 
@@ -57,9 +152,8 @@ export default function ReceivablesView() {
     return (
       <div className="p-6 max-w-[1100px]">
         <div className="h-7 w-40 bg-surface-2 rounded-md animate-pulse mb-6" />
-        <div className="h-24 bg-surface-2 rounded-xl animate-pulse mb-4" />
-        <div className="h-16 bg-surface-2 rounded-xl animate-pulse mb-4" />
-        <div className="h-64 bg-surface-2 rounded-xl animate-pulse" />
+        <div className="h-14 bg-surface-2 rounded-xl animate-pulse mb-4" />
+        <div className="h-72 bg-surface-2 rounded-xl animate-pulse" />
       </div>
     );
   }
@@ -75,15 +169,15 @@ export default function ReceivablesView() {
   }
 
   const s = data.summary;
-  const net = ap !== null ? s.total - ap : null;
+  const lastContact = (clientId: string) => clients.find((c) => c.id === clientId)?.last_contact_at;
 
   return (
-    <div className="p-6 space-y-5 max-w-[1100px]">
+    <div className="p-6 space-y-4 max-w-[1100px]">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-[18px] font-bold text-ink">Receivables</h2>
+          <h2 className="text-[18px] font-bold text-ink">Owed to you</h2>
           <p className="text-[12px] text-muted mt-0.5">
-            {s.open_count} open invoice{s.open_count !== 1 ? "s" : ""} · aged by due date
+            <span className="font-semibold text-ink tabular-nums">{fmtAmount(s.total)}</span> across {s.open_count} open invoice{s.open_count !== 1 ? "s" : ""} · most urgent first
           </p>
         </div>
         <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink transition-colors">
@@ -91,60 +185,33 @@ export default function ReceivablesView() {
         </button>
       </div>
 
-      {/* Cash position — owed to you − you owe = net float */}
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
-        <div className="grid grid-cols-3 divide-x divide-line">
-          <div className="p-4">
-            <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Owed to you</div>
-            <div className="text-[22px] font-bold text-success-ink tabular-nums mt-1">{fmtAmount(s.total)}</div>
-          </div>
-          <div className="p-4">
-            <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">You owe</div>
-            <div className="text-[22px] font-bold text-danger-ink tabular-nums mt-1">{ap !== null ? fmtAmount(ap) : "—"}</div>
-          </div>
-          <div className="p-4">
-            <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Net float</div>
-            <div className={`text-[22px] font-bold tabular-nums mt-1 ${net === null ? "text-faint" : net >= 0 ? "text-ink" : "text-danger-ink"}`}>
-              {net !== null ? fmtAmount(net) : "—"}
-            </div>
-          </div>
-        </div>
-        {s.due_soon > 0 && (
-          <div className="flex items-center gap-2 px-4 py-2.5 border-t border-line bg-success-bg/40 text-[12.5px]">
-            <CalendarClock size={14} className="text-success-ink flex-shrink-0" />
-            <span className="text-ink-2"><span className="font-bold text-success-ink tabular-nums">{fmtAmount(s.due_soon)}</span> lands in the next 7 days</span>
-          </div>
-        )}
-      </div>
-
-      {/* Aging — a single proportional bar + a legend that reads left to right */}
-      <div className="bg-surface border border-line rounded-xl p-5">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-[13px] font-semibold text-ink">Aging</span>
-          <span className="text-[12px] text-muted tabular-nums">{fmtAmount(s.total)} total open</span>
-        </div>
-        <AgingBar row={s as any} />
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-3 mt-4">
-          {BUCKETS.map((b) => {
-            const v = num((s as any)[b.key]);
-            const pct = s.total > 0 ? Math.round((v / s.total) * 100) : 0;
-            return (
-              <div key={b.key}>
-                <div className="flex items-center gap-1.5">
+      {/* Compact aging strip — the shape of the debt at a glance. */}
+      {s.total > 0 && (
+        <div className="bg-surface border border-line rounded-xl px-4 py-3">
+          <AgingBar row={s as any} />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2">
+            {BUCKETS.map((b) => {
+              const v = num((s as any)[b.key]);
+              if (v <= 0) return null;
+              return (
+                <span key={b.key} className="inline-flex items-center gap-1.5 text-[11px] tabular-nums text-muted">
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: b.color }} />
-                  <span className="text-[10.5px] font-medium uppercase tracking-wide text-muted">{b.label}</span>
-                </div>
-                <div className="text-[15px] font-bold text-ink tabular-nums mt-1">{fmtAmount(v)}</div>
-                <div className="text-[10.5px] text-faint tabular-nums">{pct}% of open</div>
-              </div>
-            );
-          })}
+                  {b.short} <span className="font-semibold text-ink-2">{fmtAmount(v)}</span>
+                </span>
+              );
+            })}
+            {s.due_soon > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-success-ink ml-auto">
+                <CalendarClock size={12} /> {fmtAmount(s.due_soon)} lands in the next 7 days
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Grouped / itemized segmented toggle */}
+      {/* Chase list / grouped toggle */}
       <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit">
-        {([["client", "By client"], ["items", `Open invoices${data.items.length ? ` · ${data.items.length}` : ""}`]] as [typeof view, string][]).map(([v, label]) => (
+        {([["chase", `Chase list${data.items.length ? ` · ${data.items.length}` : ""}`], ["client", "By client"]] as [typeof view, string][]).map(([v, label]) => (
           <button key={v} onClick={() => setView(v)}
             className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors ${view === v ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             {label}
@@ -152,14 +219,73 @@ export default function ReceivablesView() {
         ))}
       </div>
 
-      {view === "client" ? <ByClient data={data} /> : <ItemsList items={data.items} />}
+      {view === "chase"
+        ? <ChaseList items={chaseSort(data.items)} lastContact={lastContact} onRecord={setPaying} />
+        : <ByClient data={data} />}
+
+      {paying && (
+        <RecordPaymentModal
+          item={paying}
+          onClose={() => setPaying(null)}
+          onSaved={() => { setPaying(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChaseList({ items, lastContact, onRecord }: {
+  items: ARItem[];
+  lastContact: (clientId: string) => string | null | undefined;
+  onRecord: (it: ARItem) => void;
+}) {
+  if (items.length === 0) {
+    return <EmptyState label="Nothing owed to you right now — all invoices are paid." />;
+  }
+  return (
+    <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
+      {items.map((it) => {
+        const meta = bucketMeta(it.bucket);
+        const due = dueWords(it);
+        const canDrill = !!it.deal_flow_id;
+        return (
+          <div key={it.invoice_id} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2/40 transition-colors">
+            <span className="w-1.5 h-9 rounded-full flex-shrink-0" style={{ background: meta?.color || "var(--c-line-3)" }} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] font-semibold text-ink truncate">{it.client_name}</span>
+                <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${due.overdue ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
+                  {due.text}
+                </span>
+              </div>
+              <div className="text-[11px] text-muted truncate mt-0.5">
+                {it.invoice_number ? `#${it.invoice_number}` : "Invoice"}
+                <span className="text-faint"> · due {it.due_date.slice(0, 10)} · {lastContactWords(lastContact(it.client_id))}</span>
+              </div>
+            </div>
+            <span className="text-[14px] font-bold text-ink tabular-nums flex-shrink-0">{fmtAmount(it.amount)}</span>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <button onClick={() => onRecord(it)}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors">
+                Record payment
+              </button>
+              {canDrill && (
+                <button onClick={() => openDeal(it.invoice_number || it.client_name)}
+                  className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors inline-flex items-center gap-1">
+                  View deal <ArrowUpRight size={11} />
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function ByClient({ data }: { data: ReceivablesAging }) {
   if (data.by_client.length === 0) {
-    return <EmptyState label="No outstanding invoices." />;
+    return <EmptyState label="Nothing owed to you right now — all invoices are paid." />;
   }
   return (
     <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
@@ -184,44 +310,6 @@ function ByClient({ data }: { data: ReceivablesAging }) {
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-function ItemsList({ items }: { items: ARItem[] }) {
-  if (items.length === 0) {
-    return <EmptyState label="No open receivables." />;
-  }
-  return (
-    <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
-      {items.map((it) => {
-        const meta = bucketMeta(it.bucket);
-        const overdue = it.days_overdue > 0;
-        const canDrill = !!it.deal_flow_id;
-        return (
-          <div key={it.invoice_id}
-            onClick={canDrill ? () => openDeal(it.invoice_number || it.client_name) : undefined}
-            className={`flex items-center gap-3 px-5 py-3 transition-colors ${canDrill ? "cursor-pointer hover:bg-surface-2" : ""}`}>
-            <span className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: meta?.color || "var(--c-line-3)" }} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-[13px] font-semibold text-ink truncate">{it.client_name}</span>
-                {canDrill && <ArrowUpRight size={12} className="text-faint flex-shrink-0" />}
-              </div>
-              <div className="text-[11px] text-muted truncate">
-                {it.invoice_number ? `#${it.invoice_number}` : "Invoice"}
-                <span className="text-faint"> · due {it.due_date}</span>
-              </div>
-            </div>
-            <div className="text-right flex-shrink-0">
-              <div className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(it.amount)}</div>
-              <div className={`text-[10.5px] font-medium tabular-nums ${overdue ? "text-danger-ink" : "text-faint"}`}>
-                {overdue ? `${it.days_overdue}d overdue` : "not yet due"}
-              </div>
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }

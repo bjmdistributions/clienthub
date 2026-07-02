@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { toast } from "./Toast";
 import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterSendResult, ScheduledSend, BuyerTier } from "../lib/api";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -6,7 +7,7 @@ import VariablePicker, { VariableReference } from "./VariablePicker";
 import { NewsletterSchedule } from "../lib/api";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
-  Users, X, Search, ChevronDown, Eye, Megaphone, CheckCircle2, Paperclip, Clock,
+  Users, X, Search, ChevronDown, Megaphone, CheckCircle2, Paperclip, Clock,
   Repeat, Plus, Power,
 } from "lucide-react";
 
@@ -172,7 +173,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
     try {
       const reply = await api.aiDraftReply(email.body_text, undefined, tone);
       setDraft(reply);
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setLoading(null); }
   };
 
@@ -180,7 +181,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
     setLoading("extract");
     try {
       setExtracted(await api.aiExtractData(email.body_text));
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setLoading(null); }
   };
 
@@ -195,7 +196,7 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       );
       setSent(true);
       setTimeout(() => setSent(false), 2000);
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setSending(false); }
   };
 
@@ -441,7 +442,7 @@ function ComposeView() {
       setSent(true);
       setTo(""); setSubject(""); setBody("");
       setTimeout(() => setSent(false), 2000);
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setSending(false); }
   };
 
@@ -519,7 +520,7 @@ function NewsletterTab() {
   // just not contacted. Untick to include them in a send.
   const [excludeDormant, setExcludeDormant] = useState(true);
   const [tiers, setTiers] = useState<BuyerTier[]>([]);
-  const [tierFilter, setTierFilter] = useState<"all" | "ranked" | string[]>("all");
+  const [tierFilter, setTierFilter] = useState<"all" | "ranked" | "first_contact" | string[]>("all");
   const [includeRanked, setIncludeRanked] = useState(true);
   useEffect(() => {
     api.buyerTiers().then(setTiers).catch(() => {});
@@ -600,6 +601,7 @@ function NewsletterTab() {
     if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
     if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;
     const tier = tierMap[c.id] || "";
+    if (tierFilter === "first_contact") return !!c.first_contact;   // never emailed by us
     if (tierFilter === "ranked") return RANKED_TIERS.includes(tier);
     if (Array.isArray(tierFilter)) return tierFilter.includes(tier);
     // "all": include everyone unless ranked clients are off by default.
@@ -666,7 +668,7 @@ function NewsletterTab() {
     try {
       const result = await api.aiDraftNewsletter(aiPrompt, aiTone);
       setBody(result);
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     finally { setAiLoading(false); }
   };
 
@@ -803,7 +805,10 @@ function NewsletterTab() {
       {/* Panel A: Recipients */}
       <div className="nl-pane w-full lg:w-[300px] lg:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col">
         <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-          <span className="text-[14px] font-semibold text-ink">Audience</span>
+          <span className="flex items-center gap-2">
+            <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">1</span>
+            <span className="text-[14px] font-semibold text-ink">Audience</span>
+          </span>
           <span className="bg-accent/10 text-accent-hover text-[11px] font-semibold px-2 py-0.5 rounded-full tabular-nums">{metadataFilteredClients.filter((c) => c.email).length} will receive</span>
         </div>
 
@@ -836,6 +841,17 @@ function NewsletterTab() {
               <button key={v} onClick={() => setTierFilter(v as "all" | "ranked")}
                 className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${tierFilter === v ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>{l}</button>
             ))}
+            {(() => {
+              const fcAudience = clients.filter((c) => c.first_contact && !c.is_blacklisted && c.email).length;
+              const on = tierFilter === "first_contact";
+              return (
+                <button onClick={() => setTierFilter(on ? "all" : "first_contact")}
+                  title="Clients never sent any email — one intro blast reaches them all"
+                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${on ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                  First contact{fcAudience > 0 ? ` · ${fcAudience}` : ""}
+                </button>
+              );
+            })()}
             {([["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
               const active = Array.isArray(tierFilter) && tierFilter.includes(code);
               return (
@@ -965,8 +981,8 @@ function NewsletterTab() {
       <div className="nl-pane w-full lg:flex-1 flex flex-col gap-3 min-w-0">
         <div className="bg-surface border border-line rounded-lg flex flex-col flex-1">
           <div className="px-4 py-3 border-b border-line flex items-center gap-2">
-            <Mail size={14} className="text-accent" />
-            <span className="text-[14px] font-semibold text-ink">Compose</span>
+            <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">2</span>
+            <span className="text-[14px] font-semibold text-ink">Write</span>
           </div>
           <div className="p-4 flex-1 flex flex-col">
             <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -1006,7 +1022,7 @@ function NewsletterTab() {
                 <button onClick={() => setShowTemplates(!showTemplates)}
                   className="flex items-center gap-1 text-[11px] text-muted hover:text-ink-2 w-full mb-1">
                   <ChevronDown size={11} className={`transition-transform ${showTemplates ? "rotate-180" : ""}`} />
-                  Saved Templates ({templates.filter((t) => t.status === "draft").length})
+                  Saved templates ({templates.filter((t) => t.status === "draft").length})
                 </button>
                 {showTemplates && (
                   <div className="space-y-0.5 max-h-[140px] overflow-y-auto">
@@ -1037,7 +1053,7 @@ function NewsletterTab() {
 
             <textarea
               ref={textareaRef}
-              placeholder={`Hi {first_name},\n\nWrite your message here...\n\nBest regards,\n[Your name]`}
+              placeholder={`Hi {first_name},\n\nWrite your message here…\n\nBest regards,\n[Your name]`}
               rows={12}
               className="flex-1 w-full border border-line rounded-md px-3 py-2.5 text-[14px] font-mono focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
               value={body}
@@ -1103,8 +1119,8 @@ function NewsletterTab() {
       <div className="nl-pane w-full lg:w-[320px] lg:flex-shrink-0 flex flex-col gap-3">
         <div className="bg-surface border border-line rounded-lg flex-1 flex flex-col">
           <div className="px-4 py-3 border-b border-line flex items-center gap-2">
-            <Eye size={14} className="text-accent" />
-            <span className="text-[14px] font-semibold text-ink">Preview</span>
+            <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">3</span>
+            <span className="text-[14px] font-semibold text-ink">Review &amp; send</span>
           </div>
           <div className="p-4 flex-1 flex flex-col">
             <select

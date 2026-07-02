@@ -1,39 +1,23 @@
-import { useEffect, useState, useRef } from "react";
-import { api, DashboardStats, Client, Invoice, BuyerTier, ProfitForecast, Note, Newsletter } from "../lib/api";
+import { useEffect, useState } from "react";
+import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
-  Users, FileText, DollarSign, TrendingUp, Mail,
-  ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Package, StickyNote,
+  Users, FileText, Mail, ArrowRight, ArrowUpRight, CheckCircle2,
+  ChevronLeft, ChevronRight, Package, CalendarClock, Clock, TrendingUp, TrendingDown,
 } from "lucide-react";
-
-const NOTE_ACCENT: Record<string, string> = {
-  yellow: "#FACC15", blue: "#60A5FA", green: "#34D399", pink: "#F472B6", purple: "#A78BFA", orange: "#FB923C",
-};
-function relNote(iso: string): string {
-  const d = new Date(iso).getTime();
-  if (!d) return "";
-  const m = Math.floor((Date.now() - d) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const days = Math.floor(h / 24);
-  return days === 1 ? "yesterday" : `${days}d ago`;
-}
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import TierBadge from "./TierBadge";
 import PendingReviewModal from "./PendingReviewModal";
 
 interface Props {
   onNavigate: (t: any) => void;
 }
 
-const invStatusStyle = (s: string): React.CSSProperties => {
+const invStatusCls = (s: string): string => {
   const lo = s.toLowerCase();
-  if (lo === "paid")    return { background: "rgba(16,185,129,0.12)",  color: "rgb(var(--c-success))", border: "1px solid rgba(16,185,129,0.25)" };
-  if (lo === "sent")    return { background: "rgba(59,130,246,0.12)",  color: "rgb(var(--c-info))", border: "1px solid rgba(59,130,246,0.25)" };
-  if (lo === "overdue") return { background: "rgba(239,68,68,0.12)",   color: "rgb(var(--c-danger))", border: "1px solid rgba(239,68,68,0.25)" };
-  return { background: "rgba(107,114,128,0.1)", color: "var(--t-tx3)", border: "1px solid rgba(107,114,128,0.2)" };
+  if (lo === "paid")    return "bg-success-bg text-success-ink";
+  if (lo === "sent" || lo === "deposit_pending") return "bg-info-bg text-info-ink";
+  if (lo === "overdue") return "bg-danger-bg text-danger-ink";
+  return "bg-surface-3 text-ink-2";
 };
 
 function CompactAmount({ value }: { value: number }) {
@@ -47,65 +31,61 @@ function CompactAmount({ value }: { value: number }) {
   );
 }
 
-function useCountUp(target: number, duration = 900) {
-  const [value, setValue] = useState(0);
-  const [popped, setPopped] = useState(false);
-  const rafRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (target === 0) { setValue(0); return; }
-    setPopped(false);
-    const start = performance.now();
-    const tick = (now: number) => {
-      const progress = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setValue(Math.round(target * eased));
-      if (progress < 1) {
-        rafRef.current = requestAnimationFrame(tick);
-      } else {
-        setValue(target);
-        setPopped(true);
-      }
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [target, duration]);
-
-  return { value, popped };
-}
-
-function AnimatedStat({ value }: { value: number }) {
-  const { value: current, popped } = useCountUp(value);
+// Month-over-month movement, compared against the same number of days last
+// month so mid-month reads aren't unfairly down.
+function Delta({ now, then }: { now: number; then: number | null }) {
+  if (then === null) return null;
+  if (then === 0) {
+    return now > 0
+      ? <span className="text-[11px] font-medium text-success-ink">new this month</span>
+      : <span className="text-[11px] text-faint">same as last month</span>;
+  }
+  const pct = ((now - then) / Math.abs(then)) * 100;
+  const up = pct >= 0;
   return (
-    <span className={popped ? "animate-number-pop inline-block" : "inline-block"}>
-      {current.toLocaleString()}
+    <span title={`Compared with the same days of last month (${fmtAmount(then)})`}
+      className={`inline-flex items-center gap-1 text-[11px] font-medium tabular-nums ${up ? "text-success-ink" : "text-danger-ink"}`}>
+      {up ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+      {Math.abs(pct).toFixed(0)}% vs last month
     </span>
   );
 }
 
 export default function DashboardView({ onNavigate }: Props) {
-  const [stats, setStats]             = useState<DashboardStats | null>(null);
-  const [followups, setFollowups]     = useState<Client[]>([]);
-  const [pendingApprovals, setPending] = useState<Client[]>([]);
+  const [stats, setStats]               = useState<DashboardStats | null>(null);
+  const [ar, setAr]                     = useState<ReceivablesAging | null>(null);
+  const [ap, setAp]                     = useState<PayablesAging | null>(null);
+  const [followups, setFollowups]       = useState<Client[]>([]);
+  const [pendingApprovals, setPending]  = useState<Client[]>([]);
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
-  const [recentInvoices, setRecent]   = useState<Invoice[]>([]);
-  const [notes, setNotes]             = useState<Note[]>([]);
-  const [clients, setClients]         = useState<Client[]>([]);
-  const [tiers, setTiers]             = useState<BuyerTier[]>([]);
-  const [profitMonth, setProfitMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [dailyProfit, setDailyProfit] = useState<{ day: string; profit: number; revenue: number }[]>([]);
-  const [chartMetric, setChartMetric] = useState<"profit" | "revenue">("profit");
-  const [forecast, setForecast] = useState<ProfitForecast | null>(null);
-  const [sentNewsletters, setSentNewsletters] = useState<Newsletter[]>([]);
+  const [recentInvoices, setRecent]     = useState<Invoice[]>([]);
+  const [clients, setClients]           = useState<Client[]>([]);
+  const [prevMtd, setPrevMtd]           = useState<{ revenue: number; profit: number } | null>(null);
+  const [profitMonth, setProfitMonth]   = useState(() => new Date().toISOString().slice(0, 7));
+  const [dailyProfit, setDailyProfit]   = useState<{ day: string; profit: number; revenue: number }[]>([]);
+  const [chartMetric, setChartMetric]   = useState<"profit" | "revenue">("profit");
 
   const loadAll = () => {
     api.dashboardStats().then(setStats).catch(console.error);
-    api.getProfitForecast().then(setForecast).catch(() => {});
+    api.getReceivablesAging().then(setAr).catch(() => setAr(null));
+    api.getPayablesAging().then(setAp).catch(() => setAp(null));
     api.dueFollowups().then(setFollowups).catch(() => {});
     api.getPendingApprovals().then(setPending).catch(() => {});
-    api.listInvoices().then((inv) => setRecent(inv.slice(0, 50))).catch(() => {});
-    api.listNotes().then(setNotes).catch(() => {});
-    api.listNewsletters().then((ns) => setSentNewsletters(ns.filter((n) => n.status === "sent").slice(0, 5))).catch(() => {});
+    api.listInvoices().then((inv) => setRecent(inv.slice(0, 6))).catch(() => {});
+
+    // Last month, cut at today's day-of-month, for an honest MTD comparison.
+    const today = new Date();
+    const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const prevStr = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+    api.getMonthlyProfit(prevStr).then((rows) => {
+      const cut = today.getDate();
+      let revenue = 0, profit = 0;
+      rows.forEach((r) => {
+        const d = parseInt(r.day.slice(8), 10);
+        if (d <= cut) { revenue += r.revenue; profit += r.profit; }
+      });
+      setPrevMtd({ revenue, profit });
+    }).catch(() => {});
   };
 
   const loadProfitMonth = async (m: string) => {
@@ -136,8 +116,8 @@ export default function DashboardView({ onNavigate }: Props) {
   useEffect(() => {
     loadAll();
     api.listClients().then(setClients).catch(console.error);
-    api.buyerTiers().then(setTiers).catch(console.error);
     loadProfitMonth(profitMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const changeMonth = (dir: 1 | -1) => {
@@ -159,40 +139,26 @@ export default function DashboardView({ onNavigate }: Props) {
     weekday: "long", month: "long", day: "numeric",
   });
 
-  const profitMtd     = stats?.profit_mtd      ?? 0;
-  const revenueMtd    = stats?.revenue_mtd     ?? 0;
-  const allTimeRev    = stats?.all_time_revenue ?? 0;
-  const allTimeProfit = stats?.all_time_profit  ?? 0;
+  const revenueMtd = stats?.revenue_mtd ?? 0;
+  const profitMtd  = stats?.profit_mtd  ?? 0;
 
-  type KpiDef = {
-    label: string; sub: string;
-    displayValue: React.ReactNode;
-    icon: any; tab: string;
-    accent: string; iconBg: string;
+  // Cash position, straight from the AR/AP aging summaries.
+  const owedToYou = ar?.summary.total ?? null;
+  const youOwe    = ap?.summary.total ?? null;
+  const netFloat  = owedToYou !== null && youOwe !== null ? owedToYou - youOwe : null;
+
+  // Overdue = everything aged past "current".
+  const overdueAmt   = ar ? ar.summary.total - ar.summary.current : 0;
+  const overdueCount = ar ? ar.items.filter((i) => i.days_overdue > 0).length : 0;
+
+  const shippingCount = stats?.incomplete_shipping ?? 0;
+  const heroLoading = stats === null && ar === null;
+  const todayEmpty = pendingApprovals.length === 0 && overdueCount === 0 && followups.length === 0 && shippingCount === 0;
+
+  const resolvedApproval = (id: string) => {
+    setPending((p) => p.filter((x) => x.id !== id));
+    window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
-
-  const kpis: KpiDef[] = [
-    { label: "Total clients",    sub: "in account",           displayValue: <AnimatedStat value={stats?.clients ?? 0} />,          icon: Users,      tab: "clients",   accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
-    { label: "Outstanding",      sub: "awaiting payment",     displayValue: <CompactAmount value={stats?.outstanding ?? 0} />,      icon: DollarSign, tab: "invoices",  accent: "kpi-accent-amber",   iconBg: "icon-bg-amber"   },
-    { label: "Revenue MTD",      sub: "closed this month",    displayValue: <CompactAmount value={revenueMtd} />,                   icon: TrendingUp, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald" },
-    { label: "Profit MTD",       sub: "closed this month",    displayValue: <CompactAmount value={profitMtd} />,                    icon: TrendingUp, tab: "analytics", accent: profitMtd >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: profitMtd >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
-    { label: "All-Time Revenue", sub: "from closed deals",    displayValue: <CompactAmount value={allTimeRev} />,                   icon: DollarSign, tab: "analytics", accent: "kpi-accent-emerald", iconBg: "icon-bg-emerald"  },
-    { label: "All-Time Profit",  sub: "from closed deals",    displayValue: <CompactAmount value={allTimeProfit} />,                 icon: TrendingUp, tab: "analytics", accent: allTimeProfit >= 0 ? "kpi-accent-emerald" : "kpi-accent-rose", iconBg: allTimeProfit >= 0 ? "icon-bg-emerald" : "icon-bg-rose" },
-    { label: "Deals MTD",        sub: "completed this month", displayValue: <AnimatedStat value={stats?.deals_mtd ?? 0} />,         icon: FileText,   tab: "deals",     accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
-    { label: "Active deals",     sub: "in pipeline",          displayValue: <AnimatedStat value={stats?.pipeline_count ?? 0} />,    icon: FileText,   tab: "dealflow",  accent: "kpi-accent-indigo",  iconBg: "icon-bg-indigo"  },
-  ];
-
-  const weekStats = [
-    { label: "Revenue",      value: <CompactAmount value={stats?.revenue_this_week ?? 0} />, color: "rgb(var(--c-success))" },
-    { label: "New clients",  value: String(stats?.clients_this_week ?? 0),                   color: "rgb(var(--c-accent))" },
-    { label: "Interactions", value: String(stats?.interactions_this_week ?? 0),              color: "rgb(var(--c-accent))" },
-  ];
-
-  const topBuyers = tiers.filter((h) => h.tier === "S" || h.tier === "A").slice(0, 5);
-  const staggerClass = (i: number) => `animate-fade-up stagger-${Math.min(i + 1, 8)}`;
-
-  // Reusable card style
-  const cardStyle: React.CSSProperties = { border: "1px solid var(--t-b1)", boxShadow: "var(--shadow-card)", background: "var(--t-s1)" };
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
@@ -201,195 +167,207 @@ export default function DashboardView({ onNavigate }: Props) {
         <PendingReviewModal
           client={reviewClient}
           onClose={() => setReviewClient(null)}
-          onResolved={() => { setPending((p) => p.filter((x) => x.id !== reviewClient.id)); setReviewClient(null); }}
+          onResolved={() => { resolvedApproval(reviewClient.id); setReviewClient(null); }}
         />
       )}
 
-      {/* ── Page Header ─────────────────────────────────── */}
-      <div className="px-6 py-4 flex items-center justify-between flex-shrink-0"
-        style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)", boxShadow: "0 1px 0 rgba(0,0,0,0.04)" }}>
+      {/* ── Page header ─────────────────────────────────── */}
+      <div className="px-6 py-4 flex items-center justify-between flex-shrink-0 bg-surface border-b border-line">
         <div>
-          <h2 className="text-[17px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Dashboard</h2>
-          <p className="text-[12px] mt-0.5" style={{ color: "var(--t-tx4)" }}>{dateStr}</p>
-        </div>
-        <div className="flex items-center gap-4 flex-wrap justify-end">
-          <div className="text-right">
-            <p className="text-[10px] uppercase tracking-widest font-semibold mb-0.5" style={{ color: "var(--t-tx4)" }}>Outstanding</p>
-            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: "rgb(var(--c-warning))" }}>
-              <CompactAmount value={stats?.outstanding ?? 0} />
-            </p>
-          </div>
-          <div className="text-right">
-            <p className="text-[10px] uppercase tracking-widest font-semibold mb-0.5" style={{ color: "var(--t-tx4)" }}>Profit MTD</p>
-            <p className="text-[15px] font-bold tabular-nums leading-none" style={{ color: profitMtd >= 0 ? "rgb(var(--c-success))" : "rgb(var(--c-danger))" }}>
-              <CompactAmount value={profitMtd} />
-            </p>
-          </div>
-          <button
-            onClick={() => onNavigate("invoices")}
-            className="btn-ripple flex items-center gap-1.5 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-all duration-150 hover:-translate-y-px"
-            style={{
-              background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))",
-              boxShadow: "0 2px 10px var(--accent-glow), 0 1px 2px var(--accent-glow)",
-            }}
-          >
-            <FileText size={13} /> Invoices
-          </button>
+          <h2 className="text-[17px] font-semibold tracking-tight text-ink">Dashboard</h2>
+          <p className="text-[12px] text-muted mt-0.5">{dateStr}</p>
         </div>
       </div>
 
-      {/* ── Content ────────────────────────────────────── */}
-      <div className="flex-1 p-6 flex flex-col gap-5">
+      <div className="flex-1 p-6 flex flex-col gap-5 max-w-[1200px] w-full mx-auto">
 
-        {/* KPI grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-          {stats === null ? Array.from({ length: 8 }).map((_, i) => (
-            <div key={`kpi-sk-${i}`} className={`rounded-xl p-4 ${staggerClass(i)}`} style={cardStyle}>
-              <div className="skeleton w-7 h-7 rounded-lg mb-2.5" />
-              <div className="skeleton h-2.5 w-3/4 mb-2.5" />
-              <div className="skeleton h-4 w-1/2 mb-2.5" />
-              <div className="skeleton h-2.5 w-2/3" />
-            </div>
-          )) : kpis.map((k, i) => {
-            const Icon = k.icon;
-            return (
-              <button
-                key={k.label}
-                onClick={() => onNavigate(k.tab)}
-                className={`text-left group relative overflow-hidden rounded-xl p-4 transition-all duration-200 hover:-translate-y-0.5 ${k.accent} ${staggerClass(i)}`}
-                style={cardStyle}
-                onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)")}
-                onMouseLeave={e => (e.currentTarget.style.boxShadow = "var(--shadow-card)")}
-              >
-                <div className={`w-7 h-7 rounded-lg flex items-center justify-center mb-2.5 ${k.iconBg}`}>
-                  <Icon size={13} strokeWidth={2} />
+        {/* ── Hero: cash position + this month ───────────── */}
+        {heroLoading ? (
+          <div className="h-[104px] bg-surface-2 rounded-2xl animate-pulse" />
+        ) : (
+          <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up">
+            <div className="grid grid-cols-2 lg:grid-cols-5 divide-x divide-line [&>*:nth-child(3)]:border-r-0 lg:[&>*:nth-child(3)]:border-r">
+              <button onClick={() => onNavigate("receivables")}
+                className="p-5 text-left hover:bg-surface-2/50 transition-colors group">
+                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold flex items-center gap-1">
+                  Owed to you
+                  <ArrowUpRight size={10} className="opacity-0 group-hover:opacity-70 transition-opacity" />
                 </div>
-                <div className="text-[10px] font-semibold uppercase tracking-widest mb-2 truncate" style={{ color: "var(--t-tx4)" }}>{k.label}</div>
-                <div className="text-[18px] font-bold tabular-nums leading-none mb-1.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>
-                  {k.displayValue}
+                <div className="text-[24px] font-bold text-success-ink tabular-nums mt-1.5 leading-none">
+                  {owedToYou !== null ? <CompactAmount value={owedToYou} /> : "—"}
                 </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-[11px]" style={{ color: "var(--t-tx4)" }}>{k.sub}</span>
-                  <ArrowRight size={9} className="opacity-0 group-hover:opacity-60 group-hover:translate-x-0.5 transition-all duration-150" style={{ color: "var(--t-tx3)" }} />
+                <div className="text-[11px] text-faint mt-1.5">
+                  {ar ? `${ar.summary.open_count} open invoice${ar.summary.open_count !== 1 ? "s" : ""}` : "…"}
                 </div>
               </button>
-            );
-          })}
-        </div>
 
-        {/* Forecast card */}
-        {forecast && (
-          <div className="rounded-xl p-5 animate-fade-up stagger-2" style={{
-            background: "var(--t-s1)",
-            border: "1px solid var(--t-b1)",
-            borderLeft: "3px solid rgb(var(--c-accent))",
-            boxShadow: "var(--shadow-xs)",
-          }}>
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Profit projection</h3>
-                <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
-                  Estimated month-end profit based on pipeline
-                </p>
+              <button onClick={() => onNavigate("payables")}
+                className="p-5 text-left hover:bg-surface-2/50 transition-colors group">
+                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold flex items-center gap-1">
+                  You owe
+                  <ArrowUpRight size={10} className="opacity-0 group-hover:opacity-70 transition-opacity" />
+                </div>
+                <div className="text-[24px] font-bold text-danger-ink tabular-nums mt-1.5 leading-none">
+                  {youOwe !== null ? <CompactAmount value={youOwe} /> : "—"}
+                </div>
+                <div className="text-[11px] text-faint mt-1.5">
+                  {ap ? `${ap.summary.open_count} unpaid cost${ap.summary.open_count !== 1 ? "s" : ""}` : "…"}
+                </div>
+              </button>
+
+              <div className="p-5">
+                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Net float</div>
+                <div className={`text-[24px] font-bold tabular-nums mt-1.5 leading-none ${netFloat === null ? "text-faint" : netFloat >= 0 ? "text-ink" : "text-danger-ink"}`}>
+                  {netFloat !== null ? <CompactAmount value={netFloat} /> : "—"}
+                </div>
+                <div className="text-[11px] text-faint mt-1.5">after collecting &amp; paying</div>
               </div>
-              <div className="flex items-center gap-4 text-[12px]">
-                <span style={{ color: "var(--t-tx3)" }}>Actual <span className="font-semibold" style={{ color: "var(--t-tx1)" }}>{fmtAmount(forecast.actual_profit_mtd)}</span></span>
-                <span style={{ color: "var(--t-tx3)" }}>Projected <span className="font-semibold" style={{ color: "rgb(var(--c-accent))" }}>{fmtAmount(forecast.projected_profit)}</span></span>
-                <span className="px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: "rgb(var(--c-accent) / 0.1)", color: "rgb(var(--c-accent))" }}>{fmtAmount(forecast.total_forecast)}</span>
+
+              <div className="p-5 border-t border-line lg:border-t-0">
+                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Revenue this month</div>
+                <div className="text-[24px] font-bold text-ink tabular-nums mt-1.5 leading-none">
+                  <CompactAmount value={revenueMtd} />
+                </div>
+                <div className="mt-1.5"><Delta now={revenueMtd} then={prevMtd ? prevMtd.revenue : null} /></div>
+              </div>
+
+              <div className="p-5 border-t border-line lg:border-t-0">
+                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Profit this month</div>
+                <div className={`text-[24px] font-bold tabular-nums mt-1.5 leading-none ${profitMtd >= 0 ? "text-ink" : "text-danger-ink"}`}>
+                  <CompactAmount value={profitMtd} />
+                </div>
+                <div className="mt-1.5"><Delta now={profitMtd} then={prevMtd ? prevMtd.profit : null} /></div>
               </div>
             </div>
-
-            {forecast.open_deal_count > 0 ? (
-              <>
-                <div className="w-full h-2 rounded-full mb-2" style={{ background: "var(--t-s3)", overflow: "hidden" }}>
-                  {(() => {
-                    const total = Math.max(forecast.total_forecast, forecast.actual_profit_mtd + forecast.projected_profit);
-                    if (total <= 0) return null;
-                    const actualPct = Math.max(0, (forecast.actual_profit_mtd / total) * 100);
-                    const projPct = Math.max(0, (forecast.projected_profit / total) * 100);
-                    return (
-                      <>
-                        <div style={{ background: "rgb(var(--c-success))", height: "100%", width: `${actualPct}%`, float: "left", borderRadius: "4px 0 0 4px" }} />
-                        <div style={{ background: "rgb(var(--c-accent))", height: "100%", width: `${projPct}%`, float: "left", borderRadius: actualPct === 0 ? "4px 0 0 4px" : "0" }} />
-                      </>
-                    );
-                  })()}
-                </div>
-                <p className="text-[10px]" style={{ color: "var(--t-tx4)" }}>
-                  {forecast.open_deal_count} open deal{forecast.open_deal_count !== 1 ? "s" : ""} · {forecast.overall_win_rate}% overall win rate{forecast.win_rate_label ? ` (${forecast.win_rate_label})` : ""}
-                </p>
-              </>
-            ) : (
-              <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>No open deals in pipeline — projection equals actual MTD.</p>
-            )}
           </div>
         )}
 
-        {/* Notes peek */}
-        {notes.length > 0 && (
-          <div className="rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <StickyNote size={14} style={{ color: "rgb(var(--c-accent))" }} />
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)" }}>Notes</h3>
+        {/* ── Today: everything that needs a decision ────── */}
+        <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-2">
+          <div className="px-5 py-3.5 border-b border-line-2">
+            <h3 className="text-[13px] font-semibold text-ink tracking-tight">Today</h3>
+            <p className="text-[11px] text-muted mt-0.5">What needs you right now</p>
+          </div>
+
+          {todayEmpty ? (
+            <div className="py-10 flex flex-col items-center">
+              <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-success-ink mb-3">
+                <CheckCircle2 size={18} />
               </div>
-              <button onClick={() => onNavigate("notes")}
-                className="text-[11px] font-medium flex items-center gap-1 transition-colors hover:opacity-80"
-                style={{ color: "var(--accent-400)" }}>
-                View all <ArrowRight size={11} />
-              </button>
+              <div className="text-[13px] text-muted">All clear — nothing needs you right now</div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {notes.slice(0, 4).map((n) => {
-                const accent = NOTE_ACCENT[n.color] || NOTE_ACCENT.yellow;
+          ) : (
+            <div className="divide-y divide-line-2">
+              {/* New customers awaiting review — inline decisions */}
+              {pendingApprovals.slice(0, 4).map((c) => {
+                const initials = (c.name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
                 return (
-                  <button key={n.id} onClick={() => onNavigate("notes")}
-                    className="text-left rounded-lg p-3 transition-transform hover:-translate-y-0.5"
-                    style={{ background: `${accent}1f`, border: `1px solid ${accent}33` }}>
-                    <p className="text-[12px] leading-snug line-clamp-3" style={{ color: "var(--t-tx1)", minHeight: 30 }}>
-                      {n.body.trim() || <span style={{ color: "var(--t-tx4)" }}>Empty note</span>}
-                    </p>
-                    <div className="mt-2 flex items-center gap-1.5 text-[10px]" style={{ color: "var(--t-tx4)" }}>
-                      <span className="tabular-nums" title={new Date(n.updated_at).toLocaleString()}>{relNote(n.updated_at)}</span>
-                      {n.author && <><span>·</span><span className="truncate">{n.author}</span></>}
+                  <div key={c.id} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2/40 transition-colors">
+                    <span className="w-8 h-8 rounded-full bg-accent/10 text-accent-hover flex items-center justify-center text-[12px] font-bold flex-shrink-0">{initials}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
+                      <div className="text-[11px] text-muted truncate">New customer to review{c.email ? ` · ${c.email}` : ""}</div>
                     </div>
-                  </button>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button onClick={() => setReviewClient(c)}
+                        className="border border-line text-ink-2 hover:bg-surface-2 px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors">
+                        Review
+                      </button>
+                      <button onClick={async () => { await api.approveClient(c.id); resolvedApproval(c.id); }}
+                        className="bg-accent hover:bg-accent-hover text-on-accent px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors">
+                        Approve
+                      </button>
+                      <button onClick={async () => { await api.rejectClient(c.id); resolvedApproval(c.id); }}
+                        className="border border-line text-muted hover:text-danger-ink hover:bg-danger-bg px-2.5 h-7 rounded-lg text-[11.5px] font-medium transition-colors">
+                        Reject
+                      </button>
+                    </div>
+                  </div>
                 );
               })}
-            </div>
-          </div>
-        )}
+              {pendingApprovals.length > 4 && (
+                <button onClick={() => onNavigate("approvals")}
+                  className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-surface-2/40 transition-colors">
+                  <span className="w-8 flex justify-center text-faint"><Users size={14} /></span>
+                  <span className="text-[12px] text-accent font-medium">{pendingApprovals.length - 4} more waiting for review</span>
+                  <ArrowRight size={12} className="text-faint" />
+                </button>
+              )}
 
-        {/* Chart row */}
+              {/* Overdue money — the broker's #1 chase */}
+              {overdueCount > 0 && (
+                <button onClick={() => onNavigate("receivables")}
+                  className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors group">
+                  <span className="w-8 h-8 rounded-lg bg-danger-bg text-danger-ink flex items-center justify-center flex-shrink-0"><CalendarClock size={14} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-ink">
+                      {overdueCount} invoice{overdueCount !== 1 ? "s" : ""} overdue
+                    </div>
+                    <div className="text-[11px] text-muted">Chase these first</div>
+                  </div>
+                  <span className="text-[13px] font-bold text-danger-ink tabular-nums flex-shrink-0">{fmtAmount(overdueAmt)}</span>
+                  <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                </button>
+              )}
+
+              {/* Follow-ups due */}
+              {followups.length > 0 && (
+                <button onClick={() => onNavigate("clients")}
+                  className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors group">
+                  <span className="w-8 h-8 rounded-lg bg-warning-bg text-warning-ink flex items-center justify-center flex-shrink-0"><Clock size={14} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-ink">
+                      {followups.length} follow-up{followups.length !== 1 ? "s" : ""} due today
+                    </div>
+                    <div className="text-[11px] text-muted truncate">
+                      {followups.slice(0, 3).map((c) => c.name).join(", ")}{followups.length > 3 ? "…" : ""}
+                    </div>
+                  </div>
+                  <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                </button>
+              )}
+
+              {/* Shipping info missing */}
+              {shippingCount > 0 && (
+                <button onClick={() => onNavigate("invoices")}
+                  className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2/40 transition-colors group">
+                  <span className="w-8 h-8 rounded-lg bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0"><Package size={14} /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-ink">
+                      {shippingCount} invoice{shippingCount !== 1 ? "s" : ""} need{shippingCount === 1 ? "s" : ""} shipping info
+                    </div>
+                    <div className="text-[11px] text-muted">Fill in carrier and tracking to close them out</div>
+                  </div>
+                  <ArrowRight size={13} className="text-faint opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Trend + recent activity ────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
 
-          {/* Profit chart */}
-          <div className="lg:col-span-3 rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
+          {/* Cumulative month chart */}
+          <div className="lg:col-span-3 bg-surface border border-line rounded-2xl p-5 animate-fade-up stagger-3">
             <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>{monthLabel} {chartMetric === "revenue" ? "Revenue" : "Profit"}</h3>
-                <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Cumulative this month</p>
+                <h3 className="text-[13px] font-semibold text-ink tracking-tight">{monthLabel}</h3>
+                <p className="text-[11px] text-muted mt-0.5">Cumulative {chartMetric} this month</p>
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: "var(--t-s3)" }}>
-                  {(["profit", "revenue"] as const).map(mtr => {
-                    const on = chartMetric === mtr;
-                    return (
-                      <button key={mtr} onClick={() => setChartMetric(mtr)}
-                        className="px-2.5 py-1 rounded-md text-[11px] font-semibold capitalize transition-all"
-                        style={on ? { background: "var(--t-s1)", color: "var(--t-tx1)" } : { background: "transparent", color: "var(--t-tx4)" }}>
-                        {mtr}
-                      </button>
-                    );
-                  })}
+                <div className="flex items-center gap-0.5 bg-surface-2 border border-line rounded-lg p-0.5">
+                  {(["profit", "revenue"] as const).map((mtr) => (
+                    <button key={mtr} onClick={() => setChartMetric(mtr)}
+                      className={`px-2.5 h-7 rounded-md text-[11px] font-semibold capitalize transition-colors ${chartMetric === mtr ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                      {mtr}
+                    </button>
+                  ))}
                 </div>
-                <div className="flex items-center gap-1">
-                  {([-1, 1] as const).map(dir => (
+                <div className="flex items-center gap-0.5">
+                  {([-1, 1] as const).map((dir) => (
                     <button key={dir} onClick={() => changeMonth(dir)}
-                      className="w-7 h-7 flex items-center justify-center rounded-md transition-colors"
-                      style={{ color: "var(--t-tx4)" }}
-                      onMouseEnter={e => { e.currentTarget.style.background = "var(--t-s3)"; e.currentTarget.style.color = "var(--accent-600)"; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "var(--t-tx4)"; }}>
+                      className="w-7 h-7 flex items-center justify-center rounded-md text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors">
                       {dir === -1 ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
                     </button>
                   ))}
@@ -397,7 +375,7 @@ export default function DashboardView({ onNavigate }: Props) {
               </div>
             </div>
             {dailyProfit.length > 0 ? (
-              <ResponsiveContainer width="100%" height={210}>
+              <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={dailyProfit} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
                   <defs>
                     <linearGradient id="profitGrad" x1="0" y1="0" x2="1" y2="0">
@@ -421,369 +399,93 @@ export default function DashboardView({ onNavigate }: Props) {
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
                   <Line type="monotone" dataKey={chartMetric} stroke={chartMetric === "revenue" ? "url(#revenueGrad)" : "url(#profitGrad)"} strokeWidth={2.5} dot={false}
-                    activeDot={{ r: 5, fill: chartMetric === "revenue" ? "#6366F1" : "#10B981", strokeWidth: 0, style: { filter: chartMetric === "revenue" ? "drop-shadow(0 0 6px rgba(99,102,241,0.5))" : "drop-shadow(0 0 6px rgba(16,185,129,0.5))" } }}
-                    isAnimationActive animationDuration={1000} animationEasing="ease-out" />
+                    isAnimationActive animationDuration={800} animationEasing="ease-out" />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[210px] flex items-center justify-center text-[12px]" style={{ color: "var(--t-tx4)" }}>
-                No profit data for this month
+              <div className="h-[220px] flex items-center justify-center text-[12px] text-faint">
+                No closed deals this month yet
               </div>
             )}
           </div>
 
-          {/* Right column: Top Clients + Top Suppliers */}
-          <div className="lg:col-span-2 flex flex-col gap-4">
-
-            <div className="rounded-xl p-5 flex-1 animate-fade-up stagger-3" style={cardStyle}>
-              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top clients</h3>
-              <p className="text-[11px] mb-3" style={{ color: "var(--t-tx4)" }}>Ranked by net profit</p>
-              {stats?.top_clients_by_profit && stats.top_clients_by_profit.length > 0 ? (
-                <div className="space-y-0.5">
-                  {stats.top_clients_by_profit.slice(0, 4).map((c, i) => (
-                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
-                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
-                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ color: "var(--t-b3)" }}>{i + 1}</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</div>
-                        <div className="text-[10px]" style={{ color: "var(--t-tx4)" }}>{c.margin.toFixed(1)}% margin</div>
-                      </div>
-                      <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "rgb(var(--c-success))" }}><CompactAmount value={c.total_profit} /></div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-[12px] text-center py-6" style={{ color: "var(--t-tx4)" }}>No profit data yet</div>
-              )}
-            </div>
-
-            <div className="rounded-xl p-5 flex-1 animate-fade-up stagger-4" style={cardStyle}>
-              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top suppliers</h3>
-              <p className="text-[11px] mb-3" style={{ color: "var(--t-tx4)" }}>By total spend on closed deals</p>
-              {stats?.top_suppliers && stats.top_suppliers.length > 0 ? (
-                <div className="space-y-0.5">
-                  {stats.top_suppliers.slice(0, 4).map((s, i) => (
-                    <div key={i} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
-                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
-                      <span className="w-4 h-4 flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ color: "var(--t-b3)" }}>{i + 1}</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{s.name}</div>
-                        <div className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{s.contact_name || `${s.deal_count} deals`}</div>
-                      </div>
-                      <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "var(--t-tx2)" }}><CompactAmount value={s.total_paid} /></div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-[12px] text-center py-6" style={{ color: "var(--t-tx4)" }}>No supplier data yet</div>
-              )}
-            </div>
-
-          </div>
-        </div>
-
-        {/* Newsletters sent */}
-        <div className="rounded-xl p-5 animate-fade-up stagger-2" style={cardStyle}>
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Newsletters sent</h3>
-              <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Recent campaigns and how many went out</p>
-            </div>
-            <button
-              onClick={() => onNavigate("email")}
-              className="flex items-center gap-1 text-[12px] font-medium transition-colors"
-              style={{ color: "var(--accent-500)" }}
-              onMouseEnter={e => (e.currentTarget.style.color = "var(--accent-600)")}
-              onMouseLeave={e => (e.currentTarget.style.color = "var(--accent-500)")}
-            >
-              Compose <ArrowRight size={11} />
-            </button>
-          </div>
-          {sentNewsletters.length === 0 ? (
-            <div className="text-[12px] text-center py-6" style={{ color: "var(--t-tx4)" }}>No newsletters sent yet</div>
-          ) : (
-            <div className="divide-y" style={{ ["--tw-divide-opacity" as any]: 1, borderColor: "var(--t-b2)" }}>
-              {sentNewsletters.map((n) => (
-                <div key={n.id} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
-                  <div className="min-w-0 flex items-center gap-2.5">
-                    <Mail size={14} style={{ color: "var(--t-tx4)" }} className="flex-shrink-0" />
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{n.subject || "(no subject)"}</div>
-                      <div className="text-[11px]" style={{ color: "var(--t-tx4)" }}>{n.sent_at ? new Date(n.sent_at).toLocaleDateString() : ""}</div>
-                    </div>
-                  </div>
-                  <div className="text-[12px] font-semibold tabular-nums flex-shrink-0" style={{ color: "rgb(var(--c-success))" }}>
-                    {n.sent_count}/{n.recipient_count} sent
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Main grid */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-
-          {/* Recent Invoices (2/3) */}
-          <div className="xl:col-span-2 rounded-xl overflow-hidden flex flex-col animate-fade-up stagger-3" style={cardStyle}>
-            <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
+          {/* Recent activity */}
+          <div className="lg:col-span-2 bg-surface border border-line rounded-2xl overflow-hidden flex flex-col animate-fade-up stagger-4">
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-line-2">
               <div>
-                <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Recent invoices</h3>
-                <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Latest billing activity</p>
+                <h3 className="text-[13px] font-semibold text-ink tracking-tight">Recent invoices</h3>
+                <p className="text-[11px] text-muted mt-0.5">Latest billing activity</p>
               </div>
-              <button
-                onClick={() => onNavigate("invoices")}
-                className="flex items-center gap-1 text-[12px] font-medium transition-colors"
-                style={{ color: "var(--accent-500)" }}
-                onMouseEnter={e => (e.currentTarget.style.color = "var(--accent-600)")}
-                onMouseLeave={e => (e.currentTarget.style.color = "var(--accent-500)")}
-              >
+              <button onClick={() => onNavigate("invoices")}
+                className="flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
                 View all <ArrowRight size={11} />
               </button>
             </div>
             {recentInvoices.length === 0 ? (
-              <div className="flex-1 flex items-center justify-center py-14 text-center">
-                <div>
-                  <FileText size={24} className="mx-auto mb-2" style={{ color: "var(--t-b3)" }} />
-                  <p className="text-[13px]" style={{ color: "var(--t-tx4)" }}>No invoices yet</p>
-                  <button onClick={() => onNavigate("invoices")} className="mt-2 text-[12px] font-medium" style={{ color: "var(--accent-500)" }}>
-                    Create first invoice →
-                  </button>
+              <div className="flex-1 flex flex-col items-center justify-center py-12">
+                <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3">
+                  <FileText size={18} />
                 </div>
+                <p className="text-[13px] text-muted mb-2">No invoices yet</p>
+                <button onClick={() => onNavigate("invoices")} className="text-[12px] font-medium text-accent hover:text-accent-hover">
+                  Create your first invoice
+                </button>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
-                      {["Client", "Invoice #", "Due", "Status", "Amount"].map((h, i) => (
-                        <th key={h} className={`text-left px-5 py-2.5 text-[10px] font-semibold uppercase tracking-widest ${i === 1 ? "hidden sm:table-cell" : i === 2 ? "hidden md:table-cell" : ""} ${i === 4 ? "text-right" : ""}`}
-                          style={{ color: "var(--t-tx4)" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recentInvoices.map((inv) => (
-                      <tr
-                        key={inv.id}
-                        onClick={() => onNavigate("invoices")}
-                        className="cursor-pointer transition-colors"
-                        style={{ borderBottom: "1px solid var(--t-b2)" }}
-                        onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                        onMouseLeave={e => (e.currentTarget.style.background = "")}
-                      >
-                        <td className="px-5 py-3 text-[13px] font-medium" style={{ color: "var(--t-tx1)" }}>{clientName(inv.client_id)}</td>
-                        <td className="px-5 py-3 font-mono text-[11px] hidden sm:table-cell" style={{ color: "var(--t-tx4)" }}>{inv.number}</td>
-                        <td className="px-5 py-3 text-[12px] tabular-nums hidden md:table-cell" style={{ color: "var(--t-tx3)" }}>{inv.due_date.slice(0, 10)}</td>
-                        <td className="px-5 py-3">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide"
-                            style={invStatusStyle(inv.status)}>
-                            {inv.status.replace(/_/g, " ")}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3 text-right text-[13px] font-bold tabular-nums" style={{ color: "var(--t-tx1)" }}>
-                          <CompactAmount value={inv.total} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Right column (1/3) */}
-          <div className="flex flex-col gap-4">
-
-            {/* This Week */}
-            <div className="rounded-xl p-5 animate-fade-up stagger-4" style={cardStyle}>
-              <h3 className="text-[13px] font-semibold tracking-tight mb-0.5" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>This week</h3>
-              <p className="text-[11px] mb-4" style={{ color: "var(--t-tx4)" }}>Last 7 days</p>
-              <div className="space-y-3">
-                {weekStats.map((w) => (
-                  <div key={w.label} className="flex items-center justify-between">
-                    <span className="text-[12px]" style={{ color: "var(--t-tx3)" }}>{w.label}</span>
-                    <span className="text-[15px] font-bold tabular-nums" style={{ color: w.color }}>{w.value}</span>
-                  </div>
+              <div className="divide-y divide-line-2">
+                {recentInvoices.map((inv) => (
+                  <button key={inv.id} onClick={() => onNavigate("invoices")}
+                    className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-surface-2/40 transition-colors">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-ink truncate">{clientName(inv.client_id)}</div>
+                      <div className="text-[11px] text-muted truncate">
+                        <span className="font-mono">{inv.number}</span>
+                        <span className="text-faint"> · due {inv.due_date.slice(0, 10)}</span>
+                      </div>
+                    </div>
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide flex-shrink-0 ${invStatusCls(inv.status)}`}>
+                      {inv.status.replace(/_/g, " ")}
+                    </span>
+                    <span className="text-[13px] font-bold text-ink tabular-nums flex-shrink-0 w-20 text-right">
+                      <CompactAmount value={inv.total} />
+                    </span>
+                  </button>
                 ))}
               </div>
-            </div>
-
-            {/* Incomplete Shipping */}
-            {(stats?.incomplete_shipping ?? 0) > 0 && (
-              <div className="rounded-xl p-4 flex items-center justify-between animate-fade-up stagger-5"
-                style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}>
-                <div className="flex items-center gap-2.5">
-                  <Package size={14} style={{ color: "rgb(var(--c-warning))" }} className="flex-shrink-0" />
-                  <span className="text-[12px]" style={{ color: "var(--t-tx2)" }}>
-                    {stats?.incomplete_shipping} invoice{stats?.incomplete_shipping !== 1 ? "s" : ""} need shipping info
-                  </span>
-                </div>
-                <button onClick={() => onNavigate("invoices")} className="text-[12px] font-medium ml-2 flex-shrink-0" style={{ color: "var(--accent-500)" }}>View</button>
-              </div>
             )}
-
-            {/* Loss Deals */}
-            {(stats?.loss_deals_this_month ?? 0) > 0 && (
-              <div className="rounded-xl p-4 animate-fade-up stagger-5"
-                style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
-                <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "rgb(var(--c-danger))" }}>Loss Deals This Month</div>
-                <div className="mt-1 flex items-end justify-between">
-                  <div className="text-[22px] font-bold" style={{ color: "rgb(var(--c-danger))" }}>{stats?.loss_deals_this_month}</div>
-                  <div className="text-[14px] font-semibold" style={{ color: "rgb(var(--c-danger))" }}><CompactAmount value={stats?.loss_total_this_month ?? 0} /></div>
-                </div>
-              </div>
-            )}
-
-            {/* Top Buyers */}
-            {topBuyers.length > 0 && (
-              <div className="rounded-xl p-5 animate-fade-up stagger-5" style={cardStyle}>
-                <h3 className="text-[13px] font-semibold tracking-tight mb-4" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Top buyers</h3>
-                <div className="space-y-1.5">
-                  {topBuyers.map((h) => (
-                    <div key={h.client_id} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg transition-colors cursor-default"
-                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{h.client_name}</div>
-                        <div className="text-[10px] mt-0.5" style={{ color: "var(--t-tx4)" }}>
-                          {h.actual_paid > 0 ? <CompactAmount value={h.actual_paid} /> : "No purchases yet"}
-                        </div>
-                      </div>
-                      <TierBadge tier={h.tier} size="sm" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Follow-ups */}
-            <div className="rounded-xl p-5 flex flex-col flex-1 animate-fade-up stagger-6" style={cardStyle}>
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Follow-ups Due</h3>
-                  <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Clients to contact today</p>
-                </div>
-                {followups.length > 0 && (
-                  <span className="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0"
-                    style={{ background: "rgba(245,158,11,0.15)", color: "rgb(var(--c-warning-ink))" }}>
-                    {followups.length}
-                  </span>
-                )}
-              </div>
-
-              {followups.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center py-4 text-center gap-1.5">
-                  <CheckCircle2 size={22} style={{ color: "rgb(var(--c-success))" }} />
-                  <p className="text-[12px] font-medium" style={{ color: "var(--t-tx2)" }}>All caught up</p>
-                  <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>No follow-ups due today</p>
-                </div>
-              ) : (
-                <div className="space-y-0.5">
-                  {followups.map((c) => (
-                    <div key={c.id} className="flex items-center justify-between px-2 py-2 rounded-lg transition-colors"
-                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
-                      <div className="min-w-0">
-                        <p className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</p>
-                        {c.company && <p className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{c.company}</p>}
-                      </div>
-                      <span className="ml-2 flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                        style={{ background: "rgba(245,158,11,0.12)", color: "rgb(var(--c-warning-ink))", border: "1px solid rgba(245,158,11,0.2)" }}>
-                        Today
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
           </div>
         </div>
 
-        {/* Quick Actions */}
-        <div className="rounded-xl overflow-hidden animate-fade-up stagger-5" style={cardStyle}>
-          <div className="px-5 py-2.5" style={{ borderBottom: "1px solid var(--t-b2)" }}>
-            <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Quick actions</p>
-          </div>
+        {/* ── Quick actions ──────────────────────────────── */}
+        <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-5">
           <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line-2">
             {[
-              { label: "Add client",  sub: "Create a new client profile", icon: Users,    tab: "clients",  dot: "var(--accent-600)", dotBg: "var(--accent-tint)"  },
-              { label: "New invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices", dot: "rgb(var(--c-accent))", dotBg: "rgb(var(--c-accent) / 0.1)"  },
-              { label: "Scan inbox",  sub: "AI-process new emails",       icon: Mail,     tab: "email",    dot: "rgb(var(--c-success))", dotBg: "rgba(16,185,129,0.1)"  },
+              { label: "Add client",  sub: "Create a new client profile",  icon: Users,    tab: "clients"  },
+              { label: "New invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices" },
+              { label: "Newsletter",  sub: "Reach your client list",       icon: Mail,     tab: "email"    },
             ].map((a) => {
               const Icon = a.icon;
               return (
                 <button
                   key={a.label}
                   onClick={() => onNavigate(a.tab)}
-                  className="group flex items-center gap-3.5 px-5 py-4 transition-colors w-full text-left"
-                  onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                  onMouseLeave={e => (e.currentTarget.style.background = "")}
+                  className="group flex items-center gap-3.5 px-5 py-4 transition-colors w-full text-left hover:bg-surface-2/40"
                 >
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105"
-                    style={{ background: a.dotBg }}>
-                    <Icon size={14} style={{ color: a.dot }} strokeWidth={2} />
+                  <div className="w-8 h-8 rounded-lg bg-accent/10 text-accent flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105">
+                    <Icon size={14} strokeWidth={2} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-medium" style={{ color: "var(--t-tx1)" }}>{a.label}</p>
-                    <p className="text-[11px]" style={{ color: "var(--t-tx4)" }}>{a.sub}</p>
+                    <p className="text-[13px] font-medium text-ink">{a.label}</p>
+                    <p className="text-[11px] text-muted">{a.sub}</p>
                   </div>
-                  <ArrowRight size={13} className="opacity-0 group-hover:opacity-50 group-hover:translate-x-0.5 flex-shrink-0 transition-all duration-150" style={{ color: "var(--t-tx3)" }} />
+                  <ArrowRight size={13} className="opacity-0 group-hover:opacity-50 group-hover:translate-x-0.5 flex-shrink-0 transition-all duration-150 text-muted" />
                 </button>
               );
             })}
           </div>
-            </div>
+        </div>
 
-            {/* Pending Approvals */}
-            {pendingApprovals.length > 0 && (
-              <div className="rounded-xl p-5 flex flex-col flex-1 animate-fade-up stagger-7" style={cardStyle}>
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-[13px] font-semibold tracking-tight" style={{ color: "var(--t-tx1)", letterSpacing: "-0.01em" }}>Pending approvals</h3>
-                    <p className="text-[11px] mt-0.5" style={{ color: "var(--t-tx4)" }}>Sign-ups waiting for review</p>
-                  </div>
-                  <span className="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0"
-                    style={{ background: "rgba(99,102,241,0.15)", color: "rgb(var(--c-accent))" }}>
-                    {pendingApprovals.length}
-                  </span>
-                </div>
-                <div className="space-y-0.5">
-                  {pendingApprovals.map((c) => (
-                    <div key={c.id} className="flex items-center justify-between px-2 py-2 rounded-lg transition-colors"
-                      onMouseEnter={e => (e.currentTarget.style.background = "var(--t-s2)")}
-                      onMouseLeave={e => (e.currentTarget.style.background = "")}>
-                      <div className="min-w-0">
-                        <p className="text-[12px] font-medium truncate" style={{ color: "var(--t-tx1)" }}>{c.name}</p>
-                        {c.email && <p className="text-[10px] truncate" style={{ color: "var(--t-tx4)" }}>{c.email}</p>}
-                      </div>
-                      <div className="flex items-center gap-1 ml-2">
-                        <button onClick={() => setReviewClient(c)}
-                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                          style={{ background: "var(--t-s2)", color: "var(--t-tx2)", border: "1px solid var(--t-b1)" }}>
-                          Review
-                        </button>
-                        <button onClick={async () => { await api.approveClient(c.id); setPending(p => p.filter(x => x.id !== c.id)); }}
-                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                          style={{ background: "rgba(16,185,129,0.12)", color: "rgb(var(--c-success))", border: "1px solid rgba(16,185,129,0.2)" }}>
-                          Approve
-                        </button>
-                        <button onClick={async () => { await api.rejectClient(c.id); setPending(p => p.filter(x => x.id !== c.id)); }}
-                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                          style={{ background: "rgba(239,68,68,0.12)", color: "rgb(var(--c-error))", border: "1px solid rgba(239,68,68,0.2)" }}>
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-          </div>
+      </div>
     </div>
   );
 }

@@ -8,6 +8,7 @@ import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, ProfitSplit,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
 import RefundPanel from "./RefundPanel";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -129,9 +130,32 @@ export default function DealFlowView() {
   const completedFiltered = completed.filter(matchFl);
   const totalCompleted    = completed.length;
 
-  if (loading) return (
-    <div className="flex items-center justify-center py-32">
-      <RefreshCw size={15} className="text-faint animate-spin" />
+  // Skeleton mirrors the real layout (header, search, deal cards) — and only on
+  // first load, so refreshes after an action don't blank the whole view.
+  if (loading && flows.length === 0) return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="h-6 w-32 bg-surface-2 rounded-md animate-pulse" />
+          <div className="h-3.5 w-48 bg-surface-2 rounded animate-pulse mt-2" />
+        </div>
+        <div className="h-8 w-40 bg-surface-2 rounded-lg animate-pulse" />
+      </div>
+      <div className="h-9 w-full max-w-xs bg-surface-2 rounded-lg animate-pulse" />
+      <div className="space-y-4">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="bg-surface border border-line rounded-xl px-5 py-3.5 flex items-center gap-3">
+            <div className="flex items-center gap-1">
+              {[0, 1, 2, 3].map((j) => <span key={j} className="w-2.5 h-2.5 rounded-full bg-surface-2 animate-pulse" />)}
+            </div>
+            <div className="flex-1 space-y-2">
+              <div className="h-3.5 w-1/3 bg-surface-2 rounded animate-pulse" />
+              <div className="h-3 w-1/2 bg-surface-2 rounded animate-pulse" />
+            </div>
+            <div className="h-6 w-20 bg-surface-2 rounded-full animate-pulse" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 
@@ -139,7 +163,7 @@ export default function DealFlowView() {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "deal-flows.csv" });
     if (!path) return;
     const count = await api.exportDealFlowsCsv(path as string);
-    alert(`Exported ${count} deal flows to CSV.`);
+    toast(`Exported ${count} deal flow${count !== 1 ? "s" : ""} to CSV`);
   };
 
   return (
@@ -666,7 +690,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
     try {
       const filledItems = items.filter((it) => parseAmt(it.myRate) > 0);
       if (filledItems.length === 0) {
-        alert("Enter at least one item rate before adding the supplier.");
+        toast("Enter at least one item rate before adding the supplier", "error");
         setSaving(false);
         return;
       }
@@ -685,13 +709,13 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
       setItems((prev) => prev.map((it) => ({ ...it, myRate: "" })));
       setShowForm(false);
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
   const handleAddCost = async () => {
     const amt = parseAmt(costAmt);
-    if (amt <= 0) { alert("Enter a cost amount."); return; }
+    if (amt <= 0) { toast("Enter a cost amount", "error"); return; }
     setSaving(true);
     try {
       const label = COST_CATS.find((c) => c.value === costType)?.label || "Cost";
@@ -703,25 +727,25 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
       });
       setCostAmt(""); setCostNote(""); setShowCost(false);
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
   const handleMarkReceived = async () => {
     if (!hasSuppliers) return;
     const amt = parseFloat(receivedAmount);
-    if (isNaN(amt) || amt < 0) { alert("Enter a valid amount received."); return; }
+    if (isNaN(amt) || amt < 0) { toast("Enter a valid amount received", "error"); return; }
     setSaving(true);
     try {
       await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null });
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
   const handleUndo = async () => {
     setSaving(true);
-    try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { alert(e); }
+    try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -1081,7 +1105,7 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
       const unpaid = payments.filter((p) => !p.paid);
       await Promise.all(unpaid.map((p) => api.markSupplierPaymentPaid(flow.id, p.id)));
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -1092,7 +1116,7 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
       const paid = payments.filter((p) => p.paid);
       await Promise.all(paid.map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id)));
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -1214,9 +1238,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     setSaving(true);
     try {
       const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
-      if (result.is_loss && result.warning) alert(result.warning);
+      if (result.is_loss && result.warning) toast(result.warning, "error");
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -1245,13 +1269,13 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       });
       await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
       onReload();
-    } catch (e: any) { alert(e); }
+    } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
   const handleUndo = async () => {
     setSaving(true);
-    try { await api.uncompleteDealFlow(flow.id); onReload(); } catch (e: any) { alert(e); }
+    try { await api.uncompleteDealFlow(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -1435,14 +1459,14 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
 
   const handleReopen = async () => {
     setSaving(true);
-    try { await api.uncompleteDealFlow(flow.id); onReload(); } catch (e: any) { alert(e); }
+    try { await api.uncompleteDealFlow(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
   const handleDelete = async () => {
     if (!confirm("Delete this completed deal? This cannot be undone.")) return;
     setSaving(true);
-    try { await api.deleteDealFlow(flow.id); onReload(); } catch (e: any) { alert(e); }
+    try { await api.deleteDealFlow(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 

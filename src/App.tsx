@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   Users,
   FileText,
@@ -53,6 +54,7 @@ import { FeedbackModal } from "./components/FeedbackModal";
 import CheckupView from "./components/CheckupView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
+import { ToastHost } from "./components/Toast";
 import CommandPalette from "./components/CommandPalette";
 import ShortcutsModal from "./components/ShortcutsModal";
 import AutomationLogView from "./components/AutomationLogView";
@@ -224,8 +226,12 @@ export default function App() {
     refresh();
     const onChanged = () => refresh();
     window.addEventListener("approvals-changed", onChanged);
+    // A netsync pull that applied remote changes may have resolved (or added)
+    // pending items on another device — refresh the bell right away.
+    let unlisten: (() => void) | undefined;
+    listen("netsync-applied", () => refresh()).then((u) => { unlisten = u; }).catch(() => {});
     const t = setInterval(refresh, 60000);
-    return () => { window.removeEventListener("approvals-changed", onChanged); clearInterval(t); };
+    return () => { window.removeEventListener("approvals-changed", onChanged); clearInterval(t); unlisten?.(); };
   }, [me?.is_admin]);
 
   useEffect(() => {
@@ -663,6 +669,7 @@ export default function App() {
           onClose={() => setSharePanelIds(null)}
         />
       )}
+      <ToastHost />
     </div>
   );
 }

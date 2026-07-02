@@ -41,6 +41,8 @@ export interface Client {
   high_value?: boolean;
   exclusive?: boolean;
   approval_status: string;
+  /** True until this client has been sent ANY email; self-clears server-side on first send. */
+  first_contact?: boolean;
 }
 
 export interface ClientInput {

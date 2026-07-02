@@ -95,7 +95,7 @@ fn main() {
             if let Err(e) = netsync::ensure_tables() {
                 tracing::warn!("netsync init failed: {}", e);
             }
-            netsync::spawn_loop();
+            netsync::spawn_loop(app.handle().clone());
 
             // AppHandle is Send + Clone — safe to move into async spawns.
             // tauri::App is NOT Send and must never be captured in a spawn.

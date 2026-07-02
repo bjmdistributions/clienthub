@@ -322,7 +322,8 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           <StatTile label="Revenue" value={fmtAmount(revenue)} tone="ink" />
           <StatTile label="Profit" value={clientProfit === null ? "—" : fmtAmount(clientProfit)} tone={clientProfit !== null && clientProfit < 0 ? "danger" : "success"} hint={clientProfit === null ? undefined : "completed deals"} />
           <StatTile label="Orders" value={String(client.invoice_count)} tone="ink" hint={`${outstanding > 0 ? fmtAmount(outstanding) + " open" : "none open"}`} />
-          <StatTile label="Last activity" value={relTime(lastActivityRaw)} tone="ink" />
+          <StatTile label="Last activity" value={relTime(lastActivityRaw)} tone="ink"
+            hint={client.first_contact ? "no contact yet — never emailed" : undefined} />
         </div>
 
         {/* Contact line */}

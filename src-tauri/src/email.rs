@@ -669,9 +669,18 @@ async fn scan_and_notify(app: &tauri::AppHandle) {
 }
 
 /// Raise a system notification for each newly-captured lead. Best-effort.
+///
+/// Re-checks each lead's CURRENT state at notify time: a lead captured here, synced
+/// to the server, and already approved/rejected on another device (mobile) — with
+/// the resolution pulled back before we announce — must stay silent. Only announce
+/// when the client is still `pending` AND its approval-queue row is still open.
 fn notify_new_leads(app: &tauri::AppHandle, leads: &[NewLead]) {
     use tauri_plugin_notification::NotificationExt;
     for lead in leads {
+        if !still_pending_lead(&lead.client_id) {
+            tracing::info!("skipped stale new-lead notification for {} (already resolved)", lead.name);
+            continue;
+        }
         let _ = app
             .notification()
             .builder()
@@ -680,6 +689,29 @@ fn notify_new_leads(app: &tauri::AppHandle, leads: &[NewLead]) {
             .show();
         tracing::info!("notified new lead {} ({})", lead.name, &lead.client_id[..8.min(lead.client_id.len())]);
     }
+}
+
+/// Whether a captured lead is STILL awaiting review right now: the client row is
+/// `approval_status='pending'` AND it has an open (`status='pending'`) approval-queue
+/// row. False once it's been approved/rejected on any device (and synced back).
+fn still_pending_lead(client_id: &str) -> bool {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return false };
+    let client_pending = conn
+        .query_row(
+            "SELECT 1 FROM clients WHERE id=?1 AND approval_status='pending'",
+            [client_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !client_pending {
+        return false;
+    }
+    conn.query_row(
+        "SELECT 1 FROM pending_approvals WHERE entity_id=?1 AND kind='client_add' AND status='pending' LIMIT 1",
+        [client_id],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 /// Resolve the connection details + password for one inbox id, synchronously where

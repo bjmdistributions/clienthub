@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Deal, DealInput, Client, LineItem, DealCostItem, SupplierNameSuggestion } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { toast } from "./Toast";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   Plus, X, Briefcase, GripVertical, Check, Trash2, DollarSign, TrendingUp, FileDown,
@@ -58,7 +59,7 @@ export default function DealsView() {
     } else if (targetStage === "won") {
       if (confirm("Won this deal? Convert to invoice now?")) {
         await api.updateDealStage(id, "won");
-        try { await api.convertDealToInvoice(id); } catch (e: any) { alert(e); }
+        try { await api.convertDealToInvoice(id); } catch (e: any) { toast(String(e), "error"); }
         load();
       }
     } else {
@@ -131,7 +132,7 @@ export default function DealsView() {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "deals.csv" });
     if (!path) return;
     const count = await api.exportDealsCsv(path as string);
-    alert(`Exported ${count} deals to CSV.`);
+    toast(`Exported ${count} deal${count !== 1 ? "s" : ""} to CSV`);
   };
 
   return (
@@ -282,7 +283,7 @@ export default function DealsView() {
           onConvert={async () => {
             if (selectedDeal && confirm("Convert to invoice?")) {
               try { await api.convertDealToInvoice(selectedDeal.id); load(); }
-              catch (e: any) { alert(e); }
+              catch (e: any) { toast(String(e), "error"); }
             }
           }}
         />

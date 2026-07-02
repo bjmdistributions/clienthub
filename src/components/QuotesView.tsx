@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, Quote, Client, LineItem } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban } from "lucide-react";
+import { toast } from "./Toast";
 
 interface Props { onNavigate?: (t: any) => void; }
 
@@ -34,10 +35,8 @@ export default function QuotesView({ onNavigate }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Quote | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
 
-  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3000); };
   const load = async () => { setQuotes(await api.listQuotes()); };
   useEffect(() => { load(); api.listClients().then(setClients).catch(() => {}); }, []);
 
@@ -52,21 +51,21 @@ export default function QuotesView({ onNavigate }: Props) {
 
   const handlePdf = async (id: string) => {
     setBusy(id);
-    try { await api.generateQuotePdf(id); flash("PDF saved — check your quotes folder"); load(); }
-    catch (e: any) { alert(`Error: ${e}`); } finally { setBusy(null); }
+    try { await api.generateQuotePdf(id); toast("PDF saved — check your quotes folder"); load(); }
+    catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
   };
   const handleSend = async (id: string) => {
     if (!confirm("Email this quote to the client?")) return;
     setBusy(id);
-    try { await api.sendQuote(id); flash("Quote sent"); load(); }
-    catch (e: any) { alert(`Error: ${e}`); } finally { setBusy(null); }
+    try { await api.sendQuote(id); toast("Quote sent"); load(); }
+    catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
   };
   const setStatus = async (id: string, status: string) => {
-    try { await api.setQuoteStatus(id, status); load(); } catch (e: any) { alert(e); }
+    try { await api.setQuoteStatus(id, status); load(); } catch (e: any) { toast(String(e), "error"); }
   };
   const del = async (id: string) => {
     if (!confirm("Delete this quote? This cannot be undone.")) return;
-    try { await api.deleteQuote(id); load(); } catch (e: any) { alert(e); }
+    try { await api.deleteQuote(id); load(); } catch (e: any) { toast(String(e), "error"); }
   };
 
   // Convert: create an invoice from the quote, link it, mark accepted, then
@@ -85,17 +84,13 @@ export default function QuotesView({ onNavigate }: Props) {
         notes: q.notes || undefined,
       });
       await api.markQuoteConverted(q.id, invId);
-      flash("Invoice created from quote");
+      toast("Invoice created from quote");
       onNavigate?.("invoices");
-    } catch (e: any) { alert(`Error: ${e}`); } finally { setBusy(null); }
+    } catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
   };
 
   return (
     <div>
-      {toast && (
-        <div className="fixed bottom-5 right-5 bg-ink text-surface px-4 py-2.5 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.18)] text-[13px] z-50 animate-fade-in">{toast}</div>
-      )}
-
       <div className="flex justify-between items-center mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Quotes</h2>
@@ -333,7 +328,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
       if (initial) await api.updateQuote(initial.id, payload);
       else await api.createQuote(payload);
       onClose();
-    } catch (e: any) { alert(e); } finally { setSaving(false); }
+    } catch (e: any) { toast(String(e), "error"); } finally { setSaving(false); }
   };
 
   return (

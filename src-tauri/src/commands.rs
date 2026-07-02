@@ -43,7 +43,23 @@ pub struct Client {
     /// them). The UI reads these; metadata still mirrors them for older readers.
     pub high_value: bool,
     pub exclusive: bool,
+    /// True when we have NEVER sent this client any email: no sent newsletter, no
+    /// invoice/quote with a sent date, and no outbound-email interaction. Incoming
+    /// email does NOT clear it. Computed in SQL (see `FIRST_CONTACT_SQL`).
+    #[serde(default)]
+    pub first_contact: bool,
 }
+
+/// SQL boolean (1/0) that is true when the client (alias `c`) has never been
+/// emailed by us. Correlated `NOT EXISTS` subqueries — no N+1. Append as
+/// `, {FIRST_CONTACT_SQL} AS first_contact` to any `... FROM clients c` select and
+/// read with `r.get::<_, i64>("first_contact")? != 0`.
+const FIRST_CONTACT_SQL: &str = "CASE WHEN \
+    NOT EXISTS (SELECT 1 FROM newsletter_sends ns WHERE ns.client_id=c.id AND ns.status='sent') \
+    AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.client_id=c.id AND COALESCE(iv.sent_at,'') <> '') \
+    AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.client_id=c.id AND COALESCE(q.sent_at,'') <> '') \
+    AND NOT EXISTS (SELECT 1 FROM interactions ix WHERE ix.client_id=c.id AND ix.kind='email_out') \
+    THEN 1 ELSE 0 END";
 
 fn extract_meta_str(meta: &Option<Value>, key: &str) -> Option<String> {
     meta.as_ref()?.get(key)?.as_str().map(|s| s.to_string())
@@ -119,8 +135,7 @@ pub async fn client_last_activity() -> Result<Vec<ClientActivity>, String> {
 #[tauri::command]
 pub async fn list_clients() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
+    let sql = format!(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                     NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
@@ -130,10 +145,12 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active'),
                     COALESCE(c.high_value,0),
-                    COALESCE(c.exclusive,0)
+                    COALESCE(c.exclusive,0),
+                    ({fc}) AS first_contact
              FROM clients c
-             ORDER BY c.name",
-        )
+             ORDER BY c.name", fc = FIRST_CONTACT_SQL);
+    let mut stmt = conn
+        .prepare(&sql)
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -141,6 +158,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = r.get::<_, i64>(16)? != 0 || meta_flag(&meta, "high_value");
             let exclusive = r.get::<_, i64>(17)? != 0 || meta_flag(&meta, "exclusive");
+            let first_contact = r.get::<_, i64>("first_contact")? != 0;
             Ok(Client {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -162,6 +180,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                 approval_status: r.get(15)?,
                 high_value,
                 exclusive,
+                first_contact,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -187,7 +206,7 @@ pub async fn list_client_reps() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let res: rusqlite::Result<Client> = conn.query_row(
+    let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
@@ -197,15 +216,19 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 COALESCE(c.high_value,0),
-                COALESCE(c.exclusive,0)
+                COALESCE(c.exclusive,0),
+                ({fc}) AS first_contact
          FROM clients c
-         WHERE c.id=?1",
+         WHERE c.id=?1", fc = FIRST_CONTACT_SQL);
+    let res: rusqlite::Result<Client> = conn.query_row(
+        &sql,
         [&id],
         |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = r.get::<_, i64>(16).unwrap_or(0) != 0 || meta_flag(&meta, "high_value");
             let exclusive = r.get::<_, i64>(17).unwrap_or(0) != 0 || meta_flag(&meta, "exclusive");
+            let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
             Ok(Client {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -227,6 +250,7 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
                 high_value,
                 exclusive,
+                first_contact,
             })
         },
     );
@@ -322,6 +346,8 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
         approval_status: approval_status.into(),
         high_value: false,
         exclusive: false,
+        // A just-created client has never been emailed.
+        first_contact: true,
     })
 }
 
@@ -526,6 +552,8 @@ pub async fn approve_client(id: String) -> Result<(), String> {
         Err(e) => tracing::warn!("sheet write-back for {} failed: {}", id, e),
     }
     archive_source_email_for_client(&id).await;
+    // Push the approval to the server promptly so other devices reflect it.
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -536,28 +564,32 @@ pub async fn reject_client(id: String) -> Result<(), String> {
     let mut cols = Map::new();
     cols.insert("approval_status".into(), Value::String("rejected".into()));
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    // Push the rejection to the server promptly so other devices reflect it.
+    crate::netsync::push_now();
     Ok(())
 }
 
 #[tauri::command]
 pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULL,
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
-                COALESCE(c.approval_status,'active')
+                COALESCE(c.approval_status,'active'),
+                ({fc}) AS first_contact
          FROM clients c
          WHERE c.approval_status = 'pending'
-         ORDER BY c.created_at ASC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY c.created_at ASC", fc = FIRST_CONTACT_SQL);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         let high_value = meta_flag(&meta, "high_value");
         let exclusive = meta_flag(&meta, "exclusive");
+        let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -571,6 +603,7 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
             approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
             high_value,
             exclusive,
+            first_contact,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -674,6 +707,9 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
     cols.insert("status".into(), Value::String(status.into()));
     cols.insert("resolved_at".into(), Value::String(now));
     sync::record_upsert("pending_approvals", &id, cols).map_err(|e| e.to_string())?;
+    // Push the resolution to the server immediately so other devices stop showing
+    // this lead as pending (rather than waiting for the next 20s poll tick).
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -1199,24 +1235,26 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
 pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let pattern = format!("%{}%", query.to_lowercase());
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
-                COALESCE(c.approval_status,'active')
+                COALESCE(c.approval_status,'active'),
+                ({fc}) AS first_contact
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          WHERE LOWER(c.name) LIKE ?1 OR LOWER(c.email) LIKE ?1 OR LOWER(c.company) LIKE ?1 OR LOWER(c.metadata) LIKE ?1
          GROUP BY c.id
-         ORDER BY c.name LIMIT 50",
-    ).map_err(|e| e.to_string())?;
+         ORDER BY c.name LIMIT 50", fc = FIRST_CONTACT_SQL);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([pattern], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         let high_value = meta_flag(&meta, "high_value");
         let exclusive = meta_flag(&meta, "exclusive");
+        let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1230,6 +1268,7 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
             approval_status: r.get(15)?,
             high_value,
             exclusive,
+            first_contact,
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1288,22 +1327,24 @@ pub async fn global_search(query: String) -> Result<GlobalSearchResults, String>
 pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let cutoff = format!("-{} days", days);
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                ({fc}) AS first_contact
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          GROUP BY c.id
      HAVING MAX(i.created_at) IS NULL OR MAX(i.created_at) < datetime('now', ?1)
-     ORDER BY MAX(i.created_at) ASC",
-    ).map_err(|e| e.to_string())?;
+     ORDER BY MAX(i.created_at) ASC", fc = FIRST_CONTACT_SQL);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([cutoff], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         let high_value = meta_flag(&meta, "high_value");
         let exclusive = meta_flag(&meta, "exclusive");
+        let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1317,6 +1358,7 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
             approval_status: "active".into(),
             high_value,
             exclusive,
+            first_contact,
             })
         }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1325,17 +1367,18 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
 #[tauri::command]
 pub async fn due_followups() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
+    let sql = format!(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                     NULL,
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0)
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                    ({fc}) AS first_contact
              FROM clients c
              WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
              AND json_extract(c.metadata, '$.next_follow_up_date') <= date('now')
-             ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC",
-        )
+             ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC", fc = FIRST_CONTACT_SQL);
+    let mut stmt = conn
+        .prepare(&sql)
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -1343,6 +1386,7 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = meta_flag(&meta, "high_value");
             let exclusive = meta_flag(&meta, "exclusive");
+            let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1357,6 +1401,7 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
                 approval_status: "active".into(),
                 high_value,
                 exclusive,
+                first_contact,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1385,7 +1430,7 @@ pub struct ClientFilter {
 pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
 
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
@@ -1393,9 +1438,10 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
-                COALESCE(c.approval_status,'active')
+                COALESCE(c.approval_status,'active'),
+                ({fc}) AS first_contact
          FROM clients c
-         LEFT JOIN interactions i ON i.client_id = c.id"
+         LEFT JOIN interactions i ON i.client_id = c.id", fc = FIRST_CONTACT_SQL
     );
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1487,6 +1533,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = meta_flag(&meta, "high_value");
             let exclusive = meta_flag(&meta, "exclusive");
+            let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1500,6 +1547,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
                 high_value,
                 exclusive,
+                first_contact,
             })
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
@@ -1580,9 +1628,10 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
                 NULL,
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
                 COALESCE(c.is_blacklisted,0),
-                COALESCE(c.approval_status,'active')
+                COALESCE(c.approval_status,'active'),
+                ({fc}) AS first_contact
          FROM clients c
-         WHERE {}", where_clause
+         WHERE {where_clause}", fc = FIRST_CONTACT_SQL, where_clause = where_clause
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(params, |r| {
@@ -1590,6 +1639,7 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         let high_value = meta_flag(&meta, "high_value");
         let exclusive = meta_flag(&meta, "exclusive");
+        let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
         Ok(Client {
             id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
             company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1602,6 +1652,7 @@ fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: 
                 approval_status: r.get::<_, String>(15).unwrap_or_else(|_| "active".into()),
                 high_value,
                 exclusive,
+                first_contact,
             })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1615,20 +1666,22 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
     let missing_address = query_clients_where(&conn, "(json_extract(c.metadata, '$.street_address') IS NULL OR json_extract(c.metadata, '$.street_address') = '')", &[])?;
     let missing_category = query_clients_where(&conn, "(json_extract(c.metadata, '$.category') IS NULL OR json_extract(c.metadata, '$.category') = '') AND (json_extract(c.metadata, '$.primary_buy_category') IS NULL OR json_extract(c.metadata, '$.primary_buy_category') = '')", &[])?;
     let never_contacted: Vec<Client> = {
-        let sql = "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+        let sql = format!("SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                           (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
                           NULL,
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
-                COALESCE(c.is_blacklisted,0)
+                COALESCE(c.is_blacklisted,0),
+                ({fc}) AS first_contact
          FROM clients c
                    LEFT JOIN interactions i ON i.client_id = c.id
-                   WHERE i.id IS NULL";
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+                   WHERE i.id IS NULL", fc = FIRST_CONTACT_SQL);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = meta_flag(&meta, "high_value");
             let exclusive = meta_flag(&meta, "exclusive");
+            let first_contact = r.get::<_, i64>("first_contact").unwrap_or(0) != 0;
             Ok(Client {
                 id: r.get(0)?, name: r.get(1)?, email: r.get(2)?, phone: r.get(3)?,
                 company: r.get(4)?, notes: r.get(5)?, billing_status: r.get(6)?,
@@ -1641,6 +1694,7 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
                 approval_status: "active".into(),
                 high_value,
                 exclusive,
+                first_contact,
             })
         }).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
@@ -7272,7 +7326,8 @@ pub async fn get_payables_aging() -> Result<Value, String> {
                 CAST(json_extract(sp.value,'$.amount') AS REAL) AS amount, \
                 COALESCE(NULLIF(df.payment_received_at,''), df.created_at) AS anchor, \
                 df.id AS deal_flow_id, df.invoice_id AS invoice_id, \
-                i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name \
+                i.number AS invoice_number, i.client_id AS client_id, c.name AS client_name, \
+                json_extract(sp.value,'$.id') AS payment_id \
          FROM deal_flows df \
          JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
@@ -7290,6 +7345,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         r.get::<_, Option<String>>(5)?,
         r.get::<_, Option<String>>(6)?,
         r.get::<_, Option<String>>(7)?,
+        r.get::<_, Option<String>>(8)?,
     ))).map_err(|e| e.to_string())?;
 
     let today = Utc::now().date_naive();
@@ -7298,7 +7354,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
     let mut items: Vec<Value> = Vec::new();
     let mut tot = [0f64; 4];
     let mut count = 0i64;
-    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name) in rows.filter_map(|x| x.ok()) {
+    for (payee, amount, anchor, deal_flow_id, invoice_id, invoice_number, client_id, client_name, payment_id) in rows.filter_map(|x| x.ok()) {
         let days = chrono::NaiveDate::parse_from_str(anchor.get(0..10).unwrap_or(""), "%Y-%m-%d")
             .map(|d| (today - d).num_days())
             .unwrap_or(0);
@@ -7306,6 +7362,7 @@ pub async fn get_payables_aging() -> Result<Value, String> {
         let bucket = ["d0_30", "d31_60", "d61_90", "d90_plus"][idx];
         items.push(json!({
             "deal_flow_id": deal_flow_id, "invoice_id": invoice_id, "invoice_number": invoice_number,
+            "payment_id": payment_id,
             "payee": payee, "amount": amount, "client_id": client_id, "client_name": client_name,
             "anchor_date": if anchor.is_empty() { Value::Null } else { json!(anchor) },
             "days": days, "bucket": bucket,

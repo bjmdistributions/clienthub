@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, DealFlow, ProfitSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { toast } from "./Toast";
 import {
   CheckCircle2, RefreshCw, ChevronDown, RotateCcw, Trash2,
   TrendingUp, DollarSign, Package,
@@ -237,7 +238,7 @@ function DealBreakdown({
     if (!editDate) return;
     setDateSaving(true);
     try { await api.updateDealCompletedAt(flow.id, editDate); onReload(); }
-    catch (e: any) { alert(e); }
+    catch (e: any) { toast(String(e), "error"); }
     setDateSaving(false);
   };
 
@@ -245,7 +246,7 @@ function DealBreakdown({
     if (!confirm("Reopen this deal? It will move back to the active Deal Flow.")) return;
     setSaving(true);
     try { await api.uncompleteDealFlow(flow.id); onReload(); }
-    catch (e: any) { alert(e); }
+    catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
@@ -253,7 +254,7 @@ function DealBreakdown({
     if (!confirm("Permanently delete this deal record? This cannot be undone.")) return;
     setSaving(true);
     try { await api.deleteDealFlow(flow.id); onReload(); }
-    catch (e: any) { alert(e); }
+    catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
