@@ -550,7 +550,10 @@ function NewsletterTab() {
         sessionStorage.removeItem("email_preselect_ids");
         try {
           const ids = new Set<string>(JSON.parse(raw));
-          setSelected(cs.filter((c) => ids.has(c.id)));
+          // Preselect from the Clients-view "Email" bulk action must honor the same
+          // rules as the recipient picker — never carry blacklisted or "No bulk email"
+          // clients into a newsletter selection.
+          setSelected(cs.filter((c) => ids.has(c.id) && !c.is_blacklisted && !c.exclusive && !c.metadata?.exclusive));
         } catch { /* ignore malformed stash */ }
       }
     });
@@ -596,7 +599,7 @@ function NewsletterTab() {
   const RANKED_TIERS = ["S", "A", "B", "C", "D"];
   const metadataFilteredClients = searchedClients.filter((c) => {
     if (c.is_blacklisted) return false;                         // never mass-send to blacklisted (bug fix)
-    if (c.metadata?.exclusive) return false;                    // exclusive VIPs stay off mass sends
+    if (c.exclusive || c.metadata?.exclusive) return false;     // "No bulk email" stays off mass sends (flag lives in the column OR metadata)
     if (excludeDormant && c.lead_status === "inactive") return false;
     if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
     if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;

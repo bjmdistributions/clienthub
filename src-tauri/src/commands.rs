@@ -8709,8 +8709,17 @@ pub async fn send_newsletter(
 
     for cid in &client_ids {
         let sid = Uuid::new_v4().to_string();
+        // Final line of defense: never mass-email a blacklisted or "No bulk email"
+        // (exclusive) client, no matter how their id reached this list (Add-all,
+        // Clients-view preselect, manual add, a stale selection). The flag lives in
+        // BOTH the `exclusive` column and `metadata.$.exclusive`, so check both —
+        // mirrors the server scheduler's resolve_recipients. A filtered-out client
+        // returns no row → skipped, exactly like a blacklisted one.
         let client_row: Option<(String, Option<String>)> = conn.query_row(
-            "SELECT name, email FROM clients WHERE id=?1 AND (is_blacklisted IS NULL OR is_blacklisted = 0)", [cid],
+            "SELECT name, email FROM clients WHERE id=?1 \
+               AND (is_blacklisted IS NULL OR is_blacklisted = 0) \
+               AND COALESCE(exclusive,0) = 0 \
+               AND COALESCE(json_extract(metadata,'$.exclusive'),0) NOT IN (1,'true')", [cid],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).ok();
         let (name, email) = match client_row {
