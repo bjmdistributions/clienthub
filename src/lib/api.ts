@@ -362,6 +362,7 @@ export interface Invoice {
   is_complete: boolean;
   deal_flow_id?: string | null;
   deal_flow_stage?: string | null;
+  voided?: boolean;
 }
 
 export interface ShippingInfo {
@@ -946,10 +947,25 @@ export interface InvoiceTemplate {
   footer_note: string;
 }
 
+// One soft-deleted (archived) record — an invoice, deal, or deal flow.
+export interface ArchiveItem {
+  kind: "invoice" | "deal" | "deal_flow";
+  id: string;
+  title: string;
+  client_name: string | null;
+  amount: number;
+  reason: "deleted" | "fell_through";
+  archived_at: string | null;
+}
+
 export interface DashboardStats {
   clients: number;
   invoices: number;
   outstanding: number;
+  // New hero counts (backend-provided).
+  total_clients: number;
+  open_deals: number;
+  completed_this_month: number;
   paid_ytd: number;
   revenue_this_week: number;
   clients_this_week: number;
@@ -1388,6 +1404,15 @@ export const api = {
   updateDealFlowName: (id: string, name: string | null) =>
     invoke<void>("update_deal_flow_name", { id, name }),
   deleteDealFlow: (id: string) => invoke<void>("delete_deal_flow", { id }),
+  // Mark a deal flow as "fell through" — voids its linked invoice and drops it
+  // from the pipeline. Reversible via the Archive.
+  setDealFlowFellThrough: (dealFlowId: string, fellThrough: boolean) =>
+    invoke<void>("set_deal_flow_fell_through", { dealFlowId, fellThrough }),
+
+  // Archive — soft-deleted invoices/deals/deal-flows, restorable.
+  listArchive: () => invoke<ArchiveItem[]>("list_archive"),
+  restoreArchived: (kind: ArchiveItem["kind"], id: string) =>
+    invoke<void>("restore_archived", { kind, id }),
 
   // Profit Split
   getProfitSplit: () => invoke<ProfitSplit>("get_profit_split"),

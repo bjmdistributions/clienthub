@@ -380,6 +380,10 @@ fn main() {
             update_deal_flow_notes,
             update_deal_flow_name,
             delete_deal_flow,
+            set_deal_flow_fell_through,
+            // Archive (soft-delete + fell-through) + restore
+            list_archive,
+            restore_archived,
             // Profit Split
             get_profit_split,
             save_profit_split,

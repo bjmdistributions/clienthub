@@ -274,7 +274,7 @@ export default function DealsView() {
           onSave={() => handleSave(editingDeal)}
           onClose={() => { setShowForm(false); setSelectedDeal(null); setEditingDeal(null); }}
           onDelete={async () => {
-            if (selectedDeal && confirm("Delete this deal?")) {
+            if (selectedDeal && confirm("Move to Archive? You can restore it anytime.")) {
               await api.deleteDeal(selectedDeal.id);
               setShowForm(false); setSelectedDeal(null); setEditingDeal(null);
               load();

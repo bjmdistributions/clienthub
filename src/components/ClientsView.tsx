@@ -725,20 +725,28 @@ export default function ClientsView() {
                   <td className="px-3 py-3 w-10" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" className="accent-accent" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
                   </td>
-                  <td className="px-4 py-3 text-[13px] font-medium text-ink">
-                    <span className="flex items-center gap-1.5">
-                      {c.name}
+                  <td className="px-4 py-3 text-[13px] font-medium text-ink max-w-[240px]">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
-                      {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Blacklisted — excluded from all sends">Blacklisted</span>}
-                      {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
-                      {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
-                      {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0" title="Never been sent an email — introduce yourself">No contact yet</span>}
-                      {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0">Pending</span>}
-                      {!c.email && <Mail size={10} className="text-faint flex-shrink-0" />}
-                      {!c.phone && <Phone size={10} className="text-faint flex-shrink-0" />}
-                      {!c.street_address && <MapPin size={10} className="text-faint flex-shrink-0" />}
-                      {!c.category && <Tag size={10} className="text-faint flex-shrink-0" />}
-                    </span>
+                      <span className="truncate">{c.name}</span>
+                    </div>
+                    {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.first_contact || c.approval_status === "pending" || !c.email || !c.phone || !c.street_address || !c.category) && (
+                      <div className="flex flex-wrap items-center gap-1 mt-1">
+                        {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Blacklisted — excluded from all sends">Blacklisted</span>}
+                        {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
+                        {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
+                        {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Never been sent an email — introduce yourself">No contact yet</span>}
+                        {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wider">Pending</span>}
+                        {(!c.email || !c.phone || !c.street_address || !c.category) && (
+                          <span className="inline-flex items-center gap-0.5 text-faint" title="Missing profile info (email / phone / address / category)">
+                            {!c.email && <Mail size={10} />}
+                            {!c.phone && <Phone size={10} />}
+                            {!c.street_address && <MapPin size={10} />}
+                            {!c.category && <Tag size={10} />}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-[13px] text-muted">{c.company || "—"}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>

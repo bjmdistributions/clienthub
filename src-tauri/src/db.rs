@@ -1210,4 +1210,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE invoices ADD COLUMN voided INTEGER NOT NULL DEFAULT 0;
         "#,
     ),
+    (
+        56,
+        // Soft-delete: deleting an invoice/deal/deal_flow now flips `archived=1`
+        // instead of a hard DELETE. This avoids the FK crash (payments → invoices,
+        // no cascade), syncs reliably (record_upsert), and feeds the Archive view.
+        // Nothing is destroyed; restore clears the flag. Synced columns.
+        r#"
+        ALTER TABLE invoices ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE invoices ADD COLUMN archived_at TEXT;
+        ALTER TABLE deals ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE deals ADD COLUMN archived_at TEXT;
+        ALTER TABLE deal_flows ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE deal_flows ADD COLUMN archived_at TEXT;
+        "#,
+    ),
 ];

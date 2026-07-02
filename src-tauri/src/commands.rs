@@ -70,7 +70,7 @@ const COMMITTED_AR_STAGES: &str = "'none','supplier_paid','payment_received','co
 
 const FIRST_CONTACT_SQL: &str = "CASE WHEN \
     NOT EXISTS (SELECT 1 FROM newsletter_sends ns WHERE ns.client_id=c.id AND ns.status='sent') \
-    AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.client_id=c.id AND COALESCE(iv.sent_at,'') <> '') \
+    AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.client_id=c.id AND COALESCE(iv.sent_at,'') <> '' AND COALESCE(iv.archived,0)=0) \
     AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.client_id=c.id AND COALESCE(q.sent_at,'') <> '') \
     AND NOT EXISTS (SELECT 1 FROM interactions ix WHERE ix.client_id=c.id AND ix.kind='email_out') \
     THEN 1 ELSE 0 END";
@@ -129,7 +129,7 @@ pub async fn client_last_activity() -> Result<Vec<ClientActivity>, String> {
                SELECT client_id, kind, at,
                       ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY at DESC) rn
                FROM (
-                 SELECT client_id, 'invoice' AS kind, sent_at AS at FROM invoices WHERE COALESCE(sent_at,'') <> ''
+                 SELECT client_id, 'invoice' AS kind, sent_at AS at FROM invoices WHERE COALESCE(sent_at,'') <> '' AND COALESCE(archived,0)=0
                  UNION ALL SELECT client_id, 'quote', sent_at FROM quotes WHERE COALESCE(sent_at,'') <> ''
                  UNION ALL SELECT client_id, 'newsletter', sent_at FROM newsletter_sends WHERE status='sent' AND COALESCE(sent_at,'') <> ''
                  UNION ALL SELECT client_id, kind, created_at FROM interactions
@@ -151,11 +151,11 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
-                    NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
+                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
+                    NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                                COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active'),
                     COALESCE(c.high_value,0),
@@ -222,11 +222,11 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
-                NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
+                NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 COALESCE(c.high_value,0),
@@ -458,7 +458,7 @@ pub async fn get_client_credit_status(id: String) -> Result<Value, String> {
     let limit = serde_json::from_str::<Value>(&meta).ok()
         .and_then(|m| m.get("credit_limit").and_then(|v| v.as_f64())).unwrap_or(0.0);
     let exposure: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status IN ('sent','overdue') AND COALESCE(voided,0)=0",
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status IN ('sent','overdue') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
         [&id], |r| r.get(0)).unwrap_or(0.0);
     Ok(json!({
         "credit_limit": limit, "exposure": exposure,
@@ -588,9 +588,9 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 ({fc}) AS first_contact
@@ -1161,11 +1161,11 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws1.write_with_format(0, 0, "ClientHub Analytics Export", &bold).map_err(|e| e.to_string())?;
     ws1.write_string(1, 0, format!("Generated: {}", Utc::now().format("%Y-%m-%d %H:%M UTC"))).map_err(|e| e.to_string())?;
     let total_clients: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
-    let total_invoices: i64 = conn.query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0)).unwrap_or(0);
-    let outstanding: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
-    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND issue_date >= ?1", [format!("{}-01-01",Utc::now().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
-    let pipeline_val: f64 = conn.query_row("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)).unwrap_or(0.0);
-    let pipeline_cnt: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)).unwrap_or(0);
+    let total_invoices: i64 = conn.query_row("SELECT COUNT(*) FROM invoices WHERE COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0);
+    let outstanding: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
+    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND issue_date >= ?1", [format!("{}-01-01",Utc::now().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
+    let pipeline_val: f64 = conn.query_row("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost') AND COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
+    let pipeline_cnt: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost') AND COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0);
 
     ws1.write_with_format(3, 0, "Total Clients", &bold).map_err(|e| e.to_string())?;
     ws1.write_number(3, 1, total_clients as f64).map_err(|e| e.to_string())?;
@@ -1189,7 +1189,7 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws2.write_string_with_format(0, 4, "Margin %", &bold).map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT strftime('%Y-%m',issue_date) as month, COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(profit),0)
-         FROM invoices WHERE status='paid' AND is_complete=1 GROUP BY month ORDER BY month DESC"
+         FROM invoices WHERE status='paid' AND is_complete=1 AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0 GROUP BY month ORDER BY month DESC"
     ).map_err(|e| e.to_string())?;
     let month_rows: Vec<(String,f64,f64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     for (i, (m, rev, cost, profit)) in month_rows.iter().enumerate() {
@@ -1232,7 +1232,7 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws4.write_string_with_format(0, 0, "Stage", &bold).map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 1, "Count", &bold).map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 2, "Value", &bold).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT stage, COUNT(*), COALESCE(SUM(asking_price),0) FROM deals GROUP BY stage ORDER BY stage").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT stage, COUNT(*), COALESCE(SUM(asking_price),0) FROM deals WHERE COALESCE(archived,0)=0 GROUP BY stage ORDER BY stage").map_err(|e| e.to_string())?;
     let pipeline_rows: Vec<(String,i64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     for (i, (stage, cnt, val)) in pipeline_rows.iter().enumerate() {
         let row = (i + 1) as u32;
@@ -1251,9 +1251,9 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let pattern = format!("%{}%", query.to_lowercase());
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 ({fc}) AS first_contact
@@ -1317,13 +1317,13 @@ pub async fn global_search(query: String) -> Result<GlobalSearchResults, String>
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     let mut stmt_i = conn.prepare(
-        "SELECT i.id, i.number, COALESCE(c.name,'') FROM invoices i LEFT JOIN clients c ON c.id=i.client_id WHERE LOWER(i.number) LIKE ?1 OR LOWER(c.name) LIKE ?1 ORDER BY i.issue_date DESC LIMIT 5"
+        "SELECT i.id, i.number, COALESCE(c.name,'') FROM invoices i LEFT JOIN clients c ON c.id=i.client_id WHERE (LOWER(i.number) LIKE ?1 OR LOWER(c.name) LIKE ?1) AND COALESCE(i.archived,0)=0 ORDER BY i.issue_date DESC LIMIT 5"
     ).map_err(|e| e.to_string())?;
     let invoices: Vec<SearchInvoice> = stmt_i.query_map([&pat], |r| Ok(SearchInvoice { id: r.get(0)?, number: r.get(1)?, client_name: r.get(2)? }))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     let mut stmt_d = conn.prepare(
-        "SELECT d.id, d.title, COALESCE(c.name,'') FROM deals d LEFT JOIN clients c ON c.id=d.client_id WHERE LOWER(d.title) LIKE ?1 OR LOWER(c.name) LIKE ?1 ORDER BY d.updated_at DESC LIMIT 5"
+        "SELECT d.id, d.title, COALESCE(c.name,'') FROM deals d LEFT JOIN clients c ON c.id=d.client_id WHERE (LOWER(d.title) LIKE ?1 OR LOWER(c.name) LIKE ?1) AND COALESCE(d.archived,0)=0 ORDER BY d.updated_at DESC LIMIT 5"
     ).map_err(|e| e.to_string())?;
     let deals: Vec<SearchDeal> = stmt_d.query_map([&pat], |r| Ok(SearchDeal { id: r.get(0)?, title: r.get(1)?, client_name: r.get(2)? }))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
@@ -1343,9 +1343,9 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let cutoff = format!("-{} days", days);
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 MAX(i.created_at),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 ({fc}) AS first_contact
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
@@ -1383,9 +1383,9 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
+                    (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                     NULL,
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                     ({fc}) AS first_contact
              FROM clients c
              WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
@@ -1446,11 +1446,11 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
 
     let mut sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
-                NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id),''),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
+                NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 ({fc}) AS first_contact
@@ -1580,7 +1580,7 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
     let mut stmt = conn.prepare(
         "SELECT client_id, COALESCE(SUM(CASE WHEN status='paid' THEN total ELSE 0 END),0),
                 COUNT(CASE WHEN status IN ('sent','paid') THEN 1 END)
-         FROM invoices GROUP BY client_id"
+         FROM invoices WHERE COALESCE(archived,0)=0 AND COALESCE(voided,0)=0 GROUP BY client_id"
     ).map_err(|e| e.to_string())?;
     let invoice_data: Vec<(String, f64, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,i64>(2)?)))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
@@ -1638,9 +1638,9 @@ pub struct MissingInfoReport {
 fn query_clients_where(conn: &rusqlite::Connection, where_clause: &str, params: &[&dyn rusqlite::types::ToSql]) -> Result<Vec<Client>, String> {
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
+                (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 ({fc}) AS first_contact
@@ -1681,9 +1681,9 @@ pub async fn clients_missing_info() -> Result<MissingInfoReport, String> {
     let missing_category = query_clients_where(&conn, "(json_extract(c.metadata, '$.category') IS NULL OR json_extract(c.metadata, '$.category') = '') AND (json_extract(c.metadata, '$.primary_buy_category') IS NULL OR json_extract(c.metadata, '$.primary_buy_category') = '')", &[])?;
     let never_contacted: Vec<Client> = {
         let sql = format!("SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
-                          (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid'),
+                          (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                           NULL,
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid'), 0),
+                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 COALESCE(c.is_blacklisted,0),
                 ({fc}) AS first_contact
          FROM clients c
@@ -1827,6 +1827,10 @@ pub struct Invoice {
     pub is_complete: bool,
     pub deal_flow_id: Option<String>,
     pub deal_flow_stage: Option<String>,
+    /// "Deal fell through" flag. Kept (never deleted) but excluded from the working
+    /// invoice lists, AR/receivables, dashboard, and client ranking.
+    #[serde(default)]
+    pub voided: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1844,8 +1848,8 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage
-             FROM invoices ORDER BY issue_date DESC",
+            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0)
+             FROM invoices WHERE COALESCE(archived,0)=0 ORDER BY issue_date DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1861,6 +1865,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
                 shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
                 delivery_date: r.get(21)?, is_complete: r.get(22)?,
                 deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
+                voided: r.get::<_, i64>(25).unwrap_or(0) != 0,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1871,8 +1876,8 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
 pub async fn get_invoice(id: String) -> Result<Invoice, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage
-         FROM invoices WHERE id=?1",
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0)
+         FROM invoices WHERE id=?1 AND COALESCE(archived,0)=0",
         [&id],
         |r| Ok(Invoice {
             id: r.get(0)?, client_id: r.get(1)?, number: r.get(2)?,
@@ -1885,6 +1890,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
             shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
             delivery_date: r.get(21)?, is_complete: r.get(22)?,
             deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
+            voided: r.get::<_, i64>(25).unwrap_or(0) != 0,
         }),
     ).map_err(|e| e.to_string())
 }
@@ -1893,8 +1899,8 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
 pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage
-         FROM invoices WHERE client_id=?1 ORDER BY issue_date DESC",
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0)
+         FROM invoices WHERE client_id=?1 AND COALESCE(archived,0)=0 ORDER BY issue_date DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([client_id], |r| {
         Ok(Invoice {
@@ -1908,6 +1914,7 @@ pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>,
             shipping_charged: r.get(19)?, pickup_date: r.get(20)?,
             delivery_date: r.get(21)?, is_complete: r.get(22)?,
             deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
+            voided: r.get::<_, i64>(25).unwrap_or(0) != 0,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2386,9 +2393,15 @@ pub async fn update_invoice(id: String, input: UpdateInvoiceInput) -> Result<(),
 
 #[tauri::command]
 pub async fn delete_invoice(id: String) -> Result<(), String> {
-    sync::record_delete("invoices", &id).map_err(|e| e.to_string())?;
+    // Soft-delete (archive) instead of a hard DELETE: avoids the FK crash
+    // (payments → invoices, no cascade), syncs reliably, and feeds the Archive.
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("archived".into(), Value::from(1));
+    cols.insert("archived_at".into(), Value::String(now.clone()));
+    sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM invoices WHERE id=?1", [&id])
+    conn.execute("UPDATE invoices SET archived=1, archived_at=?1 WHERE id=?2", rusqlite::params![now, id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -2935,7 +2948,7 @@ fn map_deal_row(r: &rusqlite::Row) -> rusqlite::Result<Deal> {
 pub async fn list_deals() -> Result<Vec<Deal>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals ORDER BY updated_at DESC"
+        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE COALESCE(archived,0)=0 ORDER BY updated_at DESC"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| map_deal_row(r)).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2945,7 +2958,7 @@ pub async fn list_deals() -> Result<Vec<Deal>, String> {
 pub async fn list_deals_by_stage(stage: String) -> Result<Vec<Deal>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE stage=?1 ORDER BY updated_at DESC"
+        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE stage=?1 AND COALESCE(archived,0)=0 ORDER BY updated_at DESC"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&stage], |r| map_deal_row(r)).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2955,7 +2968,7 @@ pub async fn list_deals_by_stage(stage: String) -> Result<Vec<Deal>, String> {
 pub async fn get_deal(id: String) -> Result<Deal, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE id=?1",
+        "SELECT id,client_id,title,stage,line_items_json,supplier_costs_json,shipping_cost,other_costs,asking_price,payment_terms,notes,expected_close_date,created_at,updated_at,won_at,lost_at,lost_reason,converted_invoice_id,metadata FROM deals WHERE id=?1 AND COALESCE(archived,0)=0",
         [&id], map_deal_row,
     ).map_err(|e| e.to_string())
 }
@@ -3202,9 +3215,14 @@ pub async fn pipeline_analytics(timeframe_days: Option<u32>) -> Result<PipelineA
 
 #[tauri::command]
 pub async fn delete_deal(id: String) -> Result<(), String> {
-    sync::record_delete("deals", &id).map_err(|e| e.to_string())?;
+    // Soft-delete (archive) instead of a hard DELETE — reversible + sync-safe.
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("archived".into(), Value::from(1));
+    cols.insert("archived_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deals", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM deals WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deals SET archived=1, archived_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -3591,7 +3609,12 @@ pub async fn list_deal_flows() -> Result<Vec<DealFlow>, String> {
         [],
     ).ok(); // silently ignore if it fails
 
-    let sql = format!("{} ORDER BY df.updated_at DESC", DF_JOIN);
+    // Exclude archived deal flows, and deal flows whose invoice was voided/archived
+    // ("deal fell through" / deleted) — they drop out of the active pipeline.
+    let sql = format!(
+        "{} WHERE COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 ORDER BY df.updated_at DESC",
+        DF_JOIN
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_deal_flow_row).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -3600,7 +3623,10 @@ pub async fn list_deal_flows() -> Result<Vec<DealFlow>, String> {
 #[tauri::command]
 pub async fn list_deal_flows_by_stage(stage: String) -> Result<Vec<DealFlow>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let sql = format!("{} WHERE df.stage=?1 ORDER BY df.updated_at DESC", DF_JOIN);
+    let sql = format!(
+        "{} WHERE df.stage=?1 AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 ORDER BY df.updated_at DESC",
+        DF_JOIN
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&stage], map_deal_flow_row).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -4630,24 +4656,150 @@ pub async fn get_intake_fields() -> Result<Vec<Value>, String> {
 
 #[tauri::command]
 pub async fn delete_deal_flow(id: String) -> Result<(), String> {
-    let invoice_id: String = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT invoice_id FROM deal_flows WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?
-    };
-
-    sync::record_delete("deal_flows", &id).map_err(|e| e.to_string())?;
-    {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM deal_flows WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
-    }
-
-    let mut inv_cols = Map::new();
-    inv_cols.insert("deal_flow_id".into(), Value::Null);
-    inv_cols.insert("deal_flow_stage".into(), Value::String("none".into()));
-    sync::record_upsert("invoices", &invoice_id, inv_cols).map_err(|e| e.to_string())?;
+    // Soft-delete (archive) — reversible + sync-safe. The deal_flow↔invoice link is
+    // intentionally LEFT INTACT so restore is lossless (list_deal_flows filters out
+    // archived rows, so the deal leaves the active pipeline regardless).
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("archived".into(), Value::from(1));
+    cols.insert("archived_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE invoices SET deal_flow_id=NULL, deal_flow_stage='none' WHERE id=?1", [&invoice_id]).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deal_flows SET archived=1, archived_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Mark a deal flow as "fell through" (or reverse it) by voiding/unvoiding its
+/// invoice. Since `list_deal_flows` hides deal flows whose invoice is voided, this
+/// removes the deal from the active pipeline. Reversible — the deal_flow and its
+/// invoice link are untouched, so clearing it restores everything.
+#[tauri::command]
+pub async fn set_deal_flow_fell_through(deal_flow_id: String, fell_through: bool) -> Result<(), String> {
+    let invoice_id: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT invoice_id FROM deal_flows WHERE id=?1", [&deal_flow_id], |r| r.get(0)).ok().flatten()
+    };
+    let invoice_id = invoice_id.filter(|s| !s.is_empty())
+        .ok_or_else(|| "This deal flow has no linked invoice to mark.".to_string())?;
+    // Reuse the existing void logic (syncs + excludes from AR/dashboard/pipeline).
+    set_invoice_void(invoice_id, fell_through).await
+}
+
+// ============================================================
+//  Archive (soft-deleted + fell-through) list + restore
+// ============================================================
+
+/// One row in the Archive view: a soft-deleted invoice/deal/deal_flow ("deleted")
+/// or a fell-through invoice / its deal_flow ("fell_through").
+#[derive(Serialize, Debug, Clone)]
+pub struct ArchiveItem {
+    /// "invoice" | "deal" | "deal_flow"
+    pub kind: String,
+    pub id: String,
+    /// Invoice number / deal name.
+    pub title: String,
+    pub client_name: Option<String>,
+    pub amount: f64,
+    /// "deleted" | "fell_through"
+    pub reason: String,
+    pub archived_at: Option<String>,
+}
+
+/// Everything currently hidden from active views: archived (soft-deleted)
+/// invoices/deals/deal_flows, voided (fell-through) invoices, and deal flows whose
+/// invoice was voided. Newest first.
+#[tauri::command]
+pub async fn list_archive() -> Result<Vec<ArchiveItem>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = "
+        SELECT 'invoice' AS kind, i.id, i.number AS title, c.name AS client_name, i.total AS amount,
+               'deleted' AS reason, i.archived_at AS at, i.archived_at AS sort_ts
+        FROM invoices i LEFT JOIN clients c ON c.id=i.client_id
+        WHERE COALESCE(i.archived,0)=1
+        UNION ALL
+        SELECT 'invoice', i.id, i.number, c.name, i.total, 'fell_through',
+               NULL, COALESCE(i.archived_at, i.sent_at, i.issue_date)
+        FROM invoices i LEFT JOIN clients c ON c.id=i.client_id
+        WHERE COALESCE(i.voided,0)=1 AND COALESCE(i.archived,0)=0
+        UNION ALL
+        SELECT 'deal', d.id, d.title, c.name, COALESCE(d.asking_price,0), 'deleted', d.archived_at, d.archived_at
+        FROM deals d LEFT JOIN clients c ON c.id=d.client_id
+        WHERE COALESCE(d.archived,0)=1
+        UNION ALL
+        SELECT 'deal_flow', df.id, COALESCE(NULLIF(df.name,''), i.number, 'Deal flow'), c.name,
+               COALESCE(i.total, df.gross_revenue, 0), 'deleted', df.archived_at, df.archived_at
+        FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id
+        WHERE COALESCE(df.archived,0)=1
+        UNION ALL
+        SELECT 'deal_flow', df.id, COALESCE(NULLIF(df.name,''), i.number, 'Deal flow'), c.name,
+               COALESCE(i.total, df.gross_revenue, 0), 'fell_through', NULL, COALESCE(df.archived_at, df.updated_at)
+        FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id LEFT JOIN clients c ON c.id=i.client_id
+        WHERE COALESCE(i.voided,0)=1 AND COALESCE(df.archived,0)=0
+    ";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut items: Vec<(String, ArchiveItem)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(7)?.unwrap_or_default(), // sort_ts
+                ArchiveItem {
+                    kind: r.get(0)?,
+                    id: r.get(1)?,
+                    title: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    client_name: r.get(3)?,
+                    amount: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                    reason: r.get(5)?,
+                    archived_at: r.get(6)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|x| x.ok())
+        .collect();
+    // Newest first by the resolved sort timestamp.
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(items.into_iter().map(|(_, it)| it).collect())
+}
+
+/// Restore an archived/fell-through item to active. For a soft-deleted item, clear
+/// `archived`; for a fell-through invoice, clear `voided`. Synced.
+#[tauri::command]
+pub async fn restore_archived(kind: String, id: String) -> Result<(), String> {
+    let table = match kind.as_str() {
+        "invoice" => "invoices",
+        "deal" => "deals",
+        "deal_flow" => "deal_flows",
+        _ => return Err("Unknown archive kind.".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // Is this row archived (deleted) or just voided (fell_through)?
+    let archived: i64 = conn
+        .query_row(&format!("SELECT COALESCE(archived,0) FROM {} WHERE id=?1", table), [&id], |r| r.get(0))
+        .map_err(|_| "Item not found.".to_string())?;
+    drop(conn);
+
+    if archived == 1 {
+        // Un-archive.
+        let mut cols = Map::new();
+        cols.insert("archived".into(), Value::from(0));
+        cols.insert("archived_at".into(), Value::Null);
+        sync::record_upsert(table, &id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(&format!("UPDATE {} SET archived=0, archived_at=NULL WHERE id=?1", table), [&id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        // Fell-through: clear the void on the invoice. For a deal_flow, resolve its
+        // invoice first (voiding the invoice is what hid the deal).
+        let invoice_id = if kind == "deal_flow" {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.query_row("SELECT invoice_id FROM deal_flows WHERE id=?1", [&id], |r| r.get::<_, Option<String>>(0))
+                .ok().flatten().filter(|s| !s.is_empty())
+                .ok_or_else(|| "No linked invoice to restore.".to_string())?
+        } else {
+            id.clone()
+        };
+        set_invoice_void(invoice_id, false).await
+    }
 }
 
 // ============================================================
@@ -4793,8 +4945,11 @@ pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
                     COUNT(DISTINCT df.id) as deal_count,
                     MAX(df.completed_at) as last_deal_date,
                     SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) / COUNT(DISTINCT df.id) as avg_deal_amount
-             FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+             FROM deal_flows df
+                  JOIN invoices i ON i.id = df.invoice_id,
+                  json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
              WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND COALESCE(df.archived,0)=0
              GROUP BY json_extract(sp.value, '$.supplier_id')
          ) stats ON stats.sup_id = s.id
          ORDER BY s.name"
@@ -4821,8 +4976,11 @@ pub async fn get_supplier(id: String) -> Result<Supplier, String> {
                     COUNT(DISTINCT df.id) as deal_count,
                     MAX(df.completed_at) as last_deal_date,
                     SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) / COUNT(DISTINCT df.id) as avg_deal_amount
-             FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+             FROM deal_flows df
+                  JOIN invoices i ON i.id = df.invoice_id,
+                  json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
              WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND COALESCE(df.archived,0)=0
              GROUP BY json_extract(sp.value, '$.supplier_id')
          ) stats ON stats.sup_id = s.id
          WHERE s.id=?1",
@@ -7026,7 +7184,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         .query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0))
         .unwrap_or(0);
     let total_invoices: i64 = conn
-        .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM invoices WHERE COALESCE(archived,0)=0", [], |r| r.get(0))
         .unwrap_or(0);
     // Dashboard "owed to you" (AR / cash position): open invoices that are NOT
     // void AND whose deal has committed (past the speculative `invoiced` stage).
@@ -7036,7 +7194,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         .query_row(
             &format!(
                 "SELECT COALESCE(SUM(total),0) FROM invoices
-                 WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0
+                 WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0
                    AND COALESCE(deal_flow_stage,'none') IN ({stages})",
                 stages = COMMITTED_AR_STAGES
             ),
@@ -7047,7 +7205,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let paid_this_year: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(total),0) FROM invoices
-             WHERE status='paid' AND COALESCE(voided,0)=0 AND issue_date >= ?1",
+             WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND issue_date >= ?1",
             [format!("{}-01-01", Utc::now().format("%Y"))],
             |r| r.get(0),
         )
@@ -7056,7 +7214,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let revenue_this_week: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(total),0) FROM invoices
-             WHERE status='paid' AND COALESCE(voided,0)=0 AND paid_at >= date('now', '-7 days')",
+             WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND paid_at >= date('now', '-7 days')",
             [],
             |r| r.get(0),
         )
@@ -7080,21 +7238,21 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let total_cost: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0",
+            "SELECT COALESCE(SUM(total_cost),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let total_profit: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0",
+            "SELECT COALESCE(SUM(profit),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let avg_margin: f64 = conn
         .query_row(
-            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0 AND profit IS NOT NULL",
+            "SELECT COALESCE(AVG(CASE WHEN total>0 THEN (profit/total)*100 END),0) FROM invoices WHERE is_complete=1 AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND profit IS NOT NULL",
             [],
             |r| r.get(0),
         )
@@ -7103,7 +7261,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
             "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM(df.net_profit),0)
-             FROM deal_flows df WHERE df.stage='complete' GROUP BY m ORDER BY m"
+             FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 GROUP BY m ORDER BY m"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
@@ -7121,7 +7279,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
             "SELECT c.name, COALESCE(SUM(i.total),0), COALESCE(SUM(i.profit),0),
                     CASE WHEN COALESCE(SUM(i.total),0)>0 THEN (COALESCE(SUM(i.profit),0)/SUM(i.total))*100 ELSE 0 END
              FROM invoices i JOIN clients c ON c.id=i.client_id
-             WHERE i.is_complete=1 AND i.profit IS NOT NULL
+             WHERE i.is_complete=1 AND i.profit IS NOT NULL AND COALESCE(i.archived,0)=0 AND COALESCE(i.voided,0)=0
              GROUP BY i.client_id ORDER BY SUM(i.profit) DESC LIMIT 5"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
@@ -7137,18 +7295,35 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let pipeline_value: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')",
+            "SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost') AND COALESCE(archived,0)=0",
             [], |r| r.get(0),
         ).unwrap_or(0.0);
     let pipeline_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost')",
+            "SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost') AND COALESCE(archived,0)=0",
             [], |r| r.get(0),
+        ).unwrap_or(0);
+
+    // New hero stats: active (open) deal flows and deal flows completed this month.
+    // `open_deals` mirrors the active-pipeline filter (archived + voided/archived
+    // invoice excluded); `completed_this_month` counts non-archived completions in
+    // the current calendar month.
+    let open_deals: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
+             WHERE df.stage != 'complete' AND COALESCE(df.archived,0)=0
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+            [], |r| r.get(0),
+        ).unwrap_or(0);
+    let completed_this_month: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND strftime('%Y-%m', completed_at) = ?1",
+            [Utc::now().format("%Y-%m").to_string()], |r| r.get(0),
         ).unwrap_or(0);
 
     let incomplete_shipping: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM invoices WHERE status='paid' AND is_complete=0",
+            "SELECT COUNT(*) FROM invoices WHERE status='paid' AND is_complete=0 AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0",
             [], |r| r.get(0),
         ).unwrap_or(0);
 
@@ -7156,7 +7331,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         let mut stmt = conn.prepare(
             "SELECT COALESCE(json_extract(metadata,'$.category'),'Uncategorized') as cat,
                     COUNT(*) as cnt,
-                    COALESCE(SUM(CASE WHEN i.status='paid' THEN i.total ELSE 0 END),0) as paid_rev
+                    COALESCE(SUM(CASE WHEN i.status='paid' AND COALESCE(i.archived,0)=0 AND COALESCE(i.voided,0)=0 THEN i.total ELSE 0 END),0) as paid_rev
              FROM clients c LEFT JOIN invoices i ON i.client_id=c.id
              GROUP BY cat ORDER BY paid_rev DESC"
         ).map_err(|e| e.to_string())?;
@@ -7170,7 +7345,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let invoice_status_breakdown: Vec<Value> = {
         let mut stmt = conn.prepare(
-            "SELECT status, COUNT(*), COALESCE(SUM(total),0) FROM invoices GROUP BY status"
+            "SELECT status, COUNT(*), COALESCE(SUM(total),0) FROM invoices WHERE COALESCE(archived,0)=0 AND COALESCE(voided,0)=0 GROUP BY status"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok(json!({
             "status": r.get::<_,String>(0)?,
@@ -7187,7 +7362,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
                     COALESCE(SUM(i.profit),0) as total_profit,
                     MAX(i.issue_date) as last_invoice
              FROM clients c JOIN invoices i ON i.client_id=c.id
-             WHERE i.is_complete=1
+             WHERE i.is_complete=1 AND COALESCE(i.archived,0)=0 AND COALESCE(i.voided,0)=0
              GROUP BY i.client_id ORDER BY total_spent DESC LIMIT 10"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok(json!({
@@ -7205,15 +7380,15 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     // MTD revenue and profit (for dashboard month-focus)
     let revenue_mtd: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_mtd: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let deals_mtd: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
+        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0);
 
@@ -7227,7 +7402,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
              FROM deal_flows df,
                   json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
              LEFT JOIN suppliers s ON json_extract(sp.value, '$.supplier_id') = s.id
-             WHERE df.stage = 'complete'
+             WHERE df.stage = 'complete' AND COALESCE(df.archived,0)=0
                AND json_extract(sp.value, '$.supplier_name') IS NOT NULL
                AND COALESCE(json_extract(sp.value, '$.category'), 'supplier') = 'supplier'
              GROUP BY json_extract(sp.value, '$.supplier_name')
@@ -7244,21 +7419,21 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     };
 
     let loss_deals_this_month: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND net_profit < 0",
+        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1 AND net_profit < 0",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0);
     let loss_total_this_month: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND net_profit < 0",
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1 AND net_profit < 0",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0.0);
 
     // All-time totals from completed deal flows
     let all_time_revenue: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete'",
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let all_time_profit: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete'",
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
 
@@ -7277,6 +7452,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "top_clients_by_profit": top_clients_by_profit,
         "pipeline_value": pipeline_value,
         "pipeline_count": pipeline_count,
+        "open_deals": open_deals,
+        "completed_this_month": completed_this_month,
         "incomplete_shipping": incomplete_shipping,
         "category_breakdown": category_breakdown,
         "invoice_status_breakdown": invoice_status_breakdown,
@@ -7353,7 +7530,7 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
     let mut stmt = conn.prepare(
         "SELECT i.id, i.number, i.deal_flow_id, i.client_id, COALESCE(c.name,'(unknown)'), COALESCE(i.due_date,''), i.total, COALESCE(i.deal_flow_stage,'none')
          FROM invoices i LEFT JOIN clients c ON c.id=i.client_id
-         WHERE i.status IN ('sent','overdue') AND COALESCE(i.voided,0)=0",
+         WHERE i.status IN ('sent','overdue') AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok((
         r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
@@ -7440,7 +7617,8 @@ pub async fn get_payables_aging() -> Result<Value, String> {
          JOIN json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
          LEFT JOIN clients c ON c.id = i.client_id \
-         WHERE df.stage != 'complete' \
+         WHERE df.stage != 'complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
            AND COALESCE(json_extract(sp.value,'$.paid'),0)=0 \
            AND json_extract(sp.value,'$.supplier_name') IS NOT NULL",
     ).map_err(|e| e.to_string())?;
@@ -7631,7 +7809,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             "SELECT client_id, COALESCE(SUM(CASE WHEN status='paid' THEN total ELSE 0 END),0),
                     COUNT(CASE WHEN status IN ('sent','paid') THEN 1 END),
                     MAX(CASE WHEN status IN ('sent','paid') THEN issue_date END)
-             FROM invoices GROUP BY client_id"
+             FROM invoices WHERE COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 GROUP BY client_id"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,i64>(2)? as u32, r.get(3)?)))
             .map_err(|e| e.to_string())?;
@@ -8261,7 +8439,7 @@ pub async fn cleanup_clients() -> Result<CleanupResult, String> {
     {
         let mut stmt = conn.prepare(
             "SELECT c.id, c.name, c.email, c.phone, c.company,
-                    CASE WHEN EXISTS(SELECT 1 FROM invoices WHERE client_id=c.id AND status='paid') THEN 1 ELSE 0 END
+                    CASE WHEN EXISTS(SELECT 1 FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0) THEN 1 ELSE 0 END
              FROM clients c ORDER BY c.name"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {

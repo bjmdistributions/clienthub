@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging, Me } from "../lib/api";
 import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
-  Users, FileText, Mail, ArrowRight, ArrowUpRight, CheckCircle2,
-  ChevronLeft, ChevronRight, Package, CalendarClock, Clock, TrendingUp, TrendingDown,
+  Users, FileText, Mail, ArrowRight, CheckCircle2, GitBranch,
+  ChevronLeft, ChevronRight, Package, CalendarClock, Clock,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import PendingReviewModal from "./PendingReviewModal";
@@ -33,25 +33,6 @@ function CompactAmount({ value }: { value: number }) {
   );
 }
 
-// Month-over-month movement, compared against the same number of days last
-// month so mid-month reads aren't unfairly down.
-function Delta({ now, then }: { now: number; then: number | null }) {
-  if (then === null) return null;
-  if (then === 0) {
-    return now > 0
-      ? <span className="text-[11px] font-medium text-success-ink">new this month</span>
-      : <span className="text-[11px] text-faint">same as last month</span>;
-  }
-  const pct = ((now - then) / Math.abs(then)) * 100;
-  const up = pct >= 0;
-  return (
-    <span title={`Compared with the same days of last month (${fmtAmount(then)})`}
-      className={`inline-flex items-center gap-1 text-[11px] font-medium tabular-nums ${up ? "text-success-ink" : "text-danger-ink"}`}>
-      {up ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-      {Math.abs(pct).toFixed(0)}% vs last month
-    </span>
-  );
-}
 
 export default function DashboardView({ onNavigate, me }: Props) {
   // Org money (cash position, revenue, profit) is hidden from reps/viewers
@@ -66,7 +47,6 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
   const [recentInvoices, setRecent]     = useState<Invoice[]>([]);
   const [clients, setClients]           = useState<Client[]>([]);
-  const [prevMtd, setPrevMtd]           = useState<{ revenue: number; profit: number } | null>(null);
   const [profitMonth, setProfitMonth]   = useState(() => new Date().toISOString().slice(0, 7));
   const [dailyProfit, setDailyProfit]   = useState<{ day: string; profit: number; revenue: number }[]>([]);
   const [chartMetric, setChartMetric]   = useState<"profit" | "revenue">("profit");
@@ -74,26 +54,14 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const loadAll = () => {
     api.dueFollowups().then(setFollowups).catch(() => {});
     api.getPendingApprovals().then(setPending).catch(() => {});
-    // Money-bearing data is only fetched for users who may see it.
-    if (!showMoney) return;
+    // Hero counts (clients / open deals / completed this month) are non-sensitive
+    // and shown to everyone, so dashboard stats load for all users.
     api.dashboardStats().then(setStats).catch(console.error);
+    // Money-bearing data (AR/AP, invoice list) is only fetched for users who may see it.
+    if (!showMoney) return;
     api.getReceivablesAging().then(setAr).catch(() => setAr(null));
     api.getPayablesAging().then(setAp).catch(() => setAp(null));
     api.listInvoices().then((inv) => setRecent(inv.slice(0, 6))).catch(() => {});
-
-    // Last month, cut at today's day-of-month, for an honest MTD comparison.
-    const today = new Date();
-    const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const prevStr = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
-    api.getMonthlyProfit(prevStr).then((rows) => {
-      const cut = today.getDate();
-      let revenue = 0, profit = 0;
-      rows.forEach((r) => {
-        const d = parseInt(r.day.slice(8), 10);
-        if (d <= cut) { revenue += r.revenue; profit += r.profit; }
-      });
-      setPrevMtd({ revenue, profit });
-    }).catch(() => {});
   };
 
   const loadProfitMonth = async (m: string) => {
@@ -147,21 +115,18 @@ export default function DashboardView({ onNavigate, me }: Props) {
     weekday: "long", month: "long", day: "numeric",
   });
 
-  const revenueMtd = stats?.revenue_mtd ?? 0;
-  const profitMtd  = stats?.profit_mtd  ?? 0;
-
-  // Cash position, straight from the AR/AP aging summaries.
-  const owedToYou = ar?.summary.total ?? null;
-  const youOwe    = ap?.summary.total ?? null;
-  const netFloat  = owedToYou !== null && youOwe !== null ? owedToYou - youOwe : null;
-
-  // Overdue = everything aged past "current".
+  // Overdue = everything aged past "current" (shown in the Today queue for money users).
   const overdueAmt   = ar ? ar.summary.total - ar.summary.current : 0;
   const overdueCount = ar ? ar.items.filter((i) => i.days_overdue > 0).length : 0;
 
   const shippingCount = stats?.incomplete_shipping ?? 0;
-  const heroLoading = stats === null && ar === null;
+  const heroLoading = stats === null;
   const todayEmpty = pendingApprovals.length === 0 && overdueCount === 0 && followups.length === 0 && shippingCount === 0;
+
+  // New hero counts — non-sensitive, shown to everyone.
+  const totalClients      = stats?.total_clients ?? stats?.clients ?? 0;
+  const openDeals         = stats?.open_deals ?? 0;
+  const completedThisMonth = stats?.completed_this_month ?? 0;
 
   const resolvedApproval = (id: string) => {
     setPending((p) => p.filter((x) => x.id !== id));
@@ -189,66 +154,41 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
       <div className="flex-1 p-6 flex flex-col gap-5 max-w-[1200px] w-full mx-auto">
 
-        {/* ── Hero: cash position + this month (money — gated) ─ */}
-        {showMoney && (heroLoading ? (
-          <div className="h-[104px] bg-surface-2 rounded-2xl animate-pulse" />
+        {/* ── Hero: workspace at a glance (clean counts, everyone) ─ */}
+        {heroLoading ? (
+          <div className="h-[112px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
           <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up">
-            <div className="grid grid-cols-2 lg:grid-cols-5 divide-x divide-line [&>*:nth-child(3)]:border-r-0 lg:[&>*:nth-child(3)]:border-r">
-              <button onClick={() => onNavigate("receivables")}
-                className="p-5 text-left hover:bg-surface-2/50 transition-colors group">
-                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold flex items-center gap-1">
-                  Owed to you
-                  <ArrowUpRight size={10} className="opacity-0 group-hover:opacity-70 transition-opacity" />
-                </div>
-                <div className="text-[24px] font-bold text-success-ink tabular-nums mt-1.5 leading-none">
-                  {owedToYou !== null ? <CompactAmount value={owedToYou} /> : "—"}
-                </div>
-                <div className="text-[11px] text-faint mt-1.5">
-                  {ar ? `${ar.summary.open_count} open invoice${ar.summary.open_count !== 1 ? "s" : ""}` : "…"}
+            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
+              <button onClick={() => onNavigate("clients")}
+                className="p-6 flex items-center gap-4 text-left hover:bg-surface-2/50 transition-colors">
+                <span className="w-12 h-12 rounded-xl bg-accent/10 text-accent flex items-center justify-center flex-shrink-0"><Users size={22} /></span>
+                <div>
+                  <div className="text-[32px] font-bold text-ink tabular-nums leading-none">{totalClients.toLocaleString()}</div>
+                  <div className="text-[12px] text-muted mt-1">Clients</div>
                 </div>
               </button>
 
-              <button onClick={() => onNavigate("payables")}
-                className="p-5 text-left hover:bg-surface-2/50 transition-colors group">
-                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold flex items-center gap-1">
-                  You owe
-                  <ArrowUpRight size={10} className="opacity-0 group-hover:opacity-70 transition-opacity" />
-                </div>
-                <div className="text-[24px] font-bold text-danger-ink tabular-nums mt-1.5 leading-none">
-                  {youOwe !== null ? <CompactAmount value={youOwe} /> : "—"}
-                </div>
-                <div className="text-[11px] text-faint mt-1.5">
-                  {ap ? `${ap.summary.open_count} unpaid cost${ap.summary.open_count !== 1 ? "s" : ""}` : "…"}
+              <button onClick={() => onNavigate("dealflow")}
+                className="p-6 flex items-center gap-4 text-left hover:bg-surface-2/50 transition-colors">
+                <span className="w-12 h-12 rounded-xl bg-info-bg text-info-ink flex items-center justify-center flex-shrink-0"><GitBranch size={22} /></span>
+                <div>
+                  <div className="text-[32px] font-bold text-ink tabular-nums leading-none">{openDeals.toLocaleString()}</div>
+                  <div className="text-[12px] text-muted mt-1">Open deals</div>
                 </div>
               </button>
 
-              <div className="p-5">
-                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Net float</div>
-                <div className={`text-[24px] font-bold tabular-nums mt-1.5 leading-none ${netFloat === null ? "text-faint" : netFloat >= 0 ? "text-ink" : "text-danger-ink"}`}>
-                  {netFloat !== null ? <CompactAmount value={netFloat} /> : "—"}
+              <button onClick={() => onNavigate("deals")}
+                className="p-6 flex items-center gap-4 text-left hover:bg-surface-2/50 transition-colors">
+                <span className="w-12 h-12 rounded-xl bg-success-bg text-success-ink flex items-center justify-center flex-shrink-0"><CheckCircle2 size={22} /></span>
+                <div>
+                  <div className="text-[32px] font-bold text-ink tabular-nums leading-none">{completedThisMonth.toLocaleString()}</div>
+                  <div className="text-[12px] text-muted mt-1">Completed this month</div>
                 </div>
-                <div className="text-[11px] text-faint mt-1.5">after collecting &amp; paying</div>
-              </div>
-
-              <div className="p-5 border-t border-line lg:border-t-0">
-                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Revenue this month</div>
-                <div className="text-[24px] font-bold text-ink tabular-nums mt-1.5 leading-none">
-                  <CompactAmount value={revenueMtd} />
-                </div>
-                <div className="mt-1.5"><Delta now={revenueMtd} then={prevMtd ? prevMtd.revenue : null} /></div>
-              </div>
-
-              <div className="p-5 border-t border-line lg:border-t-0">
-                <div className="text-[10px] uppercase tracking-widest text-muted font-semibold">Profit this month</div>
-                <div className={`text-[24px] font-bold tabular-nums mt-1.5 leading-none ${profitMtd >= 0 ? "text-ink" : "text-danger-ink"}`}>
-                  <CompactAmount value={profitMtd} />
-                </div>
-                <div className="mt-1.5"><Delta now={profitMtd} then={prevMtd ? prevMtd.profit : null} /></div>
-              </div>
+              </button>
             </div>
           </div>
-        ))}
+        )}
 
         {/* ── Today: everything that needs a decision ────── */}
         <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-2">

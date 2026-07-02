@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
-  DollarSign, CheckCircle2, Truck, FileDown,
+  DollarSign, CheckCircle2, Truck, FileDown, XCircle,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, ProfitSplit,
@@ -316,6 +316,7 @@ export default function DealFlowView() {
               flow={flow}
               onReload={load}
               animDelay={i * 45}
+              zebra={i % 2 === 1}
             />
           ))}
         </div>
@@ -346,8 +347,8 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 }
 
 function DealFlowCard({
-  flow, onReload, animDelay,
-}: { flow: DealFlow; onReload: () => void; animDelay: number }) {
+  flow, onReload, animDelay, zebra,
+}: { flow: DealFlow; onReload: () => void; animDelay: number; zebra: boolean }) {
   const currentSi = si(flow.stage);
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
@@ -388,7 +389,7 @@ function DealFlowCard({
 
   return (
     <div
-      className="bg-surface border border-line rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.05)] overflow-hidden animate-fade-up [animation-fill-mode:backwards]"
+      className={`border border-line rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.05)] overflow-hidden animate-fade-up [animation-fill-mode:backwards] ${zebra ? "bg-surface-2/40" : "bg-surface"}`}
       style={{ animationDelay: `${animDelay}ms` }}
     >
       {/* ── Collapsed header — always visible, click to expand ── */}
@@ -552,25 +553,35 @@ function DealFlowCard({
 
           {/* Action panel */}
           <div className="border-t border-line bg-surface-2 px-5 py-4">
-            {/* Delete button row */}
-            <div className="flex justify-end mb-3">
+            {/* Row actions — mark fell through (voids the invoice) + archive */}
+            <div className="flex justify-end gap-1.5 mb-3">
               <button
                 onClick={async (e) => {
                   e.stopPropagation();
-                  if (confirm("Delete this deal flow? This cannot be undone.")) {
-                    await api.deleteDealFlow(flow.id);
-                    onReload();
-                  }
+                  if (!confirm("Mark this deal as fallen through? It drops from the pipeline and its invoice is voided. You can restore it from the Archive.")) return;
+                  try { await api.setDealFlowFellThrough(flow.id, true); toast("Deal marked as fell through"); onReload(); }
+                  catch (err: any) { toast(String(err), "error"); }
+                }}
+                className="flex items-center gap-1 text-[11px] text-faint hover:text-warning-ink hover:bg-warning-bg px-2 py-1 rounded-lg transition-colors"
+              >
+                <XCircle size={11} /> Mark deal fell through
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!confirm("Move to Archive? You can restore it anytime.")) return;
+                  try { await api.deleteDealFlow(flow.id); toast("Moved to Archive"); onReload(); }
+                  catch (err: any) { toast(String(err), "error"); }
                 }}
                 className="flex items-center gap-1 text-[11px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 py-1 rounded-lg transition-colors"
               >
-                <Trash2 size={11} /> Delete
+                <Trash2 size={11} /> Archive
               </button>
             </div>
 
             {panel === "invoiced"         && <PanelInvoiced     flow={flow} />}
             {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
-            {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} />}
+            {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
             {panel === "complete"         && <PanelComplete     flow={flow} onReload={onReload} />}
           </div>
         </>
@@ -745,9 +756,11 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
   };
 
   const handleMarkReceived = async () => {
-    if (!hasSuppliers) return;
     const amt = parseFloat(receivedAmount);
     if (isNaN(amt) || amt < 0) { toast("Enter a valid amount received", "error"); return; }
+    // No supplier on this deal → it books as 100% profit (no cost). Confirm so it's
+    // intentional, then proceed. You can complete the deal directly from here.
+    if (!hasSuppliers && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
     setSaving(true);
     try {
       await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null });
@@ -1021,7 +1034,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
               <div className="flex items-center gap-2 pt-1">
                 <button
                   onClick={handleAddSupplier}
-                  disabled={saving || !suppName.trim() || !anyRateEntered}
+                  disabled={saving || !suppName.trim()}
                   className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px]
                              font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5"
                 >
@@ -1045,9 +1058,9 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
           {/* Mark payment received */}
           <div className="space-y-2">
             {!hasSuppliers && (
-              <div className="flex items-center gap-1.5 text-[12px] text-warning-ink">
+              <div className="flex items-center gap-1.5 text-[12px] text-muted">
                 <AlertTriangle size={12} />
-                Add at least one supplier before marking payment received
+                No supplier added — this deal will be recorded as 100% profit (no cost). Add one above if you had a cost.
               </div>
             )}
             <div>
@@ -1059,7 +1072,6 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
                     type="number" step="0.01" min="0"
                     value={receivedAmount}
                     onChange={(e) => setReceivedAmount(e.target.value)}
-                    disabled={!hasSuppliers}
                     className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent disabled:opacity-50"
                   />
                 </div>
@@ -1073,7 +1085,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
             </div>
             <button
               onClick={handleMarkReceived}
-              disabled={saving || !hasSuppliers}
+              disabled={saving}
               className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent
                          px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"
             >
@@ -1105,7 +1117,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
 }
 
 // ─── Panel 3: Mark Supplier Paid ─────────────────────────────────────────
-function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
+function PanelSupplierPaid({ flow, onReload, onGoToComplete }: { flow: DealFlow; onReload: () => void; onGoToComplete: () => void }) {
   const [saving, setSaving] = useState(false);
   const payments  = flow.supplier_payments || [];
   const isDone    = si(flow.stage) > si("payment_received");
@@ -1138,9 +1150,18 @@ function PanelSupplierPaid({ flow, onReload }: { flow: DealFlow; onReload: () =>
       <SectionLabel>Supplier Payments</SectionLabel>
 
       {payments.length === 0 ? (
-        <p className="text-[12px] text-faint">
-          No suppliers recorded yet — go to the Payment In step to add one
-        </p>
+        <div className="space-y-2.5">
+          <p className="text-[12px] text-muted">
+            No supplier cost on this deal — nothing to pay. Continue to record it as 100% profit.
+          </p>
+          <button
+            onClick={onGoToComplete}
+            className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent
+                       px-5 h-9 rounded-lg text-[13px] font-medium transition-colors w-full justify-center"
+          >
+            <Check size={14} strokeWidth={2.5} /> Continue to Complete
+          </button>
+        </div>
       ) : (
         <div className="space-y-2">
           {/* Cost breakdown — read-only, shows what was entered per item */}

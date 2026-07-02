@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, ProfitSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle, Search } from "lucide-react";
 import RecurringView from "./RecurringView";
 import CostProfitPanel from "./CostProfitPanel";
 import { toast } from "./Toast";
 
-const isVoided = (inv: Invoice): boolean => inv.status.toLowerCase() === "void";
+const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
 const statusColor = (inv: Invoice): string => {
   const s = inv.status;
@@ -73,6 +73,9 @@ export default function InvoicesView() {
   const [busy, setBusy]                 = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [viewTab, setViewTab]            = useState<"all" | "drafts" | "sent" | "paid" | "recurring">("all");
+  const [search, setSearch]              = useState("");
+  // Completed invoices are hidden by default to cut list bloat.
+  const [showCompleted, setShowCompleted] = useState(false);
   const [payModal, setPayModal]         = useState<string | null>(null);
   const [payDate, setPayDate]           = useState(new Date().toISOString().slice(0, 10));
   const [payMethod, setPayMethod]       = useState("");
@@ -135,6 +138,7 @@ export default function InvoicesView() {
     finally { setBusy(null); }
   };
 
+  // Delete is now a soft archive (restorable), so the confirm is reworded.
   const handleDelete = async (id: string) => {
     if (confirmDelete !== id) {
       setConfirmDelete(id);
@@ -142,7 +146,7 @@ export default function InvoicesView() {
       return;
     }
     setConfirmDelete(null);
-    try { await api.deleteInvoice(id); load(); }
+    try { await api.deleteInvoice(id); toast("Moved to Archive"); load(); }
     catch (e: any) { toast(String(e), "error"); }
   };
 
@@ -154,13 +158,24 @@ export default function InvoicesView() {
   };
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
+  const q = search.trim().toLowerCase();
   // The status tab filters the table (recurring renders its own view). Voided
   // invoices only show under "all" so they stay out of the working lists.
   const visible = invoices.filter((i) => {
     const lo = i.status.toLowerCase();
-    if (viewTab === "drafts") return lo === "draft";
-    if (viewTab === "sent")   return lo === "sent" || lo === "deposit_pending" || lo === "overdue";
-    if (viewTab === "paid")   return lo === "paid";
+    // Voided ("deal fell through") invoices stay out of the working tabs — they
+    // only appear under "all" (dimmed) so they're still referenceable.
+    if (isVoided(i)) { if (viewTab === "drafts" || viewTab === "sent" || viewTab === "paid") return false; }
+    else if (viewTab === "drafts") { if (lo !== "draft") return false; }
+    else if (viewTab === "sent")   { if (!(lo === "sent" || lo === "deposit_pending" || lo === "overdue")) return false; }
+    else if (viewTab === "paid")   { if (lo !== "paid") return false; }
+    // Completed invoices hidden unless the toggle is on (or explicitly on the paid tab).
+    if (!showCompleted && viewTab !== "paid" && i.is_complete) return false;
+    // Search by number / client / amount.
+    if (q) {
+      const hay = `${i.number} ${clientName(i.client_id)} ${i.total}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
   // Voided invoices are excluded from all money totals.
@@ -216,6 +231,28 @@ export default function InvoicesView() {
         <RecurringView />
       ) : (
         <>
+      {/* Search + show-completed */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by number, client, or amount…"
+            className="w-full pl-9 pr-8 h-9 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+          />
+          {search && (
+            <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-muted">
+              <X size={12} />
+            </button>
+          )}
+        </div>
+        <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none whitespace-nowrap">
+          <input type="checkbox" className="accent-accent" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} />
+          Show completed
+        </label>
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         {[
@@ -292,7 +329,7 @@ export default function InvoicesView() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((inv) => {
+            {visible.map((inv, rowIdx) => {
               // Completed → actual profit. In-progress deal flow → projected
               // (revenue − supplier costs entered so far). Else fall back to costs.
               const df = flowMap[inv.id];
@@ -312,7 +349,7 @@ export default function InvoicesView() {
               }
               const voided = isVoided(inv);
               return (
-                <tr key={inv.id} className={`border-b border-line-2 last:border-0 hover:bg-surface-2/70 cursor-pointer transition-colors ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
+                <tr key={inv.id} className={`border-b border-line-2 last:border-0 hover:bg-surface-2 cursor-pointer transition-colors ${rowIdx % 2 === 1 ? "bg-surface-2/40" : ""} ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
                   <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(inv.client_id)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
@@ -406,7 +443,7 @@ export default function InvoicesView() {
             ) : visible.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-4 py-10 text-center text-[13px] text-muted">
-                  No {viewTab === "drafts" ? "draft" : viewTab} invoices
+                  {search ? "No invoices match your search" : `No ${viewTab === "drafts" ? "draft" : viewTab} invoices`}
                 </td>
               </tr>
             )}
@@ -421,11 +458,10 @@ export default function InvoicesView() {
           onClose={() => { setDetailId(null); setDetailInvoice(null); }}
           onPdf={() => handlePdf(detailInvoice.id)}
           onResend={() => { if (confirm("Re-send this invoice?")) handleSend(detailInvoice.id); }}
-          onDelete={() => {
-            if (confirm("Delete this invoice? This cannot be undone.")) {
-              handleDelete(detailInvoice.id);
-              setDetailId(null); setDetailInvoice(null);
-            }
+          onDelete={async () => {
+            if (!confirm("Move to Archive? You can restore it anytime.")) return;
+            try { await api.deleteInvoice(detailInvoice.id); toast("Moved to Archive"); } catch (e: any) { toast(String(e), "error"); }
+            setDetailId(null); setDetailInvoice(null); load();
           }}
           onCostSaved={() => { setDetailInvoice(null); api.getInvoice(detailInvoice.id).then(setDetailInvoice); }}
           onVoid={async (voided) => {

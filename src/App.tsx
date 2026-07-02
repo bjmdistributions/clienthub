@@ -27,6 +27,7 @@ import {
   Building2,
   Wallet,
   Banknote,
+  Archive as ArchiveIcon,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -49,6 +50,7 @@ import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
+import ArchiveView from "./components/ArchiveView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import { FeedbackModal } from "./components/FeedbackModal";
 import CheckupView from "./components/CheckupView";
@@ -63,9 +65,9 @@ import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
-import { canViewTab } from "./lib/permissions";
+import { canViewTab, isAdmin } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "platform" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -382,10 +384,15 @@ export default function App() {
     { id: "automation", label: "Automation",  icon: Bot },
     { id: "globe",     label: "Globe",      icon: Globe },
     { id: "notes",     label: "Notes",      icon: StickyNote },
+    { id: "archive",   label: "Archive",    icon: ArchiveIcon },
     { id: "platform",  label: "Platform",   icon: Building2 },
     { id: "settings",  label: "Settings",   icon: SettingsIcon },
   ];
-  const tabs = allTabs.filter((t) => t.id === "platform" ? superadmin : canViewTab(me, t.id as any));
+  const tabs = allTabs.filter((t) =>
+    t.id === "platform" ? superadmin
+    : t.id === "archive" ? isAdmin(me)              // admin-only, like the money views
+    : canViewTab(me, t.id as any)
+  );
 
   // Background per tab (globe is full-bleed dark); shared by single + split panes.
   const paneBg = (t: Tab) => (t === "globe" ? "#0a0a14" : "var(--t-bg)");
@@ -403,6 +410,7 @@ export default function App() {
         <div className="max-w-[1280px] mx-auto">
           {t === "clients"    && <ClientsView />}
           {t === "invoices"   && <InvoicesView />}
+          {t === "archive"    && <ArchiveView />}
           {t === "receivables" && <ReceivablesView />}
           {t === "payables"   && <PayablesView />}
           {t === "quotes"     && <QuotesView onNavigate={setTab} />}
