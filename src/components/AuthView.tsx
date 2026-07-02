@@ -155,8 +155,9 @@ export default function AuthView({
 
         <p className="text-center text-[12px] text-white/45 mt-6">
           Don't have an account?{" "}
-          <button onClick={openRegister} className="text-white/80 hover:text-white font-medium underline underline-offset-2">
-            Sign up at ecliptr.app →
+          <button onClick={openRegister} className="group inline-flex items-center gap-1 text-sky-300/90 hover:text-sky-200 font-medium transition-colors">
+            Sign up at ecliptr.app
+            <span className="transition-transform group-hover:translate-x-0.5">→</span>
           </button>
         </p>
       </div>

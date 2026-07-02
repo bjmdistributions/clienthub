@@ -70,11 +70,23 @@ pub fn ensure_rbac() -> anyhow::Result<()> {
         );
         "#,
     )?;
-    // Backfill pay columns on a staff_accounts mirror created by an older build.
+    // Backfill columns on a staff_accounts mirror created by an older build, AND —
+    // critically — own the self-service profile columns here rather than relying on
+    // db migration 48. On a FRESH store, run_migrations runs BEFORE this table
+    // exists, so migration 48's `ALTER TABLE staff_accounts ADD COLUMN avatar/…`
+    // hits "no such table", is skipped as benign, yet is still recorded as applied —
+    // leaving the freshly-created table permanently missing avatar/title/phone. Then
+    // load_me's `SELECT s.avatar, s.title, s.phone` fails and every sign-in returns
+    // "Could not load account". Adding them here (idempotent — dup-column is ignored)
+    // makes the RBAC schema self-contained and self-heals existing broken stores on
+    // the next launch.
     for stmt in [
         "ALTER TABLE staff_accounts ADD COLUMN commission_pct REAL NOT NULL DEFAULT 0",
         "ALTER TABLE staff_accounts ADD COLUMN hide_pay_cuts INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE staff_accounts ADD COLUMN pay_type TEXT NOT NULL DEFAULT 'profit_pct'",
+        "ALTER TABLE staff_accounts ADD COLUMN avatar TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE staff_accounts ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE staff_accounts ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
     ] { let _ = conn.execute(stmt, []); }
 
     let now = now_rfc3339();
