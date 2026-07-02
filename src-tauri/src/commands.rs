@@ -5508,8 +5508,18 @@ pub async fn save_company_info(mut info: crate::invoice::CompanyInfo) -> Result<
     let target = logo_dir.join("company_logo.png");
 
     if let Some(ref src) = info.logo_path {
-        std::fs::create_dir_all(&logo_dir).map_err(|e| e.to_string())?;
-        std::fs::copy(src, &target).map_err(|e| e.to_string())?;
+        let src_path = std::path::Path::new(src);
+        // Guard against copying the stored logo onto itself: after a save+reload,
+        // `logo_path` comes back as the target (`company_logo.png`), so a later save
+        // (e.g. toggling `show_company_name`) would call fs::copy(target, target),
+        // which errors/truncates on macOS and fails the whole autosave. Skip the copy
+        // when the source is already the stored target; only copy a genuinely new file.
+        let already_stored = src_path == target.as_path()
+            || std::fs::canonicalize(src_path).ok() == std::fs::canonicalize(&target).ok();
+        if !already_stored {
+            std::fs::create_dir_all(&logo_dir).map_err(|e| e.to_string())?;
+            std::fs::copy(src_path, &target).map_err(|e| e.to_string())?;
+        }
         info.logo_path = Some(target.to_string_lossy().to_string());
     } else {
         let _ = std::fs::remove_file(&target);
