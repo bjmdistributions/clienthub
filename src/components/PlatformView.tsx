@@ -61,7 +61,7 @@ export default function PlatformView() {
           </div>
 
           <div className="bg-surface border border-line rounded-xl overflow-hidden">
-            <div className={`${COLS} px-4 py-2.5 text-[11px] font-semibold text-muted uppercase tracking-wide border-b border-line`}>
+            <div className={`${COLS} px-4 py-2.5 text-[12.5px] font-medium text-muted border-b border-line`}>
               <div>Workspace</div><div>Owner</div><div>Plan</div><div>Signed up</div><div>Members</div><div>Clients</div><div>Last active</div>
             </div>
             {orgs.length === 0 && !loading && <div className="px-4 py-10 text-center text-[13px] text-muted">No signups yet.</div>}
@@ -86,7 +86,7 @@ export default function PlatformView() {
 function Stat({ icon: Icon, label, value }: { icon: any; label: string; value: number }) {
   return (
     <div className="bg-surface border border-line rounded-xl p-4">
-      <div className="flex items-center gap-2 text-[11px] font-semibold text-muted uppercase tracking-wide mb-2"><Icon size={13} /> {label}</div>
+      <div className="flex items-center gap-2 text-[12.5px] font-medium text-muted mb-2"><Icon size={13} /> {label}</div>
       <div className="text-[24px] font-bold text-ink tabular-nums">{value}</div>
     </div>
   );

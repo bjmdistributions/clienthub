@@ -39,7 +39,7 @@ export default function CostProfitPanel({
           },
         ].map((item) => (
           <div key={item.label} className="bg-surface border border-line rounded-xl px-3 py-2.5">
-            <div className="text-[10px] uppercase tracking-widest text-muted">{item.label}</div>
+            <div className="text-[12px] font-medium text-muted">{item.label}</div>
             <div className={`text-[16px] font-bold tabular-nums mt-0.5 ${item.clr}`}>{item.value}</div>
           </div>
         ))}
@@ -48,7 +48,7 @@ export default function CostProfitPanel({
       {/* Profit split preview */}
       {split && isComplete && profit > 0 && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">
+          <div className="text-[12.5px] font-medium text-muted mb-2">
             Profit Split
           </div>
           <div className="flex gap-6">

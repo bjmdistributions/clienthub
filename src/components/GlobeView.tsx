@@ -1,9 +1,9 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Globe from "globe.gl";
 import { api, Client } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import TierBadge from "./TierBadge";
-import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw } from "lucide-react";
+import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw, Search } from "lucide-react";
 
 const STAR_COUNT  = 450;
 
@@ -18,15 +18,35 @@ interface Point {
   name: string;
   city: string;
   state: string;
-  tier: string;
+  tier: string;          // real buyer tier: S / A / B / C / New / Prospect
+  highValue: boolean;
   revenue: number;
   lastContact: string | null;
   id: string;
 }
 
-// All client dots are red
-function tierColor(_tier: string): string {
-  return "#EF4444";
+// Dots mean something: tier drives color, size, and glow. S/A read brighter
+// and larger; prospects sit dim so the whales pop.
+const DOT_STYLE: Record<string, { c: string; size: number; glow: number; dim?: boolean }> = {
+  S:        { c: "56,189,248",  size: 13, glow: 0.70 },  // Diamond — bright sky
+  A:        { c: "251,191,36",  size: 12, glow: 0.60 },  // Gold
+  B:        { c: "199,210,224", size: 10, glow: 0.40 },  // Silver
+  C:        { c: "224,149,92",  size: 9,  glow: 0.35 },  // Bronze
+  Prospect: { c: "139,147,168", size: 7,  glow: 0.20, dim: true },
+  New:      { c: "139,147,168", size: 7,  glow: 0.20, dim: true },
+};
+const dotStyle = (tier: string) => DOT_STYLE[tier] ?? DOT_STYLE.New;
+const RANKED = ["S", "A", "B", "C"];
+
+type TierFilter = "all" | "ranked" | "high" | "prospect";
+const FILTERS: [TierFilter, string][] = [
+  ["all", "All"], ["ranked", "Ranked"], ["high", "High-value"], ["prospect", "Prospects"],
+];
+function passesFilter(p: Point, f: TierFilter): boolean {
+  if (f === "ranked")   return RANKED.includes(p.tier);
+  if (f === "high")     return p.highValue;
+  if (f === "prospect") return !RANKED.includes(p.tier);
+  return true;
 }
 
 const relTime = (d: string | null | undefined): string => {
@@ -43,7 +63,9 @@ const relTime = (d: string | null | undefined): string => {
 
 export default function GlobeView() {
   const [selected,    setSelected]    = useState<Point | null>(null);
-  const [mappedCount, setMappedCount] = useState(0);
+  const [points,      setPoints]      = useState<Point[]>([]);
+  const [filter,      setFilter]      = useState<TierFilter>("all");
+  const [query,       setQuery]       = useState("");
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState<string | null>(null);
   const [geocoding,   setGeocoding]   = useState(false);
@@ -56,6 +78,8 @@ export default function GlobeView() {
   const starRafRef         = useRef<number>(0);
   const autoRotateTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const cleanupRef         = useRef<(() => void) | null>(null);
+  // client_id → buyer tier, fetched once and reused by geocode refreshes.
+  const tierMapRef         = useRef<Record<string, string>>({});
   // Prevents the OrbitControls "start" event from cancelling programmatic navigation
   const isProgNavRef       = useRef(false);
   // Set briefly when a client dot is clicked so the page-level click handler
@@ -88,6 +112,15 @@ export default function GlobeView() {
     }, duration + 80);
   }, []);
 
+  const focusPoint = useCallback((d: Point) => {
+    justClickedDotRef.current = true;
+    setTimeout(() => { justClickedDotRef.current = false; }, 250);
+    setSelected(d);
+    navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
+  }, [navTo]);
+  const focusPointRef = useRef(focusPoint);
+  focusPointRef.current = focusPoint;
+
   const runGeocode = useCallback(async () => {
     setGeocoding(true);
     setGeocodeMsg("Geocoding clients…");
@@ -96,22 +129,13 @@ export default function GlobeView() {
       setGeocodeMsg(result.message);
       setGeocodeSummary({ total: result.total, matched: result.matched, skipped: result.skipped, not_found: result.not_found });
       const allClients = await api.listClientsFiltered({});
-      const pts = toPoints(allClients);
-      setMappedCount(pts.length);
-      if (globeRef.current && pts.length > 0) {
-        applyDots(globeRef.current, pts, (d) => {
-          justClickedDotRef.current = true;
-          setTimeout(() => { justClickedDotRef.current = false; }, 250);
-          setSelected(d);
-          navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
-        });
-      }
+      setPoints(toPoints(allClients, tierMapRef.current));
     } catch (e: any) {
       setGeocodeMsg(e?.toString?.() || "Geocode failed");
     } finally {
       setGeocoding(false);
     }
-  }, [navTo]);
+  }, []);
 
   useEffect(() => {
     let destroyed = false;
@@ -119,7 +143,14 @@ export default function GlobeView() {
     const init = async () => {
       let allClients: Client[] = [];
       try {
-        allClients = await api.listClientsFiltered({});
+        const [clients, tiers] = await Promise.all([
+          api.listClientsFiltered({}),
+          api.buyerTiers().catch(() => [] as any[]),
+        ]);
+        allClients = clients;
+        const tm: Record<string, string> = {};
+        for (const t of tiers as any[]) tm[t.client_id] = t.tier;
+        tierMapRef.current = tm;
       } catch {
         if (destroyed) return;
         setError("Failed to load clients");
@@ -128,8 +159,7 @@ export default function GlobeView() {
       }
       if (destroyed) return;
 
-      const points = toPoints(allClients);
-      setMappedCount(points.length);
+      setPoints(toPoints(allClients, tierMapRef.current));
       setLoading(false);
 
       // Auto-geocode any client that has a city/state/country but isn't placed
@@ -171,16 +201,7 @@ export default function GlobeView() {
       }
 
       globeRef.current = globe;
-
-      // ── Client dots (DOM-based, fixed pixel size) ──────────
-      // Clusters resolve naturally on zoom because dots don't grow on screen.
-      const onDotClick = (d: Point) => {
-        justClickedDotRef.current = true;
-        setTimeout(() => { justClickedDotRef.current = false; }, 250);
-        setSelected(d);
-        navTo({ lat: d.lat, lng: d.lng, altitude: 0.35 }, 500, false);
-      };
-      applyDots(globe, points, onDotClick);
+      // Dots are applied by the [points, filter] effect below.
 
       globe.onGlobeClick(() => {
         // Clicking the globe sphere → zoom into US to see all clients
@@ -225,6 +246,28 @@ export default function GlobeView() {
     return () => { destroyed = true; cleanupRef.current?.(); };
   }, [navTo, runGeocode]);
 
+  // ── Plotted points follow the tier filter (one htmlElementsData call —
+  //    nothing per-frame, so a large client list stays cheap). ─────────
+  const visible = useMemo(() => points.filter((p) => passesFilter(p, filter)), [points, filter]);
+  useEffect(() => {
+    if (globeRef.current) applyDots(globeRef.current, visible, (d) => focusPointRef.current(d));
+  }, [visible, loading]);
+
+  // Search — match by name or city, fly to the pick.
+  const q = query.trim().toLowerCase();
+  const results = useMemo(() => (
+    q ? points.filter((p) => p.name.toLowerCase().includes(q) || p.city.toLowerCase().includes(q)).slice(0, 8) : []
+  ), [q, points]);
+
+  // Small stats strip: what's on the map right now.
+  const stats = useMemo(() => {
+    const revenue = visible.reduce((s, p) => s + (p.revenue || 0), 0);
+    const byState: Record<string, number> = {};
+    for (const p of visible) if (p.state) byState[p.state] = (byState[p.state] || 0) + 1;
+    const top = Object.entries(byState).sort((a, b) => b[1] - a[1])[0];
+    return { revenue, topState: top ? `${top[0]} (${top[1]})` : null };
+  }, [visible]);
+
   // ── Handlers ────────────────────────────────────────────────
   const handleRespin = () => {
     setSelected(null);
@@ -238,7 +281,7 @@ export default function GlobeView() {
     if (justClickedDotRef.current) return; // a dot click is mid-flight
     const t = e.target as HTMLElement;
     // Skip clicks on UI overlays/buttons/panels so they keep working
-    if (t.closest("button, .globe-client-panel, .globe-bottom-bar, .globe-top-controls, .globe-geocode-msg")) return;
+    if (t.closest("button, input, .globe-client-panel, .globe-bottom-bar, .globe-top-controls, .globe-geocode-msg, .globe-chips, .globe-search-wrap, .globe-legend")) return;
     if (selected) return; // panel is open — let X-button handle close
     navTo(US_POV, 600, false);
   };
@@ -260,36 +303,103 @@ export default function GlobeView() {
       {/* Loading overlay */}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="text-[13px]" style={{ color: "#555" }}>Loading globe…</div>
+          <div className="text-[13px]" style={{ color: "#7E8798" }}>Loading globe…</div>
         </div>
       )}
 
       {/* Error overlay */}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="text-[13px] text-center" style={{ color: "#666" }}>{error}</div>
+          <div className="text-[13px] text-center" style={{ color: "#7E8798" }}>{error}</div>
+        </div>
+      )}
+
+      {/* Tier filter chips */}
+      {points.length > 0 && (
+        <div className="globe-chips globe-glass">
+          {FILTERS.map(([f, label]) => (
+            <button key={f} onClick={() => setFilter(f)} className={`globe-chip ${filter === f ? "on" : ""}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Client search — fly to a client */}
+      {points.length > 0 && (
+        <div className="globe-search-wrap">
+          <div className="globe-glass relative">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "#6B7488" }} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Find a client…"
+              spellCheck={false}
+            />
+          </div>
+          {results.length > 0 && (
+            <div className="globe-glass mt-1.5 overflow-hidden">
+              {results.map((p) => {
+                const ds = dotStyle(p.tier);
+                return (
+                  <button key={p.id}
+                    onClick={() => {
+                      setQuery("");
+                      // If the current filter hides this client, widen it so the dot exists.
+                      if (!passesFilter(p, filter)) setFilter("all");
+                      focusPoint(p);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.06]">
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: `rgb(${ds.c})` }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] font-medium truncate" style={{ color: "#F2F4F8" }}>{p.name}</span>
+                      {(p.city || p.state) && (
+                        <span className="block text-[11px] truncate" style={{ color: "#7E8798" }}>
+                          {p.city}{p.state ? `, ${p.state}` : ""}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {q && results.length === 0 && (
+            <div className="globe-glass mt-1.5 px-3 py-2 text-[11.5px]" style={{ color: "#7E8798" }}>
+              No mapped client matches
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Legend — what dot color/size means */}
+      {points.length > 0 && (
+        <div className="globe-legend globe-glass">
+          {(["S", "A", "B", "C", "Prospect"] as const).map((t) => {
+            const ds = dotStyle(t);
+            return (
+              <span key={t} className="inline-flex items-center gap-1.5">
+                <span className="rounded-full flex-shrink-0"
+                  style={{ width: Math.max(5, ds.size - 4), height: Math.max(5, ds.size - 4), background: `rgb(${ds.c})`, opacity: ds.dim ? 0.7 : 1 }} />
+                {t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : "Prospect"}
+              </span>
+            );
+          })}
         </div>
       )}
 
       {/* Zero-clients overlay */}
-      {mappedCount === 0 && !geocoding && (
+      {points.length === 0 && !loading && !geocoding && (
         <div className="absolute inset-0 flex items-center justify-center z-[5]">
-          <div
-            className="text-center px-7 py-5 rounded-2xl pointer-events-auto"
-            style={{
-              background: "rgba(10,10,22,0.88)",
-              border: "1px solid rgba(165,180,252,0.18)",
-              backdropFilter: "blur(8px)",
-            }}
-          >
-            <div className="text-[13px] mb-2" style={{ color: "#888" }}>No client locations mapped</div>
+          <div className="text-center px-7 py-5 rounded-2xl pointer-events-auto globe-glass">
+            <div className="text-[13px] mb-2" style={{ color: "#A9B1C6" }}>No client locations mapped</div>
             {geocodeSummary ? (
-              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#666" }}>
+              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#7E8798" }}>
                 {geocodeSummary.total} client{geocodeSummary.total !== 1 ? "s" : ""} total ·
                 {geocodeSummary.matched > 0 && <span> {geocodeSummary.matched} newly plotted ·</span>} {geocodeSummary.skipped} have no city/state
               </div>
             ) : (
-              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#666" }}>
+              <div className="text-[11px] leading-relaxed mb-3" style={{ color: "#7E8798" }}>
                 Add city/state to your client records to plot them on the globe.
               </div>
             )}
@@ -301,16 +411,18 @@ export default function GlobeView() {
               className="text-[11px] font-medium px-3 py-1.5 rounded-lg transition-colors hover:opacity-80"
               style={{ background: "var(--accent-tint)", color: "var(--accent-400)", border: "1px solid var(--accent-glow)" }}
             >
-              Fill in Addresses →
+              Fill in addresses
             </button>
           </div>
         </div>
       )}
 
-      {/* Bottom bar */}
+      {/* Bottom bar — live stats for what's plotted */}
       <div className="globe-bottom-bar">
         <div className="globe-stats-badge">
-          {mappedCount} client{mappedCount !== 1 ? "s" : ""} mapped
+          {visible.length} client{visible.length !== 1 ? "s" : ""} mapped
+          {stats.revenue > 0 && <span> · {fmtAmount(stats.revenue)} represented</span>}
+          {stats.topState && <span> · top: {stats.topState}</span>}
         </div>
         <button
           onClick={runGeocode}
@@ -343,20 +455,28 @@ export default function GlobeView() {
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-[15px] font-semibold mb-1.5">{selected.name}</h3>
-                <TierBadge tier={selected.tier} size="sm" />
+                <div className="flex items-center gap-1.5">
+                  <TierBadge tier={selected.tier} size="sm" />
+                  {selected.highValue && (
+                    <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
+                      style={{ color: "#93C5FD", background: "rgba(96,165,250,0.14)", border: "1px solid rgba(96,165,250,0.3)" }}>
+                      High value
+                    </span>
+                  )}
+                </div>
               </div>
               <button
                 onClick={() => setSelected(null)}
                 className="transition-colors"
-                style={{ color: "#555" }}
+                style={{ color: "#7E8798" }}
                 onMouseEnter={e => (e.currentTarget.style.color = "#eee")}
-                onMouseLeave={e => (e.currentTarget.style.color = "#555")}
+                onMouseLeave={e => (e.currentTarget.style.color = "#7E8798")}
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="space-y-2.5 text-[13px]" style={{ color: "#aaa" }}>
+            <div className="space-y-2.5 text-[13px]" style={{ color: "#A9B1C6" }}>
               {(selected.city || selected.state) && (
                 <div className="flex items-center gap-2">
                   <MapPin size={13} style={{ color: "var(--accent-500)" }} />
@@ -364,12 +484,12 @@ export default function GlobeView() {
                 </div>
               )}
               <div className="flex items-center gap-2">
-                <Clock size={13} style={{ color: "#555" }} />
+                <Clock size={13} style={{ color: "#7E8798" }} />
                 Last contact: {relTime(selected.lastContact)}
               </div>
               <div className="flex items-center gap-2">
-                <DollarSign size={13} style={{ color: "#34D399" }} />
-                Total revenue: {fmtAmount(selected.revenue)}
+                <DollarSign size={13} style={{ color: "#3EC785" }} />
+                Total revenue: <span className="tabular-nums font-semibold" style={{ color: "#F2F4F8" }}>{fmtAmount(selected.revenue)}</span>
               </div>
             </div>
 
@@ -385,7 +505,7 @@ export default function GlobeView() {
               onMouseLeave={e => (e.currentTarget.style.background = "var(--accent-tint)")}
             >
               <ExternalLink size={12} />
-              View Full Profile
+              Open client
             </button>
           </div>
         </div>
@@ -396,7 +516,7 @@ export default function GlobeView() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function toPoints(clients: Client[]): Point[] {
+function toPoints(clients: Client[], tierMap: Record<string, string>): Point[] {
   return clients
     .map(c => {
       const meta = c.metadata || {};
@@ -407,7 +527,8 @@ function toPoints(clients: Client[]): Point[] {
         name:        c.name,
         city:        meta.city  || "",
         state:       meta.state || "",
-        tier:        c.lead_status || "prospect",
+        tier:        tierMap[c.id] || "New",
+        highValue:   !!(c.high_value || meta.high_value),
         revenue:     c.total_revenue || 0,
         lastContact: c.last_contact_at || null,
         id:          c.id,
@@ -428,18 +549,22 @@ function applyDots(globe: any, points: Point[], onClick: (d: Point) => void) {
     .htmlLng((d: Point) => d.lng)
     .htmlAltitude(0.005)
     .htmlElement((d: Point) => {
-      const c = tierColor(d.tier);
+      const ds = dotStyle(d.tier);
 
       const wrap = document.createElement("div");
       wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
 
       const dot = document.createElement("div");
       dot.className = "globe-dot";
-      dot.style.background = c;
+      dot.style.background = `rgb(${ds.c})`;
+      dot.style.setProperty("--dot-s", `${ds.size + (d.highValue ? 2 : 0)}px`);
+      dot.style.setProperty("--dot-c", ds.c);
+      dot.style.setProperty("--dot-glow", String(d.highValue ? Math.min(ds.glow + 0.2, 0.9) : ds.glow));
+      if (ds.dim && !d.highValue) dot.style.opacity = "0.75";
       dot.innerHTML = `
         <div class="globe-dot-tip">
           <strong>${escapeHtml(d.name)}</strong>
-          ${d.city || d.state ? `<span>${escapeHtml(d.city)}${d.state ? ", " + escapeHtml(d.state) : ""}</span>` : ""}
+          <span>${escapeHtml(tierLabel(d.tier))}${d.city || d.state ? ` · ${escapeHtml(d.city)}${d.state ? ", " + escapeHtml(d.state) : ""}` : ""}</span>
         </div>`;
       dot.addEventListener("click", (ev) => {
         ev.stopPropagation();
@@ -449,6 +574,10 @@ function applyDots(globe: any, points: Point[], onClick: (d: Point) => void) {
       wrap.appendChild(dot);
       return wrap;
     });
+}
+
+function tierLabel(t: string): string {
+  return t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : t;
 }
 
 function escapeHtml(s: string): string {

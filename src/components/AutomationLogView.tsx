@@ -201,10 +201,10 @@ export default function AutomationLogView() {
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="border-b border-line-2">
-                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Date</th>
-                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Rule</th>
-                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Action</th>
-                  <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Result</th>
+                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Date</th>
+                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Rule</th>
+                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Action</th>
+                  <th className="text-left px-4 py-2.5 text-[12px] font-medium text-muted">Result</th>
                 </tr>
               </thead>
               <tbody>

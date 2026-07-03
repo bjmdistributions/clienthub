@@ -7378,14 +7378,34 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let month_start = format!("{}-01", Utc::now().format("%Y-%m"));
 
-    // MTD revenue and profit (for dashboard month-focus)
-    let revenue_mtd: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
-        [&month_start], |r| r.get(0)
+    // Hero Revenue + Profit with [This month | All time] toggle + prev-month delta.
+    // Revenue = PAID invoice totals (non-void, non-archived), month-matched on
+    // paid_at with an issue_date fallback for old rows that never set paid_at.
+    // Profit = completed deal_flows net_profit (non-archived) by completed_at.
+    let this_month = Utc::now().format("%Y-%m").to_string();
+    let prev_month = {
+        let now = Utc::now().date_naive();
+        let (y, m) = (now.year(), now.month());
+        if m == 1 { format!("{}-12", y - 1) } else { format!("{}-{:02}", y, m - 1) }
+    };
+    const REV_MONTH_SQL: &str =
+        "SELECT COALESCE(SUM(total),0) FROM invoices \
+         WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 \
+           AND strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = ?1";
+    let revenue_mtd: f64 = conn.query_row(REV_MONTH_SQL, [&this_month], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_prev_month: f64 = conn.query_row(REV_MONTH_SQL, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_all_time: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
+        [], |r| r.get(0)
     ).unwrap_or(0.0);
-    let profit_mtd: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
-        [&month_start], |r| r.get(0)
+    const PROFIT_MONTH_SQL: &str =
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows \
+         WHERE stage='complete' AND COALESCE(archived,0)=0 AND strftime('%Y-%m', completed_at) = ?1";
+    let profit_mtd: f64 = conn.query_row(PROFIT_MONTH_SQL, [&this_month], |r| r.get(0)).unwrap_or(0.0);
+    let profit_prev_month: f64 = conn.query_row(PROFIT_MONTH_SQL, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
+    let profit_all_time: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
+        [], |r| r.get(0)
     ).unwrap_or(0.0);
     let deals_mtd: i64 = conn.query_row(
         "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
@@ -7461,7 +7481,11 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "loss_deals_this_month": loss_deals_this_month,
         "loss_total_this_month": loss_total_this_month,
         "revenue_mtd": revenue_mtd,
+        "revenue_all_time": revenue_all_time,
+        "revenue_prev_month": revenue_prev_month,
         "profit_mtd": profit_mtd,
+        "profit_all_time": profit_all_time,
+        "profit_prev_month": profit_prev_month,
         "deals_mtd": deals_mtd,
         "top_suppliers": top_suppliers,
         "all_time_revenue": all_time_revenue,

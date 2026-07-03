@@ -5,8 +5,12 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
+        sans: ['Satoshi', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
+        mono: ['ui-monospace', 'SFMono-Regular', 'SF Mono', 'Menlo', 'Consolas', 'monospace'],
       },
+      // Calm, consistent motion: 130ms ease-out everywhere by default.
+      transitionDuration: { DEFAULT: '130ms' },
+      transitionTimingFunction: { DEFAULT: 'cubic-bezier(0, 0, 0.2, 1)' },
       colors: {
         // Semantic brand palette — adapts to html.dark via CSS variables.
         surface:     'rgb(var(--c-surface) / <alpha-value>)',

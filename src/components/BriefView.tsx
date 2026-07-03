@@ -385,7 +385,7 @@ function HeroCell({
 }: { label: string; value: string; extra?: React.ReactNode; sub?: string }) {
   return (
     <div className="p-5">
-      <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">{label}</div>
+      <div className="text-[12.5px] font-medium text-muted">{label}</div>
       <div className="text-[24px] font-bold text-ink tabular-nums mt-1.5 leading-none">{value}</div>
       {(extra || sub) && (
         <div className="mt-1.5 flex items-center gap-2 text-[12px]">
@@ -417,7 +417,7 @@ function SplitBox({
         borderTop: `2.5px solid ${accent}`,
       }}
     >
-      <div className="text-[10px] font-semibold uppercase tracking-widest mb-2" style={{ color: labelColor }}>
+      <div className="text-[12.5px] font-medium mb-2" style={{ color: labelColor }}>
         {label}
       </div>
       <div className="text-[20px] font-bold text-ink tabular-nums">{value}</div>
@@ -437,7 +437,7 @@ function HighlightCard({
 
   return (
     <div className="rounded-xl p-4 bg-surface" style={{ border: `1px solid ${clr.borderClr}` }}>
-      <div className={`text-[10px] font-semibold uppercase tracking-widest mb-2 ${clr.label}`}>{title}</div>
+      <div className={`text-[12.5px] font-medium mb-2 ${clr.label}`}>{title}</div>
       <div className="text-[13px] font-semibold text-ink truncate">{name}</div>
       <div className="text-[11px] text-muted mt-0.5 truncate">{sub}</div>
       <div className={`text-[18px] font-bold mt-2 ${clr.stat}`}>{stat}</div>

@@ -40,7 +40,7 @@ export default function VariablePicker({ onSelect }: VariablePickerProps) {
       </button>
       {open && (
         <div className="absolute z-50 left-0 mt-1 w-[320px] bg-surface border border-line rounded-lg shadow-lg py-1">
-          <div className="px-3 py-1.5 text-[10px] font-semibold text-muted uppercase tracking-widest border-b border-line">
+          <div className="px-3 py-1.5 text-[12.5px] font-medium text-muted border-b border-line">
             Insert Variable
           </div>
           {VARIABLES.map((v) => (
@@ -70,7 +70,7 @@ export function VariableReference() {
   };
   return (
     <div className="border border-line rounded-lg p-3 bg-surface-2/40">
-      <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Variables — click to copy, then paste into your email</div>
+      <div className="text-[12.5px] font-medium text-muted mb-2">Variables — click to copy, then paste into your email</div>
       <div className="grid sm:grid-cols-2 gap-1">
         {VARIABLES.map((v) => (
           <button key={v.token} type="button" onClick={() => copy(v.token)}

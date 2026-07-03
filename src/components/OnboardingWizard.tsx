@@ -125,7 +125,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
           {step === 0 && (
             <div className="text-center py-8">
               <div className="w-16 h-16 rounded-2xl mx-auto mb-5 flex items-center justify-center"
-                style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 28px var(--accent-glow)" }}>
+                style={{ background: "radial-gradient(circle at 50% 42%, #12162A 0%, #070912 68%, #030305 100%)", boxShadow: "inset 0 0 0 1px rgba(150,190,255,0.12)" }}>
                 <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-9 w-9" />
               </div>
               <h3 className="text-[20px] font-bold text-ink mb-2">Welcome to Ecliptr</h3>
@@ -226,7 +226,7 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   </div>
                   {csvPreview && !importSummary && (
                     <div className="space-y-2">
-                      <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Map columns</p>
+                      <p className="text-[12.5px] font-medium text-muted">Map columns</p>
                       {FIELDS.map((f) => (
                         <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
                           <label className="text-[12px] text-ink-2">{f.label}</label>

@@ -61,7 +61,7 @@ export default function UpdateNotification() {
       style={{ background: "var(--accent-tint)", borderBottom: "1px solid var(--accent-glow)" }}>
       <div className="flex items-center gap-3">
         <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-          style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))", boxShadow: "0 0 12px var(--accent-glow)" }}>
+          style={{ background: "var(--accent-600)" }}>
           <Download size={14} className="text-on-accent" />
         </div>
         <div>
@@ -84,7 +84,7 @@ export default function UpdateNotification() {
           onClick={handleInstall}
           disabled={downloading || installing}
           className="h-8 px-4 rounded-lg text-[12px] font-semibold text-on-accent disabled:opacity-50 transition-all flex items-center gap-1.5"
-          style={{ background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))", boxShadow: "0 2px 8px var(--accent-glow)" }}
+          style={{ background: "var(--accent-600)" }}
         >
           {installing ? <Check size={12} /> : downloading ? <span className="w-3 h-3 border-2 border-on-accent/40 border-t-on-accent rounded-full animate-spin" /> : null}
           {installing ? "Restarting…" : downloading ? "Downloading" : "Install Now"}

@@ -334,7 +334,7 @@ export default function ClientsView() {
       {pending.length > 0 && (
         <button
           onClick={() => setReviewId(pending[0].id)}
-          className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-accent/25 bg-gradient-to-r from-accent/10 to-accent/[0.03] text-left hover:from-accent/15 hover:to-accent/5 transition-colors"
+          className="w-full mb-4 flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-accent/25 bg-accent/[0.07] text-left hover:bg-accent/10 transition-colors"
         >
           <span className="flex items-center gap-2.5">
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent text-on-accent text-[12px] font-bold">{pending.length}</span>
@@ -376,7 +376,7 @@ export default function ClientsView() {
           { label: "Total Revenue",    value: fmtAmount(summaryStats.revenue),          color: "text-accent" },
         ].map((s) => (
           <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">{s.label}</p>
+            <p className="text-[12.5px] font-medium text-muted mb-1">{s.label}</p>
             <p className={`text-[22px] font-bold tabular-nums ${s.color}`}>{s.value}</p>
           </div>
         ))}
@@ -587,17 +587,17 @@ export default function ClientsView() {
       {showAdvanced && (
         <div className="bg-surface-2 border border-line rounded-xl p-4 mb-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">State</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">State</label>
             <input placeholder="e.g. NY" value={filter.state ?? ""} onChange={(e) => updateFilter({ state: e.target.value || undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Tag</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Tag</label>
             <input placeholder="e.g. vip" value={filter.tag ?? ""} onChange={(e) => updateFilter({ tag: e.target.value || undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Status</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Status</label>
             <select value={filter.lead_status ?? ""} onChange={(e) => updateFilter({ lead_status: e.target.value || undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any status</option>
@@ -609,7 +609,7 @@ export default function ClientsView() {
             </select>
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Last Contact</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Last Contact</label>
             <select value={filter.stale_days ?? ""} onChange={(e) => updateFilter({ stale_days: e.target.value ? Number(e.target.value) : undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any time</option>
@@ -619,7 +619,7 @@ export default function ClientsView() {
             </select>
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Missing Info</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Missing Info</label>
             <select value={filter.missing ?? ""} onChange={(e) => updateFilter({ missing: e.target.value || undefined })}
               className="border border-line h-9 px-3 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
               <option value="">Any</option>
@@ -706,7 +706,7 @@ export default function ClientsView() {
               </th>
               {([["name", "Name", "left"], ["company", "Company", "left"], ["tier", "Tier", "left"], ["email", "Email", "left"], ["phone", "Phone", "left"], ["last", "Last activity", "left"], ["revenue", "Revenue", "right"]] as const).map(([k, label, align]) => (
                 <th key={k} onClick={() => toggleSort(k)}
-                  className={`text-${align} px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest cursor-pointer select-none hover:text-ink-2`}>
+                  className={`text-${align} px-4 py-3 text-[12.5px] font-medium text-muted cursor-pointer select-none hover:text-ink-2`}>
                   {label}{sortKey === k && <span className="ml-0.5 text-accent">{sortDir === 1 ? "▲" : "▼"}</span>}
                 </th>
               ))}
@@ -733,10 +733,10 @@ export default function ClientsView() {
                     {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.first_contact || c.approval_status === "pending" || !c.email || !c.phone || !c.street_address || !c.category) && (
                       <div className="flex flex-wrap items-center gap-1 mt-1">
                         {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Blacklisted — excluded from all sends">Blacklisted</span>}
-                        {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-gradient-to-br from-accent/15 to-accent/5 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide" title="High-Value — one of your best buyers (label only)">★ High-Value</span>}
+                        {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide" title="High-Value — one of your best buyers (label only)">High value</span>}
                         {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
                         {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Never been sent an email — introduce yourself">No contact yet</span>}
-                        {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wider">Pending</span>}
+                        {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide">Pending</span>}
                         {(!c.email || !c.phone || !c.street_address || !c.category) && (
                           <span className="inline-flex items-center gap-0.5 text-faint" title="Missing profile info (email / phone / address / category)">
                             {!c.email && <Mail size={10} />}
@@ -846,7 +846,7 @@ function ClientForm({
       <h3 className="text-[14px] font-semibold text-ink mb-5">{initial ? "Edit Client" : "New Client"}</h3>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Basic Info</div>
+        <div className="text-[12.5px] font-medium text-muted mb-3">Basic Info</div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name *"><input className={inp} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field label="Company"><input className={inp} value={form.company ?? ""} onChange={(e) => set("company", e.target.value)} /></Field>
@@ -856,7 +856,7 @@ function ClientForm({
       </div>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Classification</div>
+        <div className="text-[12.5px] font-medium text-muted mb-3">Classification</div>
         <div className="grid grid-cols-3 gap-3">
           <Field label="Category">
             <input className={inp} list="categories" value={form.category ?? ""} onChange={(e) => set("category", e.target.value)} />
@@ -876,7 +876,7 @@ function ClientForm({
       </div>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Address</div>
+        <div className="text-[12.5px] font-medium text-muted mb-3">Address</div>
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
             <Field label="Street Address"><input className={inp} value={form.street_address ?? ""} onChange={(e) => set("street_address", e.target.value)} /></Field>
@@ -897,7 +897,7 @@ function ClientForm({
       </div>
 
       <div className="mb-5">
-        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">Notes & Follow-up</div>
+        <div className="text-[12.5px] font-medium text-muted mb-3">Notes & Follow-up</div>
         <Field label="Internal Notes">
           <textarea rows={3} className={inp + " py-2"} placeholder="Private notes about this client"
             value={form.notes ?? ""} onChange={(e) => set("notes", e.target.value)} />

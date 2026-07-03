@@ -665,7 +665,7 @@ export default function App() {
             </section>
           </div>
         ) : (
-          <div className={tab === "globe" ? "h-full overflow-hidden" : "h-full overflow-auto"} style={{ background: paneBg(tab) }}>
+          <div className={tab === "globe" ? "h-full overflow-hidden" : "h-full overflow-auto page-atmosphere"} style={{ background: paneBg(tab) }}>
             <div key={pageKey} className="page-enter h-full">
               {tab !== "globe" && <UpdateNotification />}
               {paneContent(tab)}

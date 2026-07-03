@@ -114,7 +114,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
       {/* The mental model, up front */}
       <div className="bg-surface border border-line rounded-xl p-5 mb-5">
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-muted mb-3">The flow</div>
+        <div className="text-[13px] font-semibold text-ink-2 mb-3">The flow</div>
         <FlowIllustration />
         <p className="text-[12px] text-muted mt-4 leading-relaxed">
           Every submission becomes a <span className="text-ink-2 font-medium">pending lead</span> in your Approvals queue — nothing is added to your client list until you approve it. Unknown fields are kept on the lead's record.
@@ -216,7 +216,7 @@ export function SetupGuide({ source, baseUrl, onBack }: {
 
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-6 h-6 rounded-md bg-gradient-to-br from-accent/20 to-accent/5 text-accent-hover flex items-center justify-center text-[12px] font-bold">B</span>
+              <span className="w-6 h-6 rounded-md bg-accent/10 text-accent-hover flex items-center justify-center text-[12px] font-bold">B</span>
               <span className="text-[13px] font-semibold text-ink">Contact / lead forms on your storefront</span>
             </div>
             <p className="text-[12px] text-muted leading-relaxed mb-3">

@@ -256,7 +256,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
         <nav className="space-y-5">
           {groups.map((g) => (
             <div key={g.group}>
-              <div className="px-3 mb-1.5 text-[10px] font-semibold text-muted uppercase tracking-widest">
+              <div className="px-3 mb-1.5 text-[12.5px] font-medium text-muted">
                 {g.group}
               </div>
               <div className="space-y-0.5">
@@ -375,7 +375,7 @@ function AccountTab() {
       <div className="flex items-center gap-4 mb-6">
         {form.avatar
           ? <img src={form.avatar} alt="" className="w-20 h-20 rounded-full object-cover border border-line" />
-          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{initial}</div>}
+          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "var(--accent-600)" }}>{initial}</div>}
         <div>
           <label className="bg-surface-2 border border-line hover:bg-surface-3 text-ink-2 px-3 h-8 rounded-lg text-[12px] font-medium inline-flex items-center cursor-pointer">
             Upload photo<input type="file" accept="image/*" className="hidden" onChange={pick} />
@@ -384,11 +384,11 @@ function AccountTab() {
         </div>
       </div>
       <div className="space-y-3">
-        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Name</label><input className={inpSm} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></div>
-        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Title</label><input className={inpSm} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Sales Manager" /></div>
-        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Phone</label><input className={inpSm} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Email</label><input className={inpSm + " opacity-60"} value={me.email} disabled /><p className="text-[10px] text-muted mt-1">Contact an admin to change your email.</p></div>
-        <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Role</label><input className={inpSm + " opacity-60"} value={me.role_name} disabled /></div>
+        <div><label className="block text-[12px] font-medium text-muted mb-1">Name</label><input className={inpSm} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></div>
+        <div><label className="block text-[12px] font-medium text-muted mb-1">Title</label><input className={inpSm} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Sales Manager" /></div>
+        <div><label className="block text-[12px] font-medium text-muted mb-1">Phone</label><input className={inpSm} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+        <div><label className="block text-[12px] font-medium text-muted mb-1">Email</label><input className={inpSm + " opacity-60"} value={me.email} disabled /><p className="text-[10px] text-muted mt-1">Contact an admin to change your email.</p></div>
+        <div><label className="block text-[12px] font-medium text-muted mb-1">Role</label><input className={inpSm + " opacity-60"} value={me.role_name} disabled /></div>
       </div>
       </div>
       <MyPlanCard />
@@ -1490,7 +1490,7 @@ function InvoiceTab() {
 
         <SettingCard icon={FileText} title="Details & text" purpose="What appears on the invoice.">
           <div className="space-y-2.5 mb-4">
-            <div className="text-[11px] font-semibold text-muted uppercase tracking-wide">Show on invoice</div>
+            <div className="text-[12.5px] font-medium text-muted">Show on invoice</div>
             <div className="grid grid-cols-2 gap-2">
               <Check2 label="Address" k="show_address" />
               <Check2 label="Email" k="show_email" />
@@ -1513,7 +1513,7 @@ function InvoiceTab() {
       {/* Live preview */}
       <div className="w-full lg:flex-1 lg:sticky lg:top-4">
         <div className="flex items-center justify-between mb-2.5">
-          <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Live preview</div>
+          <div className="text-[12.5px] font-medium text-muted">Live preview</div>
           <button onClick={viewPdf} disabled={rendering}
             className="inline-flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors">
             {rendering ? <RefreshCw size={13} className="animate-spin" /> : <ExternalLink size={13} />} View actual PDF
@@ -2105,7 +2105,7 @@ function CsvImportSection() {
               ))}
           </div>
 
-          <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Preview (first 5 rows)</div>
+          <div className="text-[12.5px] font-medium text-muted mb-2">Preview (first 5 rows)</div>
           <div className="overflow-auto max-h-40 mb-5 border border-line rounded-xl">
             <table className="text-[12px] w-full">
               <thead className="bg-surface-2">
@@ -2262,10 +2262,10 @@ function GoogleContactsSection() {
                   <thead className="bg-surface-2 sticky top-0">
                     <tr>
                       <th className="w-10 px-3 py-2"><input type="checkbox" className="accent-accent" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleAll} /></th>
-                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase">Name</th>
-                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase">Email</th>
-                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase">Company</th>
-                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase">Phone</th>
+                      <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Name</th>
+                      <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Email</th>
+                      <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Company</th>
+                      <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Phone</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2460,13 +2460,13 @@ function AutomationTab() {
         <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly — no email setup needed.</p>
         <div className="flex items-center gap-2">
           <code className="flex-1 text-[12px] bg-surface-2 rounded-lg px-2.5 py-1.5 break-all select-all text-ink-2">{leadFormUrl}</code>
-          <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied ✓" : "Copy"}</button>
+          <button onClick={copyLeadLink} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium whitespace-nowrap">{copied ? "Copied" : "Copy"}</button>
         </div>
       </div>
 
       {/* Premade automations — one-click enable */}
       <div className="mb-6">
-        <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-2.5">One-click automations</label>
+        <label className="block text-[12.5px] font-medium text-muted mb-2.5">One-click automations</label>
         <div className="grid sm:grid-cols-2 gap-2.5">
           {PREMADE_AUTOMATIONS.map((p) => {
             const on = isEnabled(p.name);
@@ -2495,16 +2495,16 @@ function AutomationTab() {
       {showForm && (
         <div className="border border-line rounded-xl p-4 mb-5 space-y-3 bg-surface-2/80">
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Rule name</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Rule name</label>
             <input className={inp} placeholder="e.g. Typeform new client signups" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <p className="text-[11px] text-muted">Patterns are <a href="https://docs.rs/regex/latest/regex/#syntax" target="_blank" rel="noreferrer" className="text-accent underline">regular expressions</a> — at least one is required.</p>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Sender pattern (regex)</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Sender pattern (regex)</label>
             <input className={`${inp} font-mono`} placeholder="e.g. noreply@typeform\.com" value={form.sender_pattern} onChange={(e) => setForm({ ...form, sender_pattern: e.target.value })} />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Subject pattern (regex)</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Subject pattern (regex)</label>
             <input className={`${inp} font-mono`} placeholder="e.g. (?i)new\s+(client|signup|inquiry)" value={form.subject_pattern} onChange={(e) => setForm({ ...form, subject_pattern: e.target.value })} />
           </div>
           <div className="flex justify-end gap-2">
@@ -2551,11 +2551,11 @@ function AutomationTab() {
           <div className="border border-line rounded-xl p-4 mb-4 space-y-3 bg-surface-2/80">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Name</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1.5">Name</label>
                 <input className={inp} value={fuForm.name} onChange={(e) => setFuForm({ ...fuForm, name: e.target.value })} placeholder="Check-in reminder" />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Trigger</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1.5">Trigger</label>
                 <select className={inp} value={fuForm.trigger_type} onChange={(e) => setFuForm({ ...fuForm, trigger_type: e.target.value })}>
                   {Object.entries(triggerLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
@@ -2563,11 +2563,11 @@ function AutomationTab() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Days</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1.5">Days</label>
                 <input className={inp} type="number" value={fuForm.trigger_value} onChange={(e) => setFuForm({ ...fuForm, trigger_value: parseInt(e.target.value) || 0 })} />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Action</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1.5">Action</label>
                 <select className={inp} value={fuForm.action_type} onChange={(e) => setFuForm({ ...fuForm, action_type: e.target.value })}>
                   {Object.entries(actionLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
@@ -2576,11 +2576,11 @@ function AutomationTab() {
             {isEmailAction && (
               <>
                 <div>
-                  <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Email Subject</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1.5">Email Subject</label>
                   <input ref={fuSubjectRef} className={inp} value={fuForm.email_subject} onChange={(e) => setFuForm({ ...fuForm, email_subject: e.target.value })} onFocus={() => { fuLastFocused.current = "subject"; }} placeholder="Just checking in" />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Email Body</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1.5">Email Body</label>
                   <textarea ref={fuBodyRef} className={inp + " h-20 resize-none"} value={fuForm.email_body} onChange={(e) => setFuForm({ ...fuForm, email_body: e.target.value })} onFocus={() => { fuLastFocused.current = "body"; }} placeholder="Hi {first_name}, hope things are going well..." />
                   <div className="mt-1">
                     <VariablePicker onSelect={insertFuVariable} />
@@ -2617,7 +2617,7 @@ function AutomationTab() {
 
         {fuLog.length > 0 && (
           <div className="mt-4 border-t border-line-2 pt-4">
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Recent Activity</p>
+            <p className="text-[12.5px] font-medium text-muted mb-2">Recent Activity</p>
             <div className="space-y-1 max-h-40 overflow-y-auto">
               {fuLog.slice(0, 20).map((l) => (
                 <div key={l.id} className="text-[11px] text-muted flex items-center gap-2">
@@ -2725,7 +2725,7 @@ function IntakeSourceCard({ source, fields, onChange }: { source: any; fields: {
         </div>
       ) : (
         <div className="space-y-2">
-          <div className="text-[11px] font-medium text-muted uppercase tracking-wide">Field mapping</div>
+          <div className="text-[12.5px] font-medium text-muted">Field mapping</div>
           {incoming.map((k) => (
             <div key={k} className="flex items-center gap-2">
               <div className="flex-1 text-[12.5px] text-ink truncate" title={k}>{k}</div>
@@ -2813,14 +2813,14 @@ function ShopifyTab() {
           Status: {cfg?.configured ? <span className="text-success-ink">Connected</span> : <span className="text-muted">Not set up yet</span>}
         </div>
         <div>
-          <div className="text-[11px] font-medium text-muted uppercase tracking-wide mb-1.5">Webhook URL</div>
+          <div className="text-[12.5px] font-medium text-muted mb-1.5">Webhook URL</div>
           <div className="flex items-center gap-2">
             <input readOnly value={url} className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[12px] text-ink" />
             <button onClick={() => navigator.clipboard?.writeText(url)} className="px-3 h-9 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
           </div>
         </div>
         <div>
-          <div className="text-[11px] font-medium text-muted uppercase tracking-wide mb-1.5">Webhook signing secret</div>
+          <div className="text-[12.5px] font-medium text-muted mb-1.5">Webhook signing secret</div>
           <div className="flex items-center gap-2">
             <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)}
               placeholder={cfg?.configured ? "•••••••  (set — paste to replace)" : "Paste the secret from Shopify"}
@@ -3028,7 +3028,7 @@ function TemplatesTab() {
       {/* Add row */}
       <div className="grid grid-cols-12 gap-2 mb-5">
         <div className="col-span-7">
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Description</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1.5">Description</label>
           <input
             className={inpSm}
             placeholder="e.g. Standard order processing"
@@ -3038,7 +3038,7 @@ function TemplatesTab() {
           />
         </div>
         <div className="col-span-2">
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Rate</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1.5">Rate</label>
           <input
             type="text"
             inputMode="decimal"
@@ -3049,7 +3049,7 @@ function TemplatesTab() {
           />
         </div>
         <div className="col-span-1">
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Qty</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1.5">Qty</label>
           <input
             type="text"
             inputMode="decimal"
@@ -3529,7 +3529,7 @@ function SheetsTab() {
       {/* Sync log */}
       <div className="bg-surface border border-line rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-line-2">
-          <span className="text-[10px] font-semibold text-muted uppercase tracking-widest">Sync History</span>
+          <span className="text-[12.5px] font-medium text-muted">Sync History</span>
         </div>
         {log.length === 0 ? (
           <div className="text-center text-[13px] text-muted py-8">No syncs yet</div>
@@ -3537,10 +3537,10 @@ function SheetsTab() {
           <table className="w-full text-sm">
             <thead className="bg-surface-2/50">
               <tr>
-                <th className="text-left px-5 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Date</th>
-                <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">New</th>
-                <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Skipped</th>
-                <th className="text-right px-5 py-2.5 text-[10px] font-semibold text-muted uppercase tracking-widest">Errors</th>
+                <th className="text-left px-5 py-2.5 text-[12px] font-medium text-muted">Date</th>
+                <th className="text-right px-5 py-2.5 text-[12px] font-medium text-muted">New</th>
+                <th className="text-right px-5 py-2.5 text-[12px] font-medium text-muted">Skipped</th>
+                <th className="text-right px-5 py-2.5 text-[12px] font-medium text-muted">Errors</th>
               </tr>
             </thead>
             <tbody>
@@ -3628,7 +3628,7 @@ function SplitsTab() {
               <input type="number" min={0} step="0.1" value={s.pct} onChange={(e) => setShare(i, { pct: parseFloat(e.target.value) || 0 })}
                 className="w-20 bg-surface-2 border border-line rounded-lg h-9 px-2 text-[13px] text-ink text-right shrink-0" />
               <span className="text-[12px] text-muted shrink-0">%</span>
-              <button onClick={() => removeShare(i)} className="text-muted hover:text-danger-ink px-1 shrink-0" title="Remove">✕</button>
+              <button onClick={() => removeShare(i)} className="text-muted hover:text-danger-ink px-1 shrink-0" title="Remove"><X size={13} /></button>
             </div>
           ))}
         </div>
@@ -3715,13 +3715,13 @@ function BackupTab() {
       <div className="space-y-3 mb-5">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-semibold text-muted uppercase tracking-widest">Backup location</p>
+            <p className="text-[12.5px] font-medium text-muted">Backup location</p>
             <p className="text-[12px] text-ink-2 font-mono mt-0.5">{status?.backup_dir || "—"}</p>
           </div>
           <button onClick={handleDirChange} className="text-[11px] text-accent hover:text-accent-hover">Change</button>
         </div>
         <div>
-          <p className="text-[11px] font-semibold text-muted uppercase tracking-widest">Last backup</p>
+          <p className="text-[12.5px] font-medium text-muted">Last backup</p>
           <p className="text-[13px] text-ink-2 mt-0.5">{lastTime}</p>
         </div>
       </div>
@@ -3736,7 +3736,7 @@ function BackupTab() {
 
       {backups.length > 0 && (
         <div>
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Backups ({backups.length})</p>
+          <p className="text-[12.5px] font-medium text-muted mb-2">Backups ({backups.length})</p>
           <div className="space-y-1">
             {backups.map((b) => (
               <div key={b.filename} className="flex items-center justify-between px-3 py-2 bg-surface-2 rounded-lg">
@@ -3829,7 +3829,7 @@ function PayoutsPanel() {
       ) : (
         <table className="w-full text-[13px]">
           <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
-            {["Rep", "Deals", "Owed", ""].map((h, i) => <th key={i} className={`text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted ${i === 3 ? "text-right" : ""}`}>{h}</th>)}
+            {["Rep", "Deals", "Owed", ""].map((h, i) => <th key={i} className={`text-left px-3 py-2 text-[12px] font-medium text-muted ${i === 3 ? "text-right" : ""}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {payouts.map((p) => (
@@ -3980,7 +3980,7 @@ function PeoplePanel() {
       <table className="w-full text-[13px]">
         <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
           {["Member", "Role", "Pay cut", "Status", ""].map((h, i) => (
-            <th key={i} className={`text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>
+            <th key={i} className={`text-left px-4 py-2.5 text-[12px] font-medium text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>
           ))}
         </tr></thead>
         <tbody>
@@ -3990,7 +3990,7 @@ function PeoplePanel() {
                 <button onClick={() => setViewing(u)} className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity group">
                   {u.avatar
                     ? <img src={u.avatar} alt="" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
-                    : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-on-accent flex-shrink-0" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
+                    : <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold text-on-accent flex-shrink-0" style={{ background: "var(--accent-600)" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
                   <div className="min-w-0">
                     <div className="font-medium text-ink truncate group-hover:text-accent">{u.display_name}</div>
                     <div className="text-[11px] text-muted truncate">{u.title ? `${u.title} · ` : ""}{u.email}</div>
@@ -4068,7 +4068,7 @@ function ProfileModal({ u, roleName, onClose }: { u: StaffMember; roleName: stri
         <div className="p-6 flex flex-col items-center text-center border-b border-line">
           {u.avatar
             ? <img src={u.avatar} alt="" className="w-20 h-20 rounded-full object-cover" />
-            : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
+            : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "var(--accent-600)" }}>{(u.display_name || u.email || "?").trim().charAt(0).toUpperCase()}</div>}
           <div className="mt-3 text-[17px] font-semibold text-ink">{u.display_name}</div>
           {u.title && <div className="text-[13px] text-muted">{u.title}</div>}
           <div className="mt-2 flex items-center gap-2">
@@ -4136,7 +4136,7 @@ function RolesPanel() {
                   Full admin (manage team, roles &amp; settings)
                 </label>
                 <table className="text-[12px]">
-                  <thead><tr><th></th>{ACTIONS.map((a) => <th key={a} className="px-3 text-[10px] uppercase tracking-wide text-muted">{a}</th>)}</tr></thead>
+                  <thead><tr><th></th>{ACTIONS.map((a) => <th key={a} className="px-3 text-[12px] font-medium text-muted">{a}</th>)}</tr></thead>
                   <tbody>
                     {MATRIX_MODULES.map((m) => (
                       <tr key={m}>
@@ -4151,7 +4151,7 @@ function RolesPanel() {
                   </tbody>
                 </table>
                 <div className="mt-4 pt-3 border-t border-line">
-                  <div className="text-[10px] uppercase tracking-wide text-muted mb-2">Sensitive visibility</div>
+                  <div className="text-[12px] font-medium text-muted mb-2">Sensitive visibility</div>
                   <div className="space-y-2">
                     {VIS_TOGGLES.map(([perm, label, hint]) => (
                       <label key={perm} className="flex items-start gap-2 text-[12px] text-ink-2 cursor-pointer">
@@ -4219,7 +4219,7 @@ function InvitesPanel() {
       <div className="bg-surface border border-line rounded-xl overflow-hidden">
         <table className="w-full text-[13px]">
           <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
-            {["Role", "Email", "Status", "Expires", ""].map((h, i) => <th key={i} className={`text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>)}
+            {["Role", "Email", "Status", "Expires", ""].map((h, i) => <th key={i} className={`text-left px-4 py-2.5 text-[12px] font-medium text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {invites.map((i) => (
@@ -4268,17 +4268,17 @@ function InvoiceNumberingSection() {
       <p className="text-[12px] text-muted mb-4">Customize how new invoice numbers are generated.</p>
       <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Prefix</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Prefix</label>
           <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" value={cfg.prefix}
             onChange={(e) => update({ prefix: e.target.value })} placeholder="INV-" />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Padding</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Padding</label>
           <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.padding}
             onChange={(e) => update({ padding: parseInt(e.target.value) || 1 })} />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Start at</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Start at</label>
           <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.next_number}
             onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
         </div>
@@ -4317,17 +4317,17 @@ function QuoteNumberingSection() {
       <p className="text-[12px] text-muted mb-4">Customize how new quote numbers are generated — including which number to start at.</p>
       <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Prefix</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Prefix</label>
           <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" value={cfg.prefix}
             onChange={(e) => update({ prefix: e.target.value })} placeholder="QUO-" />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Padding</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Padding</label>
           <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.padding}
             onChange={(e) => update({ padding: parseInt(e.target.value) || 1 })} />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Start at</label>
+          <label className="block text-[12.5px] font-medium text-muted mb-1">Start at</label>
           <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.next_number}
             onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
         </div>
@@ -4372,19 +4372,19 @@ function BillingTab() {
       {showKeys && (
         <div className="space-y-3 mb-4">
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">
-              Publishable Key {config?.publishable_key_present && <span className="text-success-ink">●</span>}
+            <label className="block text-[12.5px] font-medium text-muted mb-1">
+              Publishable Key {config?.publishable_key_present && <span className="inline-block w-2 h-2 rounded-full bg-success-ink align-middle" />}
             </label>
             <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="pk_test_..." value={pk} onChange={(e) => setPk(e.target.value)} />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">
+            <label className="block text-[12.5px] font-medium text-muted mb-1">
               Secret Key {config?.secret_key_present && <span className="text-success-ink">●</span>}
             </label>
             <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="sk_test_..." value={sk} onChange={(e) => setSk(e.target.value)} />
           </div>
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">
+            <label className="block text-[12.5px] font-medium text-muted mb-1">
               Webhook Secret {config?.webhook_secret_present && <span className="text-success-ink">●</span>}
             </label>
             <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full font-mono" type="password" placeholder="whsec_..." value={wh} onChange={(e) => setWh(e.target.value)} />
@@ -4407,7 +4407,7 @@ function BillingTab() {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">{children}</div>
+    <div className="text-[13px] font-semibold text-ink-2">{children}</div>
   );
 }
 
@@ -4465,9 +4465,9 @@ function CustomFieldsTab() {
           <table className="w-full text-sm">
             <thead className="bg-surface-2">
               <tr>
-                <th className="text-left px-4 py-2 text-[10px] font-semibold text-muted uppercase">Label</th>
-                <th className="text-left px-4 py-2 text-[10px] font-semibold text-muted uppercase">Key</th>
-                <th className="text-left px-4 py-2 text-[10px] font-semibold text-muted uppercase">Type</th>
+                <th className="text-left px-4 py-2 text-[12px] font-medium text-muted">Label</th>
+                <th className="text-left px-4 py-2 text-[12px] font-medium text-muted">Key</th>
+                <th className="text-left px-4 py-2 text-[12px] font-medium text-muted">Type</th>
                 <th className="px-4 py-2"></th>
               </tr>
             </thead>
@@ -4493,15 +4493,15 @@ function CustomFieldsTab() {
             <h3 className="text-[14px] font-semibold text-ink mb-4">{editing ? "Edit Field" : "New Field"}</h3>
             <div className="space-y-3">
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase mb-1">Label</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Label</label>
                 <input className={inp} value={form.label} onChange={e => { const lbl = e.target.value; setForm({ ...form, label: lbl, field_key: lbl.toLowerCase().replace(/[^a-z0-9_]/g, "_") }); }} placeholder="e.g. Loyalty Tier" />
               </div>
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase mb-1">Key</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Key</label>
                 <input className={inp + " font-mono text-[12px]"} value={form.field_key} onChange={e => setForm({ ...form, field_key: e.target.value })} placeholder="loyalty_tier" />
               </div>
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase mb-1">Type</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Type</label>
                 <select className={inp} value={form.field_type} onChange={e => setForm({ ...form, field_type: e.target.value })}>
                   <option value="text">Text</option>
                   <option value="number">Number</option>
@@ -4512,7 +4512,7 @@ function CustomFieldsTab() {
               </div>
               {form.field_type === "dropdown" && (
                 <div>
-                  <label className="block text-[10px] font-medium text-muted uppercase mb-1">Options (comma-separated)</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1">Options (comma-separated)</label>
                   <input className={inp} value={form.options_json ?? ""} onChange={e => setForm({ ...form, options_json: e.target.value || null })} placeholder="Gold, Silver, Bronze" />
                 </div>
               )}

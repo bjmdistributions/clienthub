@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, DashboardStats } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw, FileDown } from "lucide-react";
+import { RefreshCw, FileDown, TrendingUp, TrendingDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   BarChart, Bar, AreaChart, Area, PieChart, Pie, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -199,6 +199,11 @@ export default function AnalyticsView() {
     month: new Date(m.month + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
   }));
 
+  // Month-over-month movement for the lead stats — derived from data we
+  // already have (monthly_profit), no new backend.
+  const momLast = monthlySource.length > 1 ? monthlySource[monthlySource.length - 1] : null;
+  const momPrev = monthlySource.length > 1 ? monthlySource[monthlySource.length - 2] : null;
+
   const tierMap  = tiers.reduce((acc: Record<string, number>, t: any) => {
     acc[t.tier] = (acc[t.tier] || 0) + 1; return acc;
   }, {});
@@ -278,32 +283,38 @@ export default function AnalyticsView() {
           One calm divided row (mirrors the dashboard hero) — revenue
           leads, profit/margin/outstanding read left to right.
       ─────────────────────────────────────────────────────────── */}
-      <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up [animation-fill-mode:backwards]">
+      <div className="bg-surface border border-line rounded-2xl overflow-hidden">
         <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-line">
           <div className="p-5">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+            <div className="text-[12.5px] font-medium text-muted">
               Revenue · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
             </div>
-            <div className="text-[26px] font-bold text-accent tabular-nums mt-1.5 leading-none tracking-tight">
-              {fmtAmount(aRevenue)}
+            <div className="flex items-end gap-2.5 mt-1.5">
+              <span className="text-[26px] font-bold text-accent tabular-nums leading-none tracking-tight">
+                {fmtAmount(aRevenue)}
+              </span>
+              {momLast && momPrev && <MomChip now={momLast.revenue} prev={momPrev.revenue} />}
             </div>
             <div className="text-[11px] text-faint mt-1.5">closed deal revenue</div>
           </div>
           <div className="p-5">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">Net profit</div>
-            <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
-              style={{ color: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose }}>
-              {fmtAmount(aProfit)}
+            <div className="text-[12.5px] font-medium text-muted">Net profit</div>
+            <div className="flex items-end gap-2.5 mt-1.5">
+              <span className="text-[26px] font-bold tabular-nums leading-none"
+                style={{ color: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose }}>
+                {fmtAmount(aProfit)}
+              </span>
+              {momLast && momPrev && <MomChip now={momLast.profit} prev={momPrev.profit} />}
             </div>
             <div className="text-[11px] text-faint mt-1.5">after all costs</div>
           </div>
           <div className="p-5 border-t border-line lg:border-t-0">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">Avg margin</div>
+            <div className="text-[12.5px] font-medium text-muted">Avg margin</div>
             <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{aMargin.toFixed(1)}%</div>
             <div className="text-[11px] text-faint mt-1.5">across closed deals</div>
           </div>
           <div className="p-5 border-t border-line lg:border-t-0">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted">Outstanding</div>
+            <div className="text-[12.5px] font-medium text-muted">Outstanding</div>
             <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
               style={{ color: stats.outstanding > 0 ? CLR.amber : "var(--t-tx1)" }}>
               {fmtAmount(aOutstanding)}
@@ -311,14 +322,9 @@ export default function AnalyticsView() {
             <div className="text-[11px] text-faint mt-1.5">awaiting payment</div>
           </div>
         </div>
-      </div>
 
-      {/* ── Monthly Revenue vs Profit ──────────────────────────────
-          Grouped BarChart — two bars side by side per month.
-          No ComposedChart / Line so single-month data still looks fine.
-      ─────────────────────────────────────────────────────────── */}
-      <div className="bg-surface border border-line rounded-xl p-5
-                      animate-fade-up [animation-fill-mode:backwards] stagger-2">
+        {/* Lead insight: the revenue/profit story lives inside the same card. */}
+        <div className="px-5 pb-5 pt-4 border-t border-line-2">
         <div className="flex items-start justify-between mb-5">
           <div>
             <h3 className="text-[13px] font-semibold text-ink">Monthly revenue vs profit</h3>
@@ -352,6 +358,7 @@ export default function AnalyticsView() {
             </BarChart>
           </ResponsiveContainer>
         ) : <Blank h={300} />}
+        </div>
       </div>
 
       {/* ── Row: Profit Trend (area) + Client Mix (donut) ──────────
@@ -361,8 +368,7 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Profit Trend — area */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-2">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Profit trend</h3>
           <p className="text-[11px] text-muted mb-5">Net profit by month</p>
           {monthly.length > 0 ? (
@@ -370,8 +376,8 @@ export default function AnalyticsView() {
               <AreaChart data={monthly} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
                 <defs>
                   <linearGradient id="anProfitArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"   stopColor="#34D399" stopOpacity={0.34} />
-                    <stop offset="100%" stopColor="#14B8A6" stopOpacity={0.02} />
+                    <stop offset="0%"   stopColor={CLR.emerald} stopOpacity={0.30} />
+                    <stop offset="100%" stopColor={CLR.emerald} stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="2 4" stroke={P.grid} vertical={false} />
@@ -379,7 +385,7 @@ export default function AnalyticsView() {
                 <YAxis tick={AX} axisLine={false} tickLine={false}
                   tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
                 <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-                <Area type="monotone" dataKey="profit" stroke="#10B981" strokeWidth={2.5}
+                <Area type="monotone" dataKey="profit" stroke={CLR.emerald} strokeWidth={2.5}
                   fill="url(#anProfitArea)" isAnimationActive animationDuration={900} />
               </AreaChart>
             </ResponsiveContainer>
@@ -387,8 +393,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Client Mix — donut */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-3">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client mix</h3>
           <p className="text-[11px] text-muted mb-5">Share of clients by tier</p>
           {totalCl > 0 ? (
@@ -413,8 +418,7 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Invoice Status */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-2">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice status</h3>
           <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices</p>
 
@@ -454,17 +458,14 @@ export default function AnalyticsView() {
         </div>
 
         {/* Top Spenders */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-3">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top spenders</h3>
           <p className="text-[11px] text-muted mb-4">By total revenue collected</p>
 
           {stats.top_spenders.length > 0 ? (
             <div className="space-y-1">
               {stats.top_spenders.map((c, i) => (
-                <div key={i} className="relative rounded-xl overflow-hidden
-                                        animate-fade-up [animation-fill-mode:backwards]"
-                  style={{ animationDelay: `${i * 50}ms` }}>
+                <div key={i} className="relative rounded-xl overflow-hidden">
                   {/* Proportional fill behind each row */}
                   <div className="absolute inset-y-0 left-0 rounded-xl transition-all duration-700 ease-out"
                     style={{
@@ -505,8 +506,7 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Client Tiers */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-2">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client tiers</h3>
           <p className="text-[11px] text-muted mb-5">{totalCl} clients</p>
 
@@ -557,8 +557,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Category breakdown */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-3">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category breakdown</h3>
           <p className="text-[11px] text-muted mb-5">Revenue by client category</p>
 
@@ -600,8 +599,7 @@ export default function AnalyticsView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Most Profitable */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-2">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Most profitable</h3>
           <p className="text-[11px] text-muted mb-5">By net profit margin</p>
 
@@ -640,9 +638,8 @@ export default function AnalyticsView() {
         </div>
 
         {/* Financial snapshot */}
-        <div className="bg-surface border border-line rounded-xl p-5
-                        animate-fade-up [animation-fill-mode:backwards] stagger-3">
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5">
+          <p className="text-[12.5px] font-medium text-muted mb-5">
             Financial snapshot
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
@@ -656,7 +653,7 @@ export default function AnalyticsView() {
               { label: "Open closeouts", value: String(stats.incomplete_shipping),  clr: "var(--t-tx1)" },
             ].map((item) => (
               <div key={item.label}>
-                <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">
+                <div className="text-[12.5px] font-medium text-muted mb-1.5">
                   {item.label}
                 </div>
                 <div className="text-[20px] font-bold tabular-nums leading-none"
@@ -674,6 +671,20 @@ export default function AnalyticsView() {
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────
+
+// Small month-over-month movement chip on lead stats.
+function MomChip({ now, prev }: { now: number; prev: number }) {
+  if (!prev) return null;
+  const pct = ((now - prev) / Math.abs(prev)) * 100;
+  const up = pct >= 0;
+  return (
+    <span title="vs prior month"
+      className={`inline-flex items-center gap-0.5 h-5 px-1.5 rounded-full text-[10.5px] font-semibold tabular-nums flex-shrink-0 ${up ? "bg-success-bg text-success-ink" : "bg-danger-bg text-danger-ink"}`}>
+      {up ? <TrendingUp size={11} strokeWidth={2} /> : <TrendingDown size={11} strokeWidth={2} />}
+      {Math.abs(pct).toFixed(0)}%
+    </span>
+  );
+}
 
 function Legend({ color, label }: { color: string; label: string }) {
   return (

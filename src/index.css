@@ -1,8 +1,25 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+/* ── Brand type: Satoshi — self-hosted ── */
+@font-face {
+  font-family: 'Satoshi'; font-weight: 400; font-style: normal; font-display: swap;
+  src: url('/fonts/Satoshi-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Satoshi'; font-weight: 500; font-style: normal; font-display: swap;
+  src: url('/fonts/Satoshi-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Satoshi'; font-weight: 600 700; font-style: normal; font-display: swap;
+  src: url('/fonts/Satoshi-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Satoshi'; font-weight: 800 900; font-style: normal; font-display: swap;
+  src: url('/fonts/Satoshi-900.woff2') format('woff2');
+}
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
 
 /* ── Light theme tokens ───────────────────────────────────── */
 :root {
@@ -56,35 +73,36 @@
   --radius-2xl:  16px;
   --radius-full: 9999px;
 
-  /* ── Semantic surface / text / border tokens ── */
-  --t-bg:  #F4F3F1;
+  /* ── Semantic surface / text / border tokens ──
+        Light = warm paper page (not stark white), white cards, deep ink. */
+  --t-bg:  #FAFAF9;
   --t-s1:  #FFFFFF;
-  --t-s2:  #F7F7FB;
-  --t-s3:  #F0F0F4;
-  --t-tx1: #0F1117;
-  --t-tx2: #374151;
-  --t-tx3: #6B7280;
-  --t-tx4: #9CA3AF;
-  --t-b1:  #EBEBEF;
-  --t-b2:  #F4F4F8;
-  --t-b3:  #E5E7EB;
+  --t-s2:  #F6F6F3;
+  --t-s3:  #F0EFEC;
+  --t-tx1: #15171C;
+  --t-tx2: #3A3F49;
+  --t-tx3: #6B7078;
+  --t-tx4: #9CA0A8;
+  --t-b1:  #ECEBE7;
+  --t-b2:  #F4F3F0;
+  --t-b3:  #E2E1DC;
   --t-input-bg:     #FFFFFF;
-  --t-input-border: #E5E7EB;
-  --t-input-focus:  #FAFAFE;
+  --t-input-border: #E2E1DC;
+  --t-input-focus:  #FBFBFA;
 
   /* ── Semantic color tokens (RGB triplets → Tailwind w/ alpha support).
         Components use bg-surface / text-ink / border-line / bg-accent etc.,
         which adapt automatically under html.dark. ── */
   --c-surface:      255 255 255;
-  --c-surface-2:    247 247 251;
-  --c-surface-3:    240 240 244;
-  --c-ink:           15 17 23;
-  --c-ink-2:         55 65 81;
-  --c-muted:        107 114 128;
-  --c-faint:        156 163 175;
-  --c-line:         235 235 239;
-  --c-line-2:       244 244 248;
-  --c-line-3:       229 231 235;
+  --c-surface-2:    246 246 243;
+  --c-surface-3:    240 239 236;
+  --c-ink:           21 23 28;
+  --c-ink-2:         58 63 73;
+  --c-muted:        107 112 120;
+  --c-faint:        156 160 168;
+  --c-line:         236 235 231;
+  --c-line-2:       244 243 240;
+  --c-line-3:       226 225 220;
   --c-accent: 37 99 235;
   --c-accent-hover: 29 78 216;
   /* Foreground on the accent fill. Light theme accents are deep → white reads;
@@ -119,38 +137,40 @@ html.dark {
   --shadow-panel: 0 0 0 1px rgba(255,255,255,0.05), 0 8px 32px rgba(0,0,0,0.4);
   --shadow-modal: 0 32px 80px rgba(0,0,0,0.6), 0 8px 32px rgba(0,0,0,0.4);
 
-  --t-bg:  #0A0A0B;
-  --t-s1:  #161618;
-  --t-s2:  #1D1D20;
-  --t-s3:  #242428;
-  --t-tx1: #EDEDEF;
-  --t-tx2: #B6B6BE;
-  --t-tx3: #7C7C84;
-  --t-tx4: #56565E;
-  --t-b1:  #29292E;
-  --t-b2:  #1E1E22;
-  --t-b3:  #38383F;
-  --t-input-bg:     #1D1D20;
-  --t-input-border: #29292E;
-  --t-input-focus:  #242428;
+  /* Blue-cast near-black: page → surface → raised, ink #F2F4F8, cool hairlines. */
+  --t-bg:  #0B0D12;
+  --t-s1:  #12151C;
+  --t-s2:  #181C24;
+  --t-s3:  #1F242E;
+  --t-tx1: #F2F4F8;
+  --t-tx2: #BAC1CD;
+  --t-tx3: #7E8798;
+  --t-tx4: #566072;
+  --t-b1:  #232A36;
+  --t-b2:  #1A1F29;
+  --t-b3:  #323B4A;
+  --t-input-bg:     #181C24;
+  --t-input-border: #232A36;
+  --t-input-focus:  #1F242E;
 
-  /* Semantic tokens — matte-black dark values */
-  --c-surface:       22 22 24;
-  --c-surface-2:     29 29 32;
-  --c-surface-3:     36 36 40;
-  --c-ink:          237 237 239;
-  --c-ink-2:        182 182 190;
-  --c-muted:        150 150 158;
-  --c-faint:        134 134 142;
-  --c-line:          41 41 46;
-  --c-line-2:        30 30 34;
-  --c-line-3:        56 56 63;
+  /* Semantic tokens — blue-cast dark values */
+  --c-surface:       18 21 28;
+  --c-surface-2:     24 28 36;
+  --c-surface-3:     31 36 46;
+  --c-ink:          242 244 248;
+  --c-ink-2:        186 193 205;
+  --c-muted:        148 156 170;
+  --c-faint:        126 135 152;
+  --c-line:          35 42 54;
+  --c-line-2:        26 31 41;
+  --c-line-3:        50 59 74;
   --c-accent: 96 165 250;
   --c-accent-hover: 147 197 253;
-  --c-on-accent: 17 17 19;
-  --c-success:       52 211 153;
-  --c-success-bg:    19 48 31;
-  --c-success-ink:  110 231 183;
+  --c-on-accent: 12 15 22;
+  /* Money-positive green: confident, not neon. */
+  --c-success:       62 199 133;
+  --c-success-bg:    16 42 32;
+  --c-success-ink:  138 224 179;
   --c-warning:      251 191 36;
   --c-warning-bg:    54 40 10;
   --c-warning-ink:  253 230 138;
@@ -260,7 +280,7 @@ html, body, #root { height: 100%; }
 body {
   background-color: var(--color-bg);
   color: var(--t-tx1);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -290,7 +310,7 @@ html.dark ::selection { background: var(--accent-glow); color: var(--accent-100)
   height: 36px;
   padding: 0 10px;
   font-size: 13px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Satoshi', system-ui, sans-serif;
   border: 1px solid var(--t-input-border);
   border-radius: 8px;
   background: var(--t-input-bg);
@@ -847,24 +867,26 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
    moves. Negative offsets center the 12px circle on the wrap origin. */
 .globe-dot {
   position: absolute;
-  left: -5px; top: -5px;
-  width: 10px; height: 10px;
+  /* Per-tier visuals set inline: --dot-s size, --dot-c color triplet, --dot-glow strength. */
+  --dot-s: 10px; --dot-c: 139,147,168; --dot-glow: 0.45;
+  left: calc(var(--dot-s) / -2); top: calc(var(--dot-s) / -2);
+  width: var(--dot-s); height: var(--dot-s);
   border-radius: 50%;
   cursor: pointer;
   pointer-events: auto;
   transition: transform 0.14s cubic-bezier(0.16,1,0.3,1);
-  /* Crisp dark seat + bright bloom so each pin reads cleanly over the globe. */
+  /* Crisp dark seat + tier-colored bloom so each pin reads cleanly over the globe. */
   box-shadow:
     0 0 0 1.5px rgba(8,10,22,0.9),
-    0 0 7px 1px rgba(239,68,68,0.65),
-    0 0 15px 3px rgba(239,68,68,0.30);
+    0 0 7px 1px rgba(var(--dot-c), calc(var(--dot-glow) + 0.15)),
+    0 0 15px 3px rgba(var(--dot-c), calc(var(--dot-glow) * 0.5));
 }
 /* Soft expanding halo — one GPU-composited ring per pin (transform+opacity only). */
 .globe-dot::after {
   content: "";
   position: absolute; inset: -2px;
   border-radius: 50%;
-  border: 1.5px solid rgba(239,68,68,0.55);
+  border: 1.5px solid rgba(var(--dot-c), 0.55);
   animation: globeDotPulse 3s ease-out infinite;
   pointer-events: none;
 }
@@ -878,8 +900,41 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   z-index: 10;
   box-shadow:
     0 0 0 1.5px rgba(8,10,22,0.9),
-    0 0 10px 2px rgba(239,68,68,0.85),
-    0 0 22px 5px rgba(239,68,68,0.45);
+    0 0 10px 2px rgba(var(--dot-c), 0.85),
+    0 0 22px 5px rgba(var(--dot-c), 0.45);
+}
+
+/* Globe overlay chrome — fixed dark glass (the globe scene is always space). */
+.globe-glass {
+  background: rgba(10, 12, 24, 0.82);
+  border: 1px solid rgba(165, 180, 252, 0.16);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+}
+.globe-chips {
+  position: absolute; top: 18px; left: 18px; z-index: 6;
+  display: flex; gap: 6px; padding: 4px;
+}
+.globe-chip {
+  height: 28px; padding: 0 11px; border-radius: 8px;
+  font-size: 12px; font-weight: 500; color: #A9B1C6;
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+.globe-chip:hover { color: #E7ECF6; background: rgba(165,180,252,0.10); }
+.globe-chip.on { color: #F2F4F8; background: rgba(96,165,250,0.22); }
+.globe-search-wrap {
+  position: absolute; top: 18px; right: 64px; z-index: 6; width: 240px;
+}
+.globe-search-wrap input {
+  width: 100%; height: 34px; padding: 0 12px 0 32px;
+  font-size: 12.5px; color: #F2F4F8; outline: none;
+  background: transparent; border: none;
+}
+.globe-search-wrap input::placeholder { color: #6B7488; }
+.globe-legend {
+  position: absolute; left: 18px; bottom: 56px; z-index: 6;
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 12px; font-size: 11px; color: #A9B1C6;
 }
 @media (prefers-reduced-motion: reduce) { .globe-dot::after { animation: none; } }
 
@@ -921,7 +976,7 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   padding: 6px 10px;
   white-space: nowrap;
   font-size: 11px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Satoshi', system-ui, sans-serif;
   color: #eef0f6;
   opacity: 0;
   transition: opacity 0.15s;
@@ -1021,4 +1076,35 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   background: rgba(99, 102, 241, 0.18);
   border-color: rgba(165, 180, 252, 0.4);
   color: #6EE7B7;
+}
+
+/* ── Life: page atmosphere — a whisper of accent light + film grain ─────────
+   Static and GPU-cheap. Both pseudo layers are pointer-transparent; the grain
+   is a tiled SVG feTurbulence data-URI at ~2% opacity. */
+.page-atmosphere {
+  position: relative;
+  isolation: isolate;
+}
+.page-atmosphere::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: radial-gradient(58% 42% at 50% -6%, rgb(var(--c-accent) / 0.05), transparent 72%);
+}
+.page-atmosphere::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  opacity: 0.02;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Dashboard gets a slightly stronger eclipse-glow header wash. */
+.dashboard-glow::before {
+  background:
+    radial-gradient(52% 34% at 50% -4%, rgb(var(--c-accent) / 0.10), transparent 70%),
+    radial-gradient(30% 22% at 78% -2%, rgb(var(--c-accent) / 0.05), transparent 70%);
+}
+
+/* Visible, on-brand focus rings (keyboard nav) without hunting per element. */
+:where(button, a, input, select, textarea, [role="switch"]):focus-visible {
+  outline: 2px solid rgb(var(--c-accent) / 0.55);
+  outline-offset: 1px;
+  border-radius: 6px;
 }

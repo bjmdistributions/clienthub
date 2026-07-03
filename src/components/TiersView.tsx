@@ -71,7 +71,7 @@ export default function TiersView() {
             <button
               key={t}
               onClick={() => setFilter(filter === t ? "all" : t)}
-              className={`bg-surface border rounded-xl p-3.5 text-left transition-all duration-150 hover:-translate-y-0.5 hover:shadow-[0_4px_12px_rgba(0,0,0,0.07)] ${
+              className={`bg-surface border rounded-xl p-3.5 text-left transition-shadow hover:shadow-[0_4px_12px_rgba(0,0,0,0.07)] ${
                 filter === t ? "ring-2 ring-accent/50 border-accent/20" : "border-line"
               }`}
             >
@@ -124,15 +124,15 @@ export default function TiersView() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-line-2">
-              <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
-              <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Tier</th>
-              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Spend / Freq.</th>
-              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Actually paid</th>
-              <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Invoices</th>
-              <th className="text-center px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Quotes</th>
-              <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Reliability</th>
-              <th className="text-right px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Avg margin</th>
-              <th className="text-left px-5 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Frequency</th>
+              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Client</th>
+              <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Tier</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Spend / Freq.</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Actually paid</th>
+              <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Invoices</th>
+              <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Quotes</th>
+              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Reliability</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg margin</th>
+              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Frequency</th>
             </tr>
           </thead>
           <tbody>
@@ -141,7 +141,6 @@ export default function TiersView() {
                 key={t.client_id}
                 onClick={() => setDetailId(t.client_id)}
                 className="border-b border-line-2 last:border-0 hover:bg-surface-2/60 transition-colors cursor-pointer"
-                style={{ animationDelay: `${i * 20}ms` }}
               >
                 <td className="px-5 py-3 text-[13px] font-medium text-ink">{t.client_name}</td>
                 <td className="px-5 py-3 text-center">

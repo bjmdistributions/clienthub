@@ -35,7 +35,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
   return (
     <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-2">
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">Store Credit</div>
+        <div className="text-[12.5px] font-medium text-muted">Store Credit</div>
         <div className={`text-[18px] font-bold tabular-nums ${balance > 0 ? "text-success-ink" : "text-ink"}`}>{fmtAmount(balance)}</div>
       </div>
       <button onClick={() => setOpen((o) => !o)} className="text-[12px] text-muted hover:text-ink-2 underline underline-offset-2">

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ApprovalRequest, type Client, type ClientInput } from "../lib/api";
 import PendingReviewModal from "./PendingReviewModal";
-import { UserPlus, Inbox, ChevronRight } from "lucide-react";
+import { UserPlus, Inbox, ChevronRight, X } from "lucide-react";
 
 const kindLabel = (k: string) =>
   k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k;
@@ -34,7 +34,7 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
   const set = (key: keyof ClientInput, v: string) => setForm((f) => (f ? { ...f, [key]: v } : f));
   const Field = ({ label, k }: { label: string; k: keyof ClientInput }) => (
     <div>
-      <label className="block text-[10px] uppercase tracking-wide text-muted mb-1">{label}</label>
+      <label className="block text-[12px] font-medium text-muted mb-1">{label}</label>
       <input
         className="w-full bg-surface-2 border border-line rounded-lg h-9 px-3 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
         value={(form as any)?.[k] ?? ""}
@@ -60,7 +60,7 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
       <div className="bg-surface border border-line rounded-2xl w-full max-w-md p-5 max-h-[88vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <h3 className="text-[15px] font-semibold text-ink">{kindLabel(a.kind)}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink text-[15px] leading-none">✕</button>
+          <button onClick={onClose} className="text-muted hover:text-ink p-0.5"><X size={15} /></button>
         </div>
         <div className="text-[11px] text-muted mb-4">
           {a.requested_by_name ? `Requested by ${a.requested_by_name} · ` : ""}{new Date(a.created_at).toLocaleString()}

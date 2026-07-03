@@ -149,7 +149,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
           {/* Message */}
           <section>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Message</span>
+              <span className="text-[12.5px] font-medium" style={{ color: "var(--t-tx4)" }}>Message</span>
               <button onClick={regenerate} className="flex items-center gap-1 text-[11px]" style={{ color: "var(--t-tx3)" }}>
                 <RefreshCw size={11} /> Regenerate
               </button>
@@ -177,7 +177,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
           {/* Files, grouped per lot */}
           <section>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Files</span>
+              <span className="text-[12.5px] font-medium" style={{ color: "var(--t-tx4)" }}>Files</span>
               <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--t-tx4)" }}><GripVertical size={11} /> drag into the chat →</span>
             </div>
             <div className="space-y-2.5 mt-2">
@@ -237,7 +237,7 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
 
           {/* Steps */}
           <section>
-            <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>How to send</span>
+            <span className="text-[12.5px] font-medium" style={{ color: "var(--t-tx4)" }}>How to send</span>
             <ol className="space-y-1.5 mt-2 text-[12px]" style={{ color: "var(--t-tx3)" }}>
               <li className="flex items-center gap-2"><Check size={12} className="text-success-ink" /> Message copied to clipboard</li>
               <li>2. Open your group chat in the WhatsApp panel →</li>

@@ -117,7 +117,7 @@ function StatTile({ label, value, tone = "ink", hint }: { label: string; value: 
   const valCls = tone === "success" ? "text-success-ink" : tone === "warning" ? "text-warning-ink" : tone === "danger" ? "text-danger-ink" : tone === "muted" ? "text-muted" : "text-ink";
   return (
     <div className="bg-surface-2/60 border border-line-2 rounded-xl px-3.5 py-3">
-      <div className="text-[10px] font-semibold text-muted uppercase tracking-wide">{label}</div>
+      <div className="text-[12.5px] font-medium text-muted tracking-wide">{label}</div>
       <div className={`text-[17px] font-bold tabular-nums mt-1 truncate ${valCls}`}>{value}</div>
       {hint && <div className="text-[10px] text-faint truncate mt-0.5">{hint}</div>}
     </div>
@@ -364,7 +364,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         )}
 
         <div className="mt-4 pt-4 border-t border-line-2">
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Client portal</p>
+          <p className="text-[12.5px] font-medium text-muted mb-2">Client portal</p>
           {portalLink ? (
             <>
               <div className="flex items-center gap-2">
@@ -385,7 +385,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
         {client.notes && (
           <div className="mt-4 pt-4 border-t border-line-2">
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Notes</p>
+            <p className="text-[12.5px] font-medium text-muted mb-1.5">Notes</p>
             <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
           </div>
         )}
@@ -425,7 +425,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             {client.metadata.last_contact_date && <MetaRow label="Last Contact" value={client.metadata.last_contact_date} />}
             {client.metadata.next_follow_up_date && (
               <div className="mt-2 first:mt-0">
-                <span className="block text-[11px] font-medium text-muted uppercase tracking-wide mb-1">Follow Up</span>
+                <span className="block text-[12.5px] font-medium text-muted mb-1">Follow Up</span>
                 <input
                   type="date"
                   className="border border-line-3 px-2 h-8 rounded-md text-[13px] w-full focus:outline-none focus:ring-1 focus:ring-accent"
@@ -703,7 +703,7 @@ function MetadataCard({
   if (!hasContent) return null;
   return (
     <div className="bg-surface border border-line rounded-lg p-4">
-      <h3 className="text-[12px] font-semibold text-muted uppercase tracking-wide flex items-center gap-2 mb-3 pb-2 border-b border-line">
+      <h3 className="text-[13px] font-semibold text-ink-2 flex items-center gap-2 mb-3 pb-2 border-b border-line">
         {icon}
         {title}
       </h3>
@@ -715,7 +715,7 @@ function MetadataCard({
 function MetaRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="mt-2 first:mt-0">
-      {label && <span className="block text-[11px] font-medium text-muted uppercase tracking-wide">{label}</span>}
+      {label && <span className="block text-[12.5px] font-medium text-muted">{label}</span>}
       <span className="text-[13px] text-ink">{value}</span>
     </div>
   );

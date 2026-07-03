@@ -838,7 +838,7 @@ function NewsletterTab() {
 
         {/* Audience — the primary control, always visible (was buried in a collapse) */}
         <div className="px-3 py-2.5 border-b border-line">
-          <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">Audience</div>
+          <div className="text-[12px] font-medium text-muted mb-1.5">Audience</div>
           <div className="flex flex-wrap gap-1.5 mb-2.5">
             {([["all", "Everyone"], ["ranked", "Ranked buyers"]] as [string, string][]).map(([v, l]) => (
               <button key={v} onClick={() => setTierFilter(v as "all" | "ranked")}
@@ -875,7 +875,7 @@ function NewsletterTab() {
           </button>
           {showFilters && (
             <div className="mt-2">
-              <div className="text-[10px] uppercase tracking-wide text-muted mb-1.5">Exclude</div>
+              <div className="text-[12px] font-medium text-muted mb-1.5">Exclude</div>
               <div className="flex flex-wrap gap-1.5">
                 {([
                   ["Dormant", excludeDormant, setExcludeDormant],
@@ -1354,7 +1354,7 @@ function RecurringTab() {
   const [category, setCategory] = useState("");
 
   const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
-  const lbl = "block text-[10px] font-medium text-muted uppercase tracking-widest mb-1";
+  const lbl = "block text-[12.5px] font-medium text-muted mb-1";
 
   const load = () => {
     api.listNewsletterSchedules().then(setSchedules).catch((e) => setError(e.toString()));

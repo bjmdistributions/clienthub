@@ -199,7 +199,7 @@ export default function DealsView() {
             onDrop={(e) => onDrop(e, stage)}
           >
             <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-              <span className={`text-[12px] font-semibold uppercase tracking-wide ${stageColor(stage).split(" ")[1]}`}>
+              <span className={`text-[12.5px] font-semibold ${stageColor(stage).split(" ")[1]}`}>
                 {stageLabel(stage)}
               </span>
               <span className="bg-surface-3 text-ink-2 text-[11px] font-medium px-2 py-0.5 rounded-full">
@@ -342,7 +342,7 @@ function DealDetailPanel({
         <div className="p-6 space-y-5">
           {/* Client */}
           <div>
-            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Client</label>
+            <label className="text-[12.5px] font-medium text-muted">Client</label>
             <input
               placeholder="Search client…"
               value={clients.find((c) => c.id === input.client_id)?.name || clientSearch}
@@ -366,12 +366,12 @@ function DealDetailPanel({
           {/* Title + Stage */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Deal title</label>
+              <label className="text-[12.5px] font-medium text-muted">Deal title</label>
               <input className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent"
                 value={input.title} onChange={(e) => onChange({ ...input, title: e.target.value })} />
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Stage</label>
+              <label className="text-[12.5px] font-medium text-muted">Stage</label>
               <select value={input.stage || "lead"} onChange={(e) => onChange({ ...input, stage: e.target.value })}
                 className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent">
                 {STAGES.map((s) => <option key={s} value={s}>{stageLabel(s)}</option>)}
@@ -381,7 +381,7 @@ function DealDetailPanel({
 
           {/* Line Items */}
           <div>
-            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Line items</label>
+            <label className="text-[12.5px] font-medium text-muted">Line items</label>
             <div className="mt-2 space-y-2">
               {input.line_items.map((it, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2">
@@ -409,7 +409,7 @@ function DealDetailPanel({
 
           {/* Supplier Costs */}
           <div>
-            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Supplier costs</label>
+            <label className="text-[12.5px] font-medium text-muted">Supplier costs</label>
             <div className="mt-2 space-y-2">
               {input.supplier_costs.map((sc, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2">
@@ -446,7 +446,7 @@ function DealDetailPanel({
           {/* Costs + Price */}
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Shipping</label>
+              <label className="text-[12.5px] font-medium text-muted">Shipping</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line-3 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -454,7 +454,7 @@ function DealDetailPanel({
               </div>
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Other costs</label>
+              <label className="text-[12.5px] font-medium text-muted">Other costs</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line-3 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -462,7 +462,7 @@ function DealDetailPanel({
               </div>
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Asking price</label>
+              <label className="text-[12.5px] font-medium text-muted">Asking price</label>
               <div className="relative mt-1">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line-3 pl-5 pr-2 h-10 rounded-md text-[14px] focus:outline-none focus:ring-1 focus:ring-accent"
@@ -475,21 +475,21 @@ function DealDetailPanel({
           <div className="bg-surface-2 border border-line rounded-lg p-4">
             <div className="grid grid-cols-4 gap-3 text-[13px]">
               <div>
-                <div className="text-muted text-[11px] uppercase tracking-wide">Revenue</div>
+                <div className="text-[12px] font-medium text-muted">Revenue</div>
                 <div className="font-semibold text-ink mt-0.5">{fmtAmount(input.asking_price || 0)}</div>
               </div>
               <div>
-                <div className="text-muted text-[11px] uppercase tracking-wide">Costs</div>
+                <div className="text-[12px] font-medium text-muted">Costs</div>
                 <div className="font-semibold text-ink mt-0.5">{fmtAmount(totalCost)}</div>
               </div>
               <div>
-                <div className="text-muted text-[11px] uppercase tracking-wide">Profit</div>
+                <div className="text-[12px] font-medium text-muted">Profit</div>
                 <div className={`font-semibold mt-0.5 ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
                   {fmtAmount(profit)}
                 </div>
               </div>
               <div>
-                <div className="text-muted text-[11px] uppercase tracking-wide">Margin</div>
+                <div className="text-[12px] font-medium text-muted">Margin</div>
                 <div className={`font-semibold mt-0.5 ${margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink"}`}>
                   {margin.toFixed(1)}%
                 </div>
@@ -500,18 +500,18 @@ function DealDetailPanel({
           {/* Optional fields */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Payment terms</label>
+              <label className="text-[12.5px] font-medium text-muted">Payment terms</label>
               <input className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent"
                 value={input.payment_terms || ""} onChange={(e) => onChange({ ...input, payment_terms: e.target.value })} />
             </div>
             <div>
-              <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Expected close</label>
+              <label className="text-[12.5px] font-medium text-muted">Expected close</label>
               <input type="date" className="mt-1 border border-line-3 px-3 h-10 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent"
                 value={input.expected_close_date || ""} onChange={(e) => onChange({ ...input, expected_close_date: e.target.value })} />
             </div>
           </div>
           <div>
-            <label className="text-[11px] font-medium text-muted uppercase tracking-wide">Notes</label>
+            <label className="text-[12.5px] font-medium text-muted">Notes</label>
             <textarea rows={2} className="mt-1 border border-line-3 px-3 py-2 rounded-md text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent resize-none"
               value={input.notes || ""} onChange={(e) => onChange({ ...input, notes: e.target.value })} />
           </div>

@@ -64,7 +64,7 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
   return (
     <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">
+        <div className="text-[12.5px] font-medium text-muted">
           Payout{enabled && payout.lead_rep_id ? " & Lead Rep" : ""}{refunded > 0 ? " · Refunded" : ""}
         </div>
         {refunded > 0 && (
@@ -112,7 +112,7 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
 
       {/* Owner splits (after rep + refund) */}
       <div>
-        <div className="text-[10px] text-muted uppercase tracking-widest mb-2">
+        <div className="text-[12px] font-medium text-muted mb-2">
           Owner split{refunded > 0 ? " (after refund)" : ""}
         </div>
         <div className="grid grid-cols-3 gap-4 text-center">

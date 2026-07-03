@@ -232,7 +232,7 @@ export default function SuppliersView() {
                         : "None" },
                   ].map((st) => (
                     <div key={st.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2">
-                      <div className="text-[9px] uppercase font-semibold text-muted tracking-wider">{st.label}</div>
+                      <div className="text-[11.5px] font-medium text-muted">{st.label}</div>
                       <div className="text-[13px] font-bold text-ink mt-0.5 tabular-nums">{st.value}</div>
                     </div>
                   ))}
@@ -241,7 +241,7 @@ export default function SuppliersView() {
 
               {/* Core info */}
               <div className="space-y-3">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Supplier info</p>
+                <p className="text-[12.5px] font-medium text-muted">Supplier info</p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Supplier name *">
                     <input value={input.name} onChange={(e) => setInput({ ...input, name: e.target.value })} className="field-input" />
@@ -263,7 +263,7 @@ export default function SuppliersView() {
 
               {/* Payment */}
               <div className="space-y-3">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Payment</p>
+                <p className="text-[12.5px] font-medium text-muted">Payment</p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Payment method">
                     <input value={input.payment_method || ""} onChange={(e) => setInput({ ...input, payment_method: e.target.value })} className="field-input" placeholder="e.g. Bank Transfer" />
@@ -279,7 +279,7 @@ export default function SuppliersView() {
 
               {/* Logistics */}
               <div className="space-y-3">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">Logistics</p>
+                <p className="text-[12.5px] font-medium text-muted">Logistics</p>
                 <Field label="Typical lead time">
                   <input value={input.typical_lead_time || ""} onChange={(e) => setInput({ ...input, typical_lead_time: e.target.value })} className="field-input" placeholder="e.g. 3-5 business days" />
                 </Field>
@@ -295,7 +295,7 @@ export default function SuppliersView() {
                     onClick={() => setDealsOpen((v) => !v)}
                     className="w-full flex items-center justify-between text-left"
                   >
-                    <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">
+                    <p className="text-[12.5px] font-medium text-muted">
                       Completed deals ({supplierDeals.length})
                     </p>
                     <ChevronDown size={13} className={`text-muted transition-transform ${dealsOpen ? "rotate-180" : ""}`} />
@@ -363,9 +363,9 @@ export default function SuppliersView() {
               {/* Price history */}
               {selected && history.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Price history</p>
+                  <p className="text-[12.5px] font-medium text-muted mb-2">Price history</p>
                   <div className="border border-line rounded-lg overflow-hidden">
-                    <div className="grid grid-cols-4 px-3 py-2 bg-surface-2 text-[10px] font-semibold text-muted uppercase tracking-widest">
+                    <div className="grid grid-cols-4 px-3 py-2 bg-surface-2 text-[12.5px] font-medium text-muted">
                       <span>Date</span><span>Item</span><span>Qty</span><span>Price</span>
                     </div>
                     {history.map((h) => (

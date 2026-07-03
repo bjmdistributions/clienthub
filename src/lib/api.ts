@@ -966,6 +966,11 @@ export interface DashboardStats {
   total_clients: number;
   open_deals: number;
   completed_this_month: number;
+  // Hero money — revenue = paid invoices, profit = completed deal flows.
+  revenue_all_time: number;
+  revenue_prev_month: number;
+  profit_all_time: number;
+  profit_prev_month: number;
   paid_ytd: number;
   revenue_this_week: number;
   clients_this_week: number;

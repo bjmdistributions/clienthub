@@ -110,12 +110,12 @@ export default function QuotesView({ onNavigate }: Props) {
         ))}
       </div>
 
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
+      <div className="bg-surface border border-line-2 rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
             <tr className="border-b border-line">
               {["Quote #", "Client", "Issued", "Valid until", "Total", "Status", ""].map((h, i) => (
-                <th key={h} className={`text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted ${i >= 4 ? "text-right" : ""} ${i === 2 ? "hidden md:table-cell" : ""}`}>{h}</th>
+                <th key={h} className={`text-left px-4 py-2.5 text-[12px] font-medium text-muted ${i >= 4 ? "text-right" : ""} ${i === 2 ? "hidden md:table-cell" : ""}`}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -218,7 +218,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusStyle(displayStatus)}`}>{displayStatus}</span>
 
           <div>
-            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-0.5">Client</div>
+            <div className="text-[12.5px] font-medium text-muted mb-0.5">Client</div>
             <div className="text-[14px] font-medium text-ink mt-0.5">{clientName}</div>
           </div>
 
@@ -229,21 +229,21 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
               ...(quote.sent_at ? [{ label: "Sent", val: new Date(quote.sent_at).toLocaleDateString() }] : []),
             ].map((r) => (
               <div key={r.label}>
-                <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">{r.label}</div>
+                <div className="text-[12.5px] font-medium text-muted">{r.label}</div>
                 <div className="text-[13px] text-ink mt-0.5 tabular-nums">{r.val}</div>
               </div>
             ))}
           </div>
 
           <div>
-            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line items</div>
+            <div className="text-[12.5px] font-medium text-muted mb-2">Line items</div>
             <table className="w-full text-[13px]">
               <thead className="bg-surface-2">
                 <tr>
-                  <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Description</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Qty</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Rate</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Amount</th>
+                  <th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Description</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Qty</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Rate</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Amount</th>
                 </tr>
               </thead>
               <tbody>
@@ -267,7 +267,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
 
           {quote.notes && (
             <div>
-              <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Notes</div>
+              <div className="text-[12.5px] font-medium text-muted mb-1">Notes</div>
               <p className="text-[13px] text-ink-2 whitespace-pre-wrap">{quote.notes}</p>
             </div>
           )}
@@ -342,21 +342,21 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
         <div className="p-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Client *</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Client *</label>
               <select className={inp} value={clientId} onChange={(e) => setClientId(e.target.value)}>
                 <option value="">Select a client…</option>
                 {clients.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` — ${c.company}` : ""}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Valid until</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Valid until</label>
               <input type="date" className={inp} value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
             </div>
           </div>
 
           {/* Line items */}
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1.5">Line items</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Line items</label>
             <div className="space-y-2">
               {items.map((it, i) => (
                 <div key={i} className="flex gap-2 items-center">
@@ -373,7 +373,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
 
           <div className="grid grid-cols-2 gap-3 items-end">
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Tax %</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Tax %</label>
               <input className={inp} type="number" step="0.1" value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value); setTaxRate(isNaN(v) ? 0 : v); }} />
             </div>
             <div className="text-right text-[12px] text-muted space-y-0.5 pb-1">
@@ -384,7 +384,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
           </div>
 
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Notes</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Notes</label>
             <textarea className={inp + " h-auto py-2"} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional message shown on the quote" />
           </div>
         </div>

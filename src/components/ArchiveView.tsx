@@ -112,7 +112,7 @@ export default function ArchiveView() {
           </div>
         </div>
       ) : (
-        <div className="bg-surface border border-line rounded-xl divide-y divide-line-2 overflow-hidden">
+        <div className="bg-surface border border-line-2 rounded-xl divide-y divide-line-2 overflow-hidden">
           {filtered.map((it, i) => {
             const meta = KIND_META[it.kind];
             const Icon = meta.icon;

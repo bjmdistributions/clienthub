@@ -4,6 +4,7 @@ import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
 import {
   Users, FileText, Mail, ArrowRight, CheckCircle2, GitBranch,
   ChevronLeft, ChevronRight, Package, CalendarClock, Clock,
+  TrendingUp, TrendingDown,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import PendingReviewModal from "./PendingReviewModal";
@@ -33,6 +34,48 @@ function CompactAmount({ value }: { value: number }) {
   );
 }
 
+// Count-up once when the value arrives — 350ms ease-out, honours reduced motion.
+function useCountUp(target: number, duration = 350): number {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) { setV(target); return; }
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min((now - start) / duration, 1);
+      setV(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return v;
+}
+
+function CountUpAmount({ value }: { value: number }) {
+  const v = useCountUp(value);
+  return <>{fmtAmount(Math.round(v))}</>;
+}
+
+function CountUpInt({ value }: { value: number }) {
+  const v = useCountUp(value);
+  return <>{Math.round(v).toLocaleString()}</>;
+}
+
+// Month-over-previous-month movement chip (only meaningful in monthly mode).
+function DeltaChip({ now, prev }: { now: number; prev: number }) {
+  if (!prev) return null;
+  const pct = ((now - prev) / Math.abs(prev)) * 100;
+  const up = pct >= 0;
+  return (
+    <span title={`vs last month (${fmtAmount(prev)})`}
+      className={`inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] font-semibold tabular-nums ${up ? "bg-success-bg text-success-ink" : "bg-danger-bg text-danger-ink"}`}>
+      {up ? <TrendingUp size={12} strokeWidth={2} /> : <TrendingDown size={12} strokeWidth={2} />}
+      {Math.abs(pct).toFixed(0)}%
+    </span>
+  );
+}
+
 
 export default function DashboardView({ onNavigate, me }: Props) {
   // Org money (cash position, revenue, profit) is hidden from reps/viewers
@@ -50,6 +93,14 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const [profitMonth, setProfitMonth]   = useState(() => new Date().toISOString().slice(0, 7));
   const [dailyProfit, setDailyProfit]   = useState<{ day: string; profit: number; revenue: number }[]>([]);
   const [chartMetric, setChartMetric]   = useState<"profit" | "revenue">("profit");
+  // Hero range toggle — persisted so the dashboard opens how Jack left it.
+  const [heroRange, setHeroRangeState]  = useState<"month" | "all">(
+    () => (localStorage.getItem("ec_dash_range") as "month" | "all") || "month"
+  );
+  const setHeroRange = (r: "month" | "all") => {
+    setHeroRangeState(r);
+    try { localStorage.setItem("ec_dash_range", r); } catch { /* ignore */ }
+  };
 
   const loadAll = () => {
     api.dueFollowups().then(setFollowups).catch(() => {});
@@ -128,13 +179,17 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const openDeals         = stats?.open_deals ?? 0;
   const completedThisMonth = stats?.completed_this_month ?? 0;
 
+  // Hero money — revenue = paid invoices, profit = completed deal flows.
+  const heroRevenue = heroRange === "month" ? (stats?.revenue_mtd ?? 0) : (stats?.revenue_all_time ?? 0);
+  const heroProfit  = heroRange === "month" ? (stats?.profit_mtd ?? 0)  : (stats?.profit_all_time ?? 0);
+
   const resolvedApproval = (id: string) => {
     setPending((p) => p.filter((x) => x.id !== id));
     window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
 
   return (
-    <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
+    <div className="min-h-full flex flex-col page-atmosphere dashboard-glow" style={{ background: "var(--t-bg)" }}>
 
       {reviewClient && (
         <PendingReviewModal
@@ -154,44 +209,80 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
       <div className="flex-1 p-6 flex flex-col gap-5 max-w-[1200px] w-full mx-auto">
 
-        {/* ── Hero: workspace at a glance (clean counts, everyone) ─ */}
-        {heroLoading ? (
-          <div className="h-[112px] bg-surface-2 rounded-2xl animate-pulse" />
+        {/* ── Hero: Revenue + Profit (money — gated), range toggle ─ */}
+        {showMoney && (heroLoading ? (
+          <div className="h-[168px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
-          <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up">
-            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
-              <button onClick={() => onNavigate("clients")}
-                className="p-6 flex items-center gap-4 text-left hover:bg-surface-2/50 transition-colors">
-                <span className="w-12 h-12 rounded-xl bg-accent/10 text-accent flex items-center justify-center flex-shrink-0"><Users size={22} /></span>
-                <div>
-                  <div className="text-[32px] font-bold text-ink tabular-nums leading-none">{totalClients.toLocaleString()}</div>
-                  <div className="text-[12px] text-muted mt-1">Clients</div>
+          <div className="bg-surface border border-line rounded-2xl p-7">
+            <div className="flex items-center justify-between gap-4 mb-6">
+              <h3 className="text-[13px] font-semibold text-ink-2">Performance</h3>
+              <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
+                {([["month", "This month"], ["all", "All time"]] as ["month" | "all", string][]).map(([r, label]) => (
+                  <button key={r} onClick={() => setHeroRange(r)}
+                    className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${heroRange === r ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
+              <div>
+                <div className="text-[12.5px] font-medium text-muted">Revenue</div>
+                <div className="flex items-end gap-3 mt-2">
+                  <span className="text-[38px] font-bold text-ink tabular-nums leading-none tracking-tight">
+                    <CountUpAmount value={heroRevenue} />
+                  </span>
+                  {heroRange === "month" && <DeltaChip now={heroRevenue} prev={stats?.revenue_prev_month ?? 0} />}
                 </div>
-              </button>
+                <div className="text-[11.5px] text-faint mt-2.5">
+                  paid invoices{heroRange === "month" ? " this month" : ", all time"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[12.5px] font-medium text-muted">Profit</div>
+                <div className="flex items-end gap-3 mt-2">
+                  <span className={`text-[38px] font-bold tabular-nums leading-none tracking-tight ${heroProfit < 0 ? "text-danger-ink" : "text-ink"}`}>
+                    <CountUpAmount value={heroProfit} />
+                  </span>
+                  {heroRange === "month" && <DeltaChip now={heroProfit} prev={stats?.profit_prev_month ?? 0} />}
+                </div>
+                <div className="text-[11.5px] text-faint mt-2.5">
+                  completed deals{heroRange === "month" ? " this month" : ", all time"}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
 
-              <button onClick={() => onNavigate("dealflow")}
-                className="p-6 flex items-center gap-4 text-left hover:bg-surface-2/50 transition-colors">
-                <span className="w-12 h-12 rounded-xl bg-info-bg text-info-ink flex items-center justify-center flex-shrink-0"><GitBranch size={22} /></span>
-                <div>
-                  <div className="text-[32px] font-bold text-ink tabular-nums leading-none">{openDeals.toLocaleString()}</div>
-                  <div className="text-[12px] text-muted mt-1">Open deals</div>
-                </div>
-              </button>
-
-              <button onClick={() => onNavigate("deals")}
-                className="p-6 flex items-center gap-4 text-left hover:bg-surface-2/50 transition-colors">
-                <span className="w-12 h-12 rounded-xl bg-success-bg text-success-ink flex items-center justify-center flex-shrink-0"><CheckCircle2 size={22} /></span>
-                <div>
-                  <div className="text-[32px] font-bold text-ink tabular-nums leading-none">{completedThisMonth.toLocaleString()}</div>
-                  <div className="text-[12px] text-muted mt-1">Completed this month</div>
-                </div>
-              </button>
+        {/* ── Secondary counts — non-sensitive, everyone ──── */}
+        {heroLoading ? (
+          <div className="h-[76px] bg-surface-2 rounded-2xl animate-pulse" />
+        ) : (
+          <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
+            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line-2">
+              {([
+                { label: "Clients", value: totalClients, icon: Users, tab: "clients" },
+                { label: "Open deals", value: openDeals, icon: GitBranch, tab: "dealflow" },
+                { label: "Completed this month", value: completedThisMonth, icon: CheckCircle2, tab: "deals" },
+              ] as const).map((c) => {
+                const Icon = c.icon;
+                return (
+                  <button key={c.label} onClick={() => onNavigate(c.tab)}
+                    className="px-5 py-4 flex items-center gap-3.5 text-left hover:bg-surface-2 transition-colors">
+                    <span className="w-9 h-9 rounded-lg bg-surface text-ink-2 border border-line-2 flex items-center justify-center flex-shrink-0"><Icon size={16} strokeWidth={1.75} /></span>
+                    <div>
+                      <div className="text-[22px] font-bold text-ink tabular-nums leading-none"><CountUpInt value={c.value} /></div>
+                      <div className="text-[12px] text-muted mt-1">{c.label}</div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
 
         {/* ── Today: everything that needs a decision ────── */}
-        <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-2">
+        <div className="bg-surface border border-line rounded-2xl overflow-hidden">
           <div className="px-5 py-3.5 border-b border-line-2">
             <h3 className="text-[13px] font-semibold text-ink tracking-tight">Today</h3>
             <p className="text-[11px] text-muted mt-0.5">What needs you right now</p>
@@ -298,7 +389,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
 
           {/* Cumulative month chart */}
-          <div className="lg:col-span-3 bg-surface border border-line rounded-2xl p-5 animate-fade-up stagger-3">
+          <div className="lg:col-span-3 bg-surface border border-line rounded-2xl p-5">
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">{monthLabel}</h3>
@@ -340,10 +431,10 @@ export default function DashboardView({ onNavigate, me }: Props) {
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="2 4" stroke="var(--t-b1)" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Inter" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Inter" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Satoshi" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: "var(--t-tx4)", fontFamily: "Satoshi" }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
-                    contentStyle={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)", borderRadius: 10, color: "var(--t-tx1)", fontSize: 12, fontFamily: "Inter", boxShadow: "var(--shadow-panel)" }}
+                    contentStyle={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)", borderRadius: 10, color: "var(--t-tx1)", fontSize: 12, fontFamily: "Satoshi", boxShadow: "var(--shadow-panel)" }}
                     formatter={(v: any) => [fmtFullAmount(Number(v) || 0), chartMetric === "revenue" ? "Revenue" : "Profit"]}
                     cursor={{ stroke: "var(--t-b3)", strokeWidth: 1 }}
                   />
@@ -359,7 +450,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
           </div>
 
           {/* Recent activity */}
-          <div className="lg:col-span-2 bg-surface border border-line rounded-2xl overflow-hidden flex flex-col animate-fade-up stagger-4">
+          <div className="lg:col-span-2 bg-surface border border-line rounded-2xl overflow-hidden flex flex-col">
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-line-2">
               <div>
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">Recent invoices</h3>
@@ -406,8 +497,8 @@ export default function DashboardView({ onNavigate, me }: Props) {
         </div>
         )}
 
-        {/* ── Quick actions ──────────────────────────────── */}
-        <div className="bg-surface border border-line rounded-2xl overflow-hidden animate-fade-up stagger-5">
+        {/* ── Quick actions — secondary panel, quieter than the cards ── */}
+        <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
           <div className={`grid grid-cols-1 divide-y sm:divide-y-0 sm:divide-x divide-line-2 ${showMoney ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
             {[
               { label: "Add client",  sub: "Create a new client profile",  icon: Users,    tab: "clients"  },

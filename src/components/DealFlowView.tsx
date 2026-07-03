@@ -315,7 +315,7 @@ export default function DealFlowView() {
               key={flow.id}
               flow={flow}
               onReload={load}
-              animDelay={i * 45}
+
               zebra={i % 2 === 1}
             />
           ))}
@@ -329,7 +329,7 @@ export default function DealFlowView() {
 function Stat({ label, value, clr = "text-ink" }: { label: string; value: string; clr?: string }) {
   return (
     <div className="text-right">
-      <div className="text-[10px] uppercase tracking-widest text-muted">{label}</div>
+      <div className="text-[12px] font-medium text-muted">{label}</div>
       <div className={`text-[13px] font-semibold tabular-nums ${clr}`}>{value}</div>
     </div>
   );
@@ -347,8 +347,8 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 }
 
 function DealFlowCard({
-  flow, onReload, animDelay, zebra,
-}: { flow: DealFlow; onReload: () => void; animDelay: number; zebra: boolean }) {
+  flow, onReload, zebra,
+}: { flow: DealFlow; onReload: () => void; zebra: boolean }) {
   const currentSi = si(flow.stage);
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
@@ -389,8 +389,7 @@ function DealFlowCard({
 
   return (
     <div
-      className={`border border-line rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.05)] overflow-hidden animate-fade-up [animation-fill-mode:backwards] ${zebra ? "bg-surface-2/40" : "bg-surface"}`}
-      style={{ animationDelay: `${animDelay}ms` }}
+      className={`border border-line rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.05)] overflow-hidden ${zebra ? "bg-surface-2/40" : "bg-surface"}`}
     >
       {/* ── Collapsed header — always visible, click to expand ── */}
       <button
@@ -447,12 +446,12 @@ function DealFlowCard({
             })()}
           </div>
           {/* Invoice status — tells you where the invoice actually is */}
-          <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full ${invPill.cls}`}>
+          <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>
             {invPill.label}
           </span>
           {/* Deal flow stage — only show if it goes beyond step 1 */}
           {flow.stage !== "invoiced" && (
-            <span className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
+            <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
               {NODE_LABELS[flow.stage as Stage]}
             </span>
           )}
@@ -518,7 +517,7 @@ function DealFlowCard({
           {/* Invoice breakdown — what was bought, exactly as on the invoice */}
           {invItems.length > 0 && (
             <div className="px-5 pb-4 border-t border-line">
-              <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mt-3 mb-2">
+              <div className="text-[12.5px] font-medium text-muted mt-3 mb-2">
                 Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
               </div>
               <table className="w-full text-[12px]">
@@ -608,7 +607,7 @@ function PanelInvoiced({ flow }: { flow: DealFlow }) {
       {items.length > 0 ? (
         <div className="rounded-lg border border-line overflow-hidden">
           <div className="grid grid-cols-[1fr_48px_90px_90px] gap-x-3 px-3 py-1.5 bg-surface-2
-                          text-[10px] font-semibold text-muted uppercase tracking-widest">
+                          text-[12.5px] font-medium text-muted">
             <span>Item</span><span className="text-center">Qty</span>
             <span className="text-right">Rate</span><span className="text-right">Total</span>
           </div>
@@ -837,7 +836,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
       {!isDone && (
         showCost ? (
           <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-            <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Add cost</div>
+            <div className="text-[12.5px] font-medium text-muted">Add cost</div>
             <select value={costType} onChange={(e) => setCostType(e.target.value)} className={inp}>
               {COST_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
             </select>
@@ -872,7 +871,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
             </button>
           ) : (
             <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-              <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Supplier</div>
+              <div className="text-[12.5px] font-medium text-muted">Supplier</div>
 
               {/* Supplier search */}
               <div className="relative">
@@ -921,11 +920,11 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
               {/* Invoice items with per-item cost inputs */}
               {items.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Item Costs</div>
+                  <div className="text-[12.5px] font-medium text-muted">Item Costs</div>
                   <div className="rounded-lg border border-line overflow-hidden">
                     {/* Column header */}
                     <div className="grid grid-cols-[1fr_44px_80px_80px_80px] gap-x-2 px-3 py-1.5
-                                    bg-surface-2 text-[10px] font-semibold text-muted uppercase tracking-widest">
+                                    bg-surface-2 text-[12.5px] font-medium text-muted">
                       <span>Item</span>
                       <span className="text-center">Qty</span>
                       <span className="text-right">Our Quote</span>
@@ -1009,7 +1008,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
               ) : (
                 /* Fallback if invoice has no line items */
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold text-muted uppercase tracking-widest">Amount</div>
+                  <div className="text-[12.5px] font-medium text-muted">Amount</div>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                     <input
@@ -1064,7 +1063,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
               </div>
             )}
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Amount received</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Amount received</label>
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
@@ -1523,7 +1522,7 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
           },
         ].map((item) => (
           <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
-            <div className="text-[10px] uppercase tracking-widest text-muted">{item.label}</div>
+            <div className="text-[12px] font-medium text-muted">{item.label}</div>
             <div className={`text-[18px] font-bold tabular-nums mt-1 ${item.clr}`}>{item.value}</div>
           </div>
         ))}
@@ -1589,7 +1588,7 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
 // ─── Shared helpers ───────────────────────────────────────────────────────
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-0.5">
+    <div className="text-[13px] font-semibold text-ink-2 mb-0.5">
       {children}
     </div>
   );

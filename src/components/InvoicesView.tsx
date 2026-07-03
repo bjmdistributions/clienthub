@@ -264,7 +264,7 @@ export default function InvoicesView() {
           { label: "Total profit",   value: fmtAmount(totalProfit),   color: totalProfit >= 0 ? "text-success-ink" : "text-danger-ink" },
         ].map((s) => (
           <div key={s.label} className="bg-surface border border-line rounded-xl px-4 py-3.5">
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">{s.label}</p>
+            <p className="text-[12.5px] font-medium text-muted mb-1">{s.label}</p>
             <p className={`text-[22px] font-bold tabular-nums ${s.color}`}>{s.value}</p>
           </div>
         ))}
@@ -314,17 +314,17 @@ export default function InvoicesView() {
       )}
 
       {/* Table */}
-      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
+      <div className="bg-surface border border-line-2 rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-line-2">
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Number</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Issue</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Due</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Total</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Profit</th>
-              <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Status</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Number</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Client</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Issue</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Due</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Total</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Profit</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Status</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
@@ -638,7 +638,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
       {/* Line items */}
       <div className="mb-5">
-        <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold text-muted uppercase tracking-widest mb-2 px-1">
+        <div className="grid grid-cols-12 gap-2 text-[12.5px] font-medium text-muted mb-2 px-1">
           <div className="col-span-6">Description</div>
           <div className="col-span-1">Qty</div>
           <div className="col-span-2">Rate</div>
@@ -856,7 +856,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           )}
 
           <div>
-            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-0.5">Client</div>
+            <div className="text-[12.5px] font-medium text-muted mb-0.5">Client</div>
             <div className="text-[14px] font-medium text-ink mt-0.5">{clientName}</div>
           </div>
 
@@ -867,7 +867,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               ...(invoice.sent_at ? [{ label: "Sent", val: new Date(invoice.sent_at).toLocaleDateString() }] : []),
             ].map((r) => (
               <div key={r.label}>
-                <div className="text-[10px] font-semibold text-muted uppercase tracking-widest">{r.label}</div>
+                <div className="text-[12.5px] font-medium text-muted">{r.label}</div>
                 <div className="text-[13px] text-ink mt-0.5 tabular-nums">{r.val}</div>
               </div>
             ))}
@@ -875,14 +875,14 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
 
           {/* Line items */}
           <div>
-            <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">Line items</div>
+            <div className="text-[12.5px] font-medium text-muted mb-2">Line items</div>
             <table className="w-full text-[13px]">
               <thead className="bg-surface-2 rounded-lg">
                 <tr>
-                  <th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Description</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Qty</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Rate</th>
-                  <th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Amount</th>
+                  <th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Description</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Qty</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Rate</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Amount</th>
                 </tr>
               </thead>
               <tbody>
@@ -929,7 +929,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               ) : (
                 /* Editable for invoices not yet in a Deal Flow */
                 <div className="mt-3 space-y-2">
-                  <div className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-1">Cost items</div>
+                  <div className="text-[12.5px] font-medium text-muted mb-1">Cost items</div>
                   {costs.map((ci, i) => (
                     <div key={i} className="flex items-center gap-2">
                       <input className="flex-1 border border-line px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors" placeholder="Description"
@@ -981,7 +981,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     { label: "Pickup date", key: "pickup_date" as const, type: "date", placeholder: "" },
                   ].map((f) => (
                     <div key={f.key}>
-                      <label className="text-[10px] font-medium text-muted uppercase tracking-widest">{f.label}</label>
+                      <label className="text-[12.5px] font-medium text-muted">{f.label}</label>
                       <input type={f.type} placeholder={f.placeholder}
                         className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                         value={(shipping[f.key] as string) || ""}
@@ -989,7 +989,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                     </div>
                   ))}
                   <div>
-                    <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Shipping charged</label>
+                    <label className="text-[12.5px] font-medium text-muted">Shipping charged</label>
                     <div className="relative mt-0.5">
                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
                       <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
@@ -998,7 +998,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
                   </div>
                 </div>
                 <div>
-                  <label className="text-[10px] font-medium text-muted uppercase tracking-widest">Delivery date</label>
+                  <label className="text-[12.5px] font-medium text-muted">Delivery date</label>
                   <input type="date" className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
                     value={shipping.delivery_date || ""} onChange={(e) => setShipping({ ...shipping, delivery_date: e.target.value })} />
                 </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { api, type FormDef, type FormField } from "../lib/api";
 
 const FIELD_TYPES: [string, string][] = [
@@ -75,12 +76,12 @@ export function FormsPanel() {
           </div>
         </div>
         <div className="space-y-3 bg-surface border border-line rounded-xl p-4">
-          <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Form name (internal)</label><input className={inp} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Website lead form" /></div>
-          <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Public title</label><input className={inp} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} /></div>
-          <div><label className="block text-[10px] uppercase tracking-wide text-muted mb-1">Intro (optional)</label><textarea className={inp + " h-auto py-2"} rows={2} value={editing.intro} onChange={(e) => setEditing({ ...editing, intro: e.target.value })} /></div>
+          <div><label className="block text-[12px] font-medium text-muted mb-1">Form name (internal)</label><input className={inp} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Website lead form" /></div>
+          <div><label className="block text-[12px] font-medium text-muted mb-1">Public title</label><input className={inp} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} /></div>
+          <div><label className="block text-[12px] font-medium text-muted mb-1">Intro (optional)</label><textarea className={inp + " h-auto py-2"} rows={2} value={editing.intro} onChange={(e) => setEditing({ ...editing, intro: e.target.value })} /></div>
         </div>
 
-        <div className="text-[10px] uppercase tracking-wide text-muted mt-5 mb-2">Fields — drag ⠿ to reorder</div>
+        <div className="text-[12px] font-medium text-muted mt-5 mb-2">Fields — drag ⠿ to reorder</div>
         <div className="space-y-2">
           {editing.fields.map((f, i) => (
             <div key={f.id} draggable onDragStart={() => setDragIdx(i)} onDragOver={(e) => e.preventDefault()}
@@ -93,7 +94,7 @@ export function FormsPanel() {
                 </select>
                 <input value={f.label} onChange={(e) => setField(i, { label: e.target.value })} placeholder="Label" className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[13px] text-ink" />
                 <label className="text-[11px] text-ink-2 flex items-center gap-1"><input type="checkbox" checked={f.required} onChange={(e) => setField(i, { required: e.target.checked })} /> req</label>
-                <button onClick={() => removeField(i)} className="text-muted hover:text-red-400 px-1">✕</button>
+                <button onClick={() => removeField(i)} className="text-muted hover:text-danger-ink px-1"><X size={13} /></button>
               </div>
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-[11px] text-muted whitespace-nowrap">Maps to</span>
@@ -137,7 +138,7 @@ export function FormsPanel() {
             <div className="text-[11px] text-accent truncate">ecliptr.app/f/{f.id.slice(0, 10)}…</div>
           </div>
           <div className="flex gap-2 flex-shrink-0">
-            <button onClick={() => copy(f.id)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">{copied === f.id ? "Copied ✓" : "Copy link"}</button>
+            <button onClick={() => copy(f.id)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">{copied === f.id ? "Copied" : "Copy link"}</button>
             <button onClick={() => openEdit(f)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Edit</button>
             <button onClick={() => remove(f.id)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Delete</button>
           </div>

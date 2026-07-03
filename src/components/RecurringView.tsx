@@ -100,11 +100,11 @@ export default function RecurringView() {
           <table className="min-w-full text-sm">
             <thead>
               <tr className="border-b border-line-2">
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Template</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Client</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Frequency</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Next due</th>
-                <th className="text-left px-4 py-3 text-[10px] font-semibold text-muted uppercase tracking-widest">Status</th>
+                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Template</th>
+                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Client</th>
+                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Frequency</th>
+                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Next due</th>
+                <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Status</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
@@ -150,19 +150,19 @@ export default function RecurringView() {
             </div>
             <div className="space-y-3">
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Template Name *</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Template Name *</label>
                 <input className={inp} value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="e.g. Monthly Retainer" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Client</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1">Client</label>
                   <select className={inp} value={clientId} onChange={(e) => setClientId(e.target.value)}>
                     <option value="">Select client...</option>
                     {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Frequency</label>
+                  <label className="block text-[12.5px] font-medium text-muted mb-1">Frequency</label>
                   <select className={inp} value={frequency} onChange={(e) => setFrequency(e.target.value)}>
                     <option value="weekly">Weekly</option>
                     <option value="monthly">Monthly</option>
@@ -171,11 +171,11 @@ export default function RecurringView() {
                 </div>
               </div>
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Tax Rate (%)</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Tax Rate (%)</label>
                 <input className={inp} type="number" step="0.1" value={taxRate || ""} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} placeholder="0" />
               </div>
               <div>
-                <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Line items</label>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Line items</label>
                 <div className="space-y-2">
                   {items.map((li, i) => (
                     <div key={i} className="flex items-center gap-2">

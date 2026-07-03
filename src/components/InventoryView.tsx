@@ -213,7 +213,7 @@ export default function InventoryView() {
                     { label: "Suggested bid", value: fmtAmount(manifest.suggested_bid) },
                   ].map((s) => (
                     <div key={s.label} className="bg-surface-2 rounded-lg px-3 py-2.5">
-                      <p className="text-[9px] font-semibold text-muted uppercase tracking-widest">{s.label}</p>
+                      <p className="text-[11.5px] font-medium text-muted">{s.label}</p>
                       <p className="text-[15px] font-bold text-ink tabular-nums">{s.value}</p>
                     </div>
                   ))}
@@ -227,7 +227,7 @@ export default function InventoryView() {
                 </div>
                 <table className="w-full text-[12px] mb-4">
                   <thead className="bg-surface-2">
-                    <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Retail</th></tr>
+                    <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Items</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
                   </thead>
                   <tbody>
                     {manifest.categories.map((c) => (
@@ -245,7 +245,7 @@ export default function InventoryView() {
                     <p className="text-[11px] font-semibold text-ink-2 mb-1.5">By brand <span className="text-[9.5px] font-normal text-muted">from manifest</span></p>
                     <table className="w-full text-[12px] mb-3">
                       <thead className="bg-surface-2">
-                        <tr><th className="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-l-lg">Brand</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Items</th><th className="text-right px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest rounded-r-lg">Retail</th></tr>
+                        <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Brand</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Items</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
                       </thead>
                       <tbody>
                         {manifest.brands.map((b) => (
@@ -337,7 +337,7 @@ export default function InventoryView() {
                 {/* Metrics */}
                 <div className="flex items-end justify-between mt-3">
                   <div>
-                    <div className="text-[9px] uppercase tracking-wider text-muted font-medium">Unit cost → ask</div>
+                    <div className="text-[11.5px] font-medium text-muted">Unit cost → ask</div>
                     <div className="text-[13px] text-ink-2 tabular-nums mt-0.5">
                       <span className="font-semibold">{fmtAmount(unitCost(lot))}</span>
                       <span className="text-faint mx-1">→</span>
@@ -345,7 +345,7 @@ export default function InventoryView() {
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="text-[9px] uppercase tracking-wider text-muted font-medium">Profit</div>
+                    <div className="text-[11.5px] font-medium text-muted">Profit</div>
                     <div className={`text-[15px] font-bold tabular-nums mt-0.5 leading-none ${totalProfit(lot) >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(totalProfit(lot))}</div>
                   </div>
                 </div>
@@ -522,46 +522,46 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
         </div>
         <div className="space-y-3">
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Name *</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Name *</label>
             <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="Lot name" />
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Description</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Description</label>
             <input className={inp} value={desc} onChange={(e) => setDesc(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Category</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Category</label>
               <input className={inp} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Electronics" />
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Qty</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Qty</label>
               <input className={inp} type="number" value={qty} onChange={(e) => setQty(parseInt(e.target.value) || 0)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Supplier</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Supplier</label>
               <input className={inp} list="lot-supplier-options" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Type or pick a supplier" />
               <datalist id="lot-supplier-options">
                 {suppliers.map((s) => <option key={s} value={s} />)}
               </datalist>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Location</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Location</label>
               <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A, Shelf 3" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Cost price</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Cost price</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} />
               </div>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Selling price</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Selling price</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} />
@@ -569,7 +569,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
             </div>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Price type</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Price type</label>
             <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5">
               {(["per_unit", "total"] as const).map(pt => (
                 <button key={pt} onClick={() => setPriceType(pt)}
@@ -580,7 +580,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
             </div>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Notes</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Notes</label>
             <input className={inp} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Authentic, sealed, minor box damage" />
           </div>
           <div className="flex items-center gap-5 pt-0.5">
@@ -594,7 +594,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
             </label>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Photos</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Photos</label>
             <div className="flex flex-wrap gap-2 mb-1">
               {photos.map((p, i) => (
                 <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
@@ -629,7 +629,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
           </div>
 
           <div>
-            <label className="block text-[10px] font-medium text-muted uppercase tracking-widest mb-1">Manifest</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Manifest</label>
             {(manifestPath || newManifestFile) ? (
               <div className="flex items-center gap-2 rounded-lg border border-line px-3 py-2">
                 <FileText size={14} className="text-muted flex-shrink-0" />
@@ -698,7 +698,7 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
 
   const Row = ({ label, value }: { label: string; value: string }) => (
     <div>
-      <p className="text-[10px] font-medium text-muted uppercase tracking-widest mb-0.5">{label}</p>
+      <p className="text-[12.5px] font-medium text-muted mb-0.5">{label}</p>
       <p className="text-[13px] text-ink break-words">{value}</p>
     </div>
   );
@@ -751,22 +751,22 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
 
           {/* Financials */}
           <div className="grid grid-cols-4 gap-3">
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uCost)}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uAsk)}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{marginStr}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Profit total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(profit)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uCost)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uAsk)}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{marginStr}</p></div>
+            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Profit total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(profit)}</p></div>
           </div>
           {lot.price_type === "total" && lot.quantity > 1 && (
             <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
               <div className={inp + " text-[11px] text-muted bg-surface-2 flex items-center justify-center rounded-lg"}>×{lot.quantity} units</div>
             </div>
           )}
           {lot.price_type === "per_unit" && (
             <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[9px] uppercase tracking-widest text-muted font-semibold">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
+              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
             </div>
           )}
 
@@ -779,14 +779,14 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           </div>
           {lot.description && (
             <div>
-              <p className="text-[10px] font-medium text-muted uppercase tracking-widest mb-0.5">Description</p>
+              <p className="text-[12.5px] font-medium text-muted mb-0.5">Description</p>
               <p className="text-[13px] text-ink-2 whitespace-pre-wrap">{lot.description}</p>
             </div>
           )}
 
           {/* Manifest */}
           <div>
-            <p className="text-[10px] font-medium text-muted uppercase tracking-widest mb-1.5">Manifest</p>
+            <p className="text-[12.5px] font-medium text-muted mb-1.5">Manifest</p>
             {lot.manifest_path ? (
               <div className="flex items-center gap-2 rounded-lg border border-line px-3 py-2">
                 <FileText size={15} className="text-muted flex-shrink-0" />

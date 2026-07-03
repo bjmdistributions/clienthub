@@ -113,7 +113,7 @@ export default function CloseoutView() {
           return (
             <div key={card.label} className="bg-surface border border-line rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">
+                <p className="text-[12.5px] font-medium text-muted">
                   {card.label}
                 </p>
                 <div className={`w-7 h-7 rounded-lg ${card.bg} flex items-center justify-center`}>
@@ -177,19 +177,19 @@ export default function CloseoutView() {
                     {/* Right: financial summary */}
                     <div className="flex items-center gap-6 flex-shrink-0">
                       <div className="text-right hidden sm:block">
-                        <div className="text-[10px] text-muted uppercase tracking-widest">Revenue</div>
+                        <div className="text-[12px] font-medium text-muted">Revenue</div>
                         <div className="text-[13px] font-semibold text-ink tabular-nums">
                           {fmtAmount(flow.gross_revenue)}
                         </div>
                       </div>
                       <div className="text-right hidden sm:block">
-                        <div className="text-[10px] text-muted uppercase tracking-widest">Cost</div>
+                        <div className="text-[12px] font-medium text-muted">Cost</div>
                         <div className="text-[13px] text-muted tabular-nums">
                           {fmtAmount(flow.total_cost)}
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-[10px] text-muted uppercase tracking-widest">Profit</div>
+                        <div className="text-[12px] font-medium text-muted">Profit</div>
                         <div className={`text-[14px] font-bold tabular-nums ${
                           flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"
                         }`}>
@@ -277,7 +277,7 @@ function DealBreakdown({
           },
         ].map((item) => (
           <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
-            <div className="text-[10px] uppercase tracking-widest text-muted mb-1">{item.label}</div>
+            <div className="text-[12px] font-medium text-muted mb-1">{item.label}</div>
             <div className={`text-[18px] font-bold tabular-nums ${item.clr}`}>{item.value}</div>
           </div>
         ))}
@@ -287,7 +287,7 @@ function DealBreakdown({
       {payments.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           <div className="px-4 py-2.5 border-b border-line-2">
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-widest">
+            <p className="text-[12.5px] font-medium text-muted">
               Supplier Payments
             </p>
           </div>
@@ -321,7 +321,7 @@ function DealBreakdown({
       {/* Profit split */}
       {split && flow.net_profit > 0 && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-3">
+          <p className="text-[12.5px] font-medium text-muted mb-3">
             Profit Split
           </p>
           <div className="grid grid-cols-3 gap-4 text-center">
@@ -343,7 +343,7 @@ function DealBreakdown({
 
       {/* Backlog date editor */}
       <div className="bg-surface border border-line rounded-xl px-4 py-3">
-        <p className="text-[10px] font-semibold text-muted uppercase tracking-widest mb-2">
+        <p className="text-[12.5px] font-medium text-muted mb-2">
           Completed Date
         </p>
         <div className="flex items-center gap-2">

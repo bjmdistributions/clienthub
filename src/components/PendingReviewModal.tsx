@@ -15,9 +15,9 @@ function sourceLabel(m: Record<string, any> | null): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Manual";
 }
 
-const labelCls = "flex items-center gap-1.5 text-[11px] font-medium text-muted uppercase tracking-wide mb-1";
+const labelCls = "flex items-center gap-1.5 text-[12.5px] font-medium text-muted mb-1";
 const inputCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
-const sectionCls = "text-[11px] font-semibold text-muted uppercase tracking-wide";
+const sectionCls = "text-[12.5px] font-medium text-muted";
 
 export default function PendingReviewModal({ client, onClose, onResolved }: {
   client: Client;

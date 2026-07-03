@@ -90,7 +90,7 @@ export default function QuickLogModal({ onClose }: Props) {
         <div className="px-5 py-5 space-y-4">
           {/* Client search */}
           <div className="relative">
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Client</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Client</label>
             <input
               ref={inputRef}
               className="border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
@@ -119,7 +119,7 @@ export default function QuickLogModal({ onClose }: Props) {
 
           {/* Interaction type */}
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Type</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Type</label>
             <div className="flex gap-1.5">
               {KINDS.map((k) => {
                 const cfg = KIND_CONFIG[k];
@@ -143,7 +143,7 @@ export default function QuickLogModal({ onClose }: Props) {
 
           {/* Note body */}
           <div>
-            <label className="block text-[10px] font-semibold text-muted uppercase tracking-widest mb-1.5">Note</label>
+            <label className="block text-[12.5px] font-medium text-muted mb-1.5">Note</label>
             <textarea
               rows={5}
               className="border border-line px-3 py-2.5 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-none"

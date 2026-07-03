@@ -129,8 +129,8 @@ export default function NotesView() {
           </p>
         </div>
         <button onClick={addNote}
-          className="btn-ripple flex items-center gap-1.5 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-all duration-150 hover:-translate-y-px"
-          style={{ background: "linear-gradient(135deg, var(--accent-600), var(--accent-500))", boxShadow: "0 2px 10px var(--accent-glow)" }}>
+          className="btn-ripple flex items-center gap-1.5 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium"
+          style={{ background: "var(--accent-600)" }}>
           <Plus size={14} /> New note
         </button>
       </div>
@@ -138,7 +138,7 @@ export default function NotesView() {
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 p-6">
-            {Array.from({ length: 4 }).map((_, i) => <div key={i} className={`skeleton rounded-2xl stagger-${i + 1}`} style={{ height: NOTE_H }} />)}
+            {Array.from({ length: 4 }).map((_, i) => <div key={i} className={`skeleton rounded-2xl`} style={{ height: NOTE_H }} />)}
           </div>
         ) : notes.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-28 animate-fade-up">

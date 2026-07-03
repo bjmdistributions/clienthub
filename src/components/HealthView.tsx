@@ -46,15 +46,15 @@ export default function HealthView() {
         ))}
       </div>
 
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
+      <div className="bg-surface border border-line-2 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-surface-2 border-b border-line">
             <tr>
-              <th className="text-left px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Client</th>
-              <th className="text-center px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Score</th>
-              <th className="text-center px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Risk</th>
-              <th className="text-center px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Trend</th>
-              <th className="text-left px-4 py-3 text-[12px] font-semibold text-muted uppercase tracking-wide">Risk factors</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Client</th>
+              <th className="text-center px-4 py-3 text-[12px] font-medium text-muted">Score</th>
+              <th className="text-center px-4 py-3 text-[12px] font-medium text-muted">Risk</th>
+              <th className="text-center px-4 py-3 text-[12px] font-medium text-muted">Trend</th>
+              <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Risk factors</th>
             </tr>
           </thead>
           <tbody>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X } from "lucide-react";
 import { api } from "../lib/api";
 
 export function FeedbackModal({ me, onClose }: { me: { display_name?: string; email?: string } | null; onClose: () => void }) {
@@ -26,7 +27,7 @@ export function FeedbackModal({ me, onClose }: { me: { display_name?: string; em
       <div className="bg-surface border border-line rounded-2xl w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <h3 className="text-[15px] font-semibold text-ink">Send feedback</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink text-[15px] leading-none">✕</button>
+          <button onClick={onClose} className="text-muted hover:text-ink p-0.5"><X size={15} /></button>
         </div>
         <p className="text-[12px] text-muted mb-4">Request a feature or report a bug — it goes straight to the team.</p>
         <select value={kind} onChange={(e) => setKind(e.target.value)}
