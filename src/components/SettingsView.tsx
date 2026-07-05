@@ -246,9 +246,9 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
 
   return (
    <SaveStatusCtx.Provider value={setSaveState}>
-    <div className="flex gap-8 max-w-[1100px]">
+    <div className="flex gap-5 lg:gap-8 max-w-[1100px]">
       {/* Left rail */}
-      <aside className="w-[232px] shrink-0">
+      <aside className="w-[200px] lg:w-[232px] shrink-0">
         <div className="mb-5 px-1">
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Settings</h2>
           <p className="text-[12px] text-muted mt-0.5">Manage your workspace</p>
@@ -3435,7 +3435,7 @@ function SheetsTab() {
             <input className={inp} placeholder="https://docs.google.com/spreadsheets/d/..." value={config.sheet_url ?? ""} onChange={(e) => setConfig({ ...config, sheet_url: e.target.value })} />
           </Field>
           <Advanced label="Column mapping">
-          <div className="grid grid-cols-5 gap-3">
+          <div className="grid grid-cols-3 lg:grid-cols-5 gap-3">
             {[
               { label: "First Name", key: "first_name_col" as const, val: config.first_name_col, hint: "F" },
               { label: "Last Name",  key: "last_name_col"  as const, val: config.last_name_col,  hint: "G" },
@@ -3464,7 +3464,7 @@ function SheetsTab() {
           {customFields.length > 0 && (
             <div>
               <label className="block text-[10px] font-medium text-muted mb-1.5">Custom fields — pick the column each lives in</label>
-              <div className="grid grid-cols-5 gap-3">
+              <div className="grid grid-cols-3 lg:grid-cols-5 gap-3">
                 {customFields.map((f) => (
                   <div key={f.value}>
                     <label className="block text-[10px] font-medium text-muted mb-1 truncate" title={f.label}>{f.label}</label>
@@ -4489,7 +4489,7 @@ function CustomFieldsTab() {
       )}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25" onClick={() => setShowForm(false)}>
-          <div className="bg-surface rounded-2xl shadow-xl w-[380px] p-5" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface rounded-2xl shadow-xl w-[380px] max-w-[92vw] p-5" onClick={e => e.stopPropagation()}>
             <h3 className="text-[14px] font-semibold text-ink mb-4">{editing ? "Edit Field" : "New Field"}</h3>
             <div className="space-y-3">
               <div>

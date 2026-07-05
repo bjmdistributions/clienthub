@@ -346,7 +346,7 @@ export default function ClientsView() {
         </button>
       )}
       {/* Header */}
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex justify-between items-center gap-3 flex-wrap mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Clients</h2>
           <p className="text-[12px] text-muted mt-0.5">{summaryStats.total} total</p>
@@ -496,8 +496,8 @@ export default function ClientsView() {
       )}
 
       {/* Search + Filters */}
-      <div className="flex items-center gap-2 mb-3">
-        <div className="relative flex-1">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <div className="relative flex-1 min-w-[200px]">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <input
             placeholder="Search by name, company, or email..."

@@ -327,8 +327,14 @@ pub async fn create_client(input: ClientInput) -> Result<Client, String> {
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
     write_client_row(&id, &input, &now, &now, "active", &metadata_str, &lead_status_val).map_err(|e| e.to_string())?;
 
-    // Non-admin reps create pending clients that an admin must approve.
-    let approval_status = if !crate::employees::session_is_privileged()
+    // Non-admin reps create pending clients that an admin must approve — UNLESS
+    // this add duplicates a client already in the database (same email, or same
+    // name when no email). A returning/existing customer must NEVER land in the
+    // pending-review queue, so in that case we skip the pending flag + approval and
+    // leave the client active (it's already known to the business).
+    let is_duplicate = find_duplicate_client(&input.email, &input.name, &id).is_some();
+    let approval_status = if !is_duplicate
+        && !crate::employees::session_is_privileged()
         && crate::employees::approval_required("require_client_add_approval")
     {
         {
@@ -900,6 +906,35 @@ pub async fn delete_form(id: String) -> Result<(), String> {
 }
 
 /// Queue an admin approval row (rep add/delete requests). Returns its id.
+/// Find an EXISTING client (other than `exclude_id`) that a new add would
+/// duplicate: trimmed + case-insensitive email match first; if no email was
+/// given, an exact trimmed (case-insensitive) name match. Mirrors the server's
+/// `find_duplicate_client`. Used so a rep manually re-adding someone already in
+/// the database does NOT create a second client that lands in pending review.
+pub(crate) fn find_duplicate_client(email: &Option<String>, name: &str, exclude_id: &str) -> Option<String> {
+    let conn = pool().get().ok()?;
+    let email = email.as_deref().map(|e| e.trim()).unwrap_or("");
+    if !email.is_empty() {
+        return conn
+            .query_row(
+                "SELECT id FROM clients WHERE LOWER(TRIM(email))=LOWER(TRIM(?1)) AND id<>?2 LIMIT 1",
+                rusqlite::params![email, exclude_id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    conn.query_row(
+        "SELECT id FROM clients WHERE LOWER(TRIM(name))=LOWER(TRIM(?1)) AND id<>?2 LIMIT 1",
+        rusqlite::params![name, exclude_id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 pub(crate) fn queue_client_approval(kind: &str, entity_id: &str, summary: &str) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();

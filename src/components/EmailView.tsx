@@ -1496,7 +1496,7 @@ function RecurringTab() {
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[7vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setShowForm(false)}>
-          <div className="bg-surface rounded-2xl shadow-xl w-[520px] max-h-[82vh] overflow-auto p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-surface rounded-2xl shadow-xl w-[520px] max-w-[92vw] max-h-[82vh] overflow-auto p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-[15px] font-semibold text-ink">{editing ? "Edit schedule" : "New recurring schedule"}</h3>
               <button onClick={() => setShowForm(false)} className="text-muted hover:text-ink"><X size={16} /></button>

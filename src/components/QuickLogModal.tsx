@@ -69,7 +69,7 @@ export default function QuickLogModal({ onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-surface rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.14),0_8px_24px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.04)] w-[500px] max-h-[80vh] overflow-auto animate-fade-up"
+        className="bg-surface rounded-2xl shadow-[0_24px_60px_rgba(0,0,0,0.14),0_8px_24px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.04)] w-[500px] max-w-[92vw] max-h-[80vh] overflow-auto animate-fade-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

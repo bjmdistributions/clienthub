@@ -198,7 +198,7 @@ export default function InvoicesView() {
   return (
     <div>
       {/* Header */}
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex justify-between items-center gap-3 flex-wrap mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Invoices</h2>
           <p className="text-[12px] text-muted mt-0.5">{invoices.length} total · {fmtAmount(outstanding)} outstanding</p>
@@ -278,7 +278,7 @@ export default function InvoicesView() {
       {/* Mark paid modal */}
       {payModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setPayModal(null)}>
-          <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] animate-fade-up" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] max-w-[92vw] animate-fade-up" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
               <h3 className="text-[14px] font-semibold text-ink">Mark as paid</h3>
               <button onClick={() => setPayModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
@@ -837,7 +837,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   return (
     <>
       <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40" onClick={onClose} />
-      <div className="fixed inset-y-0 right-0 w-[480px] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
+      <div className="fixed inset-y-0 right-0 w-[480px] max-w-[92vw] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-surface/95 backdrop-blur-sm border-b border-line px-6 py-4 flex items-center justify-between z-10">
           <h3 className="text-[14px] font-semibold text-ink font-mono">{invoice.number}</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>

@@ -393,7 +393,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
       {/* Metadata cards */}
       {client.metadata && (
-        <div className="grid grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
           <MetadataCard title="Contact Info" icon={<User size={14} />}>
             {client.metadata.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
             {client.metadata.street_address && <MetaRow label="Address" value={client.metadata.street_address} />}

@@ -64,7 +64,7 @@ export default function TiersView() {
       </div>
 
       {/* Tier summary cards */}
-      <div className="grid grid-cols-5 gap-3 my-5">
+      <div className="grid grid-cols-3 lg:grid-cols-5 gap-3 my-5">
         {TIER_ORDER.map((t) => {
           const count = tierCount(t);
           return (

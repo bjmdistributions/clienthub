@@ -205,7 +205,7 @@ export default function InventoryView() {
             )}
             {manifest && (
               <div>
-                <div className="grid grid-cols-4 gap-3 mb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
                   {[
                     { label: "Total items", value: manifest.total_items },
                     { label: "Total retail", value: fmtAmount(manifest.total_retail) },
@@ -515,7 +515,7 @@ function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | n
   return (
     <>
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-xl w-[440px] p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[440px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
@@ -750,7 +750,7 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           </div>
 
           {/* Financials */}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uCost)}</p></div>
             <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uAsk)}</p></div>
             <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{marginStr}</p></div>

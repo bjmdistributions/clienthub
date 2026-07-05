@@ -170,7 +170,7 @@ export default function DealFlowView() {
     <div className="space-y-5">
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Deal Flow</h2>
           <p className="text-[12px] text-muted mt-0.5">

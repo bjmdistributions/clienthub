@@ -51,7 +51,7 @@ export default function CommandPalette({ onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[15vh] bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-2xl w-[560px] max-h-[60vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-2xl w-[560px] max-w-[92vw] max-h-[60vh] overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line">
           <span className="text-muted text-[16px]">\ud83d\udd0d</span>
           <input ref={inputRef} value={query} onChange={e => { setQuery(e.target.value); setSelectedIdx(0); }}
