@@ -23,7 +23,7 @@ export default function CostProfitPanel({
   return (
     <div className="space-y-3">
       {/* P&L grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
         {[
           { label: "Revenue", value: fmtAmount(gross), clr: "text-ink" },
           { label: "Costs",   value: fmtAmount(cost),  clr: "text-ink" },

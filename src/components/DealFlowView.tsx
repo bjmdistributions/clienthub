@@ -1506,7 +1506,7 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
   return (
     <div className="space-y-4">
       {/* P&L summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {[
           { label: "Revenue",                                    value: fmtAmount(flow.gross_revenue), clr: "text-ink"   },
           { label: "Total costs",                                value: fmtAmount(flow.total_cost),    clr: "text-ink"   },

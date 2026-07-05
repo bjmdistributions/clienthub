@@ -368,7 +368,7 @@ export default function ClientsView() {
       </div>
 
       {/* Stats bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
         {[
           { label: "Total Clients",    value: summaryStats.total,                      color: "text-ink" },
           { label: "Active Customers", value: summaryStats.active,                     color: "text-success-ink" },
@@ -585,7 +585,7 @@ export default function ClientsView() {
 
       {/* Advanced Filters */}
       {showAdvanced && (
-        <div className="bg-surface-2 border border-line rounded-xl p-4 mb-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-surface-2 border border-line rounded-xl p-4 mb-3 grid grid-cols-2 xl:grid-cols-4 gap-3">
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1.5">State</label>
             <input placeholder="e.g. NY" value={filter.state ?? ""} onChange={(e) => updateFilter({ state: e.target.value || undefined })}
@@ -629,7 +629,7 @@ export default function ClientsView() {
               <option value="category">Missing category</option>
             </select>
           </div>
-          <div className="col-span-2 lg:col-span-4 flex justify-end">
+          <div className="col-span-2 xl:col-span-4 flex justify-end">
             <button onClick={clearAll} className="text-[12px] text-muted hover:text-ink-2 transition-colors">
               Clear all filters
             </button>

@@ -205,7 +205,7 @@ export default function InventoryView() {
             )}
             {manifest && (
               <div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
                   {[
                     { label: "Total items", value: manifest.total_items },
                     { label: "Total retail", value: fmtAmount(manifest.total_retail) },

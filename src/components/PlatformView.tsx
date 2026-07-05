@@ -54,7 +54,7 @@ export default function PlatformView() {
         <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-3 mb-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
             <Stat icon={Building2} label="Signups" value={orgs.length} />
             <Stat icon={UserCircle} label="Total members" value={totalMembers} />
             <Stat icon={Users} label="Total clients" value={totalClients} />

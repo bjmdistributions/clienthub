@@ -182,7 +182,7 @@ export default function AnalyticsView() {
       </div>
       <div className="h-[108px] bg-surface-2 rounded-2xl animate-pulse" />
       <div className="h-[300px] bg-surface-2 rounded-xl animate-pulse" />
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="h-56 bg-surface-2 rounded-xl animate-pulse" />
         <div className="h-56 bg-surface-2 rounded-xl animate-pulse" />
       </div>
@@ -284,7 +284,7 @@ export default function AnalyticsView() {
           leads, profit/margin/outstanding read left to right.
       ─────────────────────────────────────────────────────────── */}
       <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-        <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-line">
+        <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
           <div className="p-5">
             <div className="text-[12.5px] font-medium text-muted">
               Revenue · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
@@ -365,10 +365,10 @@ export default function AnalyticsView() {
           Two new chart *types* — an area trend + a donut — for variety
           beyond the bars/lists, with designed (theme-independent) colors.
       ─────────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
         {/* Profit Trend — area */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Profit trend</h3>
           <p className="text-[11px] text-muted mb-5">Net profit by month</p>
           {monthly.length > 0 ? (
@@ -393,7 +393,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Client Mix — donut */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client mix</h3>
           <p className="text-[11px] text-muted mb-5">Share of clients by tier</p>
           {totalCl > 0 ? (
@@ -415,10 +415,10 @@ export default function AnalyticsView() {
       </div>
 
       {/* ── Row: Invoice Status + Top Spenders ─────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
         {/* Invoice Status */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice status</h3>
           <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices</p>
 
@@ -458,7 +458,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Top Spenders */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top spenders</h3>
           <p className="text-[11px] text-muted mb-4">By total revenue collected</p>
 
@@ -503,10 +503,10 @@ export default function AnalyticsView() {
       </div>
 
       {/* ── Row: Tier Distribution + Category ─────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
         {/* Client Tiers */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client tiers</h3>
           <p className="text-[11px] text-muted mb-5">{totalCl} clients</p>
 
@@ -557,7 +557,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Category breakdown */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category breakdown</h3>
           <p className="text-[11px] text-muted mb-5">Revenue by client category</p>
 
@@ -596,10 +596,10 @@ export default function AnalyticsView() {
       </div>
 
       {/* ── Most Profitable + Financial summary ────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
 
         {/* Most Profitable */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Most profitable</h3>
           <p className="text-[11px] text-muted mb-5">By net profit margin</p>
 
@@ -638,7 +638,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Financial snapshot */}
-        <div className="bg-surface border border-line-2 rounded-xl p-5">
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <p className="text-[12.5px] font-medium text-muted mb-5">
             Financial snapshot
           </p>

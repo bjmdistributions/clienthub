@@ -110,8 +110,8 @@ export default function QuotesView({ onNavigate }: Props) {
         ))}
       </div>
 
-      <div className="bg-surface border border-line-2 rounded-xl overflow-hidden">
-        <table className="w-full">
+      <div className="bg-surface border border-line-2 rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[640px]">
           <thead>
             <tr className="border-b border-line">
               {["Quote #", "Client", "Issued", "Valid until", "Total", "Status", ""].map((h, i) => (

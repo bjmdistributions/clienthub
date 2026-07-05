@@ -225,7 +225,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div>
                 <div className="text-[12.5px] font-medium text-muted">Revenue</div>
                 <div className="flex items-end gap-3 mt-2">
@@ -259,7 +259,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
           <div className="h-[76px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
           <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line-2">
+            <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-line-2">
               {([
                 { label: "Clients", value: totalClients, icon: Users, tab: "clients" },
                 { label: "Open deals", value: openDeals, icon: GitBranch, tab: "dealflow" },
@@ -386,10 +386,10 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
         {/* ── Trend + recent activity (money — gated) ────── */}
         {showMoney && (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
 
           {/* Cumulative month chart */}
-          <div className="lg:col-span-3 bg-surface border border-line rounded-2xl p-5">
+          <div className="xl:col-span-3 bg-surface border border-line rounded-2xl p-5 min-w-0">
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">{monthLabel}</h3>
@@ -450,7 +450,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
           </div>
 
           {/* Recent activity */}
-          <div className="lg:col-span-2 bg-surface border border-line rounded-2xl overflow-hidden flex flex-col">
+          <div className="xl:col-span-2 bg-surface border border-line rounded-2xl overflow-hidden flex flex-col min-w-0">
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-line-2">
               <div>
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">Recent invoices</h3>
@@ -499,7 +499,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
         {/* ── Quick actions — secondary panel, quieter than the cards ── */}
         <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
-          <div className={`grid grid-cols-1 divide-y sm:divide-y-0 sm:divide-x divide-line-2 ${showMoney ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+          <div className={`grid grid-cols-1 divide-y md:divide-y-0 md:divide-x divide-line-2 ${showMoney ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
             {[
               { label: "Add client",  sub: "Create a new client profile",  icon: Users,    tab: "clients"  },
               // Only surface the invoice action to users who can see the money.

@@ -472,7 +472,7 @@ function AppearanceTab() {
           ? "Mono is on — accent colors are disabled while the interface is monochrome. Turn Mono off to choose an accent."
           : "Sets the accent used across the sidebar, highlights and controls. Data colors (revenue, profit, charts) stay fixed for clarity."}
       </p>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         {ACCENTS.map((a) => {
           const isActive = accent === a.id && !matte;
           return (
@@ -2257,8 +2257,8 @@ function GoogleContactsSection() {
                 <span className="text-[12px] text-muted tabular-nums">{selected.size} selected</span>
               </div>
 
-              <div className="border border-line rounded-xl overflow-hidden mb-4 max-h-[400px] overflow-y-auto">
-                <table className="w-full text-sm">
+              <div className="border border-line rounded-xl mb-4 max-h-[400px] overflow-auto">
+                <table className="w-full min-w-[520px] text-sm">
                   <thead className="bg-surface-2 sticky top-0">
                     <tr>
                       <th className="w-10 px-3 py-2"><input type="checkbox" className="accent-accent" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleAll} /></th>
@@ -2467,7 +2467,7 @@ function AutomationTab() {
       {/* Premade automations — one-click enable */}
       <div className="mb-6">
         <label className="block text-[12.5px] font-medium text-muted mb-2.5">One-click automations</label>
-        <div className="grid sm:grid-cols-2 gap-2.5">
+        <div className="grid lg:grid-cols-2 gap-2.5">
           {PREMADE_AUTOMATIONS.map((p) => {
             const on = isEnabled(p.name);
             return (
@@ -3435,7 +3435,7 @@ function SheetsTab() {
             <input className={inp} placeholder="https://docs.google.com/spreadsheets/d/..." value={config.sheet_url ?? ""} onChange={(e) => setConfig({ ...config, sheet_url: e.target.value })} />
           </Field>
           <Advanced label="Column mapping">
-          <div className="grid grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-3 xl:grid-cols-5 gap-3">
             {[
               { label: "First Name", key: "first_name_col" as const, val: config.first_name_col, hint: "F" },
               { label: "Last Name",  key: "last_name_col"  as const, val: config.last_name_col,  hint: "G" },
@@ -3464,7 +3464,7 @@ function SheetsTab() {
           {customFields.length > 0 && (
             <div>
               <label className="block text-[10px] font-medium text-muted mb-1.5">Custom fields — pick the column each lives in</label>
-              <div className="grid grid-cols-3 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-3 xl:grid-cols-5 gap-3">
                 {customFields.map((f) => (
                   <div key={f.value}>
                     <label className="block text-[10px] font-medium text-muted mb-1 truncate" title={f.label}>{f.label}</label>
@@ -3527,14 +3527,14 @@ function SheetsTab() {
       </div>
 
       {/* Sync log */}
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
+      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
         <div className="px-5 py-3 border-b border-line-2">
           <span className="text-[12.5px] font-medium text-muted">Sync History</span>
         </div>
         {log.length === 0 ? (
           <div className="text-center text-[13px] text-muted py-8">No syncs yet</div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[440px] text-sm">
             <thead className="bg-surface-2/50">
               <tr>
                 <th className="text-left px-5 py-2.5 text-[12px] font-medium text-muted">Date</th>
@@ -3976,8 +3976,8 @@ function PeoplePanel() {
           )}
         </div>
       )}
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
-      <table className="w-full text-[13px]">
+      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
+      <table className="w-full min-w-[560px] text-[13px]">
         <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
           {["Member", "Role", "Pay cut", "Status", ""].map((h, i) => (
             <th key={i} className={`text-left px-4 py-2.5 text-[12px] font-medium text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>
@@ -4135,7 +4135,8 @@ function RolesPanel() {
                   <input type="checkbox" checked={!!has("admin:manage")} onChange={() => toggle(r.id, "admin:manage")} />
                   Full admin (manage team, roles &amp; settings)
                 </label>
-                <table className="text-[12px]">
+                <div className="overflow-x-auto">
+                  <table className="text-[12px]">
                   <thead><tr><th></th>{ACTIONS.map((a) => <th key={a} className="px-3 text-[12px] font-medium text-muted">{a}</th>)}</tr></thead>
                   <tbody>
                     {MATRIX_MODULES.map((m) => (
@@ -4150,6 +4151,7 @@ function RolesPanel() {
                     ))}
                   </tbody>
                 </table>
+                </div>
                 <div className="mt-4 pt-3 border-t border-line">
                   <div className="text-[12px] font-medium text-muted mb-2">Sensitive visibility</div>
                   <div className="space-y-2">
@@ -4216,8 +4218,8 @@ function InvitesPanel() {
         )}
       </div>
 
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
-        <table className="w-full text-[13px]">
+      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[520px] text-[13px]">
           <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
             {["Role", "Email", "Status", "Expires", ""].map((h, i) => <th key={i} className={`text-left px-4 py-2.5 text-[12px] font-medium text-muted ${i === 4 ? "text-right" : ""}`}>{h}</th>)}
           </tr></thead>
@@ -4461,8 +4463,8 @@ function CustomFieldsTab() {
       {fields.length === 0 ? (
         <p className="text-[13px] text-muted">No custom fields defined.</p>
       ) : (
-        <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-surface border border-line rounded-xl overflow-x-auto">
+          <table className="w-full min-w-[420px] text-sm">
             <thead className="bg-surface-2">
               <tr>
                 <th className="text-left px-4 py-2 text-[12px] font-medium text-muted">Label</th>

@@ -74,7 +74,7 @@ export default function CloseoutView() {
       </div>
 
       {/* ── Analytics cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {[
           {
             label: "Total Revenue",
@@ -261,7 +261,7 @@ function DealBreakdown({
   return (
     <div className="space-y-4">
       {/* P&L grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {[
           { label: "Revenue",                                      value: fmtAmount(flow.gross_revenue), clr: "text-ink"   },
           { label: "Total Cost",                                   value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
@@ -324,7 +324,7 @@ function DealBreakdown({
           <p className="text-[12.5px] font-medium text-muted mb-3">
             Profit Split
           </p>
-          <div className="grid grid-cols-3 gap-4 text-center">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
             {[
               { name: split.jack_name, val: flow.profit_jack },
               { name: split.ben_name,  val: flow.profit_ben  },

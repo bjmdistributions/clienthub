@@ -46,8 +46,8 @@ export default function HealthView() {
         ))}
       </div>
 
-      <div className="bg-surface border border-line-2 rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-surface border border-line-2 rounded-lg overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
           <thead className="bg-surface-2 border-b border-line">
             <tr>
               <th className="text-left px-4 py-3 text-[12px] font-medium text-muted">Client</th>

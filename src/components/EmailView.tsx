@@ -81,7 +81,7 @@ export default function EmailView() {
 
       {mode === "inbox" && (
         <div>
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
             <p className="text-[13px] text-muted">
               Pulls unread emails since the last scan, parses them, and matches against known clients.
             </p>
@@ -102,9 +102,9 @@ export default function EmailView() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             {/* Email list */}
-            <div className="bg-surface border border-line rounded-lg overflow-hidden">
+            <div className="bg-surface border border-line rounded-lg overflow-hidden min-w-0">
               <div className="px-4 py-3 border-b border-line text-[13px] font-semibold text-ink-2">
                 Recent ({emails.length})
               </div>
@@ -139,7 +139,7 @@ export default function EmailView() {
             </div>
 
             {/* Email detail */}
-            <div className="bg-surface border border-line rounded-lg p-5">
+            <div className="bg-surface border border-line rounded-lg p-5 min-w-0">
               {selected ? (
                 <EmailDetail email={selected} />
               ) : (

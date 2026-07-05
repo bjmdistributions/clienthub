@@ -254,7 +254,7 @@ export default function InvoicesView() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
+      <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 mb-5">
         {[
           { label: "Total",          value: invoices.length,          color: "text-ink" },
           { label: "Completed",      value: completedCount,           color: completedCount > 0 ? "text-success-ink" : "text-muted" },
@@ -558,7 +558,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
       {/* New invoice: full header including client picker */}
       {!initial && (
-        <div className="grid grid-cols-3 gap-4 mb-5">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
           <Field label="Client">
             {!createNew && !showClientPicker && clientId ? (
               <div className="flex items-center gap-2">
@@ -612,8 +612,8 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
 
       {/* Edit mode: show dates + tax (no client change) */}
       {initial && (
-        <div className="grid grid-cols-3 gap-4 mb-5 p-4 bg-surface-2 border border-line rounded-xl">
-          <div className="col-span-3 text-[11px] text-warning-ink font-medium -mb-1">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5 p-4 bg-surface-2 border border-line rounded-xl">
+          <div className="md:col-span-3 text-[11px] text-warning-ink font-medium -mb-1">
             Editing a {initial.status.toLowerCase() === "paid" ? "paid" : "sent"} invoice — amounts and dates can be adjusted.
           </div>
           <Field label="Due date"><input type="date" className={inp} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>

@@ -145,7 +145,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
       {loading ? (
         <div className="space-y-4 py-2">
           <div className="h-16 bg-surface-2 rounded-xl animate-pulse" />
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             {[0, 1, 2, 3].map((i) => <div key={i} className="h-24 bg-surface-2 rounded-xl animate-pulse" />)}
           </div>
           <div className="h-48 bg-surface-2 rounded-xl animate-pulse" />
@@ -166,7 +166,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           <div>
             <h2 className="text-[15px] font-semibold text-ink mb-3">This week at a glance</h2>
             <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-line">
+              <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
                 <HeroCell label="Revenue" value={fmtAmount(brief.revenue_this_week)} extra={changePct(brief.revenue_change_pct)} />
                 <HeroCell label="Profit" value={fmtAmount(brief.profit_this_week)} extra={changePct(brief.profit_change_pct)}
                   sub={`${brief.avg_margin_this_week.toFixed(1)}% margin`} />
@@ -202,7 +202,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
               </div>
 
               {/* Split boxes */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                 <SplitBox
                   accent="var(--accent-400)"
                   accentBg="var(--accent-tint)"
@@ -281,7 +281,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           </div>
 
           {/* Section 3: Receivables & Follow-ups */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="rounded-xl p-4" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
               <h3 className="text-[13px] font-semibold text-ink mb-3">Receivables</h3>
               {brief.overdue_invoices_count > 0 ? (
@@ -311,7 +311,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           {(brief.best_margin_deal || brief.worst_margin_deal || brief.biggest_invoice) && (
             <div>
               <h2 className="text-[15px] font-semibold text-ink mb-3">This week's highlights</h2>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                 {brief.best_margin_deal && (
                   <HighlightCard
                     accent="emerald"
@@ -346,7 +346,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           {/* Section 5: Activity */}
           <div>
             <h2 className="text-[15px] font-semibold text-ink mb-3">Activity this week</h2>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="rounded-xl p-4 flex items-center gap-4"
                 style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"

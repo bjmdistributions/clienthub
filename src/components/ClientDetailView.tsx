@@ -318,7 +318,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         </div>
 
         {/* Key stats row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
           <StatTile label="Revenue" value={fmtAmount(revenue)} tone="ink" />
           <StatTile label="Profit" value={clientProfit === null ? "—" : fmtAmount(clientProfit)} tone={clientProfit !== null && clientProfit < 0 ? "danger" : "success"} hint={clientProfit === null ? undefined : "completed deals"} />
           <StatTile label="Orders" value={String(client.invoice_count)} tone="ink" hint={`${outstanding > 0 ? fmtAmount(outstanding) + " open" : "none open"}`} />
@@ -343,7 +343,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
       {/* ── Financials: credit + portal ─────────────────── */}
       <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
         <SubHeading icon={<ShoppingCart size={15} className="text-muted" />}>Financials</SubHeading>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
           <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
           <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
           <StatTile label="Invoices sent" value={String(client.invoice_count)} tone="ink" />
@@ -393,7 +393,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
       {/* Metadata cards */}
       {client.metadata && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
           <MetadataCard title="Contact Info" icon={<User size={14} />}>
             {client.metadata.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
             {client.metadata.street_address && <MetaRow label="Address" value={client.metadata.street_address} />}
@@ -500,9 +500,9 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           </div>
 
           {/* Two-column: interactions + invoices */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Interactions */}
-            <div className="bg-surface border border-line rounded-lg">
+            <div className="bg-surface border border-line rounded-lg min-w-0">
               <div className="flex items-center justify-between px-4 py-3.5 border-b border-line">
                 <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
                   <MessageSquare size={14} className="text-muted" /> Interactions ({interactions.length})
@@ -550,7 +550,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             </div>
 
             {/* Invoices */}
-            <div className="bg-surface border border-line rounded-lg">
+            <div className="bg-surface border border-line rounded-lg min-w-0">
               <div className="px-4 py-3.5 border-b border-line">
                 <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
                   <FileText size={14} className="text-muted" /> Invoices ({invoices.length})

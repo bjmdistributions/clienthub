@@ -64,7 +64,7 @@ export default function TiersView() {
       </div>
 
       {/* Tier summary cards */}
-      <div className="grid grid-cols-3 lg:grid-cols-5 gap-3 my-5">
+      <div className="grid grid-cols-3 xl:grid-cols-5 gap-3 my-5">
         {TIER_ORDER.map((t) => {
           const count = tierCount(t);
           return (
@@ -120,8 +120,8 @@ export default function TiersView() {
       </div>
 
       {/* Table */}
-      <div className="bg-surface border border-line rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-surface border border-line rounded-xl overflow-x-auto">
+        <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-line-2">
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Client</th>

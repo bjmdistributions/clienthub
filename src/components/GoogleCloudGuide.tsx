@@ -27,8 +27,8 @@ function Step({ n, icon: Icon, title, children, mock, last }: {
         <span className="flex-shrink-0 w-7 h-7 rounded-full bg-accent text-on-accent text-[13px] font-bold flex items-center justify-center">{n}</span>
         {!last && <div className="w-px flex-1 bg-line-2 my-1.5" />}
       </div>
-      <div className={`flex-1 grid grid-cols-1 sm:grid-cols-[1fr_180px] gap-3 items-start ${last ? "" : "pb-5"}`}>
-        <div>
+      <div className={`flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-[1fr_180px] gap-3 items-start ${last ? "" : "pb-5"}`}>
+        <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-ink mb-1.5">
             <Icon size={14} className="text-accent" /> {title}
           </div>

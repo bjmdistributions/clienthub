@@ -149,7 +149,7 @@ export default function SuppliersView() {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {filtered.map((s) => (
             <button
               key={s.id}
@@ -222,7 +222,7 @@ export default function SuppliersView() {
             <div className="flex-1 px-6 py-5 space-y-5">
               {/* Stats row if editing */}
               {selected && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   {[
                     { label: "Total paid", value: fmtAmount(selected.total_paid) },
                     { label: "Deals",      value: String(selected.deal_count) },

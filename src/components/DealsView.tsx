@@ -137,7 +137,7 @@ export default function DealsView() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex justify-between items-center gap-3 flex-wrap mb-5">
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Deals</h2>
           <p className="text-[12px] text-muted mt-0.5">{deals.length} deal{deals.length !== 1 ? "s" : ""} · drag cards between stages</p>
@@ -331,7 +331,7 @@ function DealDetailPanel({
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" />
-      <div className="relative w-[540px] bg-surface shadow-xl h-full overflow-auto" onClick={(e) => e.stopPropagation()}>
+      <div className="relative w-[540px] max-w-[min(92vw,540px)] bg-surface shadow-xl h-full overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-surface border-b border-line px-6 py-4 flex items-center justify-between z-10">
           <h3 className="text-[16px] font-semibold text-ink">
             {deal ? "Edit deal" : "New deal"}
