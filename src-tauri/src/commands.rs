@@ -5754,6 +5754,18 @@ pub async fn save_company_info(mut info: crate::invoice::CompanyInfo) -> Result<
         [json],
     )
     .map_err(|e| e.to_string())?;
+
+    // Push the logo bytes to the server so the hosted invoice-PDF renderer can
+    // draw it (the server never has this local path). Fire-and-forget: a sync
+    // hiccup must not fail the save. Only when a logo exists + a server is
+    // connected.
+    if info.logo_path.is_some() && crate::netsync::is_enabled() {
+        tokio::spawn(async {
+            if let Err(e) = crate::netsync::upload_company_logo().await {
+                tracing::warn!("company logo sync to server failed: {e}");
+            }
+        });
+    }
     Ok(())
 }
 

@@ -392,6 +392,39 @@ pub async fn get_my_plan() -> Result<serde_json::Value, String> {
     resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
+/// Upload the current company logo bytes to the server so the hosted invoice
+/// PDF renderer can draw it (the server never has the desktop's local logo
+/// path). Reads `<app_data>/company_logo.png` — the single PNG that
+/// `save_company_info` always writes — and POSTs it to the per-org, admin-gated
+/// upload endpoint. No-op-friendly: callers can fire-and-forget after a save.
+#[tauri::command]
+pub async fn upload_company_logo() -> Result<(), String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let path = crate::db::app_data_dir().join("company_logo.png");
+    let bytes = std::fs::read(&path).map_err(|_| "No logo saved yet.".to_string())?;
+    let resp = http()
+        .post(format!("{}/api/settings/company/logo", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .header("content-type", "image/png")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server — check your connection.".to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Admin permission required to sync the logo.".into());
+    }
+    if resp.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+        return Err("Logo is too large — use an image under 1 MB.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Platform-owner (superadmin) signups overview: every workspace with owner email,
 /// plan, signup date and usage. Server gates this to the org_default owner.
 #[tauri::command]
