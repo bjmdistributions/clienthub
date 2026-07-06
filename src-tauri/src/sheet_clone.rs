@@ -352,12 +352,36 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
             "Can't read that sheet. Make sure it's shared with your Google account (view access) and the link is correct.".to_string()
         })?;
 
-    if !read_resp.status().is_success() {
-        return Err("Can't read that sheet. Make sure it's shared with your Google account (view access) and the link is correct.".into());
+    let status = read_resp.status();
+    if !status.is_success() {
+        // Surface Google's actual status + message so the cause is diagnosable:
+        // 401 = token/sign-in, 403 = your connected account can't read it (or copy
+        // disabled), 404 = not found / not shared with your account.
+        let body = read_resp.text().await.unwrap_or_default();
+        let reason = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        let hint = match status.as_u16() {
+            401 => "Your Google sign-in needs refreshing — open Settings → Google Sheets and click Reconnect, then try again.",
+            403 => "The Google account you connected to Ecliptr can't read this sheet. Make sure the sheet is shared (view access) with that exact account — check Settings → Google Sheets to see which account is connected. (If the owner disabled copy/download, that can also block reading.)",
+            404 => "That sheet wasn't found for your connected Google account. Double-check the link, and that the sheet is shared with the exact account shown in Settings → Google Sheets.",
+            _ => "Google refused to read that sheet.",
+        };
+        return Err(if reason.is_empty() {
+            format!("{} (Google error {})", hint, status.as_u16())
+        } else {
+            format!("{} (Google error {}: {})", hint, status.as_u16(), reason)
+        });
     }
 
     let source: Value = read_resp.json().await.map_err(|_| {
-        "Can't read that sheet. Make sure it's shared with your Google account (view access) and the link is correct.".to_string()
+        "Google returned data for that sheet that Ecliptr couldn't read.".to_string()
     })?;
 
     // 5. Transform into a NEW create body.

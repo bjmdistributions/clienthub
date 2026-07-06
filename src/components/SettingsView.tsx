@@ -3481,7 +3481,7 @@ function CategoriesTab() {
 // the Google Sheets tab (and it's the same token — connecting here connects
 // everywhere). Reconnect works with the saved credentials (no re-entry).
 function GoogleConnectCard() {
-  const [gStatus, setGStatus] = useState<{ connected: boolean } | null>(null);
+  const [gStatus, setGStatus] = useState<{ connected: boolean; email?: string; scopes?: string } | null>(null);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -3516,9 +3516,21 @@ function GoogleConnectCard() {
       <p className="text-[12px] text-muted mb-3 max-w-xl">
         One Google connection powers sheet sync, write-back, and Sheet copy.{" "}
         {connected
-          ? "You're connected — reconnect only if you added new Google access."
+          ? "Reconnect only if you added new Google access or need to switch accounts."
           : "Connect once to turn these on (uses your own Google Cloud credentials)."}
       </p>
+      {connected && gStatus?.email && (
+        <div className="text-[12px] mb-3 flex items-center gap-1.5">
+          <span className="text-muted">Connected as</span>
+          <span className="font-medium text-ink">{gStatus.email}</span>
+        </div>
+      )}
+      {connected && gStatus?.scopes !== undefined && !gStatus.scopes.includes("spreadsheets") && (
+        <div className="text-[12px] text-warning-ink bg-warning-bg border border-warning rounded-lg px-3 py-2 mb-3 flex items-start gap-1.5">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+          <span>This connection is missing Google Sheets access. Click Reconnect to grant it (needed for sheet sync and Sheet copy).</span>
+        </div>
+      )}
       {!connected && (
         <div className="space-y-2 max-w-sm mb-3">
           <SecretInput label="Google Client ID" value={clientId} onChange={setClientId} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
