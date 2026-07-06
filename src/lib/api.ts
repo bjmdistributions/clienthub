@@ -1635,6 +1635,12 @@ export const api = {
   netsyncSyncNow: () => invoke<{ pushed: number; pulled: number }>("netsync_sync_now"),
   netsyncRepair: () => invoke<{ reapplied: number; pushed: number }>("netsync_repair"),
   netsyncRepairHard: () => invoke<{ reapplied: number; pushed: number }>("netsync_repair_hard"),
+  netsyncRestoreSnapshot: () => invoke<Record<string, number>>("netsync_restore_snapshot"),
+  netsyncDiagnostics: () => invoke<{
+    version: string; connected: boolean; url: string; email: string; org: string;
+    pull_cursor: number; local_counts: Record<string, number>;
+    server_counts: Record<string, number> | null;
+  }>("netsync_diagnostics"),
   getMyPlan: () => invoke<{ name: string; plan: string; members: number; member_limit: number | null; clients: number; client_limit: number | null; is_superadmin: boolean }>("get_my_plan"),
   getPlatformSignups: () => invoke<{ orgs: any[] }>("get_platform_signups"),
 

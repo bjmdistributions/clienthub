@@ -1810,6 +1810,8 @@ function SyncTab() {
   const [nBusy, setNBusy] = useState(false);
   const [nErr,  setNErr]  = useState<string | null>(null);
   const [nMsg,  setNMsg]  = useState<string | null>(null);
+  const [diag,  setDiag]  = useState<Awaited<ReturnType<typeof api.netsyncDiagnostics>> | null>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
 
   const refresh       = () => api.syncStatus().then(setStatus);
   const checkEncrypted= () => api.syncIsEncrypted().then(setEncrypted).catch(() => {});
@@ -1862,6 +1864,28 @@ function SyncTab() {
       await refreshNet();
     } catch (e: any) { setNErr(e.toString()); }
     finally { setNBusy(false); }
+  };
+
+  const restoreFromServer = async () => {
+    if (!confirm("Copy the server's current data straight onto this device? This is the surest fix when clients or deals are still missing after Repair and Deep repair. Nothing on the server changes and no local data is lost. Continue?")) return;
+    setNBusy(true); setNErr(null);
+    setNMsg("Restoring from the server — cloning your current workspace onto this device…");
+    try {
+      const r = await api.netsyncRestoreSnapshot();
+      const total = Object.values(r).reduce((a, b) => a + b, 0);
+      const nonZero = Object.entries(r).filter(([, n]) => n > 0).map(([t, n]) => `${t} ${n}`);
+      setNMsg(`Restore complete — wrote ${total} records from the server${nonZero.length ? ` (${nonZero.join(", ")})` : ""}. Anything that was missing is back now.`);
+      await refreshNet();
+      if (diag) await refreshDiag();
+    } catch (e: any) { setNErr(e.toString()); }
+    finally { setNBusy(false); }
+  };
+
+  const refreshDiag = async () => {
+    setDiagBusy(true);
+    try { setDiag(await api.netsyncDiagnostics()); }
+    catch (e: any) { setNErr(e.toString()); }
+    finally { setDiagBusy(false); }
   };
 
   const replay = async () => {
@@ -1935,8 +1959,17 @@ function SyncTab() {
                 className="text-accent hover:underline font-medium disabled:opacity-50"
               >
                 Run Deep repair
+              </button>
+              , or{" "}
+              <button
+                onClick={restoreFromServer}
+                disabled={nBusy}
+                title="Copies the server's current data straight onto this device — the surest fix when clients or deals are still missing after Repair and Deep repair."
+                className="text-accent hover:underline font-medium disabled:opacity-50"
+              >
+                Restore from server
               </button>{" "}
-              to rebuild from the server.
+              to clone the server's current data directly.
             </p>
             {nMsg && <p className="text-[12px] text-muted">{nMsg}</p>}
             {nErr && (
@@ -1948,6 +1981,76 @@ function SyncTab() {
               <div className="flex items-center justify-between text-[12px]">
                 <span className="text-muted">Pull position</span>
                 <span className="font-mono text-ink-2 tabular-nums">{net.pull_cursor}</span>
+              </div>
+              <div className="mt-3 pt-3 border-t border-line-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[12px] text-muted">Diagnostics</span>
+                  <button
+                    onClick={refreshDiag}
+                    disabled={diagBusy}
+                    className="border border-line hover:bg-surface-2 text-ink-2 px-3 h-7 rounded-md text-[12px] font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {diagBusy && <RefreshCw size={11} className="animate-spin" />}
+                    {diag ? "Refresh" : "Run diagnostics"}
+                  </button>
+                </div>
+                {diag && (
+                  <div className="mt-2.5 space-y-2.5 text-[12px]">
+                    <div className="rounded-lg border border-line bg-surface-2/40 px-3 divide-y divide-line-2">
+                      <div className="flex items-center justify-between gap-3 py-1.5">
+                        <span className="text-muted">App version</span>
+                        <span className="text-ink-2 tabular-nums">{diag.version}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 py-1.5">
+                        <span className="text-muted">Signed in as</span>
+                        <span className="text-ink-2 truncate">{diag.connected ? (diag.email || "—") : "not connected"}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 py-1.5">
+                        <span className="text-muted">Workspace</span>
+                        <span className="text-ink-2 truncate">{diag.org || "—"}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 py-1.5">
+                        <span className="text-muted">Pull position</span>
+                        <span className="font-mono text-ink-2 tabular-nums">{diag.pull_cursor}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted mb-1">Records on this device vs. the server</div>
+                      <div className="rounded-lg border border-line bg-surface-2/40 overflow-hidden">
+                        <table className="w-full text-[12px]">
+                          <thead>
+                            <tr className="text-muted border-b border-line-2">
+                              <th className="text-left font-medium px-3 py-1.5">Table</th>
+                              <th className="text-right font-medium px-3 py-1.5">Here</th>
+                              <th className="text-right font-medium px-3 py-1.5">Server</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-line-2">
+                            {Object.keys(diag.local_counts).sort().map((t) => {
+                              const local = diag.local_counts[t] ?? 0;
+                              const server = diag.server_counts ? (diag.server_counts[t] ?? 0) : null;
+                              const behind = server !== null && local < server;
+                              if (local === 0 && (server === null || server === 0)) return null;
+                              return (
+                                <tr key={t} className={behind ? "text-danger-ink" : ""}>
+                                  <td className="px-3 py-1.5">{t}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{local}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{server === null ? "—" : server}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      {diag.server_counts === null && (
+                        <p className="text-muted mt-1">Server counts unavailable — offline or the session expired.</p>
+                      )}
+                      {diag.server_counts !== null && Object.keys(diag.local_counts).some((t) => (diag.local_counts[t] ?? 0) < (diag.server_counts?.[t] ?? 0)) && (
+                        <p className="text-danger-ink mt-1.5">Rows in red are behind the server — try Restore from server above.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </Advanced>
           </div>

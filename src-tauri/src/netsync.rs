@@ -16,6 +16,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::db::pool;
@@ -23,6 +24,19 @@ use crate::sync::{self, SyncEvent};
 
 const PUSH_BATCH: i64 = 200;
 const POLL_SECS: u64 = 20;
+
+/// The user-data tables a device clones via /api/sync/snapshot and compares via
+/// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
+/// arrives hash-stripped; `settings` is keyed by `key`; `deal_reps` by
+/// `deal_flow_id` — both handled by `sync::primary_key`.
+const SNAPSHOT_TABLES: &[&str] = &[
+    "clients", "interactions", "invoices", "deals", "deal_flows", "suppliers",
+    "supplier_price_history", "quotes", "inventory", "payment_methods", "payments",
+    "scheduled_sends", "newsletter_schedules", "messages", "categories", "notes",
+    "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds",
+    "client_credits", "rep_payouts", "intake_sources", "deal_reps", "staff_accounts",
+    "settings",
+];
 
 pub fn ensure_tables() -> Result<()> {
     let conn = pool().get()?;
@@ -316,6 +330,10 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     let (token, identity) = probe_login(&base, email, password).await?;
     state_set("netsync_url", &base);
     state_set("netsync_token", &token);
+    // Persist identity so diagnostics can show who/which org this device is bound to
+    // without another round-trip.
+    state_set("netsync_email", &identity.email);
+    state_set("netsync_org", &identity.org_id);
     // Only reset the cursor on the very first connect (full bootstrap). On a
     // re-login (token refresh) keep the cursor so we pull incrementally rather
     // than re-downloading the whole org history every sign-in.
@@ -324,6 +342,10 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     }
     pull_apply().await?;
     push_pending().await.ok(); // flush anything queued before connecting
+    // If event replay left this device behind the server (poisoned clocks /
+    // stranded rows), clone the current state directly. Runs at most once per
+    // install; best-effort so a hiccup never blocks sign-in.
+    auto_heal_if_behind().await;
     Ok(identity)
 }
 
@@ -421,6 +443,230 @@ pub async fn netsync_repair_hard() -> Result<serde_json::Value, String> {
     let reapplied = pull_apply().await.map_err(|e| e.to_string())?;
     let pushed = push_pending().await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "reapplied": reapplied, "pushed": pushed }))
+}
+
+// ---------- snapshot restore + auto-heal + diagnostics ----------
+
+/// Fetch the server's current-state snapshot and UPSERT every row straight into the
+/// local DB by primary key. This deliberately BYPASSES the oplog/LWW path
+/// (`row_clocks`/`sync_meta` are never touched), so it always lands the server's
+/// current row even on a device whose clocks are poisoned or whose event replay is
+/// stranded — the surest heal when Repair / Deep repair still leave rows missing.
+/// Only columns that exist locally are written (schema-drift safe), and both table
+/// and column names are validated as plain identifiers before interpolation. Per-row
+/// best-effort: a bad row is logged and skipped, never aborting the restore. Returns
+/// `{ table: rows_applied, ... }`.
+pub async fn restore_snapshot() -> Result<serde_json::Value> {
+    let cfg = config().context("Sign in to your workspace first, then run Restore.")?;
+    let base = cfg.url.trim_end_matches('/');
+    let resp = http()
+        .get(format!("{}/api/sync/snapshot", base))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .context("snapshot request")?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        anyhow::bail!("unauthorized — sign in again");
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!("snapshot failed: HTTP {}", resp.status());
+    }
+    #[derive(Deserialize)]
+    struct SnapResp {
+        #[serde(default)]
+        tables: HashMap<String, Vec<serde_json::Map<String, serde_json::Value>>>,
+    }
+    let body: SnapResp = resp.json().await.context("snapshot decode")?;
+
+    let mut applied = serde_json::Map::new();
+    for (table, rows) in &body.tables {
+        // Only clone into snapshot tables we recognize (defense-in-depth; the table
+        // name is interpolated into SQL below).
+        if !SNAPSHOT_TABLES.contains(&table.as_str()) {
+            tracing::warn!("restore_snapshot: skipping unknown table {}", table);
+            continue;
+        }
+        let conn = match pool().get() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("restore_snapshot: no conn for {}: {}", table, e);
+                continue;
+            }
+        };
+        let pk = sync::primary_key(table);
+        let present = sync::existing_columns(&conn, table);
+        let mut count: i64 = 0;
+        for row in rows {
+            // Keep only columns that exist locally, and require the primary key.
+            let cols: Vec<&String> = row.keys().filter(|k| present.contains(*k)).collect();
+            if !cols.iter().any(|c| c.as_str() == pk) {
+                continue; // can't upsert without the key
+            }
+            // Validate every column name as a plain identifier before it reaches the
+            // SQL text (same guard as `apply_upsert`).
+            let mut safe = true;
+            for c in &cols {
+                if c.is_empty()
+                    || c.as_bytes()[0].is_ascii_digit()
+                    || !c.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric())
+                {
+                    tracing::warn!("restore_snapshot: unsafe column {:?} in {}", c, table);
+                    safe = false;
+                    break;
+                }
+            }
+            if !safe {
+                continue;
+            }
+            let col_names: Vec<String> = cols.iter().map(|c| (*c).clone()).collect();
+            let placeholders: Vec<String> =
+                (1..=col_names.len()).map(|i| format!("?{}", i)).collect();
+            // UPSERT: set every non-PK column from the incoming row on conflict.
+            let updates: Vec<String> = col_names
+                .iter()
+                .filter(|c| c.as_str() != pk)
+                .map(|c| format!("{}=excluded.{}", c, c))
+                .collect();
+            let sql = if updates.is_empty() {
+                format!(
+                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO NOTHING",
+                    table,
+                    col_names.join(","),
+                    placeholders.join(","),
+                    pk
+                )
+            } else {
+                format!(
+                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO UPDATE SET {}",
+                    table,
+                    col_names.join(","),
+                    placeholders.join(","),
+                    pk,
+                    updates.join(",")
+                )
+            };
+            let params: Vec<Box<dyn rusqlite::ToSql>> =
+                col_names.iter().map(|c| sync::json_to_sql(&row[c])).collect();
+            let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            match conn.execute(&sql, refs.as_slice()) {
+                Ok(_) => count += 1,
+                Err(e) => {
+                    tracing::warn!("restore_snapshot: row upsert failed for {}: {}", table, e);
+                    continue;
+                }
+            }
+        }
+        applied.insert(table.clone(), serde_json::Value::from(count));
+    }
+    Ok(serde_json::Value::Object(applied))
+}
+
+/// Server-side per-table row counts for the caller's org (best-effort). Returns an
+/// empty map on any failure so callers can treat "unknown" as "don't heal".
+pub async fn server_counts() -> HashMap<String, i64> {
+    let cfg = match config() {
+        Some(c) => c,
+        None => return HashMap::new(),
+    };
+    let base = cfg.url.trim_end_matches('/');
+    let resp = match http()
+        .get(format!("{}/api/sync/counts", base))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return HashMap::new(),
+    };
+    #[derive(Deserialize)]
+    struct CountsResp {
+        #[serde(default)]
+        counts: HashMap<String, i64>,
+    }
+    match resp.json::<CountsResp>().await {
+        Ok(b) => b.counts,
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Local per-table row count for the snapshot tables.
+fn local_counts() -> HashMap<String, i64> {
+    let mut out = HashMap::new();
+    if let Ok(conn) = pool().get() {
+        for &tbl in SNAPSHOT_TABLES {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {}", tbl), [], |r| r.get(0))
+                .unwrap_or(0);
+            out.insert(tbl.to_string(), n);
+        }
+    }
+    out
+}
+
+/// After the initial bootstrap pull, compare the server's `clients` count to this
+/// device's. If the device is materially behind (fewer clients than the server), the
+/// event replay left rows stranded — clone the current state directly. Gated to run
+/// at most once per install via `netsync_autoheal_done` unless that flag is cleared.
+async fn auto_heal_if_behind() {
+    if state_get("netsync_autoheal_done").is_some() {
+        return;
+    }
+    let server = server_counts().await;
+    let server_clients = match server.get("clients") {
+        Some(n) => *n,
+        None => return, // couldn't reach server / no data — don't heal blindly
+    };
+    let local_clients: i64 = pool()
+        .get()
+        .ok()
+        .and_then(|c| c.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).ok())
+        .unwrap_or(0);
+    // Materially behind: strictly fewer local clients than the server has.
+    if local_clients < server_clients {
+        tracing::info!(
+            "netsync auto-heal: local clients {} < server {} — restoring snapshot",
+            local_clients, server_clients
+        );
+        match restore_snapshot().await {
+            Ok(applied) => tracing::info!("netsync auto-heal: restored {:?}", applied),
+            Err(e) => {
+                tracing::warn!("netsync auto-heal: restore failed: {}", e);
+                return; // don't mark done so a later connect retries
+            }
+        }
+    }
+    state_set("netsync_autoheal_done", "1");
+}
+
+/// #[tauri::command] wrapper for the Settings "Restore from server" button.
+#[tauri::command]
+pub async fn netsync_restore_snapshot() -> Result<serde_json::Value, String> {
+    restore_snapshot().await.map_err(|e| e.to_string())
+}
+
+/// Diagnostics for the Settings → Cloud sync card: connection identity, pull
+/// position, and a local-vs-server row-count comparison so a user (or support) can
+/// see at a glance whether the device is behind.
+#[tauri::command]
+pub async fn netsync_diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let version = app.package_info().version.to_string();
+    let local = local_counts();
+    let server = server_counts().await;
+    let server_json = if server.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(&server).unwrap_or(serde_json::Value::Null)
+    };
+    Ok(serde_json::json!({
+        "version": version,
+        "connected": is_enabled(),
+        "url": state_get("netsync_url").unwrap_or_default(),
+        "email": state_get("netsync_email").unwrap_or_default(),
+        "org": state_get("netsync_org").unwrap_or_default(),
+        "pull_cursor": state_get("netsync_pull_cursor").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+        "local_counts": local,
+        "server_counts": server_json,
+    }))
 }
 
 /// Fetch the signed-in workspace's plan + usage from the server (for the My Plan view).

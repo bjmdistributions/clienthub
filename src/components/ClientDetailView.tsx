@@ -407,6 +407,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           </MetadataCard>
 
           <MetadataCard title="Business Info" icon={<Building2 size={14} />}>
+            {client.category && <MetaRow label="Category" value={client.category} />}
             {client.metadata.website && <MetaRow label="Website" value={client.metadata.website} />}
             {client.metadata.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
             {client.metadata.primary_buy_category && <MetaRow label="Buy Category" value={client.metadata.primary_buy_category} />}

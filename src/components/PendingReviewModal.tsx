@@ -5,7 +5,7 @@ import { X, Check, Ban, Mail, Phone, Building2, User, FileText, MapPin, BadgeChe
 // Metadata keys that are system bookkeeping, or that we surface as their own
 // labeled fields below — so they don't also appear in the raw "extra" list.
 const SYSTEM_META = new Set(["source", "intake_source_id", "shopify_id", "lead_source"]);
-const PROMOTED_META = new Set(["first_name", "last_name", "title", "tax_id", "sales_rep", "categories"]);
+const PROMOTED_META = new Set(["first_name", "last_name", "title", "tax_id", "sales_rep", "categories", "category"]);
 
 function sourceLabel(m: Record<string, any> | null): string {
   const s = String(m?.source || "");
@@ -45,12 +45,15 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
   const [state, setState] = useState(client.state || "");
   const [zip, setZip] = useState(client.zip_code || "");
   const [country, setCountry] = useState(client.country || "");
-  // Tags (categories → tags). Parsed as an array in metadata or a comma string.
+  // Category (the single buy-category the customer picked). Lives in
+  // client.category / metadata.category — NOT the free-text tags field.
+  const [category, setCategory] = useState(client.category || mv("category"));
+  // Tags (genuine free-text tags, comma-separated). Never seeded from category.
   const initialTags = (() => {
-    const c = meta0.categories;
-    if (Array.isArray(c)) return c.join(", ");
     if (client.tags) return client.tags;
-    return typeof c === "string" ? c : "";
+    const t = meta0.tags;
+    if (Array.isArray(t)) return t.join(", ");
+    return typeof t === "string" ? t : "";
   })();
   const [tags, setTags] = useState(initialTags);
   const [notes, setNotes] = useState(client.notes || "");
@@ -70,11 +73,11 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
         first_name: firstName || undefined, last_name: lastName || undefined,
         title: title || undefined, tax_id: taxId || undefined,
         sales_rep: salesRep || undefined,
-        categories: tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined,
+        category: category || undefined,
       };
       await api.updateClient(client.id, {
         name, email, phone, company, notes, metadata, tags: tags || null,
-        lead_status: client.lead_status, category: client.category,
+        lead_status: client.lead_status, category: category || null,
         street_address: address || null, city: city || null, state: state || null,
         zip_code: zip || null, country: country || null,
         next_follow_up_date: client.next_follow_up_date,
@@ -151,10 +154,14 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
             </div>
           </div>
 
-          {/* Categories → tags */}
+          {/* Category (single buy-category) + free-text tags */}
           <div className="space-y-2 pt-1">
-            <div className={sectionCls}><span className="inline-flex items-center gap-1.5"><Tag size={12} /> Categories</span></div>
-            <input value={tags} onChange={(e) => setTags(e.target.value)} className={inputCls} placeholder="Comma-separated, e.g. Wholesale, Electronics" />
+            <label className={labelCls}><Tag size={12} /> Category</label>
+            <input value={category} onChange={(e) => setCategory(e.target.value)} className={inputCls} placeholder="e.g. Electronics" />
+          </div>
+          <div className="space-y-2 pt-1">
+            <div className={sectionCls}><span className="inline-flex items-center gap-1.5"><Tag size={12} /> Tags</span></div>
+            <input value={tags} onChange={(e) => setTags(e.target.value)} className={inputCls} placeholder="Comma-separated, e.g. Wholesale, VIP" />
             {tagList.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {tagList.map((t) => <span key={t} className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{t}</span>)}

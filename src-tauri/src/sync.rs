@@ -453,7 +453,7 @@ fn apply_event(event: &SyncEvent) -> Result<()> {
 }
 
 /// Primary-key column for a synced table (most use `id`).
-fn primary_key(table: &str) -> &'static str {
+pub(crate) fn primary_key(table: &str) -> &'static str {
     match table {
         "settings" => "key",
         "invites" => "token",
@@ -464,7 +464,7 @@ fn primary_key(table: &str) -> &'static str {
 
 /// Column names that physically exist in the local `table`. Used to make sync
 /// application resilient to schema drift between devices (see `apply_upsert`).
-fn existing_columns(conn: &rusqlite::Connection, table: &str) -> std::collections::HashSet<String> {
+pub(crate) fn existing_columns(conn: &rusqlite::Connection, table: &str) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     if let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({})", table)) {
         if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) {
@@ -628,7 +628,7 @@ fn apply_delete(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {
     Ok(())
 }
 
-fn json_to_sql(v: &serde_json::Value) -> Box<dyn rusqlite::ToSql> {
+pub(crate) fn json_to_sql(v: &serde_json::Value) -> Box<dyn rusqlite::ToSql> {
     match v {
         serde_json::Value::Null => Box::new(Option::<String>::None),
         serde_json::Value::Bool(b) => Box::new(*b as i64),
