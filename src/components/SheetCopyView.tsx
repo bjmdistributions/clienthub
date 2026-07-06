@@ -24,6 +24,16 @@ export default function SheetCopyView() {
   const [result, setResult] = useState<CloneResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+
+  // Live elapsed-seconds counter while a copy is running, so a long large-sheet
+  // copy visibly progresses instead of looking frozen.
+  useEffect(() => {
+    if (!working) return;
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [working]);
 
   // Belt-and-suspenders plan gate: the tab is already hidden off-plan in App.tsx,
   // but if this view is somehow opened without Unlimited we show a calm notice
@@ -147,6 +157,22 @@ export default function SheetCopyView() {
         </div>
       </div>
 
+      {/* Working */}
+      {working && (
+        <div className="bg-surface border border-accent/30 rounded-xl p-5">
+          <div className="flex items-center gap-3">
+            <Loader2 size={20} className="animate-spin text-accent flex-shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-semibold text-ink">Copying your sheet… ({elapsed}s)</div>
+              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
+                Reading every tab and rebuilding it in your Drive. A large sheet can take a minute or
+                two — keep this page open. It'll show a link here when it's done.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div className="bg-danger-bg border border-danger-ink/20 rounded-xl p-4">
@@ -170,10 +196,10 @@ export default function SheetCopyView() {
               <Check size={16} />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-semibold text-ink truncate">{result.title}</div>
-              <div className="text-[11.5px] text-muted mt-0.5">
-                Copied to your Drive · {result.sheetCount}{" "}
-                {result.sheetCount === 1 ? "tab" : "tabs"}
+              <div className="text-[13.5px] font-semibold text-ink">Done — your copy is ready</div>
+              <div className="text-[11.5px] text-muted mt-0.5 truncate">
+                {result.title} · {result.sheetCount}{" "}
+                {result.sheetCount === 1 ? "tab" : "tabs"} · saved in your Google Drive
               </div>
             </div>
           </div>
