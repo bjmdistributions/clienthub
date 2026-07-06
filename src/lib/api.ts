@@ -1764,6 +1764,9 @@ export const api = {
     invoke<CustomField>("save_custom_field", { id, fieldKey, label, fieldType, optionsJson }),
   deleteCustomField: (id: string) => invoke<void>("delete_custom_field", { id }),
   getSheetHeaders: (sheetUrl: string) => invoke<SheetHeader[]>("get_sheet_headers", { sheetUrl }),
+  // Read-and-rebuild a view-only supplier sheet into a fresh sheet the user owns (Unlimited plan).
+  cloneGoogleSheet: (url: string) =>
+    invoke<{ title: string; newUrl: string; sheetCount: number; warnings: string[] }>("clone_google_sheet", { url }),
 
   // Geocoding
   geocodeClient: (clientId: string) => invoke<{ lat: number; lng: number }>("geocode_client", { clientId }),

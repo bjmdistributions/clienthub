@@ -13,6 +13,7 @@ mod google_contacts;
 mod invoice;
 mod manifest;
 mod oauth_flow;
+mod sheet_clone;
 mod sheet_writeback;
 mod signup_rules;
 mod netsync;
@@ -244,6 +245,8 @@ fn main() {
             netsync::get_my_plan,
             netsync::get_platform_signups,
             netsync::upload_company_logo,
+            // Google Sheet clone (read-and-rebuild view-only supplier load sheets)
+            sheet_clone::clone_google_sheet,
             // Sticky notes
             list_notes,
             create_note,

@@ -28,6 +28,7 @@ import {
   Wallet,
   Banknote,
   Archive as ArchiveIcon,
+  CopyPlus,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -51,6 +52,7 @@ import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
 import ArchiveView from "./components/ArchiveView";
+import SheetCopyView from "./components/SheetCopyView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import { FeedbackModal } from "./components/FeedbackModal";
 import CheckupView from "./components/CheckupView";
@@ -67,7 +69,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab, isAdmin } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "platform" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -189,6 +191,9 @@ export default function App() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [showTour, setShowTour] = useState(false);
   const [superadmin, setSuperadmin] = useState(false);
+  // Org plan id ("unlimited" = top tier). Drives the Sheet-copy tab gate. The UI
+  // gate is convenience only — the Rust command is the authoritative check.
+  const [plan, setPlan] = useState<string | null>(null);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [orgName, setOrgName] = useState<string>("");
@@ -206,7 +211,7 @@ export default function App() {
     return () => window.removeEventListener("replay-tour", replay);
   }, []);
   useEffect(() => {
-    if (me) api.getMyPlan().then((p) => setSuperadmin(!!p.is_superadmin)).catch(() => setSuperadmin(false));
+    if (me) api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); }).catch(() => { setSuperadmin(false); setPlan(null); });
   }, [me]);
 
   // Poll the notification queue for the bell badge. This MUST match exactly what
@@ -379,6 +384,7 @@ export default function App() {
     { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
     { id: "suppliers", label: "Suppliers",  icon: Package },
     { id: "inventory", label: "Inventory",  icon: Grid3X3 },
+    { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     { id: "email",     label: "Newsletter", icon: Mail },
     { id: "brief",     label: "Brief",      icon: FileText },
     { id: "automation", label: "Automation",  icon: Bot },
@@ -391,6 +397,7 @@ export default function App() {
   const tabs = allTabs.filter((t) =>
     t.id === "platform" ? superadmin
     : t.id === "archive" ? isAdmin(me)              // admin-only, like the money views
+    : t.id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : canViewTab(me, t.id as any)
   );
 
@@ -417,6 +424,7 @@ export default function App() {
           {t === "dealflow"   && <DealFlowView />}
           {t === "suppliers"  && <SuppliersView />}
           {t === "inventory"  && <InventoryView />}
+          {t === "sheetcopy"  && <SheetCopyView />}
           {t === "deals"      && <CloseoutView />}
           {t === "analytics"  && <AnalyticsView />}
           {t === "health"     && <TiersView />}
