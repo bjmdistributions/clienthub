@@ -356,6 +356,32 @@ fn col_clock(table: &str, row_id: &str, col: &str) -> Result<Option<Hlc>> {
     }
 }
 
+/// The newest HLC recorded across ALL of a row's column clocks — i.e. the last
+/// time anything on this row was written. Used by `apply_delete` to decide
+/// whether an incoming tombstone actually wins.
+fn max_row_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
+    let conn = pool().get()?;
+    let mut stmt = conn.prepare(
+        "SELECT hlc_phys,hlc_log,hlc_node FROM row_clocks WHERE tbl=?1 AND row_id=?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![table, row_id], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?, r.get::<_, Vec<u8>>(2)?))
+    })?;
+    let mut best: Option<Hlc> = None;
+    for row in rows {
+        let (p, l, n) = row?;
+        let mut node = [0u8; 8];
+        if n.len() == 8 {
+            node.copy_from_slice(&n);
+        }
+        let h = Hlc { physical_ms: p as u64, logical: l, node_id: node };
+        if best.map_or(true, |b| h > b) {
+            best = Some(h);
+        }
+    }
+    Ok(best)
+}
+
 fn write_tombstone(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {
     let conn = pool().get()?;
     conn.execute(
@@ -575,8 +601,28 @@ fn apply_upsert(
 }
 
 fn apply_delete(table: &str, row_id: &str, hlc: Hlc) -> Result<()> {
-    // Tombstone wins iff newer than all existing column clocks.
-    write_tombstone(table, row_id, hlc)?;
+    // LWW for deletes, symmetric with the upsert guard: the tombstone only wins
+    // if it's NEWER than every existing column write on the row. Events arrive in
+    // server-seq order (not causal), so a stale delete from an offline device can
+    // land AFTER a newer edit — without this guard it would hard-delete the row
+    // the newer edit should have kept, silently and unrecoverably (the edit is
+    // already in sync_meta and won't re-apply).
+    let newest = max_row_clock(table, row_id)?;
+    // Keep the tombstone record monotonic: never let a stale delete downgrade a
+    // newer tombstone (which would weaken the upsert guard).
+    let existing_tomb = tombstone_clock(table, row_id)?;
+    if existing_tomb.map_or(true, |t| hlc > t) {
+        write_tombstone(table, row_id, hlc)?;
+    }
+    if let Some(latest) = newest {
+        if hlc <= latest {
+            tracing::info!(
+                "apply_delete: stale tombstone for {}/{} (row has newer writes) — keeping row",
+                table, row_id
+            );
+            return Ok(());
+        }
+    }
     let conn = pool().get()?;
     conn.execute(&format!("DELETE FROM {} WHERE {}=?1", table, primary_key(table)), [row_id])?;
     Ok(())

@@ -18,7 +18,7 @@ const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
 
 // Refined, muted tier swatches — premium metallics, not neon.
 const TIER_CLR: Record<string, string> = {
-  S:        "#2563EB",   // Diamond — brand
+  S:        "#2563EB",   // Diamond — sapphire (fixed data-viz hue, not the accent)
   A:        "#C9A227",   // Gold (muted)
   B:        "#A6AEBC",   // Silver
   C:        "#B17F4A",   // Bronze (muted)
@@ -470,7 +470,7 @@ export default function AnalyticsView() {
                   <div className="absolute inset-y-0 left-0 rounded-xl transition-all duration-700 ease-out"
                     style={{
                       width: bars ? `${(c.total_spent / maxSpend) * 100}%` : "0%",
-                      background: "rgba(99,102,241,0.06)",
+                      background: "rgb(var(--c-accent) / 0.06)",
                       transitionDelay: `${200 + i * 70}ms`,
                     }} />
                   <div className="relative flex items-center gap-3 px-4 py-3.5">

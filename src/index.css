@@ -23,21 +23,21 @@
 
 /* ── Light theme tokens ───────────────────────────────────── */
 :root {
-  --color-primary:        #2563EB;
-  --color-primary-hover:  #1D4ED8;
-  --color-primary-light:  #EFF6FF;
-  --color-primary-glow:   rgba(37,99,235,0.18);
+  --color-primary:        #FF6520;
+  --color-primary-hover:  #F0570F;
+  --color-primary-light:  #FFF3EB;
+  --color-primary-glow:   rgba(255,101,32,0.18);
 
-  /* Accent palette — default: blue. Switched live by html[data-accent]
+  /* Accent palette — default: Ecliptr orange. Switched live by html[data-accent]
      (Settings → Appearance). Drives inline styles, gradients & effects. */
-  --accent-50:   #EFF6FF;
-  --accent-100:  #DBEAFE;
-  --accent-400:  #60A5FA;
-  --accent-500:  #3B82F6;
-  --accent-600:  #2563EB;
-  --accent-700:  #1D4ED8;
-  --accent-glow: rgba(37,99,235,0.4);
-  --accent-tint: rgba(37,99,235,0.16);
+  --accent-50:   #FFF3EB;
+  --accent-100:  #FFE3D1;
+  --accent-400:  #FFA45C;
+  --accent-500:  #FF7E38;
+  --accent-600:  #FF6520;
+  --accent-700:  #F0570F;
+  --accent-glow: rgba(255,101,32,0.4);
+  --accent-tint: rgba(255,101,32,0.16);
 
   --color-success:        #059669;
   --color-success-bg:     #ECFDF5;
@@ -64,7 +64,7 @@
   --shadow-card:  0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
   --shadow-panel: 0 4px 24px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
   --shadow-modal: 0 32px 80px rgba(0,0,0,0.18), 0 8px 32px rgba(0,0,0,0.10);
-  --shadow-indigo: 0 4px 20px rgba(37,99,235,0.22), 0 1px 4px rgba(37,99,235,0.12);
+  --shadow-indigo: 0 4px 20px rgba(255,101,32,0.22), 0 1px 4px rgba(255,101,32,0.12);
 
   --radius-sm:   6px;
   --radius-md:   8px;
@@ -103,8 +103,8 @@
   --c-line:         236 235 231;
   --c-line-2:       244 243 240;
   --c-line-3:       226 225 220;
-  --c-accent: 37 99 235;
-  --c-accent-hover: 29 78 216;
+  --c-accent: 255 101 32;
+  --c-accent-hover: 240 87 15;
   /* Foreground on the accent fill. Light theme accents are deep → white reads;
      light accents (amber) override below. Dark/matte set near-black (pastel accents). */
   --c-on-accent: 255 255 255;
@@ -164,8 +164,8 @@ html.dark {
   --c-line:          35 42 54;
   --c-line-2:        26 31 41;
   --c-line-3:        50 59 74;
-  --c-accent: 96 165 250;
-  --c-accent-hover: 147 197 253;
+  --c-accent: 255 138 71;
+  --c-accent-hover: 255 164 92;
   --c-on-accent: 12 15 22;
   /* Money-positive green: confident, not neon. */
   --c-success:       62 199 133;
@@ -500,8 +500,15 @@ input, select, textarea { transition: border-color 0.14s ease, box-shadow 0.18s 
 /* ── Accent options (Settings → Appearance) ──────────────────
    Each sets the new --c-accent token (drives the whole utility-class
    UI) AND the legacy --accent-* / --color-primary used by inline
-   styles. Default = blue (in :root). Dark variants brighten for the
-   matte-black theme. Semantic + data-viz colours never change. */
+   styles. Default = Ecliptr orange (in :root). Dark variants brighten
+   for the matte-black theme. Semantic + data-viz colours never change. */
+
+/* Blue — the pre-orange default, kept as an explicit option. */
+html[data-accent="blue"] { --c-accent:37 99 235; --c-accent-hover:29 78 216;
+  --color-primary:#2563EB; --color-primary-hover:#1D4ED8; --color-primary-light:#EFF6FF; --color-primary-glow:rgba(37,99,235,.18);
+  --accent-50:#EFF6FF; --accent-100:#DBEAFE; --accent-400:#60A5FA; --accent-500:#3B82F6; --accent-600:#2563EB; --accent-700:#1D4ED8;
+  --accent-glow:rgba(37,99,235,.38); --accent-tint:rgba(37,99,235,.16); --shadow-indigo:0 4px 20px rgba(37,99,235,.22),0 1px 4px rgba(37,99,235,.12); }
+html.dark[data-accent="blue"] { --c-accent:96 165 250; --c-accent-hover:147 197 253; }
 
 html[data-accent="emerald"] { --c-accent:5 150 105; --c-accent-hover:4 120 87;
   --color-primary:#059669; --color-primary-hover:#047857; --color-primary-light:#ECFDF5; --color-primary-glow:rgba(5,150,105,.18);
@@ -846,7 +853,7 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
 .globe-neb {
   position: absolute; inset: 0; z-index: 0; pointer-events: none;
   background:
-    radial-gradient(42% 52% at 18% 24%, rgba(37,99,235,0.16), transparent 70%),
+    radial-gradient(42% 52% at 18% 24%, rgba(255,101,32,0.14), transparent 70%),
     radial-gradient(36% 46% at 84% 20%, rgba(124,58,237,0.13), transparent 70%),
     radial-gradient(52% 52% at 62% 90%, rgba(13,148,136,0.10), transparent 72%);
   filter: blur(34px);
@@ -921,7 +928,7 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   transition: background 130ms ease-out, color 130ms ease-out;
 }
 .globe-chip:hover { color: #E7ECF6; background: rgba(165,180,252,0.10); }
-.globe-chip.on { color: #F2F4F8; background: rgba(96,165,250,0.22); }
+.globe-chip.on { color: #F2F4F8; background: rgba(255,101,32,0.26); }
 .globe-search-wrap {
   position: absolute; top: 18px; right: 64px; z-index: 6; width: 240px;
 }
@@ -1044,8 +1051,8 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   backdrop-filter: blur(8px);
 }
 .globe-geocode-btn:hover {
-  background: rgba(99, 102, 241, 0.15);
-  border-color: rgba(165, 180, 252, 0.4);
+  background: rgba(255, 101, 32, 0.15);
+  border-color: rgba(255, 164, 92, 0.4);
   color: #6EE7B7;
 }
 .globe-geocode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -1073,8 +1080,8 @@ html.dark .shadow-md  { box-shadow: var(--shadow-panel) !important; }
   backdrop-filter: blur(8px);
 }
 .globe-ctrl-btn:hover {
-  background: rgba(99, 102, 241, 0.18);
-  border-color: rgba(165, 180, 252, 0.4);
+  background: rgba(255, 101, 32, 0.18);
+  border-color: rgba(255, 164, 92, 0.4);
   color: #6EE7B7;
 }
 

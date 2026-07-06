@@ -459,7 +459,7 @@ export default function GlobeView() {
                   <TierBadge tier={selected.tier} size="sm" />
                   {selected.highValue && (
                     <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
-                      style={{ color: "#93C5FD", background: "rgba(96,165,250,0.14)", border: "1px solid rgba(96,165,250,0.3)" }}>
+                      style={{ color: "#FFA45C", background: "rgba(255,101,32,0.14)", border: "1px solid rgba(255,101,32,0.3)" }}>
                       High value
                     </span>
                   )}

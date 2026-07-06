@@ -440,7 +440,7 @@ function MyPlanCard() {
 function AppearanceTab() {
   const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
   const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
-  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "blue");
+  const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "orange");
 
   const setAccent = (a: string) => {
     setAccentState(a);
@@ -457,6 +457,7 @@ function AppearanceTab() {
   };
 
   const ACCENTS = [
+    { id: "orange",  label: "Ecliptr orange", swatch: "#FF6520" },
     { id: "eclipse", label: "Eclipse",  swatch: "#4F46E5" },
     { id: "blue",    label: "Blue",     swatch: "#2563EB" },
     { id: "emerald", label: "Emerald",  swatch: "#059669" },
@@ -1443,7 +1444,7 @@ const TEMPLATE_DEFAULT: InvoiceTemplate = {
   footer_note: "",
 };
 
-const ACCENT_PRESETS = ["#111827", "#2563EB", "#0F766E", "#7C3AED", "#B91C1C", "#B45309"];
+const ACCENT_PRESETS = ["#111827", "#FF6520", "#0F766E", "#7C3AED", "#B91C1C", "#B45309"];
 
 // A small segmented control (reused for logo placement + size).
 function Segmented<T extends string>({ value, onChange, options }: {
@@ -2598,7 +2599,7 @@ function AutomationTab() {
       aside={<GuideLink section="automations" />}>
 
       {/* Fastest path — the direct lead form (no email setup needed). */}
-      <div className="border rounded-xl p-3.5 mb-5" style={{ borderColor: "rgba(var(--c-accent-rgb,99,102,241),0.3)", background: "rgba(var(--c-accent-rgb,99,102,241),0.06)" }}>
+      <div className="border rounded-xl p-3.5 mb-5" style={{ borderColor: "rgb(var(--c-accent) / 0.3)", background: "rgb(var(--c-accent) / 0.06)" }}>
         <div className="text-[12.5px] font-semibold text-ink mb-1">Fastest setup — your lead form link</div>
         <p className="text-[11.5px] text-muted mb-2.5">Share or embed this link (add <code className="font-mono">?rep=Name</code> to attribute a rep). Every submission creates a client instantly — no email setup needed.</p>
         <div className="flex items-center gap-2">

@@ -93,8 +93,8 @@ export default {
           "100%": { transform: "scale(1)",    opacity: "1" },
         },
         "glow-pulse": {
-          "0%, 100%": { boxShadow: "0 0 12px rgba(99,102,241,0.4)" },
-          "50%":      { boxShadow: "0 0 24px rgba(99,102,241,0.7)" },
+          "0%, 100%": { boxShadow: "0 0 12px rgba(255,101,32,0.4)" },
+          "50%":      { boxShadow: "0 0 24px rgba(255,101,32,0.7)" },
         },
         "spin-slow": {
           "0%":   { transform: "rotate(0deg)" },
