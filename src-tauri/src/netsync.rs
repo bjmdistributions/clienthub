@@ -372,6 +372,23 @@ pub async fn netsync_sync_now() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "pushed": pushed, "pulled": pulled }))
 }
 
+/// Repair a device that has fallen behind the server — e.g. earlier apply
+/// failures that skipped rows before the pull cursor advanced past them, leaving
+/// a device showing only a fraction of the workspace. Rewinds the pull cursor to
+/// 0 and re-applies the entire org history. Idempotent: rows already present are
+/// last-write-wins no-ops (nothing local is lost), while missing rows are
+/// re-created. Finishes by flushing any queued local changes back up.
+#[tauri::command]
+pub async fn netsync_repair() -> Result<serde_json::Value, String> {
+    if config().is_none() {
+        return Err("Sign in to your workspace first, then run Repair.".into());
+    }
+    state_set("netsync_pull_cursor", "0");
+    let reapplied = pull_apply().await.map_err(|e| e.to_string())?;
+    let pushed = push_pending().await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "reapplied": reapplied, "pushed": pushed }))
+}
+
 /// Fetch the signed-in workspace's plan + usage from the server (for the My Plan view).
 /// Requires a server connection; errors clearly when offline / not signed in.
 #[tauri::command]
@@ -390,6 +407,116 @@ pub async fn get_my_plan() -> Result<serde_json::Value, String> {
         return Err(format!("Server returned {}", resp.status()));
     }
     resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
+/// Push the org's shared email secrets (SMTP send password + primary IMAP monitor
+/// password) up to the server's per-org settings store so sibling admins on other
+/// devices can materialize them without re-typing. Called after an admin saves the
+/// ORG send config. Best-effort: silently no-ops when offline / not signed in, and
+/// only sends the passwords that are actually present in this device's keyring.
+///
+/// This is the WRITE half of the "secrets never sync in the oplog, but travel via
+/// an authed server round-trip" bridge (mirrors `push_desktop_smtp_to_pi`, but
+/// also carries the IMAP monitor password).
+pub async fn push_email_secrets_to_server() -> Result<(), String> {
+    let cfg = match config() { Some(c) => c, None => return Ok(()) };
+    let smtp_pass = crate::email::cred_opt("smtp_pass").filter(|p| !p.is_empty());
+    let imap_pass = crate::email::cred_opt("imap_pass").filter(|p| !p.is_empty());
+    if smtp_pass.is_none() && imap_pass.is_none() {
+        return Ok(());
+    }
+    let mut body = serde_json::Map::new();
+    if let Some(p) = smtp_pass { body.insert("smtp_password".into(), serde_json::Value::String(p)); }
+    if let Some(p) = imap_pass { body.insert("imap_password".into(), serde_json::Value::String(p)); }
+    let resp = http()
+        .put(format!("{}/api/settings/smtp", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::Value::Object(body))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Push one org monitor-inbox's IMAP password to the server org store (keyed by
+/// inbox id) so sibling admins can materialize it. Best-effort / no-op offline.
+pub async fn push_inbox_secret_to_server(inbox_id: &str, password: &str) -> Result<(), String> {
+    let cfg = match config() { Some(c) => c, None => return Ok(()) };
+    let body = serde_json::json!({ "inbox_secrets": { inbox_id: password } });
+    let resp = http()
+        .put(format!("{}/api/settings/smtp", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Materialize the org's shared email secrets into THIS device's keyring by
+/// fetching them once from the server (admin-gated, same-org only). Only writes a
+/// keyring entry that isn't already present, so a device that already has the
+/// password is untouched. Returns the number of secrets newly cached.
+///
+/// This is the READ half of the secret bridge: on a fresh admin's device the org
+/// config syncs down via the oplog but the keyring is empty, so the first scan
+/// calls this to pull `smtp_pass` / `imap_pass` from the server org store.
+pub async fn materialize_email_secrets_from_server() -> Result<u32, String> {
+    let cfg = match config() { Some(c) => c, None => return Ok(0) };
+    // The shared send/monitor secrets (`smtp_pass`/`imap_pass`) only apply to the
+    // org account — never clobber a personal-override device's own keyring.
+    let on_org = crate::email::use_org_default();
+    let need_smtp = on_org && crate::email::cred_opt("smtp_pass").filter(|p| !p.is_empty()).is_none();
+    let need_imap = on_org && crate::email::cred_opt("imap_pass").filter(|p| !p.is_empty()).is_none();
+    // Any org monitor inbox whose per-inbox keyring secret is missing on this
+    // device also needs materializing.
+    let missing_inbox_ids: Vec<String> = crate::email::load_org_inboxes()
+        .into_iter()
+        .filter(|ib| crate::email::cred_opt(&format!("imap_pass_{}", ib.id)).filter(|p| !p.is_empty()).is_none())
+        .map(|ib| ib.id)
+        .collect();
+    if !need_smtp && !need_imap && missing_inbox_ids.is_empty() {
+        return Ok(0);
+    }
+    let resp = http()
+        .get(format!("{}/api/settings/smtp?reveal=1", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Admin permission required.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut cached = 0u32;
+    if need_smtp {
+        if let Some(p) = body.get("smtp_password").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+            if crate::email::save_cred("smtp_pass", p).is_ok() { cached += 1; }
+        }
+    }
+    if need_imap {
+        if let Some(p) = body.get("imap_password").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+            if crate::email::save_cred("imap_pass", p).is_ok() { cached += 1; }
+        }
+    }
+    // Per-inbox secrets come back under `inbox_secrets: { id: password }`.
+    if let Some(map) = body.get("inbox_secrets").and_then(|v| v.as_object()) {
+        for id in &missing_inbox_ids {
+            if let Some(p) = map.get(id).and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+                if crate::email::save_cred(&format!("imap_pass_{}", id), p).is_ok() { cached += 1; }
+            }
+        }
+    }
+    Ok(cached)
 }
 
 /// Upload the current company logo bytes to the server so the hosted invoice

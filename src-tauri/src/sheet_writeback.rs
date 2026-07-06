@@ -42,6 +42,9 @@ fn spreadsheet_id(url: &str) -> Option<String> {
 /// key (as saved by the UI, e.g. `"cf:tax_id"` or `"lead_representative"`), the
 /// same structure the reader consumes.
 struct SheetMapping {
+    /// User toggle (Settings → Google Sheets). When false, write-back is off even
+    /// if a sheet + Google token exist. Defaults on for existing configs.
+    writeback_enabled: bool,
     sheet_url: String,
     name_col: String,
     first_name_col: String,
@@ -62,7 +65,7 @@ fn load_mapping() -> Option<SheetMapping> {
         "SELECT sheet_url, COALESCE(name_col,''), COALESCE(first_name_col,''), COALESCE(last_name_col,''), \
                 COALESCE(email_col,''), COALESCE(phone_col,''), COALESCE(company_col,''), \
                 COALESCE(category_col,''), COALESCE(lead_status_col,''), COALESCE(notes_col,''), \
-                COALESCE(field_mapping_json,'{}') \
+                COALESCE(field_mapping_json,'{}'), COALESCE(writeback_enabled,1) \
          FROM sheet_sync_config WHERE id=1",
         [],
         |r| {
@@ -71,11 +74,11 @@ fn load_mapping() -> Option<SheetMapping> {
                 r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
                 r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?,
-                r.get::<_, String>(10)?,
+                r.get::<_, String>(10)?, r.get::<_, i64>(11)?,
             ))
         },
     ).ok()?;
-    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, field_mapping_json) = row;
+    let (sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, field_mapping_json, writeback_enabled) = row;
     let sheet_url = sheet_url.filter(|s| !s.trim().is_empty())?;
     // Parse the reader's custom-field mapping: { "<col letter>": "<field key>" }.
     let field_mapping: std::collections::BTreeMap<String, String> =
@@ -88,6 +91,7 @@ fn load_mapping() -> Option<SheetMapping> {
             }))
             .unwrap_or_default();
     Some(SheetMapping {
+        writeback_enabled: writeback_enabled != 0,
         sheet_url, name_col, first_name_col, last_name_col,
         email_col, phone_col, company_col, category_col, lead_status_col, notes_col,
         field_mapping,
@@ -229,6 +233,9 @@ pub async fn append_approved_client(client_id: &str) -> Result<bool> {
         Some(m) => m,
         None => return Ok(false), // no sheet configured → skip silently
     };
+    if !mapping.writeback_enabled {
+        return Ok(false); // user turned write-back off in Settings → skip silently
+    }
     let spreadsheet = match spreadsheet_id(&mapping.sheet_url) {
         Some(s) => s,
         None => return Ok(false),

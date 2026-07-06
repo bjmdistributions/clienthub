@@ -191,6 +191,9 @@ fn main() {
             // One-time background cleanup of email_in interactions that the pre-fix
             // scanner re-logged every scan (IMAP N:* bug). Guarded to run once.
             std::thread::spawn(|| email::dedup_email_interactions_once());
+            // One-time migration: promote any existing device-local email config to
+            // the org-shared default so every admin inherits it. Guarded to run once.
+            std::thread::spawn(|| email::migrate_email_config_to_org_once());
             // Near-real-time inbox monitoring via IMAP IDLE (one watcher per inbox,
             // OS notification on each new lead) + a long safety-net sweep. Replaces
             // the old fixed 5-minute poll.
@@ -237,6 +240,7 @@ fn main() {
             netsync::netsync_status,
             netsync::netsync_disconnect,
             netsync::netsync_sync_now,
+            netsync::netsync_repair,
             netsync::get_my_plan,
             netsync::get_platform_signups,
             netsync::upload_company_logo,
@@ -462,6 +466,9 @@ fn main() {
             get_email_inboxes,
             save_email_inbox,
             delete_email_inbox,
+            get_email_use_org_default,
+            set_email_use_org_default,
+            transfer_org_inbox,
             oauth_start_consent,
             google_contacts_oauth_start,
             google_contacts_list,
@@ -614,6 +621,7 @@ fn main() {
             // Sheet Sync
             get_sheet_sync_config,
             save_sheet_sync_config,
+            sheet_writeback_status,
             sync_from_sheet,
             get_sheet_sync_log,
             list_custom_fields,

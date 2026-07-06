@@ -66,6 +66,11 @@ pub struct ParsedEmail {
 
 /// A monitor-only inbound mailbox (IMAP). Sending always uses the SMTP "send from"
 /// account in EmailSettings — these are watched/loaded only.
+///
+/// `scope` distinguishes an org-shared inbox (every admin inherits it) from a
+/// personal one (only the admin who added it watches it). Defaults to `"org"` so
+/// rows written by older builds — which had no scope field — are treated as the
+/// shared org inbox (the desired "always linked" behaviour).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EmailInbox {
     pub id: String,
@@ -73,26 +78,102 @@ pub struct EmailInbox {
     pub host: String,
     pub port: u16,
     pub user: String,
+    /// `"org"` (shared, synced, inherited by all admins) or `"me"` (personal,
+    /// device-local, not synced). Absent in legacy rows → treated as `"org"`.
+    #[serde(default = "default_inbox_scope")]
+    pub scope: String,
 }
 
-/// Configured inbound mailboxes (passwords live in the credential store, keyed
-/// `imap_pass_{id}`).
-pub fn load_inboxes() -> Vec<EmailInbox> {
+fn default_inbox_scope() -> String { "org".into() }
+
+// ── Settings keys ──────────────────────────────────────────────────────────
+// The ORG-shared keys are synced (via `sync::record_upsert`) so every device and
+// every signed-in admin in the org inherits the same config once it's set up
+// once. The PERSONAL keys are written raw (never synced) so an admin who opts out
+// keeps their own config on this device only.
+const K_ORG_SETTINGS: &str = "email_settings";           // legacy key → org-shared send/monitor account
+const K_ORG_INBOXES: &str = "email_inboxes";             // legacy key → org-shared monitor inboxes
+const K_PERSONAL_SETTINGS: &str = "email_settings_personal";
+const K_PERSONAL_INBOXES: &str = "email_inboxes_personal";
+/// Per-device flag: when "0"/"false" the signed-in admin uses their PERSONAL send
+/// config + inboxes instead of the org defaults. Defaults to org (unset → org).
+const K_USE_ORG_DEFAULT: &str = "email_use_org_default";
+
+/// Whether this device/account is currently using the org default send config
+/// (true) or a personal override (false). Device-local; unset means org.
+pub fn use_org_default() -> bool {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return true };
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [K_USE_ORG_DEFAULT], |r| r.get::<_, String>(0))
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
+}
+
+/// Set the org-default-vs-personal flag for this device. Device-local (not synced).
+pub fn set_use_org_default(on: bool) -> Result<()> {
+    let conn = pool().get()?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![K_USE_ORG_DEFAULT, if on { "1" } else { "0" }],
+    )?;
+    Ok(())
+}
+
+fn read_inboxes_key(key: &str) -> Vec<EmailInbox> {
     let conn = match pool().get() { Ok(c) => c, Err(_) => return vec![] };
-    conn.query_row("SELECT value FROM settings WHERE key='email_inboxes'", [], |r| r.get::<_, String>(0))
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
         .ok()
         .and_then(|j| serde_json::from_str(&j).ok())
         .unwrap_or_default()
 }
 
-pub fn save_inboxes(list: &[EmailInbox]) -> Result<()> {
+/// The org-shared monitor inboxes (synced). Every admin inherits these.
+pub fn load_org_inboxes() -> Vec<EmailInbox> { read_inboxes_key(K_ORG_INBOXES) }
+
+/// This device's personal monitor inboxes (never synced).
+pub fn load_personal_inboxes() -> Vec<EmailInbox> { read_inboxes_key(K_PERSONAL_INBOXES) }
+
+/// The EFFECTIVE monitor inboxes to load/watch: always the org-shared set, plus
+/// this device's personal set. An admin can add a personal support box on top of
+/// the shared one, so we watch the union. Deduped by id.
+pub fn load_inboxes() -> Vec<EmailInbox> {
+    let mut out = load_org_inboxes();
+    let mut seen: std::collections::HashSet<String> = out.iter().map(|i| i.id.clone()).collect();
+    for ib in load_personal_inboxes() {
+        if seen.insert(ib.id.clone()) { out.push(ib); }
+    }
+    out
+}
+
+/// Persist a scoped inbox list. Org lists are written to the synced key AND pushed
+/// to the sync log (so every device inherits them); personal lists are written raw
+/// (device-local, never synced).
+fn save_inboxes_scoped(scope: &str, list: &[EmailInbox]) -> Result<()> {
+    let key = if scope == "me" { K_PERSONAL_INBOXES } else { K_ORG_INBOXES };
     let conn = pool().get()?;
     let json = serde_json::to_string(list)?;
     conn.execute(
-        "INSERT INTO settings (key,value) VALUES ('email_inboxes',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [json],
+        "INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![key, json],
     )?;
+    // Org inboxes propagate to every device/account in the org (desktop is
+    // `org_default`, so a plain-key `settings` upsert is org-scoped). Personal
+    // inboxes intentionally stay off the wire.
+    if scope != "me" {
+        let mut cols = serde_json::Map::new();
+        cols.insert("value".into(), serde_json::Value::String(json));
+        let _ = crate::sync::record_upsert("settings", key, cols);
+    }
     Ok(())
+}
+
+/// Save the ORG-shared monitor inboxes (synced to all admins).
+pub fn save_inboxes(list: &[EmailInbox]) -> Result<()> {
+    save_inboxes_scoped("org", list)
+}
+
+/// Save this device's PERSONAL monitor inboxes (never synced).
+pub fn save_personal_inboxes(list: &[EmailInbox]) -> Result<()> {
+    save_inboxes_scoped("me", list)
 }
 
 fn uid_for(key: &str) -> u32 {
@@ -118,6 +199,12 @@ pub struct EmailSettings {
     pub imap_port: u16,
     pub user: String,
     pub auth_method: AuthMethod,
+    /// The staff id of the admin who currently "owns" / receives this org inbox.
+    /// Used by the "transfer to a different email admin" action; empty for legacy
+    /// records and personal configs. Purely informational for resolution — the
+    /// creds still come from the keyring / server round-trip.
+    #[serde(default)]
+    pub owner_staff_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -127,27 +214,56 @@ pub enum AuthMethod {
     Oauth2,
 }
 
-pub fn load_settings() -> Result<EmailSettings> {
-    let conn = pool().get()?;
+fn read_settings_key(key: &str) -> Option<EmailSettings> {
+    let conn = pool().get().ok()?;
     let json: String = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key='email_settings'",
-            [],
-            |r| r.get(0),
-        )
-        .context("email_settings not configured")?;
-    Ok(serde_json::from_str(&json)?)
+        .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
+        .ok()?;
+    serde_json::from_str(&json).ok()
 }
 
-pub fn save_settings(s: &EmailSettings) -> Result<()> {
+/// The org-shared send/monitor account (synced). Every admin inherits this.
+pub fn load_org_settings() -> Option<EmailSettings> { read_settings_key(K_ORG_SETTINGS) }
+
+/// This device's personal send/monitor account (never synced), if configured.
+pub fn load_personal_settings() -> Option<EmailSettings> { read_settings_key(K_PERSONAL_SETTINGS) }
+
+/// The EFFECTIVE send/monitor account for this device: the personal override when
+/// this admin has opted out AND has one configured, otherwise the org default.
+/// This is what `send()`, `test_smtp()`, and the legacy scan path use, so a fresh
+/// admin with an empty personal config transparently inherits the org account.
+pub fn load_settings() -> Result<EmailSettings> {
+    if !use_org_default() {
+        if let Some(s) = load_personal_settings() {
+            return Ok(s);
+        }
+    }
+    load_org_settings().context("email_settings not configured")
+}
+
+/// Persist the send/monitor account under a scope. `"me"` writes the personal
+/// (device-local) key; anything else writes the org-shared key AND syncs it so
+/// every admin/device inherits it.
+pub fn save_settings_scoped(scope: &str, s: &EmailSettings) -> Result<()> {
+    let key = if scope == "me" { K_PERSONAL_SETTINGS } else { K_ORG_SETTINGS };
     let conn = pool().get()?;
     let json = serde_json::to_string(s)?;
     conn.execute(
-        "INSERT INTO settings (key, value) VALUES ('email_settings', ?1)
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [json],
+        rusqlite::params![key, json],
     )?;
+    if scope != "me" {
+        let mut cols = serde_json::Map::new();
+        cols.insert("value".into(), serde_json::Value::String(json));
+        let _ = crate::sync::record_upsert("settings", key, cols);
+    }
     Ok(())
+}
+
+/// Save the org-shared send/monitor account (synced to all admins).
+pub fn save_settings(s: &EmailSettings) -> Result<()> {
+    save_settings_scoped("org", s)
 }
 
 // ---------- SMTP ----------
@@ -596,6 +712,27 @@ fn fetch_latest_matching_blocking(
 }
 
 pub async fn scan() -> Result<Vec<ParsedEmail>> {
+    // On a fresh admin's device the org config syncs down but the keyring is
+    // empty. If a password-auth org secret (send/monitor account, or any org
+    // monitor inbox) is missing locally, pull it once from the server org store
+    // into the keyring so the shared inbox works without re-typing. Best-effort.
+    //
+    // Only do this while USING the org default — an admin on a personal override
+    // manages their own keyring, and we must not overwrite their `imap_pass` with
+    // the org account's secret. (Per-inbox org secrets are always safe to fetch:
+    // they're keyed by the shared inbox's own id.)
+    let legacy_pw_missing = use_org_default() && load_org_settings().is_some_and(|s| {
+        matches!(s.auth_method, AuthMethod::Password)
+            && !s.imap_host.is_empty()
+            && cred_opt("imap_pass").filter(|p| !p.is_empty()).is_none()
+    });
+    let org_inbox_pw_missing = load_org_inboxes()
+        .iter()
+        .any(|ib| cred_opt(&format!("imap_pass_{}", ib.id)).filter(|p| !p.is_empty()).is_none());
+    if legacy_pw_missing || org_inbox_pw_missing {
+        let _ = crate::netsync::materialize_email_secrets_from_server().await;
+    }
+
     // Inbound mailboxes to monitor. If none are configured, fall back to the
     // legacy single account (in EmailSettings) so existing setups keep working.
     let mut inboxes = load_inboxes();
@@ -606,6 +743,7 @@ pub async fn scan() -> Result<Vec<ParsedEmail>> {
                 inboxes.push(EmailInbox {
                     id: "legacy".into(), label: s.user.clone(),
                     host: s.imap_host.clone(), port: s.imap_port, user: s.user.clone(),
+                    scope: "org".into(),
                 });
             }
         }
@@ -741,6 +879,7 @@ fn watchable_inboxes() -> Vec<EmailInbox> {
                 host: s.imap_host,
                 port: s.imap_port,
                 user: s.user,
+                scope: "org".into(),
             });
         }
     }
@@ -851,6 +990,58 @@ pub fn spawn_realtime_watchers(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+/// One-time migration: promote any pre-existing device-local email config
+/// (`email_settings` / `email_inboxes`) into the sync log so existing single-admin
+/// setups become the ORG-shared default that all admins inherit — WITHOUT the user
+/// re-saving. Before this change these keys were written raw and never synced, so
+/// each admin/device configured email from scratch; this backfills them once.
+///
+/// Only the config JSON is synced (never the keyring secrets) — sibling admins
+/// materialize the passwords via the server round-trip in `scan()`. Guarded by a
+/// settings flag so it runs at most once. Safe on every startup.
+pub fn migrate_email_config_to_org_once() {
+    let conn = match crate::db::pool().get() { Ok(c) => c, Err(_) => return };
+    let done = conn
+        .query_row("SELECT value FROM settings WHERE key='email_org_migrate_v1_done'", [], |r| r.get::<_, String>(0))
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if done {
+        return;
+    }
+    // Read the existing org-key rows straight from the local table.
+    let read = |key: &str| -> Option<String> {
+        conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0)).ok()
+    };
+    let settings_json = read(K_ORG_SETTINGS);
+    let inboxes_json = read(K_ORG_INBOXES);
+    // Mark done first so a mid-run interruption can't loop.
+    let _ = conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('email_org_migrate_v1_done','1') ON CONFLICT(key) DO UPDATE SET value='1'",
+        [],
+    );
+    drop(conn);
+    // Emit sync upserts for whatever config already exists locally. record_upsert
+    // is a no-op-safe idempotent LWW write; if this row already synced it just
+    // re-affirms it.
+    if let Some(json) = settings_json {
+        let mut cols = serde_json::Map::new();
+        cols.insert("value".into(), serde_json::Value::String(json));
+        let _ = crate::sync::record_upsert("settings", K_ORG_SETTINGS, cols);
+    }
+    if let Some(json) = inboxes_json {
+        let mut cols = serde_json::Map::new();
+        cols.insert("value".into(), serde_json::Value::String(json));
+        let _ = crate::sync::record_upsert("settings", K_ORG_INBOXES, cols);
+    }
+    // Best-effort: push existing keyring secrets to the server so other admins can
+    // materialize them. Fire-and-forget on a background task (needs the async
+    // netsync client); no-ops when offline / not signed in.
+    tauri::async_runtime::spawn(async {
+        let _ = crate::netsync::push_email_secrets_to_server().await;
+    });
+    tracing::info!("email config org-migration: promoted local email settings/inboxes to org-shared");
 }
 
 /// One-time cleanup of the `email_in` interactions that the pre-fix scanner

@@ -289,6 +289,18 @@ export interface SheetSyncConfig {
   last_synced_at: string | null;
   last_synced_count: number;
   field_mapping_json: string | null;
+  /** When true, approving a lead appends a row to the connected sheet. */
+  writeback_enabled: boolean;
+}
+
+/** Live status of the approved-lead → sheet write-back (Settings status banner). */
+export interface SheetWritebackStatus {
+  enabled: boolean;
+  sheet_configured: boolean;
+  google_connected: boolean;
+  active: boolean;
+  state: "active" | "disabled" | "no_sheet" | "not_connected";
+  message: string;
 }
 
 export interface CustomField {
@@ -911,6 +923,8 @@ export interface EmailInbox {
   host: string;
   port: number;
   user: string;
+  /** "org" (shared, inherited by all admins) or "me" (personal, this device only). */
+  scope?: "org" | "me";
 }
 
 export interface EmailSettings {
@@ -920,6 +934,8 @@ export interface EmailSettings {
   imap_port: number;
   user: string;
   auth_method: "password" | "oauth2";
+  /** Staff id of the admin who currently owns/receives the shared inbox. */
+  owner_staff_id?: string;
 }
 
 export interface CompanyInfo {
@@ -1537,9 +1553,14 @@ export const api = {
     invoke<void>("send_email", { to, subject, body, attachmentPath }),
   scanInbox: () => invoke<ParsedEmail[]>("scan_inbox"),
   getEmailInboxes: () => invoke<EmailInbox[]>("get_email_inboxes"),
-  saveEmailInbox: (p: { id?: string; label: string; host: string; port: number; user: string; password?: string }) =>
+  saveEmailInbox: (p: { id?: string; label: string; host: string; port: number; user: string; password?: string; scope?: "org" | "me" }) =>
     invoke<string>("save_email_inbox", p),
   deleteEmailInbox: (id: string) => invoke<void>("delete_email_inbox", { id }),
+  // Org-shared vs personal send config (this device's choice).
+  getEmailUseOrgDefault: () => invoke<boolean>("get_email_use_org_default"),
+  setEmailUseOrgDefault: (on: boolean) => invoke<void>("set_email_use_org_default", { on }),
+  // Reassign the shared inbox to a different email admin.
+  transferOrgInbox: (targetStaffId: string) => invoke<void>("transfer_org_inbox", { targetStaffId }),
   // Live connection tests + Google OAuth status (Settings → Email).
   testSmtpConnection: () => invoke<{ ok: boolean; message: string }>("test_smtp_connection"),
   testInboxConnection: (id: string) => invoke<{ ok: boolean; message: string }>("test_inbox_connection", { id }),
@@ -1578,8 +1599,8 @@ export const api = {
   saveCredential: (key: string, value: string) =>
     invoke<void>("save_credential", { key, value }),
   deleteCredential: (key: string) => invoke<void>("delete_credential", { key }),
-  saveEmailSettings: (settings: EmailSettings) =>
-    invoke<void>("save_email_settings", { settings }),
+  saveEmailSettings: (settings: EmailSettings, scope: "org" | "me" = "org") =>
+    invoke<void>("save_email_settings", { settings, scope }),
   sendTestEmail: () => invoke<string>("send_test_email"),
   getEmailSettings: () => invoke<EmailSettings | null>("get_email_settings"),
   saveCompanyInfo: (info: CompanyInfo) => invoke<void>("save_company_info", { info }),
@@ -1612,6 +1633,7 @@ export const api = {
     invoke<void>("netsync_connect", { url, email, password }),
   netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
   netsyncSyncNow: () => invoke<{ pushed: number; pulled: number }>("netsync_sync_now"),
+  netsyncRepair: () => invoke<{ reapplied: number; pushed: number }>("netsync_repair"),
   getMyPlan: () => invoke<{ name: string; plan: string; members: number; member_limit: number | null; clients: number; client_limit: number | null; is_superadmin: boolean }>("get_my_plan"),
   getPlatformSignups: () => invoke<{ orgs: any[] }>("get_platform_signups"),
 
@@ -1734,6 +1756,7 @@ export const api = {
   // Sheet Sync
   getSheetSyncConfig: () => invoke<SheetSyncConfig>("get_sheet_sync_config"),
   saveSheetSyncConfig: (config: SheetSyncConfig) => invoke<void>("save_sheet_sync_config", { config }),
+  sheetWritebackStatus: () => invoke<SheetWritebackStatus>("sheet_writeback_status"),
   syncFromSheet: () => invoke<SheetSyncResult>("sync_from_sheet"),
   getSheetSyncLog: () => invoke<SheetSyncLogEntry[]>("get_sheet_sync_log"),
   listCustomFields: () => invoke<CustomField[]>("list_custom_fields"),

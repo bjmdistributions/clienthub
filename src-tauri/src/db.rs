@@ -1225,4 +1225,15 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE deal_flows ADD COLUMN archived_at TEXT;
         "#,
     ),
+    (
+        57,
+        // Google Sheets WRITE-BACK toggle. When a lead is APPROVED the desktop
+        // appends a row to the connected sheet (sheet_writeback.rs). This flag lets
+        // the user turn that direction on/off from Settings → Google Sheets. Default
+        // ON (1) preserves the prior always-on behaviour. Local-only (the whole
+        // sheet_sync_config row is local, never synced).
+        r#"
+        ALTER TABLE sheet_sync_config ADD COLUMN writeback_enabled INTEGER NOT NULL DEFAULT 1;
+        "#,
+    ),
 ];

@@ -436,6 +436,20 @@ fn primary_key(table: &str) -> &'static str {
     }
 }
 
+/// Column names that physically exist in the local `table`. Used to make sync
+/// application resilient to schema drift between devices (see `apply_upsert`).
+fn existing_columns(conn: &rusqlite::Connection, table: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({})", table)) {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) {
+            for c in rows.flatten() {
+                set.insert(c);
+            }
+        }
+    }
+    set
+}
+
 fn apply_upsert(
     table: &str,
     row_id: &str,
@@ -469,6 +483,20 @@ fn apply_upsert(
             winning.push((col.clone(), val.clone()));
         }
     }
+    if winning.is_empty() {
+        return Ok(());
+    }
+
+    // Resilience against schema drift between devices. A device on an older (or
+    // newer) schema can receive an event that references a column it doesn't have
+    // yet. Building SQL with that column makes `conn.execute` fail with
+    // "no such column", which drops the ENTIRE event — and because the pull
+    // cursor advances regardless, that row is skipped permanently (this is what
+    // left a MacBook stuck at a fraction of the clients). Instead, apply only the
+    // columns that exist locally and — because we record clocks solely for what we
+    // applied (below) — a later re-pull fills the rest once a migration adds them.
+    let present = existing_columns(&conn, table);
+    winning.retain(|(c, _)| present.contains(c));
     if winning.is_empty() {
         return Ok(());
     }
@@ -520,7 +548,11 @@ fn apply_upsert(
         conn.execute(&sql, refs.as_slice())?;
     }
 
-    update_row_clocks(table, row_id, columns, hlc)?;
+    // Record clocks only for the columns we actually wrote, so any column we had
+    // to skip (missing from the local schema) can still arrive on a future pull.
+    let applied: serde_json::Map<String, serde_json::Value> =
+        winning.iter().map(|(c, v)| (c.clone(), v.clone())).collect();
+    update_row_clocks(table, row_id, &applied, hlc)?;
     Ok(())
 }
 

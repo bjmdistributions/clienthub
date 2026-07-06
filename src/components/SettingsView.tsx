@@ -18,6 +18,7 @@ import {
   SheetSyncConfig,
   SheetSyncResult,
   SheetSyncLogEntry,
+  SheetWritebackStatus,
   ProfitSplit,
   User,
   StaffMember,
@@ -793,7 +794,12 @@ function InboxRow({ ib }: { ib: EmailInbox }) {
         <div className="flex items-center gap-2.5 min-w-0">
           <StatusDot state={st} />
           <div className="min-w-0">
-            <div className="text-[13px] font-medium text-ink truncate">{ib.label}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-medium text-ink truncate">{ib.label}</span>
+              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0 ${ib.scope === "me" ? "bg-surface-2 text-muted" : "bg-accent/12 text-accent"}`}>
+                {ib.scope === "me" ? "Personal" : "Shared"}
+              </span>
+            </div>
             <div className="text-[11px] text-muted truncate">{ib.user}</div>
           </div>
         </div>
@@ -827,6 +833,16 @@ function SendingCard() {
   const [smtpTest,    setSmtpTest]    = useState<TestState>({ status: "idle" });
   const [gStatus,     setGStatus]     = useState<{ connected: boolean; email: string; scopes: string } | null>(null);
   const [showGuide,   setShowGuide]   = useState(false);
+  // Org-shared vs personal override + transfer.
+  const [me,          setMe]          = useState<Me | null>(null);
+  const [useOrg,      setUseOrg]      = useState(true);
+  const [staff,       setStaff]       = useState<StaffMember[]>([]);
+  const [transferTo,  setTransferTo]  = useState("");
+  const [transferMsg, setTransferMsg] = useState<string | null>(null);
+  const admin = isAdmin(me);
+  // The scope this save writes to: personal override edits the "me" config; an
+  // admin using the org default edits the shared org config.
+  const scope: "org" | "me" = useOrg ? "org" : "me";
 
   const refreshGoogleStatus = () => api.googleEmailStatus().then(setGStatus).catch(() => setGStatus(null));
   useEffect(() => {
@@ -835,6 +851,11 @@ function SendingCard() {
       setSettings(s);
       setProvider(providerFromHost(s.smtp_host || ""));
       setUseGoogle(s.auth_method === "oauth2");
+    }).catch(() => {});
+    api.getEmailUseOrgDefault().then(setUseOrg).catch(() => {});
+    api.employeeMe().then((m) => {
+      setMe(m);
+      if (isAdmin(m)) api.listStaff().then((rows) => setStaff(rows.filter((r) => r.status === "active"))).catch(() => {});
     }).catch(() => {});
     refreshGoogleStatus();
   }, []);
@@ -852,7 +873,7 @@ function SendingCard() {
     try {
       if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
       if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
-      await api.saveEmailSettings({ ...settings, auth_method: "oauth2" });
+      await api.saveEmailSettings({ ...settings, auth_method: "oauth2" }, scope);
       await api.oauthStartConsent(oauthClientId, oauthClientSecret);
       await refreshGoogleStatus();
     } catch (e: any) { setError(e.toString()); }
@@ -869,7 +890,11 @@ function SendingCard() {
     setError(null);
     try {
       const next = { ...settings, auth_method: (useGoogle ? "oauth2" : "password") as "password" | "oauth2" };
-      await api.saveEmailSettings(next);
+      // Persist this device's org-vs-personal choice, then write the config to the
+      // matching scope. `saveEmailSettings(scope="org")` also shares the secrets to
+      // the server so sibling admins inherit them.
+      await api.setEmailUseOrgDefault(useOrg);
+      await api.saveEmailSettings(next, scope);
       if (!useGoogle) {
         await api.saveCredential("smtp_user", settings.user);
         if (smtpPass) await api.saveCredential("smtp_pass", smtpPass);
@@ -886,6 +911,17 @@ function SendingCard() {
     } catch (e: any) { setError(e.toString()); }
   };
 
+  const doTransfer = async () => {
+    setTransferMsg(null);
+    if (!transferTo) return;
+    try {
+      await api.transferOrgInbox(transferTo);
+      const name = staff.find((s) => s.id === transferTo)?.display_name || "that admin";
+      setTransferMsg(`Shared inbox transferred to ${name}.`);
+      setTimeout(() => setTransferMsg(null), 3000);
+    } catch (e: any) { setTransferMsg(String(e)); }
+  };
+
   if (showGuide) return <GoogleCloudGuide onBack={() => { setShowGuide(false); refreshGoogleStatus(); }} />;
 
   const connected = useGoogle ? !!gStatus?.connected : (smtpTest.status === "ok");
@@ -893,6 +929,27 @@ function SendingCard() {
   return (
     <SettingCard icon={Send} title="Sending email" purpose="Invoices, quotes, and newsletters go out from here."
       aside={<ConnectedPill ok={connected} />}>
+      {/* Org-shared vs personal. The shared inbox is set up once and every admin
+          inherits it automatically; an admin can opt this device onto its own. */}
+      <div className="mb-4 rounded-xl border border-line bg-surface-2/40 p-3.5">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${useOrg ? "bg-accent/12 text-accent" : "bg-surface-2 text-muted"}`}>
+            {useOrg ? "Shared team inbox" : "My own inbox"}
+          </span>
+          {admin && (
+            <label className="ml-auto flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
+              <input type="checkbox" checked={!useOrg} onChange={(e) => setUseOrg(!e.target.checked)} className="accent-accent" />
+              Use my own inbox on this device
+            </label>
+          )}
+        </div>
+        <p className="text-[11.5px] text-muted">
+          {useOrg
+            ? "Set up once — every admin inherits this send account and monitored inboxes automatically."
+            : "This device sends from your own account instead of the shared team one. Other admins are unaffected."}
+        </p>
+      </div>
+
       <ProviderPicker value={provider} onPick={pickProvider} />
 
       <div className="mt-4 space-y-3">
@@ -947,6 +1004,26 @@ function SendingCard() {
         </button>
       </div>
       {smtpTest.status !== "idle" && smtpTest.status !== "testing" && <div className="mt-2.5"><TestResultLine state={smtpTest} /></div>}
+
+      {/* Transfer the shared inbox to a different email admin (admin-only, and only
+          for the shared config). The new owner's device pulls the creds itself. */}
+      {admin && useOrg && staff.length > 0 && (
+        <div className="mt-5 pt-4 border-t border-line">
+          <div className="text-[12px] font-medium text-ink-2 mb-1.5">Transfer shared inbox to another admin</div>
+          <p className="text-[11.5px] text-muted mb-2.5">Hands the send + monitored inboxes to a different email admin. Credentials move with it — no re-typing.</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select className={inpSm} value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
+              <option value="">Choose an admin…</option>
+              {staff.filter((s) => s.id !== (settings.owner_staff_id || "")).map((s) => (
+                <option key={s.id} value={s.id}>{s.display_name} ({s.email})</option>
+              ))}
+            </select>
+            <button onClick={doTransfer} disabled={!transferTo}
+              className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-40 transition-colors">Transfer</button>
+          </div>
+          {transferMsg && <div className="mt-2 text-[12px] text-ink-2">{transferMsg}</div>}
+        </div>
+      )}
     </SettingCard>
   );
 }
@@ -956,10 +1033,19 @@ function InboxCard() {
   const [inboxes, setInboxes] = useState<EmailInbox[]>([]);
   const [adding, setAdding] = useState(false);
   const [provider, setProvider] = useState("gmail");
-  const [form, setForm] = useState({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
+  const [admin, setAdmin] = useState(false);
+  const [form, setForm] = useState<{ label: string; host: string; port: number; user: string; password: string; scope: "org" | "me" }>(
+    { label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: "org" }
+  );
   const load = () => api.getEmailInboxes().then(setInboxes).catch(() => {});
   useEffect(() => {
     load();
+    api.employeeMe().then((m) => {
+      const a = isAdmin(m);
+      setAdmin(a);
+      // Non-admins can only add a personal inbox.
+      if (!a) setForm((f) => ({ ...f, scope: "me" }));
+    }).catch(() => {});
     const h = () => load();
     window.addEventListener("email-inboxes-changed", h);
     return () => window.removeEventListener("email-inboxes-changed", h);
@@ -970,8 +1056,8 @@ function InboxCard() {
   };
   const add = async () => {
     if (!form.host || !form.user || !form.password) return;
-    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password }).catch(() => {});
-    setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "" });
+    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope }).catch(() => {});
+    setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: admin ? "org" : "me" });
     setProvider("gmail"); setAdding(false); load();
   };
 
@@ -983,6 +1069,19 @@ function InboxCard() {
       {adding ? (
         <div className="border border-line rounded-xl p-4 space-y-3">
           <ProviderPicker value={provider} onPick={pickProvider} />
+          {admin && (
+            <div className="flex items-center gap-2 text-[12px] text-ink-2">
+              <span className="text-muted">Share with:</span>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="radio" name="inbox-scope" checked={form.scope === "org"} onChange={() => setForm({ ...form, scope: "org" })} className="accent-accent" />
+                Whole team
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="radio" name="inbox-scope" checked={form.scope === "me"} onChange={() => setForm({ ...form, scope: "me" })} className="accent-accent" />
+                Just me
+              </label>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <input className={inpSm} placeholder="Label (e.g. Support)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
             <input className={inpSm} placeholder="Email address" value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} />
@@ -1740,6 +1839,17 @@ function SyncTab() {
     finally { setNBusy(false); }
   };
 
+  const repairSync = async () => {
+    setNBusy(true); setNErr(null);
+    setNMsg("Re-pulling your full workspace from the server — this can take a minute…");
+    try {
+      const r = await api.netsyncRepair();
+      setNMsg(`Repair complete — re-applied ${r.reapplied} records from the server. If anything was missing, it's back now.`);
+      await refreshNet();
+    } catch (e: any) { setNErr(e.toString()); }
+    finally { setNBusy(false); }
+  };
+
   const replay = async () => {
     setReplaying(true);
     try { await api.syncReplay(); await refresh(); }
@@ -1785,6 +1895,14 @@ function SyncTab() {
                 className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-2"
               >
                 {nBusy && <RefreshCw size={13} className="animate-spin" />} {nBusy ? "Syncing…" : "Sync now"}
+              </button>
+              <button
+                onClick={repairSync}
+                disabled={nBusy}
+                title="Missing clients or deals on this device? Re-pull your entire workspace from the server. Nothing local is lost."
+                className="border border-line hover:bg-surface-2 text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-50"
+              >
+                Repair sync
               </button>
               <button
                 onClick={disconnectNet}
@@ -3355,23 +3473,37 @@ function SheetsTab() {
     email_col: "I", phone_col: "J", company_col: "E", category_col: "P",
     lead_status_col: "V", notes_col: "AA", skip_header_rows: 1,
     last_synced_at: null, last_synced_count: 0, field_mapping_json: null,
+    writeback_enabled: true,
   });
   const [saving,  setSaving]  = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [result,  setResult]  = useState<SheetSyncResult | null>(null);
   const [log,     setLog]     = useState<SheetSyncLogEntry[]>([]);
   const [customFields, setCustomFields] = useState<{ value: string; label: string }[]>([]);
+  const [wbStatus, setWbStatus] = useState<SheetWritebackStatus | null>(null);
+
+  const refreshWbStatus = () => { api.sheetWritebackStatus().then(setWbStatus).catch(() => {}); };
 
   useEffect(() => {
     api.getSheetSyncConfig().then(setConfig).catch(() => {});
     api.getSheetSyncLog().then(setLog).catch(() => {});
     api.getIntakeFields().then((fs) => setCustomFields(fs.filter((f) => f.value.startsWith("cf:")))).catch(() => {});
+    refreshWbStatus();
   }, []);
 
   const save = async () => {
     setSaving(true);
-    try { await api.saveSheetSyncConfig(config); } catch (e: any) { alert(e); }
+    try { await api.saveSheetSyncConfig(config); refreshWbStatus(); } catch (e: any) { alert(e); }
     setSaving(false);
+  };
+
+  // Toggle write-back and persist immediately (the toggle should feel instant, not
+  // require hitting "Save Config"). Reverts + surfaces the error if the save fails.
+  const toggleWriteback = async () => {
+    const next = { ...config, writeback_enabled: !config.writeback_enabled };
+    setConfig(next);
+    try { await api.saveSheetSyncConfig(next); refreshWbStatus(); }
+    catch (e: any) { setConfig(config); alert(e); }
   };
 
   const syncNow = async () => {
@@ -3422,7 +3554,7 @@ function SheetsTab() {
     <div className="max-w-4xl space-y-4">
       <div className="flex items-start justify-between gap-4">
         <p className="text-[12px] text-muted">
-          Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr syncs new clients automatically every 10 minutes.
+          Share your Google Sheet as <strong className="text-ink-2">'Anyone with link can view'</strong>, paste the URL below. Ecliptr pulls new clients in automatically every 10 minutes, and — once you approve a lead — writes it back out as a new row.
         </p>
         <GuideLink section="sheets" />
       </div>
@@ -3494,6 +3626,52 @@ function SheetsTab() {
             <Save size={13} /> {saving ? "Saving..." : "Save Config"}
           </button>
         </div>
+      </div>
+
+      {/* Write-back: approved lead → new sheet row */}
+      <div className="bg-surface border border-line rounded-xl p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <SectionLabel>Sync approvals back to the sheet</SectionLabel>
+            <p className="text-[12px] text-muted mt-2 max-w-xl">
+              When you approve a captured lead, Ecliptr adds it as a new row on this sheet —
+              mapped to the same columns above. Runs on approvals made here on the desktop.
+            </p>
+          </div>
+          <button
+            onClick={toggleWriteback}
+            role="switch"
+            aria-checked={config.writeback_enabled}
+            title={config.writeback_enabled ? "Turn write-back off" : "Turn write-back on"}
+            className={`shrink-0 w-11 h-6 rounded-full relative transition-colors ${config.writeback_enabled ? "bg-accent" : "bg-surface-3"}`}
+          >
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${config.writeback_enabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          </button>
+        </div>
+
+        {wbStatus && (
+          <div
+            className={`mt-3 flex items-start gap-2 text-[12px] px-3 py-2 rounded-lg border ${
+              wbStatus.state === "active"
+                ? "bg-success-bg text-success-ink border-success"
+                : wbStatus.state === "disabled"
+                ? "bg-surface-2 text-muted border-line"
+                : "bg-warning-bg text-warning-ink border-warning"
+            }`}
+          >
+            {wbStatus.state === "active"
+              ? <Check size={14} className="mt-0.5 shrink-0" />
+              : wbStatus.state === "disabled"
+              ? <X size={14} className="mt-0.5 shrink-0" />
+              : <AlertCircle size={14} className="mt-0.5 shrink-0" />}
+            <span>
+              {wbStatus.message}
+              {wbStatus.state === "not_connected" && (
+                <> Open the <strong className="text-ink-2">Email</strong> tab and use <strong className="text-ink-2">Connect Google</strong> (or Reconnect, if you connected before Sheets access was added).</>
+              )}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Sync */}

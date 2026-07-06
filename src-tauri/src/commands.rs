@@ -4676,6 +4676,7 @@ pub async fn get_intake_fields() -> Result<Vec<Value>, String> {
         json!({"value":"email","label":"Email"}),
         json!({"value":"phone","label":"Phone"}),
         json!({"value":"company","label":"Company"}),
+        json!({"value":"category","label":"Category"}),
         json!({"value":"notes","label":"Notes"}),
     ];
     if let Ok(mut stmt) = conn.prepare("SELECT field_key, label FROM custom_fields ORDER BY sort_order, label") {
@@ -5386,19 +5387,37 @@ pub async fn get_email_inboxes() -> Result<Vec<crate::email::EmailInbox>, String
 }
 
 /// Add or update a monitor-only inbound mailbox (password stored in the keyring).
+///
+/// `scope` = `"org"` (default) writes a shared inbox that syncs to — and is watched
+/// by — every admin/device in the org; `"me"` writes a personal inbox that stays
+/// on this device only. Adding an org inbox is an admin action.
 #[tauri::command]
-pub async fn save_email_inbox(id: Option<String>, label: String, host: String, port: u16, user: String, password: Option<String>) -> Result<String, String> {
+pub async fn save_email_inbox(id: Option<String>, label: String, host: String, port: u16, user: String, password: Option<String>, scope: Option<String>) -> Result<String, String> {
+    let scope = match scope.as_deref() { Some("me") => "me", _ => "org" };
+    if scope == "org" && !crate::employees::session_is_privileged() {
+        return Err("Admin permission required to set up the shared inbox.".into());
+    }
     let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let mut list = crate::email::load_inboxes();
-    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user };
+    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user, scope: scope.into() };
+    // Edit the list that matches the target scope so org/personal stay separate.
+    let mut list = if scope == "me" { crate::email::load_personal_inboxes() } else { crate::email::load_org_inboxes() };
     match list.iter_mut().find(|i| i.id == id) {
         Some(existing) => *existing = inbox,
         None => list.push(inbox),
     }
-    crate::email::save_inboxes(&list).map_err(|e| e.to_string())?;
+    if scope == "me" {
+        crate::email::save_personal_inboxes(&list).map_err(|e| e.to_string())?;
+    } else {
+        crate::email::save_inboxes(&list).map_err(|e| e.to_string())?;
+    }
     if let Some(pw) = password {
         if !pw.is_empty() {
             crate::email::save_cred(&format!("imap_pass_{id}"), &pw).map_err(|e| e.to_string())?;
+            // Share the org inbox's password to the server so sibling admins can
+            // materialize it (personal inboxes keep the secret on this device).
+            if scope == "org" {
+                let _ = crate::netsync::push_inbox_secret_to_server(&id, &pw).await;
+            }
         }
     }
     Ok(id)
@@ -5406,10 +5425,61 @@ pub async fn save_email_inbox(id: Option<String>, label: String, host: String, p
 
 #[tauri::command]
 pub async fn delete_email_inbox(id: String) -> Result<(), String> {
-    let mut list = crate::email::load_inboxes();
-    list.retain(|i| i.id != id);
-    crate::email::save_inboxes(&list).map_err(|e| e.to_string())?;
+    // Remove from whichever scoped list holds it. Deleting a shared (org) inbox is
+    // an admin action; personal inboxes anyone can remove from their own device.
+    let in_org = crate::email::load_org_inboxes().iter().any(|i| i.id == id);
+    if in_org && !crate::employees::session_is_privileged() {
+        return Err("Admin permission required to remove the shared inbox.".into());
+    }
+    if in_org {
+        let mut list = crate::email::load_org_inboxes();
+        list.retain(|i| i.id != id);
+        crate::email::save_inboxes(&list).map_err(|e| e.to_string())?;
+    } else {
+        let mut list = crate::email::load_personal_inboxes();
+        list.retain(|i| i.id != id);
+        crate::email::save_personal_inboxes(&list).map_err(|e| e.to_string())?;
+    }
     let _ = crate::email::delete_cred(&format!("imap_pass_{id}"));
+    Ok(())
+}
+
+/// Whether this device is using the org default send config (true) or a personal
+/// override (false). Drives the "Use my own inbox" toggle in Settings.
+#[tauri::command]
+pub async fn get_email_use_org_default() -> Result<bool, String> {
+    Ok(crate::email::use_org_default())
+}
+
+/// Toggle this device between the org default and a personal send override.
+/// Device-local — never synced, so one admin flipping to "my own" doesn't affect
+/// anyone else.
+#[tauri::command]
+pub async fn set_email_use_org_default(on: bool) -> Result<(), String> {
+    crate::email::set_use_org_default(on).map_err(|e| e.to_string())
+}
+
+/// Transfer the org's shared inbox to a different email admin: rewrite the
+/// `owner_staff_id` on the org send config (and every org monitor inbox) to the
+/// target staff member and re-sync. Admin-gated. Credentials are unchanged, so the
+/// target admin's device materializes them via the server round-trip on next scan —
+/// no password re-entry needed unless the underlying mailbox itself changes.
+#[tauri::command]
+pub async fn transfer_org_inbox(target_staff_id: String) -> Result<(), String> {
+    if !crate::employees::session_is_privileged() {
+        return Err("Admin permission required to transfer the shared inbox.".into());
+    }
+    if target_staff_id.trim().is_empty() {
+        return Err("Pick an admin to transfer to.".into());
+    }
+    // Reassign the send/monitor account owner.
+    let mut settings = crate::email::load_org_settings()
+        .ok_or_else(|| "No shared inbox is set up yet.".to_string())?;
+    settings.owner_staff_id = target_staff_id.clone();
+    crate::email::save_settings(&settings).map_err(|e| e.to_string())?;
+    // Make sure the shared secrets are on the server so the new owner's device can
+    // pull them without re-typing.
+    let _ = crate::netsync::push_email_secrets_to_server().await;
     Ok(())
 }
 
@@ -5605,9 +5675,31 @@ pub async fn delete_credential(key: String) -> Result<(), String> {
     crate::email::delete_cred(&key).map_err(|e| e.to_string())
 }
 
+/// Save the send/monitor account. `scope` = `"org"` (default) writes the shared
+/// org config that all admins inherit (admin action, synced) and shares its
+/// secrets to the server; `"me"` writes a personal override for this device only.
 #[tauri::command]
-pub async fn save_email_settings(settings: crate::email::EmailSettings) -> Result<(), String> {
-    crate::email::save_settings(&settings).map_err(|e| e.to_string())
+pub async fn save_email_settings(settings: crate::email::EmailSettings, scope: Option<String>) -> Result<(), String> {
+    let scope = match scope.as_deref() { Some("me") => "me", _ => "org" };
+    if scope == "org" && !crate::employees::session_is_privileged() {
+        return Err("Admin permission required to set up the shared send account.".into());
+    }
+    let mut settings = settings;
+    if scope == "org" {
+        // Stamp the current admin as the owner if none is set yet, so the shared
+        // inbox always has an accountable owner after first setup.
+        if settings.owner_staff_id.trim().is_empty() {
+            if let Some((id, _)) = crate::employees::session_actor() {
+                settings.owner_staff_id = id;
+            }
+        }
+    }
+    crate::email::save_settings_scoped(scope, &settings).map_err(|e| e.to_string())?;
+    if scope == "org" {
+        // Share the send/monitor secrets so sibling admins can materialize them.
+        let _ = crate::netsync::push_email_secrets_to_server().await;
+    }
+    Ok(())
 }
 
 /// Send a real test email to the configured account — verifies outbound email works
@@ -5707,20 +5799,12 @@ async fn google_oauth_email() -> Option<String> {
     body.get("email").and_then(|e| e.as_str()).map(|s| s.to_string())
 }
 
+/// The EFFECTIVE send/monitor account for this device (personal override if this
+/// admin opted out and has one, else the org default). This is what the Settings
+/// send card shows and what `send()` uses.
 #[tauri::command]
 pub async fn get_email_settings() -> Result<Option<crate::email::EmailSettings>, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let json: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key='email_settings'",
-            [],
-            |r| r.get(0),
-        )
-        .ok();
-    match json {
-        Some(s) => Ok(Some(serde_json::from_str(&s).map_err(|e| e.to_string())?)),
-        None => Ok(None),
-    }
+    Ok(crate::email::load_settings().ok())
 }
 
 #[tauri::command]
@@ -9712,6 +9796,8 @@ pub struct SheetSyncConfig {
     pub last_synced_at: Option<String>,
     pub last_synced_count: i64,
     pub field_mapping_json: Option<String>,
+    /// When true (default), approving a lead appends a row to the connected sheet.
+    pub writeback_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -9747,7 +9833,7 @@ pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
         [],
     ).map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, last_synced_at, last_synced_count, COALESCE(field_mapping_json,'{}') FROM sheet_sync_config WHERE id=1",
+        "SELECT id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, last_synced_at, last_synced_count, COALESCE(field_mapping_json,'{}'), COALESCE(writeback_enabled,1) FROM sheet_sync_config WHERE id=1",
         [],
         |r| Ok(SheetSyncConfig {
             id: r.get(0)?, sheet_url: r.get(1)?, name_col: r.get(2)?,
@@ -9757,6 +9843,7 @@ pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
             notes_col: r.get(10)?, skip_header_rows: r.get(11)?,
             last_synced_at: r.get(12)?, last_synced_count: r.get(13)?,
             field_mapping_json: r.get(14)?,
+            writeback_enabled: r.get::<_, i64>(15)? != 0,
         }),
     ).map_err(|e| e.to_string())
     .map(|mut c| {
@@ -9776,10 +9863,58 @@ pub async fn get_sheet_sync_config() -> Result<SheetSyncConfig, String> {
 pub async fn save_sheet_sync_config(config: SheetSyncConfig) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT OR REPLACE INTO sheet_sync_config (id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, field_mapping_json) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        rusqlite::params![config.sheet_url, config.name_col, config.first_name_col, config.last_name_col, config.email_col, config.phone_col, config.company_col, config.category_col, config.lead_status_col, config.notes_col, config.skip_header_rows, config.field_mapping_json.unwrap_or_default()],
+        "INSERT OR REPLACE INTO sheet_sync_config (id, sheet_url, name_col, first_name_col, last_name_col, email_col, phone_col, company_col, category_col, lead_status_col, notes_col, skip_header_rows, field_mapping_json, writeback_enabled) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        rusqlite::params![config.sheet_url, config.name_col, config.first_name_col, config.last_name_col, config.email_col, config.phone_col, config.company_col, config.category_col, config.lead_status_col, config.notes_col, config.skip_header_rows, config.field_mapping_json.unwrap_or_default(), if config.writeback_enabled { 1 } else { 0 }],
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Live status of the "approved lead → append to Google Sheet" write-back, so the
+/// Settings UI can show a clear reason why it is (or is not) active — the feature is
+/// deliberately best-effort and silent at approval time, so this is the ONLY place a
+/// user finds out whether it's armed.
+///
+/// Returns `{ enabled, sheet_configured, google_connected, active, state, message }`
+/// where `state` is one of: `active` | `disabled` | `no_sheet` | `not_connected`.
+#[tauri::command]
+pub async fn sheet_writeback_status() -> Result<Value, String> {
+    // Toggle + sheet URL come from sheet_sync_config (defaults: enabled on).
+    let (enabled, sheet_configured): (bool, bool) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COALESCE(writeback_enabled,1), \
+                    CASE WHEN sheet_url IS NOT NULL AND TRIM(sheet_url) <> '' THEN 1 ELSE 0 END \
+             FROM sheet_sync_config WHERE id=1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)? != 0)),
+        ).unwrap_or((true, false))
+    };
+    // Write-back needs the Google OAuth token (carries the Sheets scope) — the same
+    // "Connect Google" connection used for Gmail. An app-password email setup does NOT
+    // provide a Sheets-scoped token, so a stored refresh token is the requirement.
+    let google_connected = crate::email::cred_opt("oauth_refresh_token")
+        .map(|t| !t.trim().is_empty())
+        .unwrap_or(false);
+
+    let (state, message) = if !enabled {
+        ("disabled", "Write-back is turned off. Approved leads will not be added to the sheet.")
+    } else if !sheet_configured {
+        ("no_sheet", "No Google Sheet is configured. Add a sheet URL above to enable write-back.")
+    } else if !google_connected {
+        ("not_connected", "Connect Google (OAuth) under Settings → Email to grant Sheets write access. Until then approvals won't reach the sheet.")
+    } else {
+        ("active", "Active — approving a lead appends a row to the connected sheet.")
+    };
+    let active = state == "active";
+
+    Ok(json!({
+        "enabled": enabled,
+        "sheet_configured": sheet_configured,
+        "google_connected": google_connected,
+        "active": active,
+        "state": state,
+        "message": message,
+    }))
 }
 
 #[tauri::command]
