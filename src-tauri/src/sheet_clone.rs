@@ -46,13 +46,20 @@ fn spreadsheet_id(url: &str) -> Option<String> {
 }
 
 /// An HTTP client with a sane timeout (mirrors `netsync::http`). Sheets grid
-/// reads/creates can be large, so we allow a generous window.
+/// reads/creates can be large, so we allow a generous window (large multi-tab
+/// grid reads can take a while even with a field mask).
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(300))
         .build()
         .unwrap_or_default()
 }
+
+/// Field mask limiting the source read to exactly what the rebuild consumes
+/// (see `clean_sheet` / `clean_sheet_properties` / `clean_data_block`). Dropping
+/// `effectiveValue`/`effectiveFormat`/`formattedValue` at the source is the big
+/// payload win that keeps the download inside the timeout.
+const FIELDS_MASK: &str = "properties.title,sheets(properties,merges,data(rowData(values(userEnteredValue,userEnteredFormat,note,textFormatRuns,dataValidation)),rowMetadata,columnMetadata))";
 
 /// Server-authoritative plan gate. Fetches the signed-in workspace's plan from
 /// the server and returns Ok(()) only when it's the top "unlimited" tier.
@@ -87,8 +94,9 @@ async fn require_unlimited_plan() -> Result<(), String> {
 
 /// Whitelist of cell fields we keep when rebuilding a cell. Everything else
 /// (`effectiveValue`, `effectiveFormat`, `pivotTable`, …) is dropped so
-/// `spreadsheets.create` accepts the body and can round-trip it.
-fn clean_cell(cell: &Value, warnings: &mut WarnFlags) -> Value {
+/// `spreadsheets.create` accepts the body and can round-trip it. The field mask
+/// on the source read already excludes the heavy/uncopyable fields.
+fn clean_cell(cell: &Value) -> Value {
     let mut out = serde_json::Map::new();
     if let Some(v) = cell.get("userEnteredValue") {
         out.insert("userEnteredValue".into(), v.clone());
@@ -104,20 +112,14 @@ fn clean_cell(cell: &Value, warnings: &mut WarnFlags) -> Value {
     }
     if let Some(v) = cell.get("dataValidation") {
         // Data validation is kept optimistically; if create later 400s we can't
-        // know which cell caused it, so we just flag that validation exists so
-        // the caller can warn. (Kept simple per the spec's robustness guidance.)
+        // know which cell caused it. (Kept simple per the robustness guidance.)
         out.insert("dataValidation".into(), v.clone());
-        warnings.data_validation = true;
-    }
-    // pivotTable lives on the cell and is not creatable via .create.
-    if cell.get("pivotTable").is_some() {
-        warnings.pivot_tables = true;
     }
     Value::Object(out)
 }
 
 /// Rebuild one data block (a `GridData`) keeping only round-trippable fields.
-fn clean_data_block(block: &Value, warnings: &mut WarnFlags) -> Value {
+fn clean_data_block(block: &Value) -> Value {
     let mut out = serde_json::Map::new();
     if let Some(v) = block.get("startRow") {
         out.insert("startRow".into(), v.clone());
@@ -133,7 +135,7 @@ fn clean_data_block(block: &Value, warnings: &mut WarnFlags) -> Value {
                 if let Some(values) = row.get("values").and_then(Value::as_array) {
                     let new_values: Vec<Value> = values
                         .iter()
-                        .map(|c| clean_cell(c, warnings))
+                        .map(clean_cell)
                         .collect();
                     row_out.insert("values".into(), Value::Array(new_values));
                 }
@@ -196,8 +198,9 @@ fn clean_sheet_properties(props: &Value, sheet_id: i64) -> Value {
 /// Rebuild one sheet, keeping properties/merges/data and stripping everything
 /// `.create` rejects or can't round-trip (charts, banded ranges, conditional
 /// formats, protected ranges, filter views, basic filter, slicers, developer
-/// metadata, …). Detected features flip `warnings` flags.
-fn clean_sheet(sheet: &Value, sheet_id: i64, warnings: &mut WarnFlags) -> Value {
+/// metadata, …). Those fields are excluded by the source read's field mask, so
+/// there's nothing to detect here — the caller emits a single blanket warning.
+fn clean_sheet(sheet: &Value, sheet_id: i64) -> Value {
     let mut out = serde_json::Map::new();
 
     match sheet.get("properties") {
@@ -231,95 +234,19 @@ fn clean_sheet(sheet: &Value, sheet_id: i64, warnings: &mut WarnFlags) -> Value 
     if let Some(data) = sheet.get("data").and_then(Value::as_array) {
         let new_data: Vec<Value> = data
             .iter()
-            .map(|block| clean_data_block(block, warnings))
+            .map(clean_data_block)
             .collect();
         out.insert("data".into(), Value::Array(new_data));
-    }
-
-    // Detect (and drop) anything create can't take.
-    if non_empty_array(sheet, "charts") {
-        warnings.charts = true;
-    }
-    if non_empty_array(sheet, "bandedRanges") {
-        warnings.banded_ranges = true;
-    }
-    if non_empty_array(sheet, "conditionalFormats") {
-        warnings.conditional_formats = true;
-    }
-    if non_empty_array(sheet, "protectedRanges") {
-        warnings.protected_ranges = true;
-    }
-    if non_empty_array(sheet, "filterViews") {
-        warnings.filter_views = true;
-    }
-    if sheet.get("basicFilter").is_some() {
-        warnings.filter_views = true;
-    }
-    if non_empty_array(sheet, "slicers") {
-        warnings.slicers = true;
-    }
-    if non_empty_array(sheet, "developerMetadata") {
-        warnings.developer_metadata = true;
     }
 
     Value::Object(out)
 }
 
-fn non_empty_array(v: &Value, key: &str) -> bool {
-    v.get(key)
-        .and_then(Value::as_array)
-        .map(|a| !a.is_empty())
-        .unwrap_or(false)
-}
-
-/// Which strippable features were detected in the source. Rendered to
-/// human-readable warnings only for features actually present.
-#[derive(Default)]
-struct WarnFlags {
-    charts: bool,
-    banded_ranges: bool,
-    conditional_formats: bool,
-    protected_ranges: bool,
-    filter_views: bool,
-    slicers: bool,
-    developer_metadata: bool,
-    pivot_tables: bool,
-    data_validation: bool,
-}
-
-impl WarnFlags {
-    fn into_messages(self) -> Vec<String> {
-        let mut w = Vec::new();
-        if self.charts {
-            w.push("Charts were not copied".into());
-        }
-        if self.conditional_formats {
-            w.push("Conditional formatting was not copied".into());
-        }
-        if self.pivot_tables {
-            w.push("Pivot tables were not copied".into());
-        }
-        if self.banded_ranges {
-            w.push("Alternating-color banding was not copied".into());
-        }
-        if self.protected_ranges {
-            w.push("Protected ranges were not copied".into());
-        }
-        if self.filter_views {
-            w.push("Filters were not copied".into());
-        }
-        if self.slicers {
-            w.push("Slicers were not copied".into());
-        }
-        if self.developer_metadata {
-            w.push("Developer metadata was not copied".into());
-        }
-        if self.data_validation {
-            w.push("Data validation rules may not have copied".into());
-        }
-        w
-    }
-}
+/// Blanket note surfaced to every clone. Because the source read is masked to
+/// just the round-trippable fields, we can't (and don't) detect which of these
+/// were actually present — so we always tell the user what a copy can't carry.
+const STRIP_WARNING: &str =
+    "Charts, images, pivot tables, and conditional formatting are not copied.";
 
 /// Read a view-only Google Sheet the user is authorized to see and rebuild it
 /// into a NEW spreadsheet they own. Gated to the Unlimited plan (server-checked).
@@ -339,12 +266,16 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
 
     let client = http();
 
-    // 4. Read the source sheet WITH grid data.
+    // 4. Read the source sheet WITH grid data, restricted to a field mask so we
+    //    only download what the rebuild consumes (dropping effectiveValue/
+    //    effectiveFormat/formattedValue — the payload bulk). Using reqwest
+    //    .query() so the mask's commas/parens are URL-encoded correctly.
     let read_resp = client
         .get(format!(
-            "https://sheets.googleapis.com/v4/spreadsheets/{}?includeGridData=true",
+            "https://sheets.googleapis.com/v4/spreadsheets/{}",
             id
         ))
+        .query(&[("includeGridData", "true"), ("fields", FIELDS_MASK)])
         .bearer_auth(&token)
         .send()
         .await
@@ -380,13 +311,20 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
         });
     }
 
-    let source: Value = read_resp.json().await.map_err(|_| {
-        "Google returned data for that sheet that Ecliptr couldn't read.".to_string()
+    // Read the raw body and parse it ourselves so the failure message can report
+    // how many bytes we got (a very large sheet may still overflow the timeout /
+    // truncate). Never panic — always a graceful Err.
+    let body = read_resp.bytes().await.map_err(|_| {
+        "Ecliptr couldn't finish downloading that sheet's data. It may be extremely large — try a sheet with fewer tabs/rows, or tell support.".to_string()
+    })?;
+    let source: Value = serde_json::from_slice(&body).map_err(|_| {
+        format!(
+            "Ecliptr couldn't read that sheet's data (received {} bytes). It may be extremely large — try a sheet with fewer tabs/rows, or tell support.",
+            body.len()
+        )
     })?;
 
     // 5. Transform into a NEW create body.
-    let mut warnings = WarnFlags::default();
-
     let source_title = source
         .get("properties")
         .and_then(|p| p.get("title"))
@@ -401,7 +339,7 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
             sheets
                 .iter()
                 .enumerate()
-                .map(|(i, s)| clean_sheet(s, i as i64, &mut warnings))
+                .map(|(i, s)| clean_sheet(s, i as i64))
                 .collect()
         })
         .unwrap_or_default();
@@ -455,6 +393,6 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
         title,
         new_url,
         sheet_count,
-        warnings: warnings.into_messages(),
+        warnings: vec![STRIP_WARNING.to_string()],
     })
 }
