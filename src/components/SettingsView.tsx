@@ -88,6 +88,7 @@ import {
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
 import VariablePicker from "./VariablePicker";
 import { FormsPanel } from "./FormsPanel";
@@ -2755,6 +2756,9 @@ function AutomationTab() {
 function UpdateButton() {
   const [checking, setChecking] = useState(false);
   const [status,   setStatus]   = useState<string | null>(null);
+  const [version,  setVersion]  = useState<string | null>(null);
+
+  useEffect(() => { getVersion().then(setVersion).catch(() => setVersion(null)); }, []);
 
   const checkForUpdates = async () => {
     setChecking(true);
@@ -2774,6 +2778,10 @@ function UpdateButton() {
 
   return (
     <div>
+      <div className="flex items-center gap-2 mb-3 text-[13px]">
+        <span className="text-muted">You're on</span>
+        <span className="font-semibold text-ink tabular-nums">{version ? `v${version}` : "…"}</span>
+      </div>
       <button
         onClick={checkForUpdates}
         disabled={checking}
@@ -3467,6 +3475,71 @@ function CategoriesTab() {
   );
 }
 
+// One shared Google connection powers email sending, sheet sync/write-back, and
+// Sheet copy. It used to be reachable ONLY by ticking a checkbox in the Email tab,
+// so users who don't send via Gmail could never find it. This surfaces it right in
+// the Google Sheets tab (and it's the same token — connecting here connects
+// everywhere). Reconnect works with the saved credentials (no re-entry).
+function GoogleConnectCard() {
+  const [gStatus, setGStatus] = useState<{ connected: boolean } | null>(null);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const refresh = () => api.googleEmailStatus().then((s) => setGStatus(s)).catch(() => setGStatus(null));
+  useEffect(() => { refresh(); }, []);
+
+  const connect = async () => {
+    setConnecting(true); setErr(null);
+    try {
+      if (clientId) await api.saveCredential("oauth_client_id", clientId);
+      if (clientSecret) await api.saveCredential("oauth_client_secret", clientSecret);
+      await api.oauthStartConsent(clientId, clientSecret); // blanks fall back to saved creds server-side
+      await refresh();
+    } catch (e: any) { setErr(String(e)); }
+    finally { setConnecting(false); }
+  };
+
+  if (showGuide) return <GoogleCloudGuide onBack={() => { setShowGuide(false); refresh(); }} />;
+
+  const connected = !!gStatus?.connected;
+  return (
+    <div className="bg-surface border border-line rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-1">
+        <Cloud size={15} className="text-accent" />
+        <span className="text-[13px] font-semibold text-ink">Google account</span>
+        {connected && <span className="ml-1"><ConnectedPill ok /></span>}
+      </div>
+      <p className="text-[12px] text-muted mb-3 max-w-xl">
+        One Google connection powers sheet sync, write-back, and Sheet copy.{" "}
+        {connected
+          ? "You're connected — reconnect only if you added new Google access."
+          : "Connect once to turn these on (uses your own Google Cloud credentials)."}
+      </p>
+      {!connected && (
+        <div className="space-y-2 max-w-sm mb-3">
+          <SecretInput label="Google Client ID" value={clientId} onChange={setClientId} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <SecretInput label="Google Client Secret" value={clientSecret} onChange={setClientSecret} showSecrets={showSecrets} onToggleSecrets={() => setShowSecrets((v) => !v)} />
+          <button type="button" onClick={() => setShowGuide(true)} className="text-[12px] text-accent hover:underline">
+            How do I get these?
+          </button>
+        </div>
+      )}
+      <button
+        onClick={connect}
+        disabled={connecting || (!connected && (!clientId || !clientSecret))}
+        className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+      >
+        {connecting ? <><RefreshCw size={13} className="animate-spin" /> Connecting…</> : connected ? <><RefreshCw size={13} /> Reconnect</> : <><Cloud size={13} /> Connect Google</>}
+      </button>
+      {err && <div className="text-danger-ink text-[12.5px] mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</div>}
+    </div>
+  );
+}
+
 function SheetsTab() {
   const [config,  setConfig]  = useState<SheetSyncConfig>({
     id: 1, sheet_url: null, name_col: "", first_name_col: "F", last_name_col: "G",
@@ -3558,6 +3631,9 @@ function SheetsTab() {
         </p>
         <GuideLink section="sheets" />
       </div>
+
+      {/* Google connection — lives here so it's findable (not buried in Email) */}
+      <GoogleConnectCard />
 
       {/* Setup */}
       <div className="bg-surface border border-line rounded-xl p-5">
@@ -3667,7 +3743,7 @@ function SheetsTab() {
             <span>
               {wbStatus.message}
               {wbStatus.state === "not_connected" && (
-                <> Open the <strong className="text-ink-2">Email</strong> tab and use <strong className="text-ink-2">Connect Google</strong> (or Reconnect, if you connected before Sheets access was added).</>
+                <> Use the <strong className="text-ink-2">Google account</strong> card at the top of this tab to connect (or Reconnect, if you connected before Sheets access was added).</>
               )}
             </span>
           </div>

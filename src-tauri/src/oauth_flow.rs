@@ -25,6 +25,24 @@ pub async fn start_consent_flow(
     scope: &str,
     cred_prefix: &str,
 ) -> Result<()> {
+    // Fall back to previously-saved credentials when the caller passes blanks —
+    // e.g. a "Reconnect" that shouldn't force re-entering the Client ID/secret.
+    let client_id = if client_id.trim().is_empty() {
+        crate::email::cred(&format!("{}_client_id", cred_prefix)).unwrap_or_default()
+    } else {
+        client_id
+    };
+    let client_secret = if client_secret.trim().is_empty() {
+        crate::email::cred(&format!("{}_client_secret", cred_prefix)).unwrap_or_default()
+    } else {
+        client_secret
+    };
+    if client_id.trim().is_empty() || client_secret.trim().is_empty() {
+        return Err(anyhow!(
+            "Enter your Google Client ID and Client secret first, then connect."
+        ));
+    }
+
     let port = find_open_port(7777, 7799)?;
     let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
 

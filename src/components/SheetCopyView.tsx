@@ -156,7 +156,7 @@ export default function SheetCopyView() {
           </div>
           {needsGoogle && (
             <p className="text-[11.5px] text-muted mt-2 ml-[23px] leading-relaxed">
-              Head to Settings → Email to connect your Google account, then try again.
+              Head to Settings → Google Sheets to connect your Google account, then try again.
             </p>
           )}
         </div>

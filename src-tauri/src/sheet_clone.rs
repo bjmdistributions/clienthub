@@ -331,7 +331,7 @@ pub async fn clone_google_sheet(url: String) -> Result<CloneResult, String> {
     // 2. Access token (already-granted spreadsheets scope).
     let token = crate::email::oauth2_access_token()
         .await
-        .map_err(|_| "Connect your Google account in Settings → Email first, then try again.".to_string())?;
+        .map_err(|_| "Connect your Google account in Settings → Google Sheets first, then try again.".to_string())?;
 
     // 3. Parse the source spreadsheet id.
     let id = spreadsheet_id(&url)
