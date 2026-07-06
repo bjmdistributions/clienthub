@@ -528,7 +528,25 @@ fn apply_upsert(
             params.push(json_to_sql(v));
         }
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, refs.as_slice())?;
+        let n = conn.execute(&sql, refs.as_slice())?;
+        if n == 0 {
+            // INSERT OR IGNORE no-op: a PARTIAL upsert reached a row that doesn't
+            // exist yet and hit a NOT-NULL constraint (e.g. clients.name). The row
+            // was NOT created. Critically, do NOT record clocks here — otherwise
+            // these columns get "phantom" clocks that permanently block the real
+            // create event from ever materializing the row (per-column LWW sees an
+            // existing clock and skips). Events can arrive out of causal order
+            // (the server serves them by arrival seq, not HLC), so a partial can
+            // precede its create; leaving clocks unset lets the later create win
+            // and insert the row. (This is what stranded a MacBook at a fraction
+            // of its clients — see Deep repair for healing already-poisoned devices.)
+            tracing::warn!(
+                "apply_upsert: 0-row INSERT OR IGNORE for {}/{} (missing required column on a \
+                 not-yet-created row); skipping clock record so a later create still applies",
+                table, row_id
+            );
+            return Ok(());
+        }
     } else {
         let set_clause: Vec<String> = winning
             .iter()

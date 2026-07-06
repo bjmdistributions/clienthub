@@ -242,6 +242,7 @@ fn main() {
             netsync::netsync_disconnect,
             netsync::netsync_sync_now,
             netsync::netsync_repair,
+            netsync::netsync_repair_hard,
             netsync::get_my_plan,
             netsync::get_platform_signups,
             netsync::upload_company_logo,

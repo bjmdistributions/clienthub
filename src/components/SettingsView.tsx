@@ -1851,6 +1851,18 @@ function SyncTab() {
     finally { setNBusy(false); }
   };
 
+  const repairSyncHard = async () => {
+    if (!confirm("Deep repair rebuilds this device's data from the server. Nothing on the server is touched and no data is lost — it just re-applies your full history. Use this if clients or deals are still missing after Repair sync. Continue?")) return;
+    setNBusy(true); setNErr(null);
+    setNMsg("Deep repair: rebuilding from the server. This re-applies your full history and can take a minute or two — keep the app open…");
+    try {
+      const r = await api.netsyncRepairHard();
+      setNMsg(`Deep repair complete — re-applied ${r.reapplied} records from the server. Anything that was stuck is back now.`);
+      await refreshNet();
+    } catch (e: any) { setNErr(e.toString()); }
+    finally { setNBusy(false); }
+  };
+
   const replay = async () => {
     setReplaying(true);
     try { await api.syncReplay(); await refresh(); }
@@ -1913,6 +1925,18 @@ function SyncTab() {
                 Disconnect
               </button>
             </div>
+            <p className="text-[12px] text-muted">
+              Still missing clients or deals after Repair sync?{" "}
+              <button
+                onClick={repairSyncHard}
+                disabled={nBusy}
+                title="Rebuilds this device from the server by re-applying your full history. Nothing on the server changes and no data is lost."
+                className="text-accent hover:underline font-medium disabled:opacity-50"
+              >
+                Run Deep repair
+              </button>{" "}
+              to rebuild from the server.
+            </p>
             {nMsg && <p className="text-[12px] text-muted">{nMsg}</p>}
             {nErr && (
               <div className="text-danger-ink text-[12.5px] flex items-center gap-1.5">

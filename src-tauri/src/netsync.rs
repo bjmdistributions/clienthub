@@ -389,6 +389,40 @@ pub async fn netsync_repair() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "reapplied": reapplied, "pushed": pushed }))
 }
 
+/// Deep repair — for a device that plain Repair CAN'T heal. Older builds could
+/// record a "phantom clock" for a partial upsert that silently no-op'd on a
+/// not-yet-created row (a NOT-NULL violation swallowed by INSERT OR IGNORE), then
+/// mark the event applied — permanently blocking the real create event from ever
+/// materializing the row. Plain Repair re-pulls but SKIPS already-applied events,
+/// so it can never fix that. This wipes the sync bookkeeping (applied-event log,
+/// per-column clocks, tombstones, replayed-file log) so the ENTIRE server history
+/// re-applies from scratch, then re-pulls from cursor 0.
+///
+/// Safe: it does NOT delete any real data rows (clients/deals/invoices/…). Re-apply
+/// is idempotent last-write-wins and rebuilds the clocks as it goes; any local
+/// changes still queued are re-pushed at the end. Combined with the apply_upsert
+/// fix (0-row inserts no longer record clocks), the re-pull can't re-poison itself.
+#[tauri::command]
+pub async fn netsync_repair_hard() -> Result<serde_json::Value, String> {
+    if config().is_none() {
+        return Err("Sign in to your workspace first, then run Deep repair.".into());
+    }
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "DELETE FROM sync_meta;
+             DELETE FROM row_clocks;
+             DELETE FROM tombstones;
+             DELETE FROM replayed_files;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    state_set("netsync_pull_cursor", "0");
+    let reapplied = pull_apply().await.map_err(|e| e.to_string())?;
+    let pushed = push_pending().await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "reapplied": reapplied, "pushed": pushed }))
+}
+
 /// Fetch the signed-in workspace's plan + usage from the server (for the My Plan view).
 /// Requires a server connection; errors clearly when offline / not signed in.
 #[tauri::command]
