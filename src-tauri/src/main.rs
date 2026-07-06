@@ -628,6 +628,7 @@ fn main() {
             get_sheet_sync_config,
             save_sheet_sync_config,
             sheet_writeback_status,
+            sheet_writeback::sync_all_clients_to_sheet,
             sync_from_sheet,
             get_sheet_sync_log,
             list_custom_fields,

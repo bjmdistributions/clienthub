@@ -276,3 +276,141 @@ pub async fn append_approved_client(client_id: &str) -> Result<bool> {
     }
     Ok(true)
 }
+
+/// Bulk push: append EVERY active client that isn't already on the connected sheet.
+///
+/// Unlike `append_approved_client` (best-effort, silent, per-approval), this is an
+/// explicit user action from Settings, so it returns loud errors and does NOT require
+/// `writeback_enabled` — the button click IS the consent. Deduplicates against the
+/// sheet by reading the mapped email column first, so re-running is safe.
+///
+/// Returns `{ added, skipped, total }` where `skipped` = clients already present.
+#[tauri::command]
+pub async fn sync_all_clients_to_sheet() -> Result<serde_json::Value, String> {
+    let mapping = load_mapping()
+        .ok_or_else(|| "Connect a Google Sheet in Settings → Google Sheets first.".to_string())?;
+    let spreadsheet = spreadsheet_id(&mapping.sheet_url)
+        .ok_or_else(|| "Connect a Google Sheet in Settings → Google Sheets first.".to_string())?;
+    let access = crate::email::oauth2_access_token()
+        .await
+        .map_err(|_| "Connect your Google account in Settings → Google Sheets first.".to_string())?;
+
+    let http = reqwest::Client::new();
+
+    // DEDUP: read the mapped email column and collect existing addresses (lowercased).
+    // If no email column is mapped, dedup is off — we append every active client.
+    let dedup_on = !mapping.email_col.trim().is_empty();
+    let mut existing_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if dedup_on {
+        let col = mapping.email_col.trim();
+        let url = format!(
+            "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}:{}",
+            spreadsheet, col, col
+        );
+        let resp = http
+            .get(&url)
+            .bearer_auth(&access)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to read the sheet's email column: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Failed to read the sheet (HTTP {}): {}", status, text));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse the sheet's email column: {}", e))?;
+        // `values` is a 2-D array of rows; each row is an array of cells. Add every
+        // non-empty cell lowercased — matching by exact lowercased email is safe, so we
+        // don't need to special-case a header row (a header like "Email" simply won't
+        // collide with a real address).
+        if let Some(rows) = body.get("values").and_then(|v| v.as_array()) {
+            for row in rows {
+                if let Some(cells) = row.as_array() {
+                    for cell in cells {
+                        if let Some(s) = cell.as_str() {
+                            let e = s.trim().to_lowercase();
+                            if !e.is_empty() {
+                                existing_emails.insert(e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Gather all active (approved) client ids — skip pending/rejected. The clients
+    // table has no `archived` column (only invoices/deals/deal_flows do), so
+    // approval_status alone selects the accepted book.
+    let ids: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM clients WHERE COALESCE(approval_status,'active')='active'")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r.map_err(|e| e.to_string())?);
+        }
+        v
+    };
+
+    // Build rows for clients not already in the sheet. Dedup within this batch too, so
+    // two clients sharing an email don't both get appended.
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut skipped = 0usize;
+    let mut batch_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in &ids {
+        let client = match load_client_row(id) {
+            Some(c) => c,
+            None => continue,
+        };
+        if dedup_on {
+            let e = client.email.trim().to_lowercase();
+            if !e.is_empty() && (existing_emails.contains(&e) || !batch_seen.insert(e)) {
+                skipped += 1;
+                continue;
+            }
+        }
+        let row = build_row(&mapping, &client);
+        if row.is_empty() {
+            continue;
+        }
+        rows.push(row);
+    }
+
+    let added = rows.len();
+
+    // Append in chunks of <=500 rows per request.
+    for chunk in rows.chunks(500) {
+        let url = format!(
+            "https://sheets.googleapis.com/v4/spreadsheets/{}/values/A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+            spreadsheet
+        );
+        let body = serde_json::json!({ "values": chunk });
+        let resp = http
+            .post(&url)
+            .bearer_auth(&access)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to append to the sheet: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Sheets append failed (HTTP {}): {}", status, text));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "added": added,
+        "skipped": skipped,
+        "total": added + skipped,
+        "dedup": dedup_on,
+    }))
+}

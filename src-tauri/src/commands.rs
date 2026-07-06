@@ -3563,10 +3563,35 @@ fn recalc_completed_deal_flow(id: &str, gross: f64, payments: &[SupplierPayment]
     let total_cost: f64 = payments.iter().map(|p| p.amount).sum();
     let net = gross - total_cost;
     let is_loss = net < 0.0;
-    let jack = (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0;
-    let ben = (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0;
-    let business = (net * (split.business_pct / 100.0) * 100.0).round() / 100.0;
-    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss})).map_err(|e| e.to_string())?;
+
+    // Read the STORED metadata so we honor the payout decision made at completion.
+    // A deal completed 100%-to-business (payout_included=false) must NOT be silently
+    // re-split to partners just because a supplier payment was edited/deleted. We also
+    // preserve shipping_status and any other keys already on the metadata.
+    let mut meta_obj: Map<String, Value> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT metadata FROM deal_flows WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0))
+            .ok().flatten()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    };
+    let include_payout = meta_obj.get("payout_included").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Mirror complete_deal_flow's branch: split by pct only when payout is included,
+    // otherwise everything goes to the business.
+    let (jack, ben, business) = if include_payout {
+        ( (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
+          (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0,
+          (net * (split.business_pct / 100.0) * 100.0).round() / 100.0 )
+    } else {
+        (0.0, 0.0, net)
+    };
+
+    // Preserve existing metadata (payout_included, shipping_status, ...) and only
+    // refresh is_loss — do NOT overwrite the whole object with just {is_loss}.
+    meta_obj.insert("is_loss".into(), Value::Bool(is_loss));
+    let meta_json = serde_json::to_string(&Value::Object(meta_obj)).map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
 
     let mut cols = Map::new();
@@ -4325,9 +4350,9 @@ pub async fn save_payout_split(shares: Vec<Value>) -> Result<(), String> {
 pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     let enabled = setting_bool("rep_payouts_enabled");
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let (net, gross, refund_owed): (f64, f64, f64) = conn.query_row(
-        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0) FROM deal_flows WHERE id=?1",
-        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|_| "Deal not found".to_string())?;
+    let (net, gross, refund_owed, payout_included): (f64, f64, f64, bool) = conn.query_row(
+        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0), COALESCE(json_extract(metadata,'$.payout_included'),0) FROM deal_flows WHERE id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))).map_err(|_| "Deal not found".to_string())?;
     // Resolve the rep: a manual per-deal override (deal_reps) wins; otherwise the
     // deal earns for its CLIENT's assigned rep (client.metadata.lead_representative),
     // matched to an active employee by name. If the client has a rep name that isn't
@@ -4371,7 +4396,14 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         "unmatched_rep_name": unmatched_name,
         "rep_cut": if has_cut { r2(cut) } else { 0.0 },
         "remaining_profit": r2(remaining),
-        "splits": read_profit_split_shares().into_iter().map(|(name, pct, is_business)| json!({ "name": name, "amount": r2(remaining * pct / 100.0), "is_business": is_business })).collect::<Vec<_>>(),
+        // Honor the deal's payout decision: when payout_included is false the deal was
+        // completed 100%-to-business, so partners get 0 and the business gets the full
+        // remaining net. Only split by pct when payout was included at completion.
+        "splits": read_profit_split_shares().into_iter().map(|(name, pct, is_business)| {
+            let amount = if payout_included { remaining * pct / 100.0 }
+                         else if is_business { remaining } else { 0.0 };
+            json!({ "name": name, "amount": r2(amount), "is_business": is_business })
+        }).collect::<Vec<_>>(),
     }))
 }
 

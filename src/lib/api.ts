@@ -1764,6 +1764,8 @@ export const api = {
   getSheetSyncConfig: () => invoke<SheetSyncConfig>("get_sheet_sync_config"),
   saveSheetSyncConfig: (config: SheetSyncConfig) => invoke<void>("save_sheet_sync_config", { config }),
   sheetWritebackStatus: () => invoke<SheetWritebackStatus>("sheet_writeback_status"),
+  syncAllClientsToSheet: () =>
+    invoke<{ added: number; skipped: number; total: number; dedup: boolean }>("sync_all_clients_to_sheet"),
   syncFromSheet: () => invoke<SheetSyncResult>("sync_from_sheet"),
   getSheetSyncLog: () => invoke<SheetSyncLogEntry[]>("get_sheet_sync_log"),
   listCustomFields: () => invoke<CustomField[]>("list_custom_fields"),

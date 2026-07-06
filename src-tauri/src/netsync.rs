@@ -556,6 +556,59 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
                 }
             }
         }
+
+        // RECONCILE (mirror): remove stale local rows whose primary key isn't in the
+        // server's set. This is what fixes WRONG TOTALS after a heal — leftover
+        // deals/invoices that were deleted on the server but never removed here (they
+        // inflate revenue / open-deal counts). SAFETY: only prune when the server
+        // returned a NON-EMPTY set for this table — the server sends [] for a table it
+        // failed to read, and pruning on that would mass-delete real local data. Never
+        // prune the user's own account rows or device-local settings.
+        // Never prune: the user's own account rows, device-local settings, and
+        // deal_reps (keyed per-deal_flow, so a single-key DELETE could remove grouped
+        // rows — and it doesn't affect the revenue/open-deal totals we're fixing).
+        const NO_PRUNE: &[&str] = &["staff_accounts", "settings", "deal_reps"];
+        if !NO_PRUNE.contains(&table.as_str()) && !rows.is_empty() {
+            let server_pks: std::collections::HashSet<String> = rows
+                .iter()
+                .filter_map(|r| {
+                    r.get(pk).map(|v| match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        other => other.to_string(),
+                    })
+                })
+                .collect();
+            let local_pks: Vec<String> = {
+                let mut v = Vec::new();
+                if let Ok(mut stmt) =
+                    conn.prepare(&format!("SELECT CAST({} AS TEXT) FROM {}", pk, table))
+                {
+                    if let Ok(rws) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                        for r in rws.flatten() {
+                            v.push(r);
+                        }
+                    }
+                }
+                v
+            };
+            let mut pruned: i64 = 0;
+            for lp in &local_pks {
+                if !server_pks.contains(lp) {
+                    match conn.execute(&format!("DELETE FROM {} WHERE {}=?1", table, pk), [lp]) {
+                        Ok(n) => pruned += n as i64,
+                        Err(e) => tracing::warn!(
+                            "restore_snapshot: prune failed for {}/{}: {}",
+                            table, lp, e
+                        ),
+                    }
+                }
+            }
+            if pruned > 0 {
+                tracing::info!("restore_snapshot: pruned {} stale rows from {}", pruned, table);
+            }
+        }
+
         applied.insert(table.clone(), serde_json::Value::from(count));
     }
     Ok(serde_json::Value::Object(applied))
@@ -608,34 +661,42 @@ fn local_counts() -> HashMap<String, i64> {
 /// event replay left rows stranded — clone the current state directly. Gated to run
 /// at most once per install via `netsync_autoheal_done` unless that flag is cleared.
 async fn auto_heal_if_behind() {
-    if state_get("netsync_autoheal_done").is_some() {
+    // v2 flag: re-runs once for installs that already healed under the old
+    // clients-only check, so the mirror-reconcile (which also fixes wrong totals
+    // from stale local rows) gets a chance to run.
+    if state_get("netsync_autoheal_v2_done").is_some() {
         return;
     }
     let server = server_counts().await;
-    let server_clients = match server.get("clients") {
-        Some(n) => *n,
-        None => return, // couldn't reach server / no data — don't heal blindly
-    };
-    let local_clients: i64 = pool()
-        .get()
-        .ok()
-        .and_then(|c| c.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).ok())
-        .unwrap_or(0);
-    // Materially behind: strictly fewer local clients than the server has.
-    if local_clients < server_clients {
+    if server.is_empty() {
+        return; // couldn't reach server — don't heal blindly; a later connect retries
+    }
+    let local = local_counts();
+    // Heal when this device DIVERGES from the server on any key table — in EITHER
+    // direction: missing rows (behind) OR stale extra rows (which skew revenue /
+    // open-deal totals). restore_snapshot upserts the server's rows AND prunes the
+    // stale local ones, so a mismatch on any of these is enough to reconcile.
+    let key_tables = ["clients", "invoices", "deals", "deal_flows", "payments"];
+    let diverged = key_tables.iter().any(|t| {
+        match server.get(*t) {
+            Some(&sv) => *local.get(*t).unwrap_or(&0) != sv,
+            None => false,
+        }
+    });
+    if diverged {
         tracing::info!(
-            "netsync auto-heal: local clients {} < server {} — restoring snapshot",
-            local_clients, server_clients
+            "netsync auto-heal: local/server counts diverge (local={:?} server={:?}) — reconciling",
+            local, server
         );
         match restore_snapshot().await {
-            Ok(applied) => tracing::info!("netsync auto-heal: restored {:?}", applied),
+            Ok(applied) => tracing::info!("netsync auto-heal: reconciled {:?}", applied),
             Err(e) => {
                 tracing::warn!("netsync auto-heal: restore failed: {}", e);
                 return; // don't mark done so a later connect retries
             }
         }
     }
-    state_set("netsync_autoheal_done", "1");
+    state_set("netsync_autoheal_v2_done", "1");
 }
 
 /// #[tauri::command] wrapper for the Settings "Restore from server" button.

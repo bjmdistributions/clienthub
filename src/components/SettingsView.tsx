@@ -3694,8 +3694,26 @@ function SheetsTab() {
   const [log,     setLog]     = useState<SheetSyncLogEntry[]>([]);
   const [customFields, setCustomFields] = useState<{ value: string; label: string }[]>([]);
   const [wbStatus, setWbStatus] = useState<SheetWritebackStatus | null>(null);
+  const [pushingAll, setPushingAll] = useState(false);
+  const [pushAllMsg, setPushAllMsg] = useState<string | null>(null);
 
   const refreshWbStatus = () => { api.sheetWritebackStatus().then(setWbStatus).catch(() => {}); };
+
+  // Bulk push: append every active client not already on the sheet. Explicit action,
+  // so it confirms first and surfaces a plain-language result (or error).
+  const syncAllClients = async () => {
+    if (!confirm("Add every active client that isn't already in the sheet?")) return;
+    setPushingAll(true);
+    setPushAllMsg(null);
+    try {
+      const r = await api.syncAllClientsToSheet();
+      setPushAllMsg(`Added ${r.added}, skipped ${r.skipped} already present`);
+    } catch (e: any) {
+      setPushAllMsg(null);
+      alert(e);
+    }
+    setPushingAll(false);
+  };
 
   useEffect(() => {
     api.getSheetSyncConfig().then(setConfig).catch(() => {});
@@ -3888,6 +3906,18 @@ function SheetsTab() {
             </span>
           </div>
         )}
+
+        {/* One-shot bulk push: every active client that isn't already in the sheet. */}
+        <div className="mt-4 pt-4 border-t border-line-2 flex items-center gap-3 flex-wrap">
+          <button
+            onClick={syncAllClients}
+            disabled={pushingAll || !config.sheet_url}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
+          >
+            <RefreshCw size={13} className={pushingAll ? "animate-spin" : ""} /> {pushingAll ? "Syncing..." : "Sync all clients to the sheet now"}
+          </button>
+          {pushAllMsg && <span className="text-[12px] text-success-ink">{pushAllMsg}</span>}
+        </div>
       </div>
 
       {/* Sync */}
