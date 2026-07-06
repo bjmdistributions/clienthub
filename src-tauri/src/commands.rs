@@ -564,6 +564,9 @@ pub async fn approve_client(id: String) -> Result<(), String> {
     let mut cols = Map::new();
     cols.insert("approval_status".into(), Value::String("active".into()));
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    // Resolve the synced approval queue row so the server + mobile/web stop
+    // showing this already-approved lead as pending.
+    resolve_client_approvals(&id, "approved")?;
     // Write the approved lead back to the connected sheet + archive its source
     // email (both best-effort — a failure never blocks approval).
     match crate::sheet_writeback::append_approved_client(&id).await {
@@ -584,6 +587,9 @@ pub async fn reject_client(id: String) -> Result<(), String> {
     let mut cols = Map::new();
     cols.insert("approval_status".into(), Value::String("rejected".into()));
     sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    // Resolve the synced approval queue row so the server + mobile/web stop
+    // showing this already-rejected lead as pending.
+    resolve_client_approvals(&id, "rejected")?;
     // Push the rejection to the server promptly so other devices reflect it.
     crate::netsync::push_now();
     Ok(())
@@ -661,6 +667,33 @@ fn delete_client_row(id: &str) -> Result<(), String> {
         conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
     }
     sync::record_delete("clients", id).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Resolve any synced `pending_approvals` rows (kind='client_add') queued for a
+/// client so the amber-banner approve/reject path converges with the server +
+/// mobile/web queue. Idempotent: zero matching rows is a clean no-op.
+fn resolve_client_approvals(client_id: &str, status: &str) -> Result<(), String> {
+    let ids: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM pending_approvals WHERE entity_id=?1 AND kind='client_add' AND status='pending'",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![client_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    for id in ids {
+        let now = Utc::now().to_rfc3339();
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE pending_approvals SET status=?1, resolved_at=?2 WHERE id=?3",
+                rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+        }
+        let mut cols = Map::new();
+        cols.insert("status".into(), Value::String(status.into()));
+        cols.insert("resolved_at".into(), Value::String(now));
+        sync::record_upsert("pending_approvals", &id, cols).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
