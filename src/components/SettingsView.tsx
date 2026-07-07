@@ -1867,7 +1867,7 @@ function SyncTab() {
   };
 
   const restoreFromServer = async () => {
-    if (!confirm("Copy the server's current data straight onto this device? This is the surest fix when clients or deals are still missing after Repair and Deep repair. Nothing on the server changes and no local data is lost. Continue?")) return;
+    if (!confirm("Make this device match the server exactly. Your unsynced local changes are pushed to the server FIRST so nothing you've entered here is lost; then any leftover rows that no longer exist on the server are removed from this device. This is the surest fix when clients or deals are still missing after Repair and Deep repair. Continue?")) return;
     setNBusy(true); setNErr(null);
     setNMsg("Restoring from the server — cloning your current workspace onto this device…");
     try {

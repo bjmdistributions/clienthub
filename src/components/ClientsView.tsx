@@ -287,7 +287,18 @@ export default function ClientsView() {
   };
 
   const runCleanup = async () => {
-    const r = await api.cleanupClients();
+    const groups = duplicates.length;
+    const detail = groups > 0
+      ? `merge ${groups} duplicate client group${groups === 1 ? "" : "s"} and remove empty placeholder clients`
+      : "scan for duplicate and empty placeholder clients and merge/remove any it finds";
+    if (!window.confirm(`This will permanently ${detail}.\n\nMerged clients' invoices, deals, quotes and history move to the client that's kept. This can't be undone.\n\nContinue?`)) return;
+    let r: { duplicates_merged: number; ghosts_removed: number; remaining_clients: number };
+    try {
+      r = await api.cleanupClients();
+    } catch (e) {
+      alert(`Cleanup failed: ${e}`);
+      return;
+    }
     if (r.duplicates_merged > 0 || r.ghosts_removed > 0) {
       const msg = [];
       if (r.duplicates_merged > 0) msg.push(`${r.duplicates_merged} duplicates merged`);
@@ -449,17 +460,7 @@ export default function ClientsView() {
               <AlertCircle size={14} /> {duplicates.reduce((s, g) => s + g.count - 1, 0)} potential duplicates found
             </span>
             <button
-              onClick={async () => {
-                const r = await api.cleanupClients();
-                if (r.duplicates_merged > 0 || r.ghosts_removed > 0) {
-                  setDuplicates([]);
-                  api.listClients().then((all) => {
-                    setClients(all);
-                    setSummaryStats({ total: all.length, active: all.filter((c) => c.lead_status === "active_customer").length, hotLeads: all.filter((c) => c.lead_status === "hot_lead").length, revenue: all.reduce((s, c) => s + (c.total_revenue || 0), 0) });
-                  });
-                  loadMissingInfo();
-                }
-              }}
+              onClick={runCleanup}
               className="text-[12px] px-3 py-1.5 bg-danger text-white rounded-md hover:bg-danger transition-colors"
             >
               Auto-Merge All
@@ -476,7 +477,7 @@ export default function ClientsView() {
                   {g.client_ids.slice(1).map((id, i) => (
                     <button
                       key={id}
-                      onClick={async () => { await api.deleteClient(id); setDuplicates(duplicates.filter((d) => d.key !== g.key)); loadMissingInfo(); }}
+                      onClick={async () => { if (!window.confirm("Delete this duplicate client? If your workspace requires approval, it'll be queued for an admin instead.")) return; try { await api.deleteClient(id); } catch (e) { alert(`Couldn't delete: ${e}`); return; } setDuplicates(duplicates.filter((d) => d.key !== g.key)); loadMissingInfo(); }}
                       className="text-[10px] text-danger-ink hover:text-danger-ink underline"
                     >
                       Delete #{i + 2}

@@ -185,7 +185,23 @@ pub async fn pull_apply() -> Result<usize> {
         None => return Ok(0),
     };
     let base = cfg.url.trim_end_matches('/');
+    // If a previous pass recorded a failed event but then hit a network error before it
+    // could rewind (an early `?` return), honor that pending rewind now so the failed
+    // event is re-pulled instead of being stranded below the advanced cursor.
+    if let Some(pending) = state_get("netsync_rewind_pending").and_then(|s| s.parse::<i64>().ok()) {
+        let cur: i64 = state_get("netsync_pull_cursor").and_then(|s| s.parse().ok()).unwrap_or(0);
+        if pending < cur {
+            state_set("netsync_pull_cursor", &pending.to_string());
+        }
+        state_set("netsync_rewind_pending", "");
+    }
     let mut applied = 0;
+    // Cursor of the first page in which an event FAILED to apply this pass. We keep
+    // paging (so a later event — e.g. a not-yet-seen parent row — still gets applied),
+    // then rewind the stored cursor to here so the failed events are RE-ATTEMPTED next
+    // tick instead of being skipped forever. The old code advanced unconditionally,
+    // permanently stranding any event that errored (the "stuck device" data-loss class).
+    let mut earliest_failure: Option<i64> = None;
     loop {
         let cursor: i64 = state_get("netsync_pull_cursor")
             .and_then(|s| s.parse().ok())
@@ -204,17 +220,63 @@ pub async fn pull_apply() -> Result<usize> {
         }
         let body: PullResp = resp.json().await.context("pull decode")?;
         let n = body.events.len();
+        let mut page_failed = false;
         for ev in &body.events {
             if let Err(e) = sync::apply_remote(ev) {
                 tracing::warn!("netsync apply failed for {}: {}", ev.id, e);
+                page_failed = true;
             } else {
                 applied += 1;
             }
+        }
+        if page_failed && earliest_failure.is_none() {
+            earliest_failure = Some(cursor);
+            // Persist immediately so a later-page network error (an early return below)
+            // can't lose the fact that this page needs re-pulling next tick.
+            state_set("netsync_rewind_pending", &cursor.to_string());
         }
         // Advance the cursor only after applying, so a crash mid-page re-pulls it.
         state_set("netsync_pull_cursor", &body.cursor.to_string());
         if n == 0 || body.cursor <= cursor {
             break;
+        }
+    }
+
+    // If anything failed this pass, rewind the stored cursor to the earliest failed
+    // page so those events are retried next tick — but bound the retries so a genuinely
+    // un-appliable ("poison") event advances after N tries (logged; run Deep repair to
+    // recover) rather than re-pulling the same page forever.
+    const MAX_STUCK_RETRIES: u32 = 5;
+    match earliest_failure {
+        Some(rewind) => {
+            // We reached the end of the pass, so the crash-safety marker has done its job;
+            // the bounded logic below owns the cursor from here.
+            state_set("netsync_rewind_pending", "");
+            let prev: i64 = state_get("netsync_stuck_cursor").and_then(|s| s.parse().ok()).unwrap_or(-1);
+            let attempts: u32 = if prev == rewind {
+                state_get("netsync_stuck_attempts").and_then(|s| s.parse().ok()).unwrap_or(0)
+            } else {
+                0
+            };
+            if attempts >= MAX_STUCK_RETRIES {
+                tracing::error!(
+                    "netsync: an event at/after cursor {} failed to apply {} times; advancing past it (logged) — run Deep repair if data is missing",
+                    rewind, attempts
+                );
+                state_set("netsync_stuck_cursor", "");
+                state_set("netsync_stuck_attempts", "0");
+                // leave netsync_pull_cursor advanced (skip the poison event)
+            } else {
+                state_set("netsync_stuck_cursor", &rewind.to_string());
+                state_set("netsync_stuck_attempts", &(attempts + 1).to_string());
+                state_set("netsync_pull_cursor", &rewind.to_string());
+            }
+        }
+        None => {
+            if state_get("netsync_stuck_cursor").map(|s| !s.is_empty()).unwrap_or(false) {
+                state_set("netsync_stuck_cursor", "");
+                state_set("netsync_stuck_attempts", "0");
+            }
         }
     }
     Ok(applied)
@@ -459,6 +521,38 @@ pub async fn netsync_repair_hard() -> Result<serde_json::Value, String> {
 pub async fn restore_snapshot() -> Result<serde_json::Value> {
     let cfg = config().context("Sign in to your workspace first, then run Restore.")?;
     let base = cfg.url.trim_end_matches('/');
+    // Capture the (table,row_id) keys queued locally BEFORE we drain the push queue.
+    // Even if push succeeds HTTP-wise, the server can silently drop an event that fails
+    // to apply (e.g. a column it lacks under version skew) while still returning 200 —
+    // so we must never prune a row this device just pushed.
+    let pushing: std::collections::HashSet<String> = {
+        let mut set = std::collections::HashSet::new();
+        if let Ok(conn) = pool().get() {
+            if let Ok(mut stmt) = conn.prepare("SELECT event_json FROM netsync_outbound") {
+                if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                    for j in rows.flatten() {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&j) {
+                            let op = v.get("op");
+                            let t = op.and_then(|o| o.get("table")).and_then(|x| x.as_str());
+                            let rid = op.and_then(|o| o.get("row_id")).and_then(|x| x.as_str());
+                            if let (Some(t), Some(rid)) = (t, rid) {
+                                set.insert(format!("{}\u{0}{}", t, rid));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        set
+    };
+    // Flush locally-queued changes to the server BEFORE mirroring its snapshot, so a
+    // row created here but not yet pushed isn't seen as "missing on the server" and
+    // pruned. If the push doesn't fully succeed we still heal missing rows but skip
+    // pruning entirely (below) so unpushed local data can never be deleted.
+    let pushed_ok = push_pending().await.is_ok();
+    if !pushed_ok {
+        tracing::warn!("restore_snapshot: local push incomplete — healing rows but NOT pruning");
+    }
     let resp = http()
         .get(format!("{}/api/sync/snapshot", base))
         .bearer_auth(&cfg.token)
@@ -568,7 +662,9 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
         // deal_reps (keyed per-deal_flow, so a single-key DELETE could remove grouped
         // rows — and it doesn't affect the revenue/open-deal totals we're fixing).
         const NO_PRUNE: &[&str] = &["staff_accounts", "settings", "deal_reps"];
-        if !NO_PRUNE.contains(&table.as_str()) && !rows.is_empty() {
+        // Only prune when the pre-push fully succeeded — otherwise a locally-created,
+        // not-yet-pushed row would be absent from the server set and wrongly deleted.
+        if pushed_ok && !NO_PRUNE.contains(&table.as_str()) && !rows.is_empty() {
             let server_pks: std::collections::HashSet<String> = rows
                 .iter()
                 .filter_map(|r| {
@@ -594,7 +690,10 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
             };
             let mut pruned: i64 = 0;
             for lp in &local_pks {
-                if !server_pks.contains(lp) {
+                // Never prune a row this device just pushed (guards against the server
+                // silently dropping a pushed event under schema drift), nor one still
+                // present on the server.
+                if !server_pks.contains(lp) && !pushing.contains(&format!("{}\u{0}{}", table, lp)) {
                     match conn.execute(&format!("DELETE FROM {} WHERE {}=?1", table, pk), [lp]) {
                         Ok(n) => pruned += n as i64,
                         Err(e) => tracing::warn!(

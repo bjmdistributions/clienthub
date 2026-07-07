@@ -421,6 +421,14 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
 
 const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories"];
 
+/// True if peers will actually apply an event for `table`. Emitting a record for a
+/// table outside this set produces an event that the apply side rejects — which (with
+/// the pull retry loop) stalls a peer's sync. Callers that reassign rows across tables
+/// should broadcast ONLY for synced tables; the local UPDATE keeps this device correct.
+pub fn is_synced_table(table: &str) -> bool {
+    ALLOWED_TABLES.contains(&table)
+}
+
 fn apply_event(event: &SyncEvent) -> Result<()> {
     if already_applied(&event.id)? {
         return Ok(());

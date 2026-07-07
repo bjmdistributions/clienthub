@@ -5157,9 +5157,19 @@ pub async fn archive_supplier(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn delete_supplier(id: String) -> Result<(), String> {
-    sync::record_delete("suppliers", &id).map_err(|e| e.to_string())?;
+    // Delete locally FIRST; only broadcast the sync delete if it actually succeeded.
+    // If we recorded the delete first and the DELETE were FK-blocked, a phantom
+    // delete would propagate to other devices even though the row still exists here
+    // (mirrors delete_client's deliberate ordering).
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM suppliers WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM suppliers WHERE id=?1", [&id]).map_err(|e| {
+        if e.to_string().contains("FOREIGN KEY") {
+            "Cannot delete: this supplier is referenced by deals. Remove or reassign them first.".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
+    sync::record_delete("suppliers", &id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -8553,7 +8563,6 @@ fn fuzzy_score(ghost: &ClientRow, real: &ClientRow) -> i32 {
     let ghost_name = ghost.name.to_lowercase();
     let real_name = real.name.to_lowercase();
     let real_company = real.company.as_deref().unwrap_or("").to_lowercase();
-    let ghost_company = ghost.company.as_deref().unwrap_or("").to_lowercase();
 
     if !real_company.is_empty() && ghost_name.contains(&real_company) {
         score += 10;
@@ -8577,12 +8586,6 @@ fn fuzzy_score(ghost: &ClientRow, real: &ClientRow) -> i32 {
         }
     }
 
-    if ghost_company == "ben" && real_company != "ben" && !real_company.is_empty() {
-        if ghost_name.starts_with(&real_company) || ghost_name.contains(&real_company) {
-            score += 8;
-        }
-    }
-
     if !real_name.is_empty() && !ghost_name.is_empty() && ghost_name != real_name {
         let real_words: Vec<&str> = real_name.split_whitespace().collect();
         let ghost_words: Vec<&str> = ghost_name.split_whitespace().collect();
@@ -8598,63 +8601,148 @@ fn fuzzy_score(ghost: &ClientRow, real: &ClientRow) -> i32 {
     score
 }
 
+/// Tables carrying a `client_id` (all keyed by `id`) that must be REASSIGNED — not
+/// orphaned or cascade-deleted — when two clients are merged.
+const CLIENT_CHILD_TABLES: &[&str] = &[
+    "interactions", "invoices", "email_drafts", "newsletter_sends", "deals",
+    "followup_log", "client_portal_tokens", "recurring_invoices", "tier_history",
+    "quotes", "checkup_items", "refunds", "client_credits",
+];
+
+/// Merge `loser` into `keeper`: backfill the keeper's empty contact fields from the
+/// loser, reassign every child row to the keeper, then delete the loser — recording
+/// EVERY change to sync so other devices converge. Sequential (no wrapping txn) to
+/// match delete_client and avoid deadlocking record_* on a second pooled connection.
+///
+/// Previously the merge did raw DELETEs with no sync record (the deleted client
+/// resurrected on other devices) and only reassigned interactions/invoices (deals,
+/// quotes, refunds, credits… were stranded on the deleted client).
+fn merge_client_into(conn: &rusqlite::Connection, loser: &str, keeper: &str, now: &str) -> Result<(), String> {
+    if loser == keeper { return Ok(()); }
+
+    // 1) Backfill the keeper's empty contact fields from the loser so nothing is lost.
+    if let Ok((k_email, k_phone, k_company)) = conn.query_row(
+        "SELECT COALESCE(email,''), COALESCE(phone,''), COALESCE(company,'') FROM clients WHERE id=?1",
+        [keeper],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+    ) {
+        let (l_email, l_phone, l_company) = conn.query_row(
+            "SELECT COALESCE(email,''), COALESCE(phone,''), COALESCE(company,'') FROM clients WHERE id=?1",
+            [loser],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+        ).unwrap_or_default();
+        let mut filled = serde_json::Map::new();
+        if k_email.trim().is_empty() && !l_email.trim().is_empty() {
+            let _ = conn.execute("UPDATE clients SET email=?1, updated_at=?2 WHERE id=?3", rusqlite::params![l_email, now, keeper]);
+            filled.insert("email".into(), Value::String(l_email));
+        }
+        if k_phone.trim().is_empty() && !l_phone.trim().is_empty() {
+            let _ = conn.execute("UPDATE clients SET phone=?1, updated_at=?2 WHERE id=?3", rusqlite::params![l_phone, now, keeper]);
+            filled.insert("phone".into(), Value::String(l_phone));
+        }
+        if k_company.trim().is_empty() && !l_company.trim().is_empty() {
+            let _ = conn.execute("UPDATE clients SET company=?1, updated_at=?2 WHERE id=?3", rusqlite::params![l_company, now, keeper]);
+            filled.insert("company".into(), Value::String(l_company));
+        }
+        if !filled.is_empty() {
+            filled.insert("updated_at".into(), Value::String(now.to_string()));
+            let _ = sync::record_upsert("clients", keeper, filled);
+        }
+    }
+
+    // 2) Reassign every child row to the keeper, recording each so peers converge.
+    for t in CLIENT_CHILD_TABLES {
+        let ids: Vec<String> = {
+            let mut stmt = match conn.prepare(&format!("SELECT id FROM {t} WHERE client_id=?1")) {
+                Ok(s) => s,
+                Err(_) => continue, // table absent on this build — skip
+            };
+            let mapped = match stmt.query_map([loser], |r| r.get::<_, String>(0)) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+        if ids.is_empty() { continue; }
+        conn.execute(&format!("UPDATE {t} SET client_id=?1 WHERE client_id=?2"), rusqlite::params![keeper, loser])
+            .map_err(|e| e.to_string())?;
+        // Broadcast the reassignment ONLY for tables peers actually apply. Emitting for
+        // a non-synced table (e.g. newsletter_sends, which the server relays but the
+        // desktop apply-side rejects) produces an event that stalls every peer's pull
+        // loop. The local UPDATE above already keeps THIS device consistent.
+        if sync::is_synced_table(t) {
+            for rid in &ids {
+                let mut cols = serde_json::Map::new();
+                cols.insert("client_id".into(), Value::String(keeper.to_string()));
+                let _ = sync::record_upsert(t, rid, cols);
+            }
+        }
+    }
+
+    // 3) Delete the loser and broadcast the delete (children reassigned → no FK block).
+    conn.execute("DELETE FROM clients WHERE id=?1", [loser]).map_err(|e| e.to_string())?;
+    sync::record_delete("clients", loser).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cleanup_clients() -> Result<CleanupResult, String> {
+    // Permanently merges/removes clients — admins (or owner PIN) only.
+    if !crate::employees::session_is_privileged() {
+        return Err("Only an admin can run duplicate cleanup.".into());
+    }
     let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
     let mut duplicates_merged: u32 = 0;
 
-    let mut email_dups: Vec<(String, Vec<String>)> = Vec::new();
+    // Merge clients that share an email.
+    let mut email_dups: Vec<Vec<String>> = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT LOWER(email), GROUP_CONCAT(id) FROM clients WHERE email IS NOT NULL AND email != '' GROUP BY LOWER(email) HAVING COUNT(*) > 1"
+            "SELECT GROUP_CONCAT(id) FROM clients WHERE email IS NOT NULL AND email != '' GROUP BY LOWER(email) HAVING COUNT(*) > 1"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))
-        }).map_err(|e| e.to_string())?;
-        for r in rows {
-            if let Ok((key, ids)) = r {
-                let id_list: Vec<String> = ids.split(',').map(|s| s.to_string()).collect();
-                if id_list.len() > 1 { email_dups.push((key, id_list)); }
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        for r in rows.flatten() {
+            let ids: Vec<String> = r.split(',').map(|s| s.to_string()).collect();
+            if ids.len() > 1 { email_dups.push(ids); }
+        }
+    }
+    for ids in &email_dups {
+        let keeper = ids[0].clone();
+        for dup_id in &ids[1..] {
+            match merge_client_into(&conn, dup_id, &keeper, &now) {
+                Ok(()) => duplicates_merged += 1,
+                Err(e) => tracing::warn!("cleanup: merge {} -> {} failed (skipped): {}", dup_id, keeper, e),
             }
         }
     }
 
-    for (_key, ids) in &email_dups {
-        let keeper = &ids[0];
-        for dup_id in &ids[1..] {
-            let _ = conn.execute("UPDATE interactions SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
-            let _ = conn.execute("UPDATE invoices SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
-            let _ = conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![dup_id]);
-            duplicates_merged += 1;
-        }
-    }
-
-    let mut exact_name_dups: Vec<(String, Vec<String>)> = Vec::new();
+    // Merge emailless clients that share an exact (trimmed, case-insensitive) name.
+    let mut name_dups: Vec<Vec<String>> = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT LOWER(TRIM(name)), GROUP_CONCAT(id) FROM clients WHERE (email IS NULL OR email = '') GROUP BY LOWER(TRIM(name)) HAVING COUNT(*) > 1"
+            "SELECT GROUP_CONCAT(id) FROM clients WHERE (email IS NULL OR email = '') GROUP BY LOWER(TRIM(name)) HAVING COUNT(*) > 1"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))
-        }).map_err(|e| e.to_string())?;
-        for r in rows {
-            if let Ok((key, ids)) = r {
-                let id_list: Vec<String> = ids.split(',').map(|s| s.to_string()).collect();
-                if id_list.len() > 1 { exact_name_dups.push((key, id_list)); }
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        for r in rows.flatten() {
+            let ids: Vec<String> = r.split(',').map(|s| s.to_string()).collect();
+            if ids.len() > 1 { name_dups.push(ids); }
+        }
+    }
+    for ids in &name_dups {
+        let keeper = ids[0].clone();
+        for dup_id in &ids[1..] {
+            match merge_client_into(&conn, dup_id, &keeper, &now) {
+                Ok(()) => duplicates_merged += 1,
+                Err(e) => tracing::warn!("cleanup: merge {} -> {} failed (skipped): {}", dup_id, keeper, e),
             }
         }
     }
 
-    for (_key, ids) in &exact_name_dups {
-        let keeper = &ids[0];
-        for dup_id in &ids[1..] {
-            let _ = conn.execute("UPDATE interactions SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
-            let _ = conn.execute("UPDATE invoices SET client_id=?1 WHERE client_id=?2", rusqlite::params![keeper, dup_id]);
-            let _ = conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![dup_id]);
-            duplicates_merged += 1;
-        }
-    }
-
+    // Merge "ghost" placeholders (no company, no email, blank/date-like phone) into
+    // the real client they clearly duplicate. NO hard-coded names — the old code
+    // special-cased company=="ben" (a partner's name), which would flag any customer
+    // whose client is literally named "Ben" for deletion.
     let mut all_clients: Vec<ClientRow> = Vec::new();
     {
         let mut stmt = conn.prepare(
@@ -8665,35 +8753,33 @@ pub async fn cleanup_clients() -> Result<CleanupResult, String> {
         let rows = stmt.query_map([], |r| {
             Ok(ClientRow {
                 id: r.get(0)?,
-                name: r.get::<_,String>(1)?,
+                name: r.get::<_, String>(1)?,
                 email: r.get(2)?,
                 phone: r.get(3)?,
                 company: r.get(4)?,
-                has_invoices: r.get::<_,i64>(5)? != 0,
+                has_invoices: r.get::<_, i64>(5)? != 0,
             })
         }).map_err(|e| e.to_string())?;
         for r in rows { if let Ok(c) = r { all_clients.push(c); } }
     }
 
-    let mut ghost_ids: Vec<String> = Vec::new();
-
+    let mut ghost_merges: Vec<(String, String)> = Vec::new(); // (ghost_id, keeper_id)
+    let mut ghost_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (i, c) in all_clients.iter().enumerate() {
         let company_lower = c.company.as_deref().unwrap_or("").to_lowercase();
         let phone_str = c.phone.as_deref().unwrap_or("");
         let email_str = c.email.as_deref().unwrap_or("");
-        let is_ghost_pattern = (company_lower == "ben" || company_lower.is_empty())
+        let is_ghost_pattern = company_lower.is_empty()
             && email_str.is_empty()
             && (phone_str.is_empty() || is_date_like(phone_str));
-
         if !is_ghost_pattern { continue; }
 
         let mut best_match: Option<(usize, i32)> = None;
         for (j, other) in all_clients.iter().enumerate() {
             if i == j { continue; }
-            if ghost_ids.contains(&other.id) { continue; }
+            if ghost_set.contains(&other.id) { continue; }
             let other_email = other.email.as_deref().unwrap_or("");
             if other_email.is_empty() && !other.has_invoices { continue; }
-
             let score = fuzzy_score(c, other);
             if score >= 8 {
                 match best_match {
@@ -8703,20 +8789,20 @@ pub async fn cleanup_clients() -> Result<CleanupResult, String> {
                 }
             }
         }
-
-        if best_match.is_some() {
-            ghost_ids.push(c.id.clone());
+        if let Some((j, _)) = best_match {
+            ghost_set.insert(c.id.clone());
+            ghost_merges.push((c.id.clone(), all_clients[j].id.clone()));
+        }
+    }
+    let mut ghosts_removed: u32 = 0;
+    for (ghost_id, keeper_id) in &ghost_merges {
+        match merge_client_into(&conn, ghost_id, keeper_id, &now) {
+            Ok(()) => ghosts_removed += 1,
+            Err(e) => tracing::warn!("cleanup: ghost merge {} -> {} failed (skipped): {}", ghost_id, keeper_id, e),
         }
     }
 
-    for ghost_id in &ghost_ids {
-        let _ = conn.execute("UPDATE interactions SET client_id=NULL WHERE client_id=?1", rusqlite::params![ghost_id]);
-        let _ = conn.execute("DELETE FROM clients WHERE id=?1", rusqlite::params![ghost_id]);
-    }
-    let ghosts_removed = ghost_ids.len() as u32;
-
-    let remaining_clients: u32 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get::<_,i64>(0)).unwrap_or(0) as u32;
-
+    let remaining_clients: u32 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get::<_, i64>(0)).unwrap_or(0) as u32;
     Ok(CleanupResult { duplicates_merged, ghosts_removed, remaining_clients })
 }
 
