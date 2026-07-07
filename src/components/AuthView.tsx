@@ -131,8 +131,12 @@ export default function AuthView({
             />
             <button
               type="button"
-              onClick={() => setShowPw(!showPw)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[13px] font-semibold text-white/50 hover:text-white/80 px-2 py-1"
+              // preventDefault on mousedown keeps the input focused and stops a
+              // focus/blur race that made the toggle miss clicks intermittently;
+              // functional update always flips regardless of a stale render.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setShowPw((v) => !v)}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-[13px] font-semibold text-white/50 hover:text-white/80 px-3 py-2 select-none"
             >
               {showPw ? "Hide" : "Show"}
             </button>
