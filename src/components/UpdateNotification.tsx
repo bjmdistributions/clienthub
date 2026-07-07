@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Download, X, Check } from "lucide-react";
+import { api } from "../lib/api";
 
 export default function UpdateNotification() {
   const [update, setUpdate] = useState<any>(null);
@@ -56,6 +57,15 @@ export default function UpdateNotification() {
     localStorage.setItem("clienthub_update_dismissed", update.version);
   };
 
+  // Fallback when the in-app updater can't write in place (common on macOS when the
+  // app is quarantined/translocated): send the user to the download page, which
+  // starts a direct download of the newest installer — never a GitHub page.
+  const openDownload = () => { api.openExternal("https://ecliptr.app/download").catch(() => {}); };
+  const friendlyError = (e: string) =>
+    /read-only|os error 30/i.test(e)
+      ? "Couldn't update in place. Tap Download update, then drag Ecliptr into your Applications folder and reopen."
+      : `Update failed: ${e}`;
+
   return (
     <div className="sticky top-0 z-50 flex items-center justify-between px-5 py-3"
       style={{ background: "var(--accent-tint)", borderBottom: "1px solid var(--accent-glow)" }}>
@@ -67,7 +77,7 @@ export default function UpdateNotification() {
         <div>
           <p className="text-[13px] font-semibold" style={{ color: "var(--t-tx1)" }}>Ecliptr {update.version} is available</p>
           <p className="text-[11px]" style={{ color: error ? "var(--danger, #ef4444)" : "var(--t-tx3)" }}>
-            {error ? `Update failed: ${error}` : installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}%` : "Update now to get the latest features and fixes"}
+            {error ? friendlyError(error) : installing ? "Installing… app will restart" : downloading ? `Downloading… ${progress}%` : "Update now to get the latest features and fixes"}
           </p>
         </div>
       </div>
@@ -81,13 +91,13 @@ export default function UpdateNotification() {
           </button>
         )}
         <button
-          onClick={handleInstall}
+          onClick={error ? openDownload : handleInstall}
           disabled={downloading || installing}
           className="h-8 px-4 rounded-lg text-[12px] font-semibold text-on-accent disabled:opacity-50 transition-all flex items-center gap-1.5"
           style={{ background: "var(--accent-600)" }}
         >
           {installing ? <Check size={12} /> : downloading ? <span className="w-3 h-3 border-2 border-on-accent/40 border-t-on-accent rounded-full animate-spin" /> : null}
-          {installing ? "Restarting…" : downloading ? "Downloading" : "Install Now"}
+          {error ? "Download update" : installing ? "Restarting…" : downloading ? "Downloading" : "Install Now"}
         </button>
       </div>
     </div>
