@@ -5,10 +5,12 @@ import { api, Me } from "../lib/api";
 // website-created account signing in on a fresh device is restored (account +
 // data) from the server, so we show a calm "Restoring…" state, not an error.
 const REGISTER_URL = "https://ecliptr.app/register";
+const FORGOT_URL = "https://ecliptr.app/forgot";
 
-// The backend returns this sentinel when the credentials belong to a different
-// workspace than the one this device is bound to — switching means wiping local
-// state and pulling the other org, so it needs a confirm + restart.
+// The backend returns this sentinel when the credentials belong to a DIFFERENT
+// workspace than the one occupying this device's active store. Each workspace lives
+// in its own local store, so switching just re-points to that store and restarts —
+// the current workspace's data is left completely intact and separate.
 const SWITCH_PREFIX = "__SWITCH_WORKSPACE__:";
 
 /**
@@ -80,8 +82,7 @@ export default function AuthView({
       const msg = typeof e === "string" ? e : (e?.message || "Something went wrong");
       // Different-workspace credentials: confirm, then wipe + restart into it.
       if (msg.startsWith(SWITCH_PREFIX)) {
-        const org = msg.slice(SWITCH_PREFIX.length) || "another workspace";
-        if (confirm(`These credentials belong to ${org}. Switch this device to that workspace? The app will restart.`)) {
+        if (confirm(`These credentials belong to a different workspace. Switch to it now? Your current workspace stays intact and separate — you can switch back anytime by signing in with its email. The app will restart.`)) {
           try { const { relaunch } = await import("@tauri-apps/plugin-process"); await relaunch(); return; }
           catch { /* fall through to reset busy state */ }
         }
@@ -94,6 +95,7 @@ export default function AuthView({
   };
 
   const openRegister = () => { api.openExternal(REGISTER_URL).catch(() => {}); };
+  const openForgot = () => { api.openExternal(FORGOT_URL).catch(() => {}); };
 
   const inp = "w-full h-11 px-3.5 rounded-xl text-[14px] bg-white/5 border border-white/12 text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-white/30 focus:border-white/25 transition";
 
@@ -133,6 +135,12 @@ export default function AuthView({
               className="absolute right-2 top-1/2 -translate-y-1/2 text-[13px] font-semibold text-white/50 hover:text-white/80 px-2 py-1"
             >
               {showPw ? "Hide" : "Show"}
+            </button>
+          </div>
+
+          <div className="flex justify-end -mt-1">
+            <button type="button" onClick={openForgot} className="text-[12px] text-white/45 hover:text-white/70 transition-colors">
+              Forgot password?
             </button>
           </div>
 
