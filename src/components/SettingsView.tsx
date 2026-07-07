@@ -458,7 +458,7 @@ function AppearanceTab() {
 
   const ACCENTS = [
     { id: "orange",  label: "Ecliptr orange", swatch: "#FF6520" },
-    { id: "eclipse", label: "Eclipse",  swatch: "#4F46E5" },
+    { id: "eclipse", label: "Indigo",   swatch: "#4F46E5" },
     { id: "blue",    label: "Blue",     swatch: "#2563EB" },
     { id: "emerald", label: "Emerald",  swatch: "#059669" },
     { id: "teal",    label: "Teal",     swatch: "#0D9488" },
