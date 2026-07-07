@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, WeeklyBrief, ProfitSplit } from "../lib/api";
+import { api, WeeklyBrief } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
 import {
@@ -21,10 +21,20 @@ const FREQ_PRESETS: { label: string; days: number }[] = [
   { label: "Monthly", days: 30 },
 ];
 
+// Colors for payout-recipient boxes. Business uses the app accent; other
+// recipients cycle through a fixed palette so any number of them stay distinct.
+const BIZ_COLOR = { accent: "var(--accent-400)", accentBg: "var(--accent-tint)", accentBorder: "var(--accent-glow)", labelColor: "var(--accent-500)" };
+const RECIP_COLORS = [
+  { accent: "#34D399", accentBg: "rgba(16,185,129,0.08)", accentBorder: "rgba(16,185,129,0.2)", labelColor: "#10B981" },
+  { accent: "#60A5FA", accentBg: "rgba(59,130,246,0.08)", accentBorder: "rgba(59,130,246,0.2)", labelColor: "#3B82F6" },
+  { accent: "#A78BFA", accentBg: "rgba(139,92,246,0.08)", accentBorder: "rgba(139,92,246,0.2)", labelColor: "#8B5CF6" },
+  { accent: "#F472B6", accentBg: "rgba(236,72,153,0.08)", accentBorder: "rgba(236,72,153,0.2)", labelColor: "#EC4899" },
+  { accent: "#FBBF24", accentBg: "rgba(245,158,11,0.08)", accentBorder: "rgba(245,158,11,0.2)", labelColor: "#F59E0B" },
+];
+
 export default function BriefView({ currentUser }: { currentUser?: any }) {
   const [brief,   setBrief]   = useState<WeeklyBrief | null>(null);
   const [loading, setLoading] = useState(true);
-  const [split,   setSplit]   = useState<ProfitSplit | null>(null);
   const [anchorDate, setAnchorDate] = useState<string | null>(null);
   const [freq,    setFreq]    = useState(7);
 
@@ -32,12 +42,8 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
     setLoading(true);
     try {
       const repName = currentUser?.role === "sales_rep" ? currentUser.name : null;
-      const [b, s] = await Promise.all([
-        api.generateWeeklyBrief(date ?? null, repName),
-        api.getProfitSplit(),
-      ]);
+      const b = await api.generateWeeklyBrief(date ?? null, repName);
       setBrief(b);
-      setSplit(s);
     } catch (e: any) { toast(String(e), "error"); }
     setLoading(false);
   };
@@ -201,46 +207,53 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 </div>
               </div>
 
-              {/* Split boxes */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                <SplitBox
-                  accent="var(--accent-400)"
-                  accentBg="var(--accent-tint)"
-                  accentBorder="var(--accent-glow)"
-                  label={`Business ${split?.business_pct ?? 40}%`}
-                  value={fmtAmount(brief.profit_business_this_week)}
-                  labelColor="var(--accent-500)"
-                />
-                <SplitBox
-                  accent="#34D399"
-                  accentBg="rgba(16,185,129,0.08)"
-                  accentBorder="rgba(16,185,129,0.2)"
-                  label={`${split?.jack_name || "Partner 1"} ${split?.jack_pct ?? 30}%`}
-                  value={fmtAmount(brief.profit_jack_this_week)}
-                  labelColor="#10B981"
-                />
-                <SplitBox
-                  accent="#60A5FA"
-                  accentBg="rgba(59,130,246,0.08)"
-                  accentBorder="rgba(59,130,246,0.2)"
-                  label={`${split?.ben_name || "Partner 2"} ${split?.ben_pct ?? 30}%`}
-                  value={fmtAmount(brief.profit_ben_this_week)}
-                  labelColor="#3B82F6"
-                />
-              </div>
+              {/* Payout split — config-driven; shown only when recipients are set up.
+                  Never assumes a split or shows partner names. */}
+              {brief.payout_totals && brief.payout_totals.length > 0 ? (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {(() => {
+                      let nb = 0;
+                      return brief.payout_totals.map((r, i) => {
+                        const c = r.is_business ? BIZ_COLOR : RECIP_COLORS[(nb++) % RECIP_COLORS.length];
+                        return (
+                          <SplitBox key={i}
+                            accent={c.accent} accentBg={c.accentBg} accentBorder={c.accentBorder}
+                            label={r.name} value={fmtAmount(r.this_week)} labelColor={c.labelColor}
+                          />
+                        );
+                      });
+                    })()}
+                  </div>
 
-              {/* Month-to-date */}
-              {brief.net_profit_this_month !== 0 && (
-                <div className="flex items-center justify-between text-[12px] text-muted pt-3"
-                  style={{ borderTop: "1px solid var(--t-b1)" }}>
-                  <span>
-                    This month: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
-                  </span>
-                  <span>
-                    {split?.jack_name || "Partner 1"} MTD: <span className="font-medium text-ink-2">{fmtAmount(brief.profit_jack_this_month)}</span>
-                    <span className="mx-1.5">&middot;</span>
-                    {split?.ben_name || "Partner 2"} MTD: <span className="font-medium text-ink-2">{fmtAmount(brief.profit_ben_this_month)}</span>
-                  </span>
+                  {/* Month-to-date */}
+                  {brief.net_profit_this_month !== 0 && (
+                    <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3"
+                      style={{ borderTop: "1px solid var(--t-b1)" }}>
+                      <span>
+                        This month: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
+                      </span>
+                      <span className="text-right">
+                        {brief.payout_totals.map((r, i) => (
+                          <span key={i}>
+                            {i > 0 && <span className="mx-1.5">&middot;</span>}
+                            {r.name} MTD: <span className="font-medium text-ink-2">{fmtAmount(r.this_month)}</span>
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                /* Unconfigured → net only + a setup link (no assumed split, no names) */
+                <div className="flex items-center justify-between gap-3 flex-wrap pt-1">
+                  <span className="text-[12px] text-muted">Set up a payout split to see how each recipient's cut breaks down.</span>
+                  <button
+                    onClick={() => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "settings" }))}
+                    className="text-[12px] font-medium text-accent hover:underline"
+                  >
+                    Set up payout split →
+                  </button>
                 </div>
               )}
 

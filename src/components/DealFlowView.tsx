@@ -5,7 +5,7 @@ import {
   DollarSign, CheckCircle2, Truck, FileDown, XCircle,
 } from "lucide-react";
 import {
-  api, DealFlow, SupplierPayment, Invoice, Supplier, ProfitSplit,
+  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
@@ -1246,7 +1246,7 @@ function PanelSupplierPaid({ flow, onReload, onGoToComplete }: { flow: DealFlow;
 type ShippingHold = "idle" | "asking" | "shipping";
 
 function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
-  const [split,        setSplit]        = useState<ProfitSplit | null>(null);
+  const [recipients,   setRecipients]   = useState<PayoutShare[]>([]);
   const [saving,       setSaving]       = useState(false);
   const [shipHold,     setShipHold]     = useState<ShippingHold>("idle");
   // Shipping form fields
@@ -1259,7 +1259,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const [completedDate, setCompletedDate] = useState(todayStr);
   const [payoutIncluded, setPayoutIncluded] = useState(false);
 
-  useEffect(() => { api.getProfitSplit().then(setSplit).catch(() => {}); }, []);
+  useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
 
   const canComplete = flow.stage === "payment_received" || flow.stage === "supplier_paid";
   const isComplete  = flow.stage === "complete";
@@ -1317,7 +1317,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       <SectionLabel>Deal Summary</SectionLabel>
 
       {/* P&L grid + profit split (shared with Invoice detail) */}
-      <CostProfitPanel flow={flow} split={split} />
+      <CostProfitPanel flow={flow} recipients={recipients} />
 
       {/* ── Complete action area ── */}
       {canComplete && shipHold === "idle" && (
@@ -1482,10 +1482,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
 // ─── Completed deal full breakdown ────────────────────────────────────────
 function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
-  const [split,  setSplit]  = useState<ProfitSplit | null>(null);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => { api.getProfitSplit().then(setSplit).catch(() => {}); }, []);
 
   const margin = flow.gross_revenue > 0 ? (flow.net_profit / flow.gross_revenue) * 100 : 0;
   const payments = flow.supplier_payments || [];

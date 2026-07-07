@@ -82,6 +82,11 @@ pub struct EmailInbox {
     /// device-local, not synced). Absent in legacy rows → treated as `"org"`.
     #[serde(default = "default_inbox_scope")]
     pub scope: String,
+    /// A placeholder entry (demo/sales accounts): counts toward "inbox linked" for
+    /// display, but is never dialed by the real-time watcher or the safety-net scan.
+    /// Absent in real rows → false.
+    #[serde(default)]
+    pub demo: bool,
 }
 
 fn default_inbox_scope() -> String { "org".into() }
@@ -743,7 +748,7 @@ pub async fn scan() -> Result<Vec<ParsedEmail>> {
                 inboxes.push(EmailInbox {
                     id: "legacy".into(), label: s.user.clone(),
                     host: s.imap_host.clone(), port: s.imap_port, user: s.user.clone(),
-                    scope: "org".into(),
+                    scope: "org".into(), demo: false,
                 });
             }
         }
@@ -868,9 +873,11 @@ async fn inbox_conn(ib: &EmailInbox) -> Option<(String, u16, String, String)> {
 }
 
 /// Enumerate the mailboxes to watch: every added inbox, plus the legacy account
-/// (from EmailSettings) when it has an IMAP host — mirrors `scan()`.
+/// (from EmailSettings) when it has an IMAP host — mirrors `scan()`. Demo/placeholder
+/// inboxes (real accounts used for sales demos) are excluded — they exist only to
+/// satisfy the "inbox linked" display and are never actually dialed.
 fn watchable_inboxes() -> Vec<EmailInbox> {
-    let mut inboxes = load_inboxes();
+    let mut inboxes: Vec<EmailInbox> = load_inboxes().into_iter().filter(|ib| !ib.demo).collect();
     if let Ok(s) = load_settings() {
         if !s.imap_host.is_empty() {
             inboxes.push(EmailInbox {
@@ -880,6 +887,7 @@ fn watchable_inboxes() -> Vec<EmailInbox> {
                 port: s.imap_port,
                 user: s.user,
                 scope: "org".into(),
+                demo: false,
             });
         }
     }

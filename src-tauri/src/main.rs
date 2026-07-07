@@ -622,6 +622,7 @@ fn main() {
             delete_category,
             reorder_categories,
             sort_categories,
+            dedupe_categories,
             import_categories,
             csv_distinct_column,
             // Sheet Sync

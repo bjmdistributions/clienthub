@@ -691,6 +691,59 @@ export interface ProfitSplit {
   ben_name: string;
 }
 
+/** A configured payout recipient. Empty recipient list = payouts not set up. */
+export interface PayoutShare {
+  name: string;
+  pct: number;
+  is_business: boolean;
+}
+
+/** A recipient's cut across the brief periods (empty list when unconfigured). */
+export interface PayoutTotal {
+  name: string;
+  is_business: boolean;
+  this_week: number;
+  this_month: number;
+  all_time: number;
+}
+
+/**
+ * Split a single completed deal's net profit across the configured recipients.
+ * Mirrors the Rust `allocate_payout`: the whole net goes to the "included" bucket
+ * when partners were cut in, otherwise to the business recipient(s). Returns [] when
+ * unconfigured so callers render no split (never an assumed split or partner names).
+ */
+export function allocateDealPayout(
+  net: number,
+  payoutIncluded: boolean,
+  recipients: PayoutShare[],
+): { name: string; is_business: boolean; amount: number }[] {
+  if (!recipients.length) return [];
+  const netIncl = payoutIncluded ? net : 0;
+  const netExcl = payoutIncluded ? 0 : net;
+  const bizPctSum = recipients.filter((r) => r.is_business).reduce((a, r) => a + (Number(r.pct) || 0), 0);
+  const bizCount = recipients.filter((r) => r.is_business).length;
+  const anyBiz = bizCount > 0;
+  return recipients.map((r) => {
+    const pct = Number(r.pct) || 0;
+    const base = (netIncl * pct) / 100;
+    let extra = 0;
+    if (Math.abs(netExcl) >= 1e-6) {
+      if (anyBiz) {
+        if (r.is_business) extra = bizPctSum > 0 ? (netExcl * pct) / bizPctSum : netExcl / bizCount;
+      } else {
+        extra = (netExcl * pct) / 100;
+      }
+    }
+    return { name: r.name, is_business: r.is_business, amount: Math.round((base + extra) * 100) / 100 };
+  });
+}
+
+/** Parse a deal_flow's metadata for whether partners were cut in (default false). */
+export function dealPayoutIncluded(flow: { metadata?: string | null }): boolean {
+  try { return !!JSON.parse(flow.metadata || "{}").payout_included; } catch { return false; }
+}
+
 export interface DealFlow {
   id: string;
   name?: string | null;
@@ -880,6 +933,8 @@ export interface WeeklyBrief {
   refunded_deals_this_week: number;
   refunded_total_this_week: number;
   rep_earnings_this_week: number;
+  /** Config-driven payout split per recipient; empty when payouts aren't set up. */
+  payout_totals: PayoutTotal[];
 }
 
 export interface PipelineAnalytics {
@@ -1756,6 +1811,7 @@ export const api = {
   deleteCategory: (id: string) => invoke<void>("delete_category", { id }),
   reorderCategories: (ids: string[]) => invoke<void>("reorder_categories", { ids }),
   sortCategories: (desc: boolean) => invoke<void>("sort_categories", { desc }),
+  dedupeCategories: () => invoke<number>("dedupe_categories"),
   importCategories: (labels: string[]) => invoke<number>("import_categories", { labels }),
   csvDistinctColumn: (path: string, column: number) => invoke<string[]>("csv_distinct_column", { path, column }),
   sheetCategoryValues: () => invoke<string[]>("sheet_category_column_values"),

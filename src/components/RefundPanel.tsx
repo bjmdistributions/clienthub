@@ -110,22 +110,25 @@ export default function RefundPanel({ dealFlowId }: { dealFlowId: string }) {
         </div>
       )}
 
-      {/* Owner splits (after rep + refund) */}
-      <div>
-        <div className="text-[12px] font-medium text-muted mb-2">
-          Owner split{refunded > 0 ? " (after refund)" : ""}
-        </div>
-        <div className="grid grid-cols-3 gap-4 text-center">
-          {splits.map((s) => (
-            <div key={s.name}>
-              <div className="text-[12px] text-muted">{s.name}</div>
-              <div className={`text-[16px] font-bold tabular-nums mt-0.5 ${s.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>
-                {fmtAmount(s.amount)}
+      {/* Owner splits (after rep + refund) — config-driven; hidden until payouts
+          are set up so we never show an assumed split or partner names. */}
+      {splits.length > 0 && (
+        <div>
+          <div className="text-[12px] font-medium text-muted mb-2">
+            Owner split{refunded > 0 ? " (after refund)" : ""}
+          </div>
+          <div className="flex flex-wrap gap-4 text-center">
+            {splits.map((s, i) => (
+              <div key={i} className="flex-1 min-w-[80px]">
+                <div className="text-[12px] text-muted truncate">{s.name}</div>
+                <div className={`text-[16px] font-bold tabular-nums mt-0.5 ${s.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>
+                  {fmtAmount(s.amount)}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Owed-back banner */}
       {owed > 0 && (

@@ -593,12 +593,9 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (
         21,
         r#"
-        -- Default profit split percentages and partner names
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_business', '40');
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_jack', '30');
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_ben', '30');
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_jack_name', 'Jack');
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_split_ben_name', 'Ben');
+        -- (Removed) Payout split is now fully user-configured; we never seed
+        -- default percentages or partner names. Unconfigured orgs show no split.
+        SELECT 1;
         "#,
     ),
     (

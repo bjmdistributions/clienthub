@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, DealFlow, ProfitSplit } from "../lib/api";
+import { api, DealFlow, PayoutShare, allocateDealPayout, dealPayoutIncluded } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
 import {
@@ -26,16 +26,16 @@ function MarginBadge({ margin }: { margin: number }) {
 // ─── Main view ────────────────────────────────────────────────────────────────
 export default function CloseoutView() {
   const [flows,   setFlows]   = useState<DealFlow[]>([]);
-  const [split,   setSplit]   = useState<ProfitSplit | null>(null);
+  const [recipients, setRecipients] = useState<PayoutShare[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [f, sp] = await Promise.all([api.listDealFlows(), api.getProfitSplit()]);
+      const [f, sp] = await Promise.all([api.listDealFlows(), api.getPayoutSplit()]);
       setFlows(f.filter((fl) => fl.stage === "complete"));
-      setSplit(sp);
+      setRecipients(sp);
     } catch (e) { console.error(e); }
     setLoading(false);
   };
@@ -208,7 +208,7 @@ export default function CloseoutView() {
                 {/* Expanded breakdown */}
                 {isExp && (
                   <div className="border-t border-line bg-surface-2/50 px-5 py-5">
-                    <DealBreakdown flow={flow} split={split} onReload={load} />
+                    <DealBreakdown flow={flow} recipients={recipients} onReload={load} />
                   </div>
                 )}
               </div>
@@ -222,9 +222,10 @@ export default function CloseoutView() {
 
 // ─── Expanded deal breakdown ──────────────────────────────────────────────────
 function DealBreakdown({
-  flow, split, onReload,
-}: { flow: DealFlow; split: ProfitSplit | null; onReload: () => void }) {
+  flow, recipients, onReload,
+}: { flow: DealFlow; recipients: PayoutShare[]; onReload: () => void }) {
   const [saving, setSaving] = useState(false);
+  const alloc = allocateDealPayout(flow.net_profit, dealPayoutIncluded(flow), recipients);
   const payments = flow.supplier_payments || [];
   const margin   = pct(flow.net_profit, flow.gross_revenue);
 
@@ -318,22 +319,18 @@ function DealBreakdown({
         </div>
       )}
 
-      {/* Profit split */}
-      {split && flow.net_profit > 0 && (
+      {/* Profit split — config-driven; hidden until payouts are set up */}
+      {flow.net_profit > 0 && alloc.length > 0 && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3">
           <p className="text-[12.5px] font-medium text-muted mb-3">
             Profit Split
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-            {[
-              { name: split.jack_name, val: flow.profit_jack },
-              { name: split.ben_name,  val: flow.profit_ben  },
-              { name: "Business",      val: flow.profit_business },
-            ].map((item) => (
-              <div key={item.name}>
-                <div className="text-[12px] text-muted">{item.name}</div>
+          <div className="flex flex-wrap gap-4 text-center">
+            {alloc.map((item, i) => (
+              <div key={i} className="flex-1 min-w-[90px]">
+                <div className="text-[12px] text-muted truncate">{item.name}</div>
                 <div className="text-[18px] font-bold text-success-ink tabular-nums mt-0.5">
-                  {fmtAmount(item.val)}
+                  {fmtAmount(item.amount)}
                 </div>
               </div>
             ))}

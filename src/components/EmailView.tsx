@@ -792,6 +792,20 @@ function NewsletterTab() {
     setPreviewIdx(0);
   };
 
+  // The compose action is a single button: "Send now" (interval 0) sends
+  // immediately with a progress bar; any other choice schedules the send. The
+  // button's label + icon + handler all follow the currently chosen option, so
+  // there's no separate Schedule button.
+  const isScheduledSend = scheduleInterval !== 0;
+  const scheduleOptLabel =
+    scheduleInterval === 3600 ? "spread over 1 hour" :
+    scheduleInterval === 7200 ? "spread over 2 hours" :
+    scheduleInterval === 14400 ? "spread over 4 hours" :
+    scheduleInterval === -1 ? (scheduleCustomDate ? `for ${new Date(scheduleCustomDate).toLocaleString()}` : "for a custom time") :
+    "";
+  const composeIncomplete = validRecipients.length === 0 || !subject.trim() || !body.trim();
+  const actionDisabled = sending || scheduling || composeIncomplete || (scheduleInterval === -1 && !scheduleCustomDate);
+
   const previewClient = validRecipients[previewIdx] || validRecipients[0];
   const previewSub = (t: string, c: Client) => t
     .replace(/\{\{?first_name\}?\}/g, c.name.split(" ")[0])
@@ -1158,13 +1172,16 @@ function NewsletterTab() {
           )}
 
           <button
-            onClick={handleSend}
-            disabled={sending || validRecipients.length === 0 || !subject.trim() || !body.trim()}
+            onClick={isScheduledSend ? handleSchedule : handleSend}
+            disabled={actionDisabled}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent rounded-md text-[14px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
             style={{ height: 44 }}
           >
-            <Send size={16} />
-            {sending ? sendProgress : `Send ${validRecipients.length} emails`}
+            {isScheduledSend ? <Clock size={16} /> : <Send size={16} />}
+            {sending ? sendProgress
+              : scheduling ? "Scheduling…"
+              : isScheduledSend ? `Schedule — ${scheduleOptLabel}`
+              : `Send ${validRecipients.length} emails`}
           </button>
           {sending && (
             <div className="mt-2 h-1.5 w-full bg-surface-3 rounded-full overflow-hidden">
@@ -1204,10 +1221,11 @@ function NewsletterTab() {
                 <input type="datetime-local" value={scheduleCustomDate} onChange={(e) => setScheduleCustomDate(e.target.value)}
                   className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px]" />
               )}
-              <button onClick={handleSchedule} disabled={scheduling}
-                className="w-full bg-accent hover:bg-accent-hover text-on-accent rounded-md text-[12px] font-medium h-8 flex items-center justify-center gap-1.5 disabled:opacity-50">
-                {scheduling ? "Scheduling…" : "Schedule"}
-              </button>
+              <div className="text-[11px] text-muted pt-0.5">
+                {isScheduledSend
+                  ? `The button above now schedules this send — ${scheduleOptLabel}.`
+                  : "Pick an option above; the send button will switch to scheduling."}
+              </div>
             </div>
           )}
 

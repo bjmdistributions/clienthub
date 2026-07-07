@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, ProfitSplit } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, PayoutShare } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle, Search } from "lucide-react";
@@ -818,11 +818,11 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   // Cost & Profit is owned by the linked Deal Flow (single source of truth).
   // Fetch it so the invoice shows the identical P&L panel as the Deal Flow view.
   const [dealFlow, setDealFlow] = useState<DealFlow | null>(null);
-  const [split, setSplit] = useState<ProfitSplit | null>(null);
+  const [recipients, setRecipients] = useState<PayoutShare[]>([]);
   useEffect(() => {
     let active = true;
     api.getDealFlowByInvoice(invoice.id).then((df) => { if (active) setDealFlow(df); }).catch(() => {});
-    api.getProfitSplit().then((s) => { if (active) setSplit(s); }).catch(() => {});
+    api.getPayoutSplit().then((s) => { if (active) setRecipients(s); }).catch(() => {});
     return () => { active = false; };
   }, [invoice.id]);
 
@@ -918,7 +918,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               dealFlow ? (
                 /* Linked to a Deal Flow — show the identical, synced P&L panel */
                 <div className="mt-3 space-y-2">
-                  <CostProfitPanel flow={dealFlow} split={split} />
+                  <CostProfitPanel flow={dealFlow} recipients={recipients} />
                   <div className="flex items-center gap-2 px-3 py-2 bg-info-bg border border-info rounded-lg">
                     <GitBranch size={11} className="text-info-ink flex-shrink-0" />
                     <p className="text-[11px] text-info-ink">

@@ -19,7 +19,6 @@ import {
   SheetSyncResult,
   SheetSyncLogEntry,
   SheetWritebackStatus,
-  ProfitSplit,
   User,
   StaffMember,
   RoleDef,
@@ -3398,6 +3397,28 @@ function CategoriesTab() {
     reload();
   };
 
+  // Same-name siblings (case/whitespace-insensitive) — only surface the cleanup
+  // button when there's actually something to merge.
+  const hasDupes = (() => {
+    const seen = new Set<string>();
+    for (const c of cats) {
+      const key = `${c.parent_id || ""}::${c.label.trim().toLowerCase()}`;
+      if (seen.has(key)) return true;
+      seen.add(key);
+    }
+    return false;
+  })();
+  const [deduping, setDeduping] = useState(false);
+  const dedupe = async () => {
+    setDeduping(true);
+    try {
+      const n = await api.dedupeCategories();
+      setAddedMsg(n > 0 ? `Merged ${n} duplicate${n === 1 ? "" : "s"}` : "No duplicates found");
+      reload();
+    } catch { setAddedMsg("Could not clean up duplicates"); }
+    setDeduping(false);
+  };
+
   // ── Detect categories from a spreadsheet column ──
   const pickFile = async () => {
     const selected = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
@@ -3507,6 +3528,11 @@ function CategoriesTab() {
         <button onClick={pickSheet} className={toolBtn}>
           <Sheet size={13} /> Import from connected Sheet
         </button>
+        {hasDupes && (
+          <button onClick={dedupe} disabled={deduping} className={toolBtn} title="Merge categories with the same name">
+            <Wand2 size={13} /> {deduping ? "Cleaning up…" : "Clean up duplicates"}
+          </button>
+        )}
         {addedMsg && <span className="text-[12px] text-success-ink font-medium ml-1">{addedMsg}</span>}
       </div>
 
@@ -4000,9 +4026,20 @@ function SplitsTab() {
 
   const total = shares.reduce((a, s) => a + (Number(s.pct) || 0), 0);
   const valid = Math.abs(total - 100) < 0.01;
+  const remaining = Math.round((100 - total) * 100) / 100;
   const persist = (next: Share[]) => {
     setShares(next);
     if (Math.abs(next.reduce((a, s) => a + (Number(s.pct) || 0), 0) - 100) < 0.01) api.savePayoutSplit(next).catch(() => {});
+  };
+  // Auto-math: drop the leftover (or overage) onto the Business share — or the last
+  // recipient if none is marked Business — so the split always totals 100% and no
+  // money is left unallocated.
+  const balance = () => {
+    if (!shares.length) return;
+    const bizIdx = shares.findIndex((s) => s.is_business);
+    const idx = bizIdx >= 0 ? bizIdx : shares.length - 1;
+    const others = shares.reduce((a, s, i) => (i === idx ? a : a + (Number(s.pct) || 0)), 0);
+    persist(shares.map((s, i) => (i === idx ? { ...s, pct: Math.round(Math.max(0, 100 - others) * 100) / 100 } : s)));
   };
   const setShare = (i: number, patch: Partial<Share>) => persist(shares.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   const removeShare = (i: number) => persist(shares.filter((_, idx) => idx !== i));
@@ -4057,10 +4094,14 @@ function SplitsTab() {
           ))}
         </div>
         <div className="flex items-center gap-2 mt-3 flex-wrap">
-          <button onClick={() => setShares([...shares, { name: "", pct: 0, is_business: false }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Owner</button>
-          {!shares.some((s) => s.is_business) && <button onClick={() => setShares([...shares, { name: "Business", pct: 0, is_business: true }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Business</button>}
+          <button onClick={() => setShares([...shares, { name: "", pct: Math.max(0, remaining), is_business: false }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Owner</button>
+          {!shares.some((s) => s.is_business) && <button onClick={() => setShares([...shares, { name: "Business", pct: Math.max(0, remaining), is_business: true }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Business</button>}
+          {!valid && shares.length > 0 && (
+            <button onClick={balance} className="text-[12px] border border-accent/40 text-accent rounded-lg px-3 h-8 hover:bg-accent/10">Balance to 100%</button>
+          )}
           <div className={`ml-auto flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12px] border ${valid ? "border-success bg-success-bg text-success-ink" : "border-danger bg-danger-bg text-danger-ink"}`}>
-            {valid ? <Check size={13} /> : <AlertCircle size={13} />} {total.toFixed(1)}%{!valid && " · must equal 100%"}
+            {valid ? <Check size={13} /> : <AlertCircle size={13} />} {total.toFixed(1)}%
+            {!valid && (remaining > 0 ? ` · ${remaining}% left` : ` · ${Math.abs(remaining)}% over`)}
           </div>
         </div>
       </div>

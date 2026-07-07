@@ -4286,9 +4286,9 @@ pub async fn delete_refund(id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Dynamic owner-split shares (name, pct, is_business). Reads `profit_split_json`;
-/// if unset, migrates from the legacy jack/ben/business settings. Each share takes
-/// pct% of the REMAINDER after the rep's cut — identical formula, N entries.
+/// Dynamic owner-split shares (name, pct, is_business). Reads `profit_split_json`.
+/// Returns an empty list when the org has not configured a split — we never fall
+/// back to a default split or partner names. Each share takes pct% of the profit.
 fn read_profit_split_shares() -> Vec<(String, f64, bool)> {
     if let Ok(conn) = pool().get() {
         if let Ok(j) = conn.query_row("SELECT value FROM settings WHERE key='profit_split_json'", [], |r| r.get::<_, String>(0)) {
@@ -4305,8 +4305,36 @@ fn read_profit_split_shares() -> Vec<(String, f64, bool)> {
             }
         }
     }
-    let s = read_profit_split().unwrap_or(ProfitSplit { business_pct: 40.0, jack_pct: 30.0, ben_pct: 30.0, jack_name: "Partner 1".into(), ben_name: "Partner 2".into() });
-    vec![(s.jack_name, s.jack_pct, false), (s.ben_name, s.ben_pct, false), ("Business".to_string(), s.business_pct, true)]
+    // No configured split → unconfigured. We never assume a default split or
+    // partner names; callers treat an empty list as "payouts not set up yet".
+    Vec::new()
+}
+
+/// Split a period's net profit across the configured recipients.
+/// `net_incl` = net from deals where partners were cut in (payout_included=true);
+/// `net_excl` = net from deals kept 100% by the business (payout_included=false).
+/// Returns (name, is_business, amount) in the recipients' order. Empty when
+/// unconfigured. The included portion is divided by each recipient's pct (which
+/// the editor forces to sum to 100); the excluded portion goes to the business
+/// recipient(s), or — if none is marked business — is split like the included part.
+pub fn allocate_payout(net_incl: f64, net_excl: f64, recipients: &[(String, f64, bool)]) -> Vec<(String, bool, f64)> {
+    if recipients.is_empty() { return Vec::new(); }
+    let biz_pct_sum: f64 = recipients.iter().filter(|(_, _, b)| *b).map(|(_, p, _)| *p).sum();
+    let biz_count = recipients.iter().filter(|(_, _, b)| *b).count();
+    let any_biz = biz_count > 0;
+    recipients.iter().map(|(name, pct, is_biz)| {
+        let base = net_incl * pct / 100.0;
+        let extra = if net_excl.abs() < 0.000001 {
+            0.0
+        } else if any_biz {
+            if *is_biz {
+                if biz_pct_sum > 0.0 { net_excl * pct / biz_pct_sum } else { net_excl / biz_count as f64 }
+            } else { 0.0 }
+        } else {
+            net_excl * pct / 100.0
+        };
+        (name.clone(), *is_biz, ((base + extra) * 100.0).round() / 100.0)
+    }).collect()
 }
 
 #[tauri::command]
@@ -5473,7 +5501,7 @@ pub async fn save_email_inbox(id: Option<String>, label: String, host: String, p
         return Err("Admin permission required to set up the shared inbox.".into());
     }
     let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user, scope: scope.into() };
+    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user, scope: scope.into(), demo: false };
     // Edit the list that matches the target scope so org/personal stay separate.
     let mut list = if scope == "me" { crate::email::load_personal_inboxes() } else { crate::email::load_org_inboxes() };
     match list.iter_mut().find(|i| i.id == id) {
@@ -8173,6 +8201,18 @@ pub struct StuckDeal {
     pub days_in_stage: u32,
 }
 
+/// One configured payout recipient's cut across the brief's periods. The whole
+/// list is empty when the org has not set up a payout split, so the UI shows no
+/// breakdown (never an assumed split or partner names).
+#[derive(Serialize, Debug, Clone)]
+pub struct PayoutTotal {
+    pub name: String,
+    pub is_business: bool,
+    pub this_week: f64,
+    pub this_month: f64,
+    pub all_time: f64,
+}
+
 #[derive(Serialize, Debug, Clone)]
 pub struct WeeklyBrief {
     pub generated_at: String,
@@ -8220,6 +8260,8 @@ pub struct WeeklyBrief {
     pub refunded_deals_this_week: u32,
     pub refunded_total_this_week: f64,
     pub rep_earnings_this_week: f64,
+    /// Config-driven payout split per recipient; empty when payouts aren't set up.
+    pub payout_totals: Vec<PayoutTotal>,
 }
 
 #[tauri::command]
@@ -8308,6 +8350,35 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let df_all_biz: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(profit_business),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
+
+    // Config-driven payout breakdown: split net profit across the org's configured
+    // recipients (empty when unconfigured). Included vs. excluded net is bucketed by
+    // each completed deal's payout_included flag (default false → business keeps all).
+    let net_incl = "COALESCE(SUM(CASE WHEN COALESCE(json_extract(df.metadata,'$.payout_included'),0)=1 THEN df.net_profit ELSE 0 END),0)";
+    let net_excl = "COALESCE(SUM(CASE WHEN COALESCE(json_extract(df.metadata,'$.payout_included'),0)=1 THEN 0 ELSE df.net_profit END),0)";
+    let split_week: (f64, f64) = conn.query_row(
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        [&week_start, &end_excl], |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0.0, 0.0));
+    let split_month: (f64, f64) = conn.query_row(
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1{rep_filter}"),
+        [&month_start], |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0.0, 0.0));
+    let split_all: (f64, f64) = conn.query_row(
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"),
+        [], |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0.0, 0.0));
+    let payout_recipients = read_profit_split_shares();
+    let alloc_week = allocate_payout(split_week.0, split_week.1, &payout_recipients);
+    let alloc_month = allocate_payout(split_month.0, split_month.1, &payout_recipients);
+    let alloc_all = allocate_payout(split_all.0, split_all.1, &payout_recipients);
+    let payout_totals: Vec<PayoutTotal> = payout_recipients.iter().enumerate().map(|(i, (name, _pct, is_biz))| PayoutTotal {
+        name: name.clone(),
+        is_business: *is_biz,
+        this_week: alloc_week.get(i).map(|x| x.2).unwrap_or(0.0),
+        this_month: alloc_month.get(i).map(|x| x.2).unwrap_or(0.0),
+        all_time: alloc_all.get(i).map(|x| x.2).unwrap_or(0.0),
+    }).collect();
 
     let pipeline_value: f64 = conn.query_row(
         "SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)
@@ -8479,6 +8550,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         refunded_deals_this_week,
         refunded_total_this_week,
         rep_earnings_this_week,
+        payout_totals,
     })
 }
 
@@ -9717,19 +9789,31 @@ pub async fn list_categories() -> Result<Vec<Category>, String> {
 #[tauri::command]
 pub async fn create_category(input: CategoryInput) -> Result<String, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    let label = input.label.trim().to_string();
+    if label.is_empty() { return Err("label required".into()); }
+    // A subcategory can only nest under a top-level category (one level deep).
+    let parent = input.parent_id.filter(|p| !p.is_empty());
+    // Reject an exact-duplicate label among siblings (case/whitespace-insensitive)
+    // — this is what let the same category get added twice and show as repeats
+    // everywhere (newsletter recipient picker, client editor, etc).
+    let dup_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM categories WHERE lower(trim(label))=lower(trim(?1)) \
+         AND ((parent_id IS NULL AND ?2 IS NULL) OR parent_id=?2)",
+        rusqlite::params![label, parent],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    if dup_exists { return Err(format!("\"{}\" already exists", label)); }
     let id = Uuid::new_v4().to_string();
     let max_sort: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) FROM categories", [],
         |r| r.get(0),
     ).unwrap_or(-1);
-    // A subcategory can only nest under a top-level category (one level deep).
-    let parent = input.parent_id.filter(|p| !p.is_empty());
     let sort_order = max_sort + 1;
     conn.execute(
         "INSERT INTO categories (id, label, sort_order, parent_id) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![id, input.label, sort_order, parent],
+        rusqlite::params![id, label, sort_order, parent],
     ).map_err(|e| e.to_string())?;
-    sync_category_upsert(&id, &input.label, sort_order, parent.as_deref());
+    sync_category_upsert(&id, &label, sort_order, parent.as_deref());
     Ok(id)
 }
 
@@ -9803,16 +9887,29 @@ pub async fn import_categories(labels: Vec<String>) -> Result<usize, String> {
 #[tauri::command]
 pub async fn update_category(id: String, input: CategoryInput) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    let label = input.label.trim().to_string();
+    if label.is_empty() { return Err("label required".into()); }
+    // Same duplicate guard as create: don't let a rename collide with a sibling.
+    let current_parent: Option<String> = conn.query_row(
+        "SELECT parent_id FROM categories WHERE id=?1", [&id], |r| r.get(0),
+    ).unwrap_or(None);
+    let dup_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM categories WHERE id!=?1 AND lower(trim(label))=lower(trim(?2)) \
+         AND ((parent_id IS NULL AND ?3 IS NULL) OR parent_id=?3)",
+        rusqlite::params![id, label, current_parent],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    if dup_exists { return Err(format!("\"{}\" already exists", label)); }
     conn.execute(
         "UPDATE categories SET label=?1 WHERE id=?2",
-        rusqlite::params![input.label, id],
+        rusqlite::params![label, id],
     ).map_err(|e| e.to_string())?;
     // Sync the full row so label + existing sort_order/parent_id round-trip.
     let (sort_order, parent_id): (i64, Option<String>) = conn.query_row(
         "SELECT sort_order, parent_id FROM categories WHERE id=?1", [&id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     ).map_err(|e| e.to_string())?;
-    sync_category_upsert(&id, &input.label, sort_order, parent_id.as_deref());
+    sync_category_upsert(&id, &label, sort_order, parent_id.as_deref());
     Ok(())
 }
 
@@ -9835,6 +9932,48 @@ pub async fn delete_category(id: String) -> Result<(), String> {
     }
     sync::record_delete("categories", &id).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Merge exact-duplicate category labels (same parent, case/whitespace-
+/// insensitive) — a one-time repair for rows created before `create_category`
+/// rejected duplicates. Clients reference a category only by its label string
+/// (never by id), so merging is just: keep the earliest row, reparent any of the
+/// duplicate's children onto it, delete the rest. Returns how many were removed.
+#[tauri::command]
+pub async fn dedupe_categories() -> Result<usize, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut cats: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn.prepare("SELECT id, label, parent_id FROM categories ORDER BY sort_order")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let mut kept: std::collections::HashMap<(Option<String>, String), String> = std::collections::HashMap::new();
+    let mut removed = 0usize;
+    for (id, label, parent_id) in cats.drain(..) {
+        let key = (parent_id.clone(), label.trim().to_lowercase());
+        if let Some(keep_id) = kept.get(&key) {
+            let children: Vec<(String, String, i64)> = {
+                let mut stmt = conn.prepare("SELECT id, label, sort_order FROM categories WHERE parent_id=?1")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt.query_map([&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+                    .map_err(|e| e.to_string())?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            conn.execute("UPDATE categories SET parent_id=?1 WHERE parent_id=?2", rusqlite::params![keep_id, id])
+                .map_err(|e| e.to_string())?;
+            for (cid, clabel, csort) in &children {
+                sync_category_upsert(cid, clabel, *csort, Some(keep_id.as_str()));
+            }
+            conn.execute("DELETE FROM categories WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+            sync::record_delete("categories", &id).map_err(|e| e.to_string())?;
+            removed += 1;
+        } else {
+            kept.insert(key, id);
+        }
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
