@@ -1047,8 +1047,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
 
   return (
     <>
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-xl w-[440px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[440px] max-w-[92vw] max-h-[82vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
