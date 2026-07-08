@@ -197,7 +197,6 @@ const SETTINGS_GROUPS: {
       { id: "ai",       label: "AI",            icon: Bot,        desc: "Ollama model selection" },
       { id: "sheets",   label: "Google Sheets", icon: Sheet,      desc: "Two-way sheet sync" },
       { id: "import",   label: "Import",        icon: Download,   desc: "CSV & Google Contacts" },
-      { id: "payments", label: "Payments",      icon: CreditCard, desc: "Accepted payment methods" },
       { id: "billing",  label: "Billing",       icon: Receipt,    desc: "Stripe configuration" },
       { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
       { id: "webforms", label: "Web forms",     icon: Globe,       desc: "Custom sites & forms → pending leads" },
@@ -225,9 +224,11 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
         .map((g) => ({ ...g, items: g.items.filter((i) => NON_ADMIN_SECTIONS.includes(i.id)) }))
         .filter((g) => g.items.length > 0);
 
-  const [tab, setTab] = useState<SettingsTab>(
-    () => (localStorage.getItem("clienthub_settings_tab") as SettingsTab) || "appearance"
-  );
+  const [tab, setTab] = useState<SettingsTab>(() => {
+    // Payments merged into the Invoice tab — redirect any saved "payments" tab.
+    const s = localStorage.getItem("clienthub_settings_tab") as SettingsTab;
+    return s === "payments" ? "invoice" : (s || "appearance");
+  });
   const select = (t: SettingsTab) => {
     setTab(t);
     localStorage.setItem("clienthub_settings_tab", t);
@@ -311,7 +312,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "email"       && <EmailTab />}
           {tab === "whatsapp"    && <WhatsAppTab />}
           {tab === "company"     && <CompanyTab />}
-          {tab === "invoice"     && <InvoiceTab />}
+          {tab === "invoice"     && <div className="space-y-8"><InvoiceTab /><PaymentsTab /></div>}
           {tab === "storefront"  && <StorefrontTab />}
           {tab === "categories"  && <CategoriesTab />}
           {tab === "ai"          && <AiTab />}
@@ -319,7 +320,6 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "import"      && <ImportTab />}
           {tab === "automation"  && <AutomationTab />}
           {tab === "forms"       && <FormsPanel />}
-          {tab === "payments"    && <PaymentsTab />}
           {tab === "templates"   && <TemplatesTab />}
           {tab === "sheets"      && <SheetsTab />}
           {tab === "splits"      && <SplitsTab />}
@@ -3445,6 +3445,22 @@ function StorefrontTab() {
           <label className="text-[13px] text-ink-2">Accent color</label>
           <input type="color" value={cfg.accent || "#FF6520"} onChange={(e) => set({ accent: e.target.value })} className="w-9 h-9 rounded-lg border border-line bg-surface-2 cursor-pointer" />
           <span className="text-[12px] text-muted tabular-nums">{cfg.accent}</span>
+        </div>
+        <div className="pt-1">
+          <label className="text-[13px] text-ink-2 block mb-2">Background</label>
+          <div className="flex gap-2">
+            {[
+              { id: "charcoal", label: "Charcoal", c: "#0D0A09" },
+              { id: "obsidian", label: "Obsidian", c: "#070707" },
+              { id: "midnight", label: "Midnight", c: "#080A10" },
+              { id: "slate",    label: "Slate",    c: "#0B0D10" },
+              { id: "plum",     label: "Plum",     c: "#0D080D" },
+            ].map((b) => (
+              <button key={b.id} type="button" onClick={() => set({ bg: b.id })} title={b.label}
+                className={`w-9 h-9 rounded-lg border-2 transition-colors ${(cfg.bg || "charcoal") === b.id ? "border-accent" : "border-line"}`}
+                style={{ background: b.c }} aria-label={b.label} />
+            ))}
+          </div>
         </div>
       </div>
 

@@ -5800,6 +5800,7 @@ pub struct StorefrontConfig {
     pub contact_wa: String,
     pub contact_email: String,
     pub accent: String,
+    pub bg: String,
 }
 
 fn sf_get(conn: &rusqlite::Connection, key: &str) -> Option<String> {
@@ -5818,20 +5819,21 @@ pub async fn get_storefront_config() -> Result<StorefrontConfig, String> {
         enabled: sf_bool(&conn, "storefront_enabled", false),
         url: if token.is_empty() { None } else { Some(format!("https://ecliptr.app/i/{}", token)) },
         token,
-        show_prices: sf_bool(&conn, "storefront_show_prices", true),
+        show_prices: sf_bool(&conn, "storefront_show_prices", false),
         show_logo: sf_bool(&conn, "storefront_show_logo", true),
         title: sf_get(&conn, "storefront_title").unwrap_or_default(),
         subtitle: sf_get(&conn, "storefront_subtitle").unwrap_or_default(),
         contact_wa: sf_get(&conn, "storefront_contact_wa").unwrap_or_default(),
         contact_email: sf_get(&conn, "storefront_contact_email").unwrap_or_default(),
         accent: sf_get(&conn, "storefront_accent").unwrap_or_else(|| "#FF6520".into()),
+        bg: sf_get(&conn, "storefront_bg").unwrap_or_else(|| "charcoal".into()),
     })
 }
 
 /// Save storefront config (synced so the server serves it). Mints a stable public
 /// token the first time it's enabled.
 #[tauri::command]
-pub async fn save_storefront_config(enabled: bool, show_prices: bool, show_logo: bool, title: String, subtitle: String, contact_wa: String, contact_email: String, accent: Option<String>) -> Result<StorefrontConfig, String> {
+pub async fn save_storefront_config(enabled: bool, show_prices: bool, show_logo: bool, title: String, subtitle: String, contact_wa: String, contact_email: String, accent: Option<String>, bg: Option<String>) -> Result<StorefrontConfig, String> {
     write_setting("storefront_enabled", if enabled { "1" } else { "0" })?;
     write_setting("storefront_show_prices", if show_prices { "1" } else { "0" })?;
     write_setting("storefront_show_logo", if show_logo { "1" } else { "0" })?;
@@ -5840,6 +5842,7 @@ pub async fn save_storefront_config(enabled: bool, show_prices: bool, show_logo:
     write_setting("storefront_contact_wa", contact_wa.trim())?;
     write_setting("storefront_contact_email", contact_email.trim())?;
     write_setting("storefront_accent", accent.as_deref().unwrap_or("#FF6520").trim())?;
+    write_setting("storefront_bg", bg.as_deref().unwrap_or("charcoal").trim())?;
     let has_token = { let conn = pool().get().map_err(|e| e.to_string())?; sf_get(&conn, "storefront_token").is_some() };
     if enabled && !has_token {
         let token: String = Uuid::new_v4().to_string().replace('-', "").chars().take(16).collect();

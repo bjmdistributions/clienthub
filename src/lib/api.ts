@@ -1181,6 +1181,7 @@ export interface StorefrontConfig {
   contact_wa: string;
   contact_email: string;
   accent: string;
+  bg: string;
 }
 
 /** AI-parsed load fields from a pasted supplier message / manifest image. */
@@ -1690,7 +1691,7 @@ export const api = {
   saveStorefrontConfig: (c: Omit<StorefrontConfig, "token" | "url">) =>
     invoke<StorefrontConfig>("save_storefront_config", {
       enabled: c.enabled, showPrices: c.show_prices, showLogo: c.show_logo,
-      title: c.title, subtitle: c.subtitle, contactWa: c.contact_wa, contactEmail: c.contact_email, accent: c.accent,
+      title: c.title, subtitle: c.subtitle, contactWa: c.contact_wa, contactEmail: c.contact_email, accent: c.accent, bg: c.bg,
     }),
 
   // Settings
