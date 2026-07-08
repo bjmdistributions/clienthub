@@ -5786,6 +5786,68 @@ pub async fn set_anthropic_key(key: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- Public storefront config (synced settings, read by the server) ----------
+
+#[derive(Serialize)]
+pub struct StorefrontConfig {
+    pub enabled: bool,
+    pub token: String,
+    pub url: Option<String>,
+    pub show_prices: bool,
+    pub show_logo: bool,
+    pub title: String,
+    pub subtitle: String,
+    pub contact_wa: String,
+    pub contact_email: String,
+    pub accent: String,
+}
+
+fn sf_get(conn: &rusqlite::Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+fn sf_bool(conn: &rusqlite::Connection, key: &str, default: bool) -> bool {
+    match sf_get(conn, key) { Some(v) => v == "1" || v.eq_ignore_ascii_case("true"), None => default }
+}
+
+#[tauri::command]
+pub async fn get_storefront_config() -> Result<StorefrontConfig, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let token = sf_get(&conn, "storefront_token").unwrap_or_default();
+    Ok(StorefrontConfig {
+        enabled: sf_bool(&conn, "storefront_enabled", false),
+        url: if token.is_empty() { None } else { Some(format!("https://ecliptr.app/i/{}", token)) },
+        token,
+        show_prices: sf_bool(&conn, "storefront_show_prices", true),
+        show_logo: sf_bool(&conn, "storefront_show_logo", true),
+        title: sf_get(&conn, "storefront_title").unwrap_or_default(),
+        subtitle: sf_get(&conn, "storefront_subtitle").unwrap_or_default(),
+        contact_wa: sf_get(&conn, "storefront_contact_wa").unwrap_or_default(),
+        contact_email: sf_get(&conn, "storefront_contact_email").unwrap_or_default(),
+        accent: sf_get(&conn, "storefront_accent").unwrap_or_else(|| "#FF6520".into()),
+    })
+}
+
+/// Save storefront config (synced so the server serves it). Mints a stable public
+/// token the first time it's enabled.
+#[tauri::command]
+pub async fn save_storefront_config(enabled: bool, show_prices: bool, show_logo: bool, title: String, subtitle: String, contact_wa: String, contact_email: String, accent: Option<String>) -> Result<StorefrontConfig, String> {
+    write_setting("storefront_enabled", if enabled { "1" } else { "0" })?;
+    write_setting("storefront_show_prices", if show_prices { "1" } else { "0" })?;
+    write_setting("storefront_show_logo", if show_logo { "1" } else { "0" })?;
+    write_setting("storefront_title", title.trim())?;
+    write_setting("storefront_subtitle", subtitle.trim())?;
+    write_setting("storefront_contact_wa", contact_wa.trim())?;
+    write_setting("storefront_contact_email", contact_email.trim())?;
+    write_setting("storefront_accent", accent.as_deref().unwrap_or("#FF6520").trim())?;
+    let has_token = { let conn = pool().get().map_err(|e| e.to_string())?; sf_get(&conn, "storefront_token").is_some() };
+    if enabled && !has_token {
+        let token: String = Uuid::new_v4().to_string().replace('-', "").chars().take(16).collect();
+        write_setting("storefront_token", &token)?;
+    }
+    get_storefront_config().await
+}
+
 // ============================================================
 //  Settings & Credentials
 // ============================================================

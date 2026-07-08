@@ -1169,6 +1169,20 @@ export interface OllamaModel {
   size?: number;
 }
 
+/** Public storefront configuration (synced; the server serves the catalog from it). */
+export interface StorefrontConfig {
+  enabled: boolean;
+  token: string;
+  url: string | null;
+  show_prices: boolean;
+  show_logo: boolean;
+  title: string;
+  subtitle: string;
+  contact_wa: string;
+  contact_email: string;
+  accent: string;
+}
+
 /** AI-parsed load fields from a pasted supplier message / manifest image. */
 export interface ParsedLoad {
   title?: string | null;
@@ -1670,6 +1684,14 @@ export const api = {
     invoke<ParsedLoad>("parse_load", { text, imageBase64: imageBase64 ?? null, imageMediaType: imageMediaType ?? null }),
   loadAiStatus: () => invoke<boolean>("load_ai_status"),
   setAnthropicKey: (key: string) => invoke<void>("set_anthropic_key", { key }),
+
+  // Public storefront config
+  getStorefrontConfig: () => invoke<StorefrontConfig>("get_storefront_config"),
+  saveStorefrontConfig: (c: Omit<StorefrontConfig, "token" | "url">) =>
+    invoke<StorefrontConfig>("save_storefront_config", {
+      enabled: c.enabled, showPrices: c.show_prices, showLogo: c.show_logo,
+      title: c.title, subtitle: c.subtitle, contactWa: c.contact_wa, contactEmail: c.contact_email, accent: c.accent,
+    }),
 
   // Settings
   saveCredential: (key: string, value: string) =>

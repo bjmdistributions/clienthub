@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis, ParsedLoad } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -27,6 +27,7 @@ export default function InventoryView() {
   const [editing, setEditing] = useState<Lot | null>(null);
   const [prefill, setPrefill] = useState<Partial<Lot> | null>(null);
   const [pasting, setPasting] = useState(false);
+  const [blastLot, setBlastLot] = useState<Lot | null>(null);
   const [showSold, setShowSold] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [linkModal, setLinkModal] = useState<string | null>(null);
@@ -377,11 +378,15 @@ export default function InventoryView() {
                   </button>
                 </div>
 
-                {/* Primary action — share this lot to WhatsApp directly */}
-                <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                {/* Primary actions — share this lot */}
+                <div className="mt-3 space-y-1.5" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: [lot.id] }))}
                     className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-success-ink border border-success bg-success-bg hover:bg-success-bg h-8 rounded-lg transition-colors">
                     <Send size={13} /> Send to WhatsApp
+                  </button>
+                  <button onClick={() => setBlastLot(lot)}
+                    className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-accent border border-accent/40 bg-accent/5 hover:bg-accent/10 h-8 rounded-lg transition-colors">
+                    <Mail size={13} /> Blast to buyers
                   </button>
                 </div>
 
@@ -418,6 +423,8 @@ export default function InventoryView() {
         onClose={() => setPasting(false)}
         onParsed={(pf) => { setPasting(false); setEditing(null); setPrefill(pf); setShowForm(true); }}
       />}
+
+      {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
 
       {detailId && (() => {
         const detail = lots.find((l) => l.id === detailId);
@@ -549,6 +556,113 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
               <button onClick={parse} disabled={busy || (!text.trim() && !img)}
                 className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
                 {busy ? <><RefreshCw size={14} className="animate-spin" /> Reading…</> : <>Parse load →</>}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Build 2 — Blast this load: auto-draft an email from the lot, auto-pick the
+// buyer segment by the lot's category (or all eligible buyers), review, send.
+function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => void; onSent: () => void }) {
+  const [clients, setClients] = useState<Client[]>([]);
+  const [mode, setMode] = useState<"category" | "all">("category");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [storeUrl, setStoreUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      api.listClients().catch(() => [] as Client[]),
+      api.getStorefrontConfig().then((c) => (c.enabled ? c.url : null)).catch(() => null),
+    ]).then(([cs, url]) => {
+      setClients(cs); setStoreUrl(url);
+      // Draft the email from the lot.
+      setSubject(`New load: ${lot.name}`);
+      const line = [lot.category, lot.quantity > 0 ? `${lot.quantity} units` : "", lot.location].filter(Boolean).join(" · ");
+      const price = lot.asking_price > 0 ? `\nPrice: ${fmtAmount(lot.asking_price)}${lot.price_type === "per_unit" ? " / unit" : ""}` : "";
+      setBody(
+        `Hi {{first_name}},\n\nNew load just in:\n\n${lot.name}` +
+        (line ? `\n${line}` : "") + price +
+        (lot.description ? `\n\n${lot.description}` : "") +
+        (lot.notes ? `\n${lot.notes}` : "") +
+        `\n\nReply if you want it — first to commit takes it.` +
+        (url ? `\n\nBrowse everything available: ${url}` : "")
+      );
+      setLoaded(true);
+    });
+  }, [lot]);
+
+  // Eligible = has email, not blacklisted, not do-not-bulk. Matched = same category.
+  const eligible = clients.filter((c) => c.email && !c.is_blacklisted && !c.exclusive);
+  const cat = (lot.category || "").trim().toLowerCase();
+  const matched = eligible.filter((c) => cat && (c.category || "").trim().toLowerCase() === cat);
+  const recipients = mode === "category" ? matched : eligible;
+  const topBuyers = [...eligible].sort((a, b) => (b.total_revenue || 0) - (a.total_revenue || 0)).slice(0, 3);
+
+  const send = async () => {
+    if (!recipients.length) { toast("No matching buyers to send to.", "error"); return; }
+    if (!subject.trim() || !body.trim()) { toast("Subject and message are required.", "error"); return; }
+    if (!confirm(`Send this load to ${recipients.length} buyer${recipients.length === 1 ? "" : "s"}? Each gets an individual email.`)) return;
+    setSending(true);
+    try {
+      const nl = await api.saveNewsletter(null, subject.trim(), body);
+      await api.sendNewsletter(nl.id, recipients.map((c) => c.id), subject.trim(), body, null);
+      toast(`Blasting to ${recipients.length} buyers…`);
+      onSent();
+    } catch (e: any) { toast(String(e), "error"); setSending(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[9vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[520px] max-w-[94vw] p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-1">
+          <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Mail size={15} className="text-accent" /> Blast this load</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
+        </div>
+        <p className="text-[12px] text-muted mb-3 truncate">{lot.name}</p>
+
+        {!loaded ? (
+          <div className="text-sm text-muted py-8 text-center">Loading buyers…</div>
+        ) : (
+          <>
+            {/* Audience */}
+            <div className="bg-surface-2 border border-line rounded-lg p-2.5 mb-3">
+              <div className="flex items-center gap-1.5 mb-2">
+                <button onClick={() => setMode("category")} disabled={!matched.length}
+                  className={`flex-1 text-[12px] font-medium h-8 rounded-lg border transition-colors disabled:opacity-40 ${mode === "category" ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-3"}`}>
+                  {lot.category || "Category"} · {matched.length}
+                </button>
+                <button onClick={() => setMode("all")}
+                  className={`flex-1 text-[12px] font-medium h-8 rounded-lg border transition-colors ${mode === "all" ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:bg-surface-3"}`}>
+                  All buyers · {eligible.length}
+                </button>
+              </div>
+              <div className="text-[11.5px] text-muted">
+                {recipients.length} buyer{recipients.length === 1 ? "" : "s"} will receive this.
+                {topBuyers.length > 0 && <> Top: {topBuyers.map((b) => b.name).join(", ")}.</>}
+                <span className="block mt-0.5">Blacklisted &amp; do-not-bulk buyers are always excluded.</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject"
+                className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+              <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={9}
+                className="w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none leading-relaxed" />
+              <p className="text-[11px] text-muted"><code>{"{{first_name}}"}</code> is personalized per buyer.</p>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={onClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
+              <button onClick={send} disabled={sending || !recipients.length}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+                {sending ? <><RefreshCw size={14} className="animate-spin" /> Sending…</> : <><Send size={14} /> Send to {recipients.length}</>}
               </button>
             </div>
           </>

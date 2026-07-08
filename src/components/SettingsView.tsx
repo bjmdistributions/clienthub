@@ -31,6 +31,7 @@ import {
   WhatsappSettings,
   CapturedCustomer,
   FormCapturePreview,
+  StorefrontConfig,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { isAdmin } from "../lib/permissions";
@@ -159,7 +160,7 @@ const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:ou
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 type SettingsTab =
-  | "account" | "appearance" | "company" | "invoice" | "categories" | "customfields"
+  | "account" | "appearance" | "company" | "invoice" | "storefront" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
   | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "webforms"
   | "sync" | "splits" | "backup" | "team";
@@ -175,6 +176,7 @@ const SETTINGS_GROUPS: {
       { id: "appearance",   label: "Appearance",    icon: Palette,           desc: "Theme, accent color & display" },
       { id: "company",      label: "Company",        icon: Building2,         desc: "Business details & invoice logo" },
       { id: "invoice",      label: "Invoice",        icon: Receipt,           desc: "Invoice branding & preview" },
+      { id: "storefront",   label: "Storefront",     icon: Globe,             desc: "Public inventory catalog link" },
       { id: "categories",   label: "Categories",     icon: Tag,               desc: "Client & deal categories" },
       { id: "customfields", label: "Custom Fields",  icon: SlidersHorizontal, desc: "Extra fields on client records" },
     ],
@@ -310,6 +312,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "whatsapp"    && <WhatsAppTab />}
           {tab === "company"     && <CompanyTab />}
           {tab === "invoice"     && <InvoiceTab />}
+          {tab === "storefront"  && <StorefrontTab />}
           {tab === "categories"  && <CategoriesTab />}
           {tab === "ai"          && <AiTab />}
           {tab === "sync"        && <SyncTab />}
@@ -3339,6 +3342,115 @@ function TemplatesTab() {
           <div className="text-center text-[13px] text-muted py-10">No templates yet.</div>
         )}
       </div>
+    </div>
+  );
+}
+
+function StorefrontTab() {
+  const [cfg, setCfg] = useState<StorefrontConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { api.getStorefrontConfig().then(setCfg).catch(() => {}); }, []);
+  if (!cfg) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
+
+  const set = (patch: Partial<StorefrontConfig>) => setCfg({ ...cfg, ...patch });
+  const save = async (override?: Partial<StorefrontConfig>) => {
+    const next = { ...cfg, ...(override || {}) };
+    setCfg(next);
+    setSaving(true);
+    try { const c = await api.saveStorefrontConfig(next); setCfg(c); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const copy = () => { if (cfg.url) { navigator.clipboard.writeText(cfg.url); setCopied(true); setTimeout(() => setCopied(false), 1500); } };
+
+  const inpCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40";
+  const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
+    <button onClick={onClick} className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${on ? "bg-accent" : "bg-surface-3 border border-line"}`}>
+      <span className={`absolute top-[3px] left-[3px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${on ? "translate-x-5" : ""}`} />
+    </button>
+  );
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <p className="text-[12px] text-muted leading-relaxed">
+        A clean public web page of your available inventory — share the link with your buyer network so they can browse what's in stock anytime, with photos, location, and (optionally) pricing. Sold or archived lots drop off automatically.
+      </p>
+
+      {/* Enable */}
+      <div className="flex items-center justify-between bg-surface border border-line rounded-xl px-4 py-3">
+        <div>
+          <div className="text-[13px] font-medium text-ink">Public storefront</div>
+          <div className="text-[11.5px] text-muted">{cfg.enabled ? "Live — anyone with the link can view your available lots" : "Off — turn on to generate your shareable link"}</div>
+        </div>
+        <Toggle on={cfg.enabled} onClick={() => save({ enabled: !cfg.enabled })} />
+      </div>
+
+      {/* Link */}
+      {cfg.enabled && cfg.url && (
+        <div>
+          <SectionLabel>Your public link</SectionLabel>
+          <div className="flex gap-2 mt-2">
+            <input readOnly value={cfg.url} onFocus={(e) => e.currentTarget.select()} className={inpCls} />
+            <button onClick={copy} className="border border-line rounded-lg px-3 h-9 text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap flex items-center gap-1.5">
+              {copied ? <><Check size={13} className="text-success-ink" /> Copied</> : "Copy"}
+            </button>
+            <button onClick={() => api.openExternal(cfg.url!)} className="border border-line rounded-lg px-3 h-9 text-[12px] text-ink-2 hover:bg-surface-2 whitespace-nowrap">Open</button>
+          </div>
+          <p className="text-[11px] text-muted mt-1.5">Anyone can view it — the link is unguessable. Turning the storefront off makes it stop working.</p>
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="space-y-3">
+        <SectionLabel>Page content</SectionLabel>
+        <div>
+          <label className="text-[12px] text-muted">Headline</label>
+          <input value={cfg.title} onChange={(e) => set({ title: e.target.value })} placeholder="e.g. BJM Distributions — Available Now" className={inpCls} />
+        </div>
+        <div>
+          <label className="text-[12px] text-muted">Subtitle</label>
+          <input value={cfg.subtitle} onChange={(e) => set({ subtitle: e.target.value })} placeholder="e.g. Wholesale loads, refreshed weekly. First to commit wins it." className={inpCls} />
+        </div>
+      </div>
+
+      {/* Contact — powers the "Inquire" button on every lot */}
+      <div className="space-y-3">
+        <SectionLabel>Inquire button</SectionLabel>
+        <p className="text-[11.5px] text-muted -mt-1">Each lot gets an “Inquire” button. WhatsApp is used if set, otherwise email.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-[12px] text-muted">WhatsApp number</label>
+            <input value={cfg.contact_wa} onChange={(e) => set({ contact_wa: e.target.value })} placeholder="+1 555 555 0100" className={inpCls} />
+          </div>
+          <div>
+            <label className="text-[12px] text-muted">Contact email</label>
+            <input value={cfg.contact_email} onChange={(e) => set({ contact_email: e.target.value })} placeholder="you@company.com" className={inpCls} />
+          </div>
+        </div>
+      </div>
+
+      {/* Display options */}
+      <div className="space-y-2.5">
+        <SectionLabel>Display</SectionLabel>
+        <label className="flex items-center gap-2.5 text-[13px] text-ink-2 cursor-pointer">
+          <input type="checkbox" className="accent-accent" checked={cfg.show_prices} onChange={(e) => set({ show_prices: e.target.checked })} />
+          Show prices (asking price on each lot)
+        </label>
+        <label className="flex items-center gap-2.5 text-[13px] text-ink-2 cursor-pointer">
+          <input type="checkbox" className="accent-accent" checked={cfg.show_logo} onChange={(e) => set({ show_logo: e.target.checked })} />
+          Show your company logo (from Company settings)
+        </label>
+        <div className="flex items-center gap-3 pt-1">
+          <label className="text-[13px] text-ink-2">Accent color</label>
+          <input type="color" value={cfg.accent || "#FF6520"} onChange={(e) => set({ accent: e.target.value })} className="w-9 h-9 rounded-lg border border-line bg-surface-2 cursor-pointer" />
+          <span className="text-[12px] text-muted tabular-nums">{cfg.accent}</span>
+        </div>
+      </div>
+
+      <button onClick={() => save()} disabled={saving} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50">
+        {saving ? "Saving…" : "Save storefront"}
+      </button>
     </div>
   );
 }

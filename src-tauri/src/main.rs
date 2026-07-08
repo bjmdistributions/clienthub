@@ -490,6 +490,8 @@ fn main() {
             parse_load,
             load_ai_status,
             set_anthropic_key,
+            get_storefront_config,
+            save_storefront_config,
             // Settings & creds
             save_credential,
             delete_credential,
