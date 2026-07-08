@@ -483,39 +483,13 @@ export default function InventoryView() {
 // screenshot) → AI parses it into lot fields → opens the New-lot form prefilled.
 function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: (pfs: Partial<Lot>[]) => void }) {
   const [text, setText] = useState("");
-  const [img, setImg] = useState<{ b64: string; mt: string; preview: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
-  const [keyInput, setKeyInput] = useState("");
-
-  useEffect(() => { api.loadAiStatus().then(setHasKey).catch(() => setHasKey(false)); }, []);
-
-  const onPaste = (e: React.ClipboardEvent) => {
-    const item = Array.from(e.clipboardData.items).find((i) => i.type.startsWith("image/"));
-    if (!item) return; // let normal text paste happen
-    const file = item.getAsFile();
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const b64 = dataUrl.split(",")[1] || "";
-      const mt = (dataUrl.match(/data:(.*?);/) || [])[1] || "image/png";
-      setImg({ b64, mt, preview: dataUrl });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const saveKey = async () => {
-    if (!keyInput.trim()) return;
-    try { await api.setAnthropicKey(keyInput.trim()); setHasKey(true); setKeyInput(""); }
-    catch (e: any) { setErr(String(e)); }
-  };
 
   const parse = async () => {
     setBusy(true); setErr(null);
     try {
-      const loads: ParsedLoad[] = await api.parseLoads(text, img?.b64, img?.mt);
+      const loads: ParsedLoad[] = await api.parseLoads(text);
       if (!loads.length) { setErr("Couldn't find a load in that text — add a bit more detail and retry."); setBusy(false); return; }
       const prefills: Partial<Lot>[] = loads.map((p) => {
         const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
@@ -545,45 +519,24 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
-        <p className="text-[12px] text-muted mb-3">Paste one or more loads (whole WhatsApp messages are fine), and/or press <b>Ctrl/⌘+V</b> to drop a screenshot. AI strips the junk, splits multiple loads, and fills a form for each — you review, add photos/category, and save.</p>
+        <p className="text-[12px] text-muted mb-3">Paste one or more loads — whole WhatsApp messages are fine. It strips the junk, splits multiple loads, and fills a form for each. Review, add photos and category, then save. Free — no AI, no key.</p>
 
-        {hasKey === false ? (
-          <div className="bg-warning-bg border border-warning rounded-lg p-3 mb-3">
-            <div className="text-[12.5px] text-warning-ink font-medium mb-1.5">Add your AI key to enable paste-to-load</div>
-            <div className="text-[11.5px] text-warning-ink/90 mb-2">Get one at console.anthropic.com → API keys. Stored on this device only. Parsing costs a fraction of a cent.</div>
-            <div className="flex gap-2">
-              <input value={keyInput} onChange={(e) => setKeyInput(e.target.value)} type="password" placeholder="sk-ant-…" className={inp} />
-              <button onClick={saveKey} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-9 rounded-lg text-[12px] font-medium whitespace-nowrap">Save key</button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onPaste={onPaste}
-              rows={6}
-              autoFocus
-              placeholder="Paste the load details here…"
-              className="w-full border border-line px-3 py-2.5 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-none"
-            />
-            {img && (
-              <div className="mt-2 flex items-center gap-2">
-                <img src={img.preview} alt="manifest" className="h-14 w-14 object-cover rounded-lg border border-line" />
-                <span className="text-[12px] text-muted">Manifest image attached</span>
-                <button onClick={() => setImg(null)} className="text-muted hover:text-danger-ink ml-auto"><X size={14} /></button>
-              </div>
-            )}
-            {err && <div className="text-[11.5px] text-danger-ink mt-2">{err}</div>}
-            <div className="flex justify-end gap-2 mt-4">
-              <button onClick={onClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
-              <button onClick={parse} disabled={busy || (!text.trim() && !img)}
-                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
-                {busy ? <><RefreshCw size={14} className="animate-spin" /> Reading…</> : <>Parse load →</>}
-              </button>
-            </div>
-          </>
-        )}
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={8}
+          autoFocus
+          placeholder="Paste the supplier message(s) here…"
+          className="w-full border border-line px-3 py-2.5 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-none"
+        />
+        {err && <div className="text-[11.5px] text-danger-ink mt-2">{err}</div>}
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
+          <button onClick={parse} disabled={busy || !text.trim()}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+            {busy ? <><RefreshCw size={14} className="animate-spin" /> Reading…</> : <>Format loads →</>}
+          </button>
+        </div>
       </div>
     </div>
   );

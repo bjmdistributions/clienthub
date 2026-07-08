@@ -5765,11 +5765,31 @@ pub async fn parse_load(text: String, image_base64: Option<String>, image_media_
 }
 
 /// Parse a pasted blob (often several WhatsApp messages) into a LIST of lots.
+/// Free + deterministic: calls the hosted rule-based parser (no AI, no API key).
 #[tauri::command]
-pub async fn parse_loads(text: String, image_base64: Option<String>, image_media_type: Option<String>) -> Result<Vec<Value>, String> {
-    crate::ai::parse_loads(&text, image_base64.as_deref(), image_media_type.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+pub async fn parse_loads(text: String, image_base64: Option<String>, _image_media_type: Option<String>) -> Result<Vec<Value>, String> {
+    if text.trim().is_empty() {
+        return Err(if image_base64.is_some() {
+            "Paste the message text — the free parser reads text, not screenshots.".into()
+        } else {
+            "Paste one or more load messages first.".into()
+        });
+    }
+    let base = crate::netsync::config()
+        .map(|c| c.url.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "https://ecliptr.app".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{base}/api/tools/parse-loads"))
+        .json(&serde_json::json!({ "text": text }))
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Parser service returned {}", resp.status()));
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(v.get("loads").and_then(|l| l.as_array()).cloned().unwrap_or_default())
 }
 
 /// Whether an Anthropic API key is configured (never returns the key itself).
