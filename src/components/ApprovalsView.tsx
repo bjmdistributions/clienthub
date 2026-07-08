@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type ApprovalRequest, type Client, type ClientInput } from "../lib/api";
 import PendingReviewModal from "./PendingReviewModal";
-import { UserPlus, Inbox, ChevronRight, X } from "lucide-react";
+import { UserPlus, Inbox, ChevronRight, X, Store } from "lucide-react";
 
 const kindLabel = (k: string) =>
-  k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k;
+  k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k;
 
 function sourceLabel(m: Record<string, any> | null | undefined): string {
   const s = String(m?.source || "");
@@ -113,9 +113,11 @@ export function ApprovalsView() {
     await load(); window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
 
-  // Role-based requests that aren't a plain new-customer add (e.g. deletions).
-  const nonAddRequests = items.filter((a) => a.kind !== "client_add");
-  const total = pending.length + nonAddRequests.length;
+  // Stale storefront listings (renew or mark sold) get their own section; other
+  // non-client_add requests (e.g. deletions) are team requests.
+  const staleListings = items.filter((a) => a.kind === "listing_stale");
+  const teamRequests = items.filter((a) => a.kind !== "client_add" && a.kind !== "listing_stale");
+  const total = pending.length + staleListings.length + teamRequests.length;
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
@@ -160,12 +162,37 @@ export function ApprovalsView() {
             </section>
           )}
 
+          {/* Storefront listings that have gone stale — renew or mark sold */}
+          {staleListings.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2 mb-2.5">
+                <Store size={15} className="text-muted" />
+                <h3 className="text-[13px] font-semibold text-ink">Storefront listings</h3>
+                <span className="text-[11px] font-semibold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums">{staleListings.length}</span>
+              </div>
+              <div className="space-y-2.5">
+                {staleListings.map((a) => (
+                  <div key={a.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[14px] font-medium text-ink truncate">{(a.summary || "").replace(/^Renew or mark sold:\s*/, "") || "Listing"}</div>
+                      <div className="text-[11px] text-muted mt-0.5">On your storefront 2+ days — renew to keep it live, or mark it sold.</div>
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <button onClick={() => quick(a.id, true)} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium">Renew</button>
+                      <button onClick={() => quick(a.id, false)} className="border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium">Mark sold</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Team requests (deletions, etc.) */}
-          {nonAddRequests.length > 0 && (
+          {teamRequests.length > 0 && (
             <section>
               <h3 className="text-[13px] font-semibold text-ink mb-2.5">Team requests</h3>
               <div className="space-y-2.5">
-                {nonAddRequests.map((a) => (
+                {teamRequests.map((a) => (
                   <div key={a.id} className="bg-surface border border-line rounded-xl p-4 flex items-center justify-between gap-4">
                     <button className="min-w-0 text-left flex-1" onClick={() => setSelected(a)}>
                       <div className="text-[14px] font-medium text-ink truncate">{a.summary || kindLabel(a.kind)}</div>

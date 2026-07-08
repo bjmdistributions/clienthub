@@ -37,14 +37,22 @@ export default function InventoryView() {
   const [showManifest, setShowManifest] = useState(false);
 
   const [suppliers, setSuppliers] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [mediaBase, setMediaBase] = useState("");
   const [detailId, setDetailId] = useState<string | null>(null);
   const load = async () => { const l = await api.listInventory(); setLots(l); };
   useEffect(() => {
     load();
     api.listSuppliers().then((s) => setSuppliers(s.map((x) => x.name).filter(Boolean))).catch(() => {});
+    api.listCategories().then((cs) => setCategories(cs.map((c) => c.label).filter(Boolean))).catch(() => {});
     api.mediaBaseDir().then(setMediaBase).catch(() => {});
   }, []);
+  // Category suggestions = the org's managed categories (buyer segments) plus any
+  // category already used on a lot, so picking one keeps blasts aligned to a segment.
+  const categoryOptions = Array.from(new Set([
+    ...categories,
+    ...lots.map((l) => (l.category || "").trim()).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
 
   const setStatus = async (lot: Lot, status: string) => {
     try { await api.setLotStatus(lot.id, status); load(); }
@@ -417,7 +425,7 @@ export default function InventoryView() {
         </div>
       </div>
 
-      {showForm && <LotForm initial={editing} prefill={prefill} onClose={() => { setShowForm(false); setEditing(null); setPrefill(null); load(); }} deals={deals} suppliers={suppliers} mediaBase={mediaBase} />}
+      {showForm && <LotForm initial={editing} prefill={prefill} onClose={() => { setShowForm(false); setEditing(null); setPrefill(null); load(); }} deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} />}
 
       {pasting && <PasteLoadModal
         onClose={() => setPasting(false)}
@@ -672,7 +680,7 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
   );
 }
 
-function LotForm({ initial, prefill, onClose, suppliers, mediaBase }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; mediaBase: string }) {
+function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string }) {
   const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
   const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
   const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
@@ -761,7 +769,10 @@ function LotForm({ initial, prefill, onClose, suppliers, mediaBase }: { initial?
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Category</label>
-              <input className={inp} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Electronics" />
+              <input className={inp} list="lot-category-options" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Type or pick a category" />
+              <datalist id="lot-category-options">
+                {categories.map((c) => <option key={c} value={c} />)}
+              </datalist>
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Qty</label>
