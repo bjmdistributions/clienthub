@@ -74,11 +74,15 @@ export default function DealFlowView() {
       );
 
       // Auto-create deal flows for ALL invoices that aren't already complete —
-      // includes drafts so invoices and deal flow stay fully in sync.
+      // includes drafts so invoices and deal flow stay fully in sync. Exclude
+      // VOIDED invoices: list_deal_flows hides their flows, so they're never
+      // "covered" and would retrigger createDealFlow every load — which errors
+      // ("deal flow already exists") and, via Promise.all, blanked the whole view.
       const coveredIds = new Set(deduped.map((fl) => fl.invoice_id));
-      const missing = inv.filter((i) => !i.is_complete && !coveredIds.has(i.id));
+      const missing = inv.filter((i) => !i.is_complete && !i.voided && !coveredIds.has(i.id));
       if (missing.length > 0) {
-        await Promise.all(missing.map((i) => api.createDealFlow(i.id, null, i.number)));
+        // allSettled, not all: one failed create must never blank the pipeline.
+        await Promise.allSettled(missing.map((i) => api.createDealFlow(i.id, null, i.number)));
         const fresh = await api.listDealFlows();
         // Re-deduplicate after creation
         const freshDeduped = Object.values(
