@@ -1233,4 +1233,13 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE sheet_sync_config ADD COLUMN writeback_enabled INTEGER NOT NULL DEFAULT 1;
         "#,
     ),
+    (
+        58,
+        // Structured extras for a lot (pallets, MSRP, avg MSRP, MOQ, size run) as a
+        // single JSON blob so the storefront/blast can show them and the parser can
+        // fill them. Public fields; supplier + cost stay in their own columns (internal).
+        r#"
+        ALTER TABLE inventory ADD COLUMN details_json TEXT;
+        "#,
+    ),
 ];

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, CompanyInfo } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { toast } from "./Toast";
@@ -818,6 +818,11 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
       const prefills: Partial<Lot>[] = loads.map((p) => {
         const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
         const pt = p.price_type === "per_unit" || p.price_type === "total" ? p.price_type : undefined;
+        const sizeRun = p.size_run && p.size_run.length ? p.size_run : null;
+        const hasDetails = p.pallets != null || p.msrp != null || p.avg_msrp != null || p.moq != null || sizeRun != null;
+        const detailsJson = hasDetails
+          ? JSON.stringify({ pallets: p.pallets ?? null, msrp: p.msrp ?? null, avg_msrp: p.avg_msrp ?? null, moq: p.moq ?? null, size_run: sizeRun })
+          : undefined;
         return {
           name: p.title ?? "",
           description: p.description ?? "",
@@ -829,6 +834,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
           supplier: p.supplier ?? "",
           location: p.location ?? "",
           notes: notes || undefined,
+          details_json: detailsJson,
         };
       });
       onParsed(prefills);
@@ -881,20 +887,63 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
     Promise.all([
       api.listClients().catch(() => [] as Client[]),
       api.getStorefrontConfig().then((c) => (c.enabled ? c.url : null)).catch(() => null),
-    ]).then(([cs, url]) => {
+      api.getCompanyInfo().catch(() => null),
+    ]).then(([cs, url, company]) => {
       setClients(cs); setStoreUrl(url);
-      // Draft the email from the lot.
+
+      // Public structured extras from the lot (never supplier/cost).
+      const details: LotDetails = (() => { try { return JSON.parse(lot.details_json || "{}") ?? {}; } catch { return {}; } })();
+      const pallets = details.pallets ?? null;
+      const msrp = details.msrp ?? null;
+      const avgMsrp = details.avg_msrp ?? null;
+      const sizeRun = (details.size_run || []).filter((r) => r.size.trim());
+
+      // Company contact block — read from org company settings, never hardcoded.
+      const co: CompanyInfo | null = company;
+      const phone = co?.phone?.trim() || "";
+      const website = url || "";
+
       setSubject(`New load: ${lot.name}`);
-      const line = [lot.category, lot.quantity > 0 ? `${lot.quantity} units` : "", lot.location].filter(Boolean).join(" · ");
-      const price = lot.asking_price > 0 ? `\nPrice: ${fmtAmount(lot.asking_price)}${lot.price_type === "per_unit" ? " / unit" : ""}` : "";
-      setBody(
-        `Hi {{first_name}},\n\nNew load just in:\n\n${lot.name}` +
-        (line ? `\n${line}` : "") + price +
-        (lot.description ? `\n\n${lot.description}` : "") +
-        (lot.notes ? `\n${lot.notes}` : "") +
-        `\n\nReply if you want it — first to commit takes it.` +
-        (url ? `\n\nBrowse everything available: ${url}` : "")
-      );
+
+      const price = lot.asking_price > 0
+        ? `${lot.price_type === "per_unit" ? "Price per unit" : "Price for the lot"} - $${fmtAmount(lot.asking_price).replace(/^\$/, "")}`
+        : "";
+      // Header summary line: "<pallets> pallets · <units> units · <brand mix>".
+      const summary = [
+        pallets ? `${pallets} pallets` : "",
+        lot.quantity > 0 ? `${lot.quantity} units` : "",
+        lot.description || "",
+      ].filter(Boolean).join(" · ");
+
+      // Compose the outbound template; every line is dropped when its value is missing.
+      const lines: string[] = [];
+      lines.push("Hey {{first_name}},");
+      lines.push("");
+      lines.push(lot.name);
+      if (summary) { lines.push(""); lines.push(summary); }
+      lines.push("");
+      if (lot.quantity > 0) lines.push(`UNITS - ${lot.quantity}`);
+      if (pallets) lines.push(`PALLETS - ${pallets}`);
+      if (msrp) lines.push(`TOTAL MSRP - $${fmtAmount(msrp).replace(/^\$/, "")}`);
+      if (avgMsrp) lines.push(`AVG MSRP - $${fmtAmount(avgMsrp).replace(/^\$/, "")}`);
+      if (price) lines.push(price);
+      if (sizeRun.length) {
+        lines.push("");
+        lines.push("Sizes:");
+        for (const r of sizeRun) lines.push(`${r.size} - ${r.qty}`);
+      }
+      lines.push("");
+      lines.push(`If you want any specifics or the manifest, reply here${phone ? ` or text/call me at ${phone}` : ""}.`);
+      lines.push("");
+      lines.push("Thanks,");
+      lines.push("");
+      // Contact/signature block — omit any missing field.
+      if (co?.name?.trim()) lines.push(co.name.trim());
+      if (co?.email?.trim()) lines.push(co.email.trim());
+      if (phone) lines.push(phone);
+      if (website) lines.push(website);
+
+      setBody(lines.join("\n"));
       setLoaded(true);
     });
   }, [lot]);
@@ -994,6 +1043,18 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
   const [newManifestFile, setNewManifestFile] = useState<string | null>(null); // picked file for a not-yet-created lot
   const [saving, setSaving] = useState(false);
 
+  // Structured extras (details_json). Public: pallets/msrp/sizeRun. Internal: moq.
+  // Seed from the edited lot, or from a pasted-load prefill.
+  const seedDetails = (): LotDetails => {
+    try { return JSON.parse((initial?.details_json ?? (prefill as any)?.details_json) || "{}") ?? {}; }
+    catch { return {}; }
+  };
+  const [details0] = useState<LotDetails>(seedDetails);
+  const [pallets, setPallets] = useState<number>(details0.pallets ?? 0);
+  const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
+  const [moq, setMoq] = useState<number>(details0.moq ?? 0);
+  const [sizeRun, setSizeRun] = useState<{ size: string; qty: number }[]>(details0.size_run ?? []);
+
   const pickManifest = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
     if (typeof f !== "string") return;
@@ -1028,10 +1089,17 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
     if (!name.trim()) return;
     setSaving(true);
     try {
+      // Build the public/internal extras blob. Undefined when everything's empty
+      // so we don't persist an empty object.
+      const cleanRun = sizeRun.filter((r) => r.size.trim());
+      const hasDetails = !!pallets || !!msrp || !!moq || cleanRun.length > 0;
+      const detailsJson = hasDetails
+        ? JSON.stringify({ pallets: pallets || null, msrp: msrp || null, moq: moq || null, size_run: cleanRun })
+        : undefined;
       if (initial) {
-        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType });
+        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
       } else {
-        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType });
+        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType, detailsJson });
         // Photos were picked as raw paths; copy them into the lot's synced media folder now that it has an id.
         if (photos.length > 0) {
           const rel = await api.importLotPhotos(lot.id, photos);
@@ -1059,63 +1127,73 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
             <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="Lot name" />
           </div>
           <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Category</label>
+            <CategoryCombobox value={category} onChange={setCategory} options={categories} />
+          </div>
+          <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">Description</label>
             <input className={inp} value={desc} onChange={(e) => setDesc(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Category</label>
-              <CategoryCombobox value={category} onChange={setCategory} options={categories} />
-            </div>
-            <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Qty</label>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Quantity (units)</label>
               <input className={inp} type="number" value={qty} onChange={(e) => setQty(parseInt(e.target.value) || 0)} />
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Supplier</label>
-              <input className={inp} list="lot-supplier-options" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Type or pick a supplier" />
-              <datalist id="lot-supplier-options">
-                {suppliers.map((s) => <option key={s} value={s} />)}
-              </datalist>
-            </div>
-            <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Location</label>
-              <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A, Shelf 3" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Cost price</label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} />
-              </div>
-            </div>
-            <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Selling price</label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} />
-              </div>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Pallets</label>
+              <input className={inp} type="number" value={pallets || ""} onChange={(e) => setPallets(parseInt(e.target.value) || 0)} placeholder="0" />
             </div>
           </div>
           <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Price type</label>
-            <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5">
-              {(["per_unit", "total"] as const).map(pt => (
-                <button key={pt} onClick={() => setPriceType(pt)}
-                  className={`flex-1 text-[12px] font-medium py-1.5 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                  {pt === "per_unit" ? "Per unit" : "Total"}
-                </button>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Location</label>
+            <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A, Shelf 3" />
+          </div>
+          <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">MSRP (total retail)</label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+              <input className={inp + " pl-6"} type="number" step="0.01" value={msrp || ""} onChange={(e) => setMsrp(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Selling price</label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+              </div>
+              <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5 flex-shrink-0">
+                {(["per_unit", "total"] as const).map(pt => (
+                  <button key={pt} onClick={() => setPriceType(pt)}
+                    className={`text-[12px] font-medium px-2.5 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                    {pt === "per_unit" ? "Per unit" : "Fixed total"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Size run editor */}
+          <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Size run (size → quantity)</label>
+            <div className="space-y-1.5">
+              {sizeRun.map((r, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input className={inp + " flex-1"} value={r.size} placeholder='Size (e.g. "10.5")'
+                    onChange={(e) => setSizeRun(sizeRun.map((row, idx) => idx === i ? { ...row, size: e.target.value } : row))} />
+                  <input className={inp + " w-24 tabular-nums"} type="number" value={r.qty || ""} placeholder="Qty"
+                    onChange={(e) => setSizeRun(sizeRun.map((row, idx) => idx === i ? { ...row, qty: parseInt(e.target.value) || 0 } : row))} />
+                  <button onClick={() => setSizeRun(sizeRun.filter((_, idx) => idx !== i))} title="Remove size"
+                    className="w-8 h-9 flex items-center justify-center text-muted hover:text-danger-ink transition-colors flex-shrink-0"><X size={14} /></button>
+                </div>
               ))}
+              <button onClick={() => setSizeRun([...sizeRun, { size: "", qty: 0 }])}
+                className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
+                <Plus size={13} /> Add size
+              </button>
             </div>
           </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Notes</label>
-            <input className={inp} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Authentic, sealed, minor box damage" />
-          </div>
+
           <div className="flex items-center gap-5 pt-0.5">
             <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
               <input type="checkbox" className="accent-accent" checked={sentWa} onChange={(e) => setSentWa(e.target.checked)} />
@@ -1175,6 +1253,38 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
                 <Plus size={13} /> Add manifest (PDF / CSV)
               </button>
             )}
+          </div>
+
+          <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Notes</label>
+            <input className={inp} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Authentic, sealed, minor box damage" />
+          </div>
+
+          {/* Internal — never shown to buyers. Supplier, your cost, and MOQ stay private. */}
+          <div className="bg-surface-2 border border-line rounded-lg p-3 space-y-3">
+            <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
+              <Lock size={13} className="text-muted" /> Internal — never shown to buyers
+            </div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Supplier</label>
+              <input className={inp} list="lot-supplier-options" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Type or pick a supplier" />
+              <datalist id="lot-supplier-options">
+                {suppliers.map((s) => <option key={s} value={s} />)}
+              </datalist>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">Your cost</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                  <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-[12.5px] font-medium text-muted mb-1">MOQ (min order qty)</label>
+                <input className={inp + " tabular-nums"} type="number" value={moq || ""} onChange={(e) => setMoq(parseInt(e.target.value) || 0)} placeholder="0" />
+              </div>
+            </div>
           </div>
 
         </div>

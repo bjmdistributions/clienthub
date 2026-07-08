@@ -6464,14 +6464,16 @@ pub struct InventoryLot {
     pub location: Option<String>,
     pub price_type: String,
     pub manifest_path: Option<String>,
+    /// JSON blob of extra structured fields: {pallets, msrp, avg_msrp, moq, size_run:[{size,qty}]}.
+    pub details_json: Option<String>,
 }
 
 #[tauri::command]
 pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let (sql, params): (String, Vec<String>) = match &status {
-        Some(s) => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
-        None => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path FROM inventory ORDER BY created_at DESC".into(), vec![]),
+        Some(s) => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path,details_json FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
+        None => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path,details_json FROM inventory ORDER BY created_at DESC".into(), vec![]),
     };
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
@@ -6482,20 +6484,21 @@ pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>,
         created_at: r.get(10)?, updated_at: r.get(11)?, notes: r.get(12)?,
         sent_whatsapp: r.get(13)?, sent_email: r.get(14)?, supplier: r.get(15)?,
         location: r.get(16)?, price_type: r.get(17)?, manifest_path: r.get(18)?,
+        details_json: r.get(19)?,
     })).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
-pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>, notes: Option<String>, supplier: Option<String>, location: Option<String>, price_type: Option<String>) -> Result<InventoryLot, String> {
+pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_price: f64, description: Option<String>, category: Option<String>, photos: Option<Vec<String>>, notes: Option<String>, supplier: Option<String>, location: Option<String>, price_type: Option<String>, details_json: Option<String>) -> Result<InventoryLot, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let photos_json = serde_json::to_string(&photos.unwrap_or_default()).map_err(|e| e.to_string())?;
     let pt = price_type.unwrap_or_else(|| "per_unit".into());
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location,price_type) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9,?10,0,0,?11,?12,?13)",
-        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now, notes, supplier, location, pt],
+        "INSERT INTO inventory (id,name,description,category,quantity,total_cost,asking_price,status,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location,price_type,details_json) VALUES (?1,?2,?3,?4,?5,?6,?7,'available',?8,?9,?9,?10,0,0,?11,?12,?13,?14)",
+        rusqlite::params![id, name, description, category, quantity, total_cost, asking_price, photos_json, now, notes, supplier, location, pt, details_json],
     ).map_err(|e| e.to_string())?;
 
     // Sync the full row so other devices can reconstruct it.
@@ -6516,13 +6519,14 @@ pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_pri
     cols.insert("supplier".into(), serde_json::json!(supplier));
     cols.insert("location".into(), serde_json::json!(location));
     cols.insert("price_type".into(), serde_json::json!(pt));
+    cols.insert("details_json".into(), serde_json::json!(details_json));
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
 
-    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, supplier, location, price_type: pt, manifest_path: None })
+    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, supplier, location, price_type: pt, manifest_path: None, details_json })
 }
 
 #[tauri::command]
-pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, supplier: Option<String>, location: Option<String>, price_type: Option<String>) -> Result<(), String> {
+pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, supplier: Option<String>, location: Option<String>, price_type: Option<String>, details_json: Option<String>) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut sets = vec!["updated_at = ?1".to_string()];
@@ -6543,6 +6547,7 @@ pub async fn update_lot(id: String, name: Option<String>, description: Option<St
     if let Some(v) = supplier { sets.push("supplier = ?".to_string()); cols.insert("supplier".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     if let Some(v) = location { sets.push("location = ?".to_string()); cols.insert("location".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     if let Some(v) = price_type { sets.push("price_type = ?".to_string()); cols.insert("price_type".into(), serde_json::json!(v)); params.push(Box::new(v)); }
+    if let Some(v) = details_json { sets.push("details_json = ?".to_string()); cols.insert("details_json".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     let sql = format!("UPDATE inventory SET {} WHERE id = ?", sets.join(", "));
     params.push(Box::new(id.clone()));
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();

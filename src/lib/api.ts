@@ -1097,6 +1097,16 @@ export interface Lot {
   location: string | null;
   manifest_path: string | null;
   price_type: string;
+  details_json: string | null;
+}
+
+/** Parsed shape of Lot.details_json — public structured extras. */
+export interface LotDetails {
+  pallets?: number | null;
+  msrp?: number | null;
+  avg_msrp?: number | null;
+  moq?: number | null;
+  size_run?: { size: string; qty: number }[] | null;
 }
 
 export interface FollowUpRule {
@@ -1184,7 +1194,7 @@ export interface StorefrontConfig {
   bg: string;
 }
 
-/** AI-parsed load fields from a pasted supplier message / manifest image. */
+/** Fields from the free rule-based parser (server /api/tools/parse-loads). */
 export interface ParsedLoad {
   title?: string | null;
   description?: string | null;
@@ -1198,6 +1208,11 @@ export interface ParsedLoad {
   location?: string | null;
   supplier?: string | null;
   notes?: string | null;
+  pallets?: number | null;
+  msrp?: number | null;
+  avg_msrp?: number | null;
+  moq?: number | null;
+  size_run?: { size: string; qty: number }[] | null;
 }
 
 export interface CsvPreview {
@@ -1897,7 +1912,7 @@ export const api = {
 
   // Inventory
   listInventory: (status?: string) => invoke<Lot[]>("list_inventory", { status: status ?? null }),
-  createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string; priceType?: string }) =>
+  createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string; priceType?: string; detailsJson?: string }) =>
     invoke<Lot>("create_lot", { ...lot }),
   updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
   setLotStatus: (id: string, status: string) => invoke<void>("set_lot_status", { id, status }),
