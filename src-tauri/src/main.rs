@@ -488,6 +488,7 @@ fn main() {
             ai_list_models,
             ai_set_model,
             parse_load,
+            parse_loads,
             load_ai_status,
             set_anthropic_key,
             get_storefront_config,

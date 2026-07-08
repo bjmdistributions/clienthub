@@ -1193,6 +1193,7 @@ export interface ParsedLoad {
   unit_price?: number | null;
   total_cost?: number | null;
   asking_price?: number | null;
+  price_type?: string | null;
   condition?: string | null;
   location?: string | null;
   supplier?: string | null;
@@ -1683,6 +1684,9 @@ export const api = {
   // Paste-to-load: parse a supplier load message (+ optional image) into lot fields
   parseLoad: (text: string, imageBase64?: string | null, imageMediaType?: string | null) =>
     invoke<ParsedLoad>("parse_load", { text, imageBase64: imageBase64 ?? null, imageMediaType: imageMediaType ?? null }),
+  // Multi-load: parse a pasted blob (several messages) into a list of lot fields.
+  parseLoads: (text: string, imageBase64?: string | null, imageMediaType?: string | null) =>
+    invoke<ParsedLoad[]>("parse_loads", { text, imageBase64: imageBase64 ?? null, imageMediaType: imageMediaType ?? null }),
   loadAiStatus: () => invoke<boolean>("load_ai_status"),
   setAnthropicKey: (key: string) => invoke<void>("set_anthropic_key", { key }),
 

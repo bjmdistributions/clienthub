@@ -328,6 +328,20 @@ const LOAD_SCHEMA: &str = r#"{
   "notes": "anything else useful: MOQ, freight terms, manifest availability, pickup — or null"
 }"#;
 
+const LOADS_SCHEMA: &str = r#"{
+  "title": "short buyer-facing product name, e.g. 'Fanatics Sweaters & Jerseys' or 'Vivo Home Small Appliances'",
+  "description": "1-3 sentences: brand mix, notable items, program details — cleaned of emojis/bullets",
+  "category": "single best category e.g. Apparel, Electronics, Small Appliances, General Merchandise, Home Goods, Health & Beauty, Tools & Hardware, Footwear, Toys & Games — or null",
+  "quantity": "number of units if stated, else number of pallets, else 1",
+  "unit_price": "per-unit price if priced PER UNIT, else null",
+  "asking_price": "single lump price for the whole pallet/truckload/lot if priced that way, else null",
+  "price_type": "'per_unit' if priced per unit, else 'total' for a whole-lot price",
+  "condition": "e.g. new, new with tags, new without tags, customer returns, mixed — or null",
+  "location": "e.g. 'FOB California', city/state, or warehouse — or null",
+  "supplier": "brand/source or sender company if named, else null",
+  "notes": "anything else useful: pallet count, weekly program, freight terms, comparisons — cleaned — or null"
+}"#;
+
 /// Parse a pasted supplier load message (+ optional manifest/screenshot image) into
 /// structured lot fields. Returns JSON the UI maps onto the create-lot form.
 pub async fn parse_load(text: &str, image_base64: Option<&str>, image_media_type: Option<&str>) -> Result<Value> {
@@ -396,6 +410,104 @@ pub async fn parse_load(text: &str, image_base64: Option<&str>, image_media_type
                 let status = r.status();
                 let txt = r.text().await.unwrap_or_default();
                 // Auth/quota errors are not worth retrying — surface immediately.
+                if status.as_u16() == 401 || status.as_u16() == 403 {
+                    return Err(anyhow!("AI key rejected ({}). Check your Anthropic API key in Settings.", status));
+                }
+                last_err = Some(anyhow!("AI HTTP {}: {}", status, txt));
+            }
+            Err(e) => last_err = Some(e.into()),
+        }
+        if attempt < MAX_RETRIES {
+            tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("AI request failed")))
+}
+
+/// Parse a pasted blob that may contain MANY loads (e.g. several WhatsApp messages)
+/// into a list of structured lots. Splits by distinct offer, strips junk (emojis,
+/// bullets, "see pictures below"), and infers per-unit vs whole-lot pricing.
+pub async fn parse_loads(text: &str, image_base64: Option<&str>, image_media_type: Option<&str>) -> Result<Vec<Value>> {
+    let key = anthropic_key().ok_or_else(|| anyhow!(
+        "No AI key set. Add your Anthropic API key in Settings → Loads to enable paste-to-load."
+    ))?;
+    if text.trim().is_empty() && image_base64.is_none() {
+        return Err(anyhow!("Paste one or more load messages, or attach an image first."));
+    }
+
+    let system = format!(
+        "You extract structured data about wholesale/liquidation LOADS (pallets, truckloads, \
+         or lots of merchandise) from a supplier's pasted messages. The text often contains \
+         SEVERAL separate loads — e.g. multiple WhatsApp messages, each its own offer (a line \
+         like '[12:26 PM, 7/8/2026] Name:' usually starts a new load).\n\n\
+         Return ONLY valid JSON of the form {{\"loads\": [ ... ]}} — one object per distinct \
+         load, each matching the schema below. No markdown, no commentary.\n\n\
+         CLEAN the data: strip emojis, bullet characters (•, -, *, ·), and junk lines such as \
+         'see pictures below', 'see below', 'see pics', 'pictures 👇'. Never put those in any field. \
+         Use null for anything not stated; never invent prices or quantities. Numbers are plain \
+         numbers (no $ or commas).\n\n\
+         PRICING: if the message says price PER UNIT, set unit_price and price_type='per_unit'. \
+         If it's a single lump price for the whole pallet/truckload/lot, set asking_price and \
+         price_type='total'. quantity = number of units if stated, else number of pallets, else 1.\n\n\
+         Schema per load:\n{}",
+        LOADS_SCHEMA
+    );
+
+    let mut content: Vec<Value> = Vec::new();
+    if let (Some(b64), media) = (image_base64, image_media_type) {
+        content.push(serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media.unwrap_or("image/jpeg"), "data": b64 }
+        }));
+    }
+    let user_text = if text.trim().is_empty() {
+        "Extract every load from the attached image.".to_string()
+    } else {
+        format!("Supplier messages:\n{}", text.trim())
+    };
+    content.push(serde_json::json!({ "type": "text", "text": user_text }));
+
+    let body = serde_json::json!({
+        "model": LOAD_MODEL,
+        "max_tokens": 2048,
+        "system": system,
+        "messages": [{ "role": "user", "content": content }]
+    });
+
+    let client = http_client()?;
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let resp = client
+            .post(ANTHROPIC_URL)
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                let v: Value = r.json().await.context("Anthropic returned invalid JSON")?;
+                let raw = v.get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.iter().find_map(|b| b.get("text").and_then(|t| t.as_str())))
+                    .ok_or_else(|| anyhow!("Unexpected AI response shape"))?;
+                let cleaned = raw.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                let parsed: Value = serde_json::from_str(cleaned)
+                    .with_context(|| format!("AI returned non-JSON: {}", cleaned))?;
+                // Accept {"loads":[...]}, a bare [...], or a single {...}.
+                let loads = if let Some(arr) = parsed.get("loads").and_then(|l| l.as_array()) {
+                    arr.clone()
+                } else if let Some(arr) = parsed.as_array() {
+                    arr.clone()
+                } else {
+                    vec![parsed]
+                };
+                return Ok(loads);
+            }
+            Ok(r) => {
+                let status = r.status();
+                let txt = r.text().await.unwrap_or_default();
                 if status.as_u16() == 401 || status.as_u16() == 403 {
                     return Err(anyhow!("AI key rejected ({}). Check your Anthropic API key in Settings.", status));
                 }

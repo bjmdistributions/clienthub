@@ -26,6 +26,8 @@ export default function InventoryView() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Lot | null>(null);
   const [prefill, setPrefill] = useState<Partial<Lot> | null>(null);
+  const [prefillQueue, setPrefillQueue] = useState<Partial<Lot>[]>([]); // remaining pasted loads to step through
+  const [prefillSeq, setPrefillSeq] = useState(0);                       // bumps to remount LotForm per queued load
   const [pasting, setPasting] = useState(false);
   const [blastLot, setBlastLot] = useState<Lot | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -425,11 +427,19 @@ export default function InventoryView() {
         </div>
       </div>
 
-      {showForm && <LotForm initial={editing} prefill={prefill} onClose={() => { setShowForm(false); setEditing(null); setPrefill(null); load(); }} deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} />}
+      {showForm && <LotForm key={editing ? editing.id : `pf-${prefillSeq}`} initial={editing} prefill={prefill}
+        onClose={() => {
+          setShowForm(false); setEditing(null); load();
+          // Step to the next pasted load, if any, in a freshly-prefilled form.
+          if (prefillQueue.length > 0) {
+            setPrefill(prefillQueue[0]); setPrefillQueue(prefillQueue.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true);
+          } else { setPrefill(null); }
+        }}
+        deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} />}
 
       {pasting && <PasteLoadModal
         onClose={() => setPasting(false)}
-        onParsed={(pf) => { setPasting(false); setEditing(null); setPrefill(pf); setShowForm(true); }}
+        onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true); }}
       />}
 
       {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
@@ -471,7 +481,7 @@ export default function InventoryView() {
 
 // Paste-to-load: paste a supplier's WhatsApp message (and/or Ctrl+V a manifest
 // screenshot) → AI parses it into lot fields → opens the New-lot form prefilled.
-function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: (pf: Partial<Lot>) => void }) {
+function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: (pfs: Partial<Lot>[]) => void }) {
   const [text, setText] = useState("");
   const [img, setImg] = useState<{ b64: string; mt: string; preview: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -505,19 +515,25 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
   const parse = async () => {
     setBusy(true); setErr(null);
     try {
-      const p: ParsedLoad = await api.parseLoad(text, img?.b64, img?.mt);
-      const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
-      onParsed({
-        name: p.title ?? "",
-        description: p.description ?? "",
-        category: p.category ?? "",
-        quantity: p.quantity ?? 1,
-        total_cost: p.total_cost ?? p.unit_price ?? 0,
-        asking_price: p.asking_price ?? 0,
-        supplier: p.supplier ?? "",
-        location: p.location ?? "",
-        notes: notes || undefined,
+      const loads: ParsedLoad[] = await api.parseLoads(text, img?.b64, img?.mt);
+      if (!loads.length) { setErr("Couldn't find a load in that text — add a bit more detail and retry."); setBusy(false); return; }
+      const prefills: Partial<Lot>[] = loads.map((p) => {
+        const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
+        const pt = p.price_type === "per_unit" || p.price_type === "total" ? p.price_type : undefined;
+        return {
+          name: p.title ?? "",
+          description: p.description ?? "",
+          category: p.category ?? "",
+          quantity: p.quantity ?? 1,
+          total_cost: p.total_cost ?? p.unit_price ?? 0,
+          asking_price: p.asking_price ?? 0,
+          price_type: pt,
+          supplier: p.supplier ?? "",
+          location: p.location ?? "",
+          notes: notes || undefined,
+        };
       });
+      onParsed(prefills);
     } catch (e: any) { setErr(String(e)); }
     setBusy(false);
   };
@@ -529,7 +545,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
-        <p className="text-[12px] text-muted mb-3">Paste the supplier's message, and/or press <b>Ctrl/⌘+V</b> to drop a manifest screenshot. AI fills the new-lot form — you review before saving.</p>
+        <p className="text-[12px] text-muted mb-3">Paste one or more loads (whole WhatsApp messages are fine), and/or press <b>Ctrl/⌘+V</b> to drop a screenshot. AI strips the junk, splits multiple loads, and fills a form for each — you review, add photos/category, and save.</p>
 
         {hasKey === false ? (
           <div className="bg-warning-bg border border-warning rounded-lg p-3 mb-3">

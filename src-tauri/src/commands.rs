@@ -5764,6 +5764,14 @@ pub async fn parse_load(text: String, image_base64: Option<String>, image_media_
         .map_err(|e| e.to_string())
 }
 
+/// Parse a pasted blob (often several WhatsApp messages) into a LIST of lots.
+#[tauri::command]
+pub async fn parse_loads(text: String, image_base64: Option<String>, image_media_type: Option<String>) -> Result<Vec<Value>, String> {
+    crate::ai::parse_loads(&text, image_base64.as_deref(), image_media_type.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Whether an Anthropic API key is configured (never returns the key itself).
 #[tauri::command]
 pub async fn load_ai_status() -> Result<bool, String> {
