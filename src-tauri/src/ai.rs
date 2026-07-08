@@ -295,6 +295,121 @@ pub async fn health_check() -> Result<bool> {
     Ok(matches!(r, Ok(resp) if resp.status().is_success()))
 }
 
+// ---------- Paste-to-load: parse a supplier load post into a structured lot ----------
+// Uses Anthropic Claude Haiku (cloud) for reliable extraction from messy WhatsApp
+// text and manifest photos. The API key lives in the local `settings` table
+// (key `anthropic_api_key`) — device-local, never synced. Cost ~$0.001 per parse.
+
+const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
+const LOAD_MODEL: &str = "claude-haiku-4-5-20251001";
+
+fn anthropic_key() -> Option<String> {
+    let conn = pool().get().ok()?;
+    conn.query_row("SELECT value FROM settings WHERE key='anthropic_api_key'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// True when an Anthropic key is configured — the UI uses this to prompt for setup.
+pub fn has_load_ai_key() -> bool { anthropic_key().is_some() }
+
+const LOAD_SCHEMA: &str = r#"{
+  "title": "short buyer-facing product name for this load, e.g. 'Amazon Electronics Returns Pallet'",
+  "description": "one to three sentences describing the load, brand mix, notable items",
+  "category": "single best category e.g. Electronics, Apparel, General Merchandise, Home Goods, Health & Beauty, Tools & Hardware, Footwear, Toys & Games, Kitchenware, Seasonal",
+  "quantity": "number of units, or 1 if it's a single pallet/truckload sold as a lot",
+  "unit_price": "per-unit cost if stated, else null",
+  "total_cost": "total cost / your buy price if stated, else null",
+  "asking_price": "resale / asking price to the buyer if stated, else null",
+  "condition": "e.g. new, customer returns, shelf-pulls, overstock, salvage, mixed — or null",
+  "location": "city/state or warehouse location if stated, else null",
+  "supplier": "supplier or source name if stated, else null",
+  "notes": "anything else useful: MOQ, freight terms, manifest availability, pickup — or null"
+}"#;
+
+/// Parse a pasted supplier load message (+ optional manifest/screenshot image) into
+/// structured lot fields. Returns JSON the UI maps onto the create-lot form.
+pub async fn parse_load(text: &str, image_base64: Option<&str>, image_media_type: Option<&str>) -> Result<Value> {
+    let key = anthropic_key().ok_or_else(|| anyhow!(
+        "No AI key set. Add your Anthropic API key in Settings → Loads to enable paste-to-load."
+    ))?;
+    if text.trim().is_empty() && image_base64.is_none() {
+        return Err(anyhow!("Paste a load message or attach an image first."));
+    }
+
+    let system = format!(
+        "You extract structured data about a wholesale/liquidation LOAD (a pallet, truckload, \
+         or lot of merchandise) from a supplier's message and/or a manifest photo. Return ONLY \
+         valid JSON matching this schema — no markdown, no commentary. Use null for anything not \
+         stated; never invent prices or quantities. Numbers must be plain numbers (no $ or commas).\n\nSchema:\n{}",
+        LOAD_SCHEMA
+    );
+
+    // Build the user content: optional image block first, then the text.
+    let mut content: Vec<Value> = Vec::new();
+    if let (Some(b64), media) = (image_base64, image_media_type) {
+        content.push(serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media.unwrap_or("image/jpeg"), "data": b64 }
+        }));
+    }
+    let user_text = if text.trim().is_empty() {
+        "Extract the load details from the attached image.".to_string()
+    } else {
+        format!("Supplier message:\n{}", text.trim())
+    };
+    content.push(serde_json::json!({ "type": "text", "text": user_text }));
+
+    let body = serde_json::json!({
+        "model": LOAD_MODEL,
+        "max_tokens": 1024,
+        "system": system,
+        "messages": [{ "role": "user", "content": content }]
+    });
+
+    let client = http_client()?;
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let resp = client
+            .post(ANTHROPIC_URL)
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                let v: Value = r.json().await.context("Anthropic returned invalid JSON")?;
+                // content is an array of blocks; take the first text block.
+                let raw = v.get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.iter().find_map(|b| b.get("text").and_then(|t| t.as_str())))
+                    .ok_or_else(|| anyhow!("Unexpected AI response shape"))?;
+                let cleaned = raw.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                let parsed: Value = serde_json::from_str(cleaned)
+                    .with_context(|| format!("AI returned non-JSON: {}", cleaned))?;
+                return Ok(parsed);
+            }
+            Ok(r) => {
+                let status = r.status();
+                let txt = r.text().await.unwrap_or_default();
+                // Auth/quota errors are not worth retrying — surface immediately.
+                if status.as_u16() == 401 || status.as_u16() == 403 {
+                    return Err(anyhow!("AI key rejected ({}). Check your Anthropic API key in Settings.", status));
+                }
+                last_err = Some(anyhow!("AI HTTP {}: {}", status, txt));
+            }
+            Err(e) => last_err = Some(e.into()),
+        }
+        if attempt < MAX_RETRIES {
+            tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("AI request failed")))
+}
+
 pub async fn draft_newsletter(prompt: &str, tone: &str) -> Result<String> {
     let tone_instruction = match tone {
         "formal" => "formal, professional",

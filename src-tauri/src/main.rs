@@ -487,6 +487,9 @@ fn main() {
             ai_health_check,
             ai_list_models,
             ai_set_model,
+            parse_load,
+            load_ai_status,
+            set_anthropic_key,
             // Settings & creds
             save_credential,
             delete_credential,

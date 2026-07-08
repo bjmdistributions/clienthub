@@ -1169,6 +1169,21 @@ export interface OllamaModel {
   size?: number;
 }
 
+/** AI-parsed load fields from a pasted supplier message / manifest image. */
+export interface ParsedLoad {
+  title?: string | null;
+  description?: string | null;
+  category?: string | null;
+  quantity?: number | null;
+  unit_price?: number | null;
+  total_cost?: number | null;
+  asking_price?: number | null;
+  condition?: string | null;
+  location?: string | null;
+  supplier?: string | null;
+  notes?: string | null;
+}
+
 export interface CsvPreview {
   headers: string[];
   rows: string[][];
@@ -1649,6 +1664,12 @@ export const api = {
   aiHealthCheck: () => invoke<boolean>("ai_health_check"),
   aiListModels: () => invoke<OllamaModel[]>("ai_list_models"),
   aiSetModel: (model: string) => invoke<void>("ai_set_model", { model }),
+
+  // Paste-to-load: parse a supplier load message (+ optional image) into lot fields
+  parseLoad: (text: string, imageBase64?: string | null, imageMediaType?: string | null) =>
+    invoke<ParsedLoad>("parse_load", { text, imageBase64: imageBase64 ?? null, imageMediaType: imageMediaType ?? null }),
+  loadAiStatus: () => invoke<boolean>("load_ai_status"),
+  setAnthropicKey: (key: string) => invoke<void>("set_anthropic_key", { key }),
 
   // Settings
   saveCredential: (key: string, value: string) =>

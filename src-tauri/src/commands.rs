@@ -5755,6 +5755,37 @@ pub async fn ai_set_model(model: String) -> Result<(), String> {
     crate::ai::set_model(&model).map_err(|e| e.to_string())
 }
 
+/// Paste-to-load: parse a supplier load message (+ optional image) into structured
+/// lot fields. `image_base64` is the raw base64 (no data: prefix).
+#[tauri::command]
+pub async fn parse_load(text: String, image_base64: Option<String>, image_media_type: Option<String>) -> Result<Value, String> {
+    crate::ai::parse_load(&text, image_base64.as_deref(), image_media_type.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Whether an Anthropic API key is configured (never returns the key itself).
+#[tauri::command]
+pub async fn load_ai_status() -> Result<bool, String> {
+    Ok(crate::ai::has_load_ai_key())
+}
+
+/// Save (or clear, when empty) the Anthropic API key. Device-local, never synced.
+#[tauri::command]
+pub async fn set_anthropic_key(key: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let k = key.trim();
+    if k.is_empty() {
+        conn.execute("DELETE FROM settings WHERE key='anthropic_api_key'", []).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('anthropic_api_key', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [k],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ============================================================
 //  Settings & Credentials
 // ============================================================

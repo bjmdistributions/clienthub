@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis, ParsedLoad } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -25,6 +25,8 @@ export default function InventoryView() {
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Lot | null>(null);
+  const [prefill, setPrefill] = useState<Partial<Lot> | null>(null);
+  const [pasting, setPasting] = useState(false);
   const [showSold, setShowSold] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [linkModal, setLinkModal] = useState<string | null>(null);
@@ -156,7 +158,11 @@ export default function InventoryView() {
                 className="flex items-center gap-1.5 border border-line-3 text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 transition-colors">
                 <FileDown size={13} /> Export
               </button>
-              <button onClick={() => { setEditing(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
+              <button onClick={() => setPasting(true)} title="Paste a supplier load message or drop a manifest — AI fills the form"
+                className="flex items-center gap-1.5 border border-accent/40 text-accent px-3 h-9 rounded-lg text-[12px] font-medium hover:bg-accent/10 transition-colors">
+                <Clipboard size={13} /> Paste a load
+              </button>
+              <button onClick={() => { setEditing(null); setPrefill(null); setShowForm(true); }} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5">
                 <Plus size={14} /> Add lot
               </button>
             </>
@@ -406,7 +412,12 @@ export default function InventoryView() {
         </div>
       </div>
 
-      {showForm && <LotForm initial={editing} onClose={() => { setShowForm(false); setEditing(null); load(); }} deals={deals} suppliers={suppliers} mediaBase={mediaBase} />}
+      {showForm && <LotForm initial={editing} prefill={prefill} onClose={() => { setShowForm(false); setEditing(null); setPrefill(null); load(); }} deals={deals} suppliers={suppliers} mediaBase={mediaBase} />}
+
+      {pasting && <PasteLoadModal
+        onClose={() => setPasting(false)}
+        onParsed={(pf) => { setPasting(false); setEditing(null); setPrefill(pf); setShowForm(true); }}
+      />}
 
       {detailId && (() => {
         const detail = lots.find((l) => l.id === detailId);
@@ -443,17 +454,121 @@ export default function InventoryView() {
   );
 }
 
-function LotForm({ initial, onClose, suppliers, mediaBase }: { initial?: Lot | null; onClose: () => void; deals: Deal[]; suppliers: string[]; mediaBase: string }) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [desc, setDesc] = useState(initial?.description ?? "");
-  const [category, setCategory] = useState(initial?.category ?? "");
-  const [qty, setQty] = useState(initial?.quantity ?? 1);
-  const [cost, setCost] = useState(initial?.total_cost ?? 0);
-  const [ask, setAsk] = useState(initial?.asking_price ?? 0);
+// Paste-to-load: paste a supplier's WhatsApp message (and/or Ctrl+V a manifest
+// screenshot) → AI parses it into lot fields → opens the New-lot form prefilled.
+function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: (pf: Partial<Lot>) => void }) {
+  const [text, setText] = useState("");
+  const [img, setImg] = useState<{ b64: string; mt: string; preview: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+
+  useEffect(() => { api.loadAiStatus().then(setHasKey).catch(() => setHasKey(false)); }, []);
+
+  const onPaste = (e: React.ClipboardEvent) => {
+    const item = Array.from(e.clipboardData.items).find((i) => i.type.startsWith("image/"));
+    if (!item) return; // let normal text paste happen
+    const file = item.getAsFile();
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const b64 = dataUrl.split(",")[1] || "";
+      const mt = (dataUrl.match(/data:(.*?);/) || [])[1] || "image/png";
+      setImg({ b64, mt, preview: dataUrl });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const saveKey = async () => {
+    if (!keyInput.trim()) return;
+    try { await api.setAnthropicKey(keyInput.trim()); setHasKey(true); setKeyInput(""); }
+    catch (e: any) { setErr(String(e)); }
+  };
+
+  const parse = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const p: ParsedLoad = await api.parseLoad(text, img?.b64, img?.mt);
+      const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
+      onParsed({
+        name: p.title ?? "",
+        description: p.description ?? "",
+        category: p.category ?? "",
+        quantity: p.quantity ?? 1,
+        total_cost: p.total_cost ?? p.unit_price ?? 0,
+        asking_price: p.asking_price ?? 0,
+        supplier: p.supplier ?? "",
+        location: p.location ?? "",
+        notes: notes || undefined,
+      });
+    } catch (e: any) { setErr(String(e)); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-1">
+          <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
+        </div>
+        <p className="text-[12px] text-muted mb-3">Paste the supplier's message, and/or press <b>Ctrl/⌘+V</b> to drop a manifest screenshot. AI fills the new-lot form — you review before saving.</p>
+
+        {hasKey === false ? (
+          <div className="bg-warning-bg border border-warning rounded-lg p-3 mb-3">
+            <div className="text-[12.5px] text-warning-ink font-medium mb-1.5">Add your AI key to enable paste-to-load</div>
+            <div className="text-[11.5px] text-warning-ink/90 mb-2">Get one at console.anthropic.com → API keys. Stored on this device only. Parsing costs a fraction of a cent.</div>
+            <div className="flex gap-2">
+              <input value={keyInput} onChange={(e) => setKeyInput(e.target.value)} type="password" placeholder="sk-ant-…" className={inp} />
+              <button onClick={saveKey} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-9 rounded-lg text-[12px] font-medium whitespace-nowrap">Save key</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onPaste={onPaste}
+              rows={6}
+              autoFocus
+              placeholder="Paste the load details here…"
+              className="w-full border border-line px-3 py-2.5 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-none"
+            />
+            {img && (
+              <div className="mt-2 flex items-center gap-2">
+                <img src={img.preview} alt="manifest" className="h-14 w-14 object-cover rounded-lg border border-line" />
+                <span className="text-[12px] text-muted">Manifest image attached</span>
+                <button onClick={() => setImg(null)} className="text-muted hover:text-danger-ink ml-auto"><X size={14} /></button>
+              </div>
+            )}
+            {err && <div className="text-[11.5px] text-danger-ink mt-2">{err}</div>}
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={onClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
+              <button onClick={parse} disabled={busy || (!text.trim() && !img)}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+                {busy ? <><RefreshCw size={14} className="animate-spin" /> Reading…</> : <>Parse load →</>}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LotForm({ initial, prefill, onClose, suppliers, mediaBase }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; mediaBase: string }) {
+  const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
+  const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
+  const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
+  const [qty, setQty] = useState(initial?.quantity ?? prefill?.quantity ?? 1);
+  const [cost, setCost] = useState(initial?.total_cost ?? prefill?.total_cost ?? 0);
+  const [ask, setAsk] = useState(initial?.asking_price ?? prefill?.asking_price ?? 0);
   const [priceType, setPriceType] = useState(initial?.price_type ?? "per_unit");
-  const [supplier, setSupplier] = useState(initial?.supplier ?? "");
-  const [location, setLocation] = useState(initial?.location ?? "");
-  const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [supplier, setSupplier] = useState(initial?.supplier ?? prefill?.supplier ?? "");
+  const [location, setLocation] = useState(initial?.location ?? prefill?.location ?? "");
+  const [notes, setNotes] = useState(initial?.notes ?? prefill?.notes ?? "");
   const [sentWa, setSentWa] = useState(initial?.sent_whatsapp ?? false);
   const [sentEmail, setSentEmail] = useState(initial?.sent_email ?? false);
   const [photos, setPhotos] = useState<string[]>(() => { try { return JSON.parse(initial?.photos_json ?? "[]") ?? []; } catch { return []; } });
