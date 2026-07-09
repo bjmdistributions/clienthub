@@ -4410,7 +4410,22 @@ pub fn allocate_payout(net_incl: f64, net_excl: f64, recipients: &[(String, f64,
 
 #[tauri::command]
 pub async fn get_payout_split() -> Result<Vec<Value>, String> {
-    Ok(read_profit_split_shares().into_iter().map(|(name, pct, is_business)| json!({ "name": name, "pct": pct, "is_business": is_business })).collect())
+    // Read the raw setting (not the 3-tuple helper) so the optional `kind` field
+    // survives the round-trip. Downstream payout math still only reads name/pct/is_business.
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let raw: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='profit_split_json'", [], |r| r.get(0)).ok();
+    let Some(j) = raw.filter(|s| !s.trim().is_empty()) else { return Ok(Vec::new()); };
+    let arr: Vec<Value> = serde_json::from_str(&j).unwrap_or_default();
+    Ok(arr.iter().filter_map(|e| {
+        let name = e.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let pct = e.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let is_business = e.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false);
+        if name.is_empty() && !is_business { return None; }
+        let name = if is_business && name.is_empty() { "Business".to_string() } else { name };
+        let kind = e.get("kind").and_then(|x| x.as_str()).map(|s| s.to_string())
+            .unwrap_or_else(|| if is_business { "business".into() } else { "person".into() });
+        Some(json!({ "name": name, "pct": pct, "is_business": is_business, "kind": kind }))
+    }).collect())
 }
 
 /// Save the dynamic owner split. Also back-fills the legacy jack/ben/business settings

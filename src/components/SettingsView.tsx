@@ -4168,14 +4168,21 @@ function SheetsTab() {
 }
 
 function SplitsTab() {
-  type Share = { name: string; pct: number; is_business: boolean };
+  type ShareKind = "person" | "business" | "investment" | "other";
+  type Share = { name: string; pct: number; is_business: boolean; kind: ShareKind };
+  const KIND_LABEL: Record<ShareKind, string> = { person: "Person", business: "Business", investment: "Investment", other: "Other" };
+  const NAME_PLACEHOLDER: Record<ShareKind, string> = { person: "Name", business: "Business", investment: "Investment fund", other: "Label" };
   const [shares, setShares] = useState<Share[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   const reloadStaff = () => api.listStaff().then((s) => setStaff(s.filter((x) => x.status === "active"))).catch(() => {});
   useEffect(() => {
-    api.getPayoutSplit().then(setShares).catch(() => {});
+    // Older saves have no kind — derive it for display; nothing is written back until the user edits.
+    api.getPayoutSplit().then((list) => setShares(list.map((s) => ({
+      ...s,
+      kind: ((s.kind === "person" || s.kind === "business" || s.kind === "investment" || s.kind === "other") ? s.kind : (s.is_business ? "business" : "person")) as ShareKind,
+    })))).catch(() => {});
     reloadStaff().finally(() => setLoaded(true));
   }, []);
 
@@ -4203,8 +4210,8 @@ function SplitsTab() {
   const setRepType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); reloadStaff(); };
   const setRepVal = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
 
-  // Live preview off a sample $1,000 profit, using the first rep with a profit-% rule.
-  const sample = 1000;
+  // Live preview off an editable sample profit, using the first rep with a profit-% rule.
+  const [sample, setSample] = useState(10000);
   const previewRep = staff.find((u) => ((u as any).pay_type || "profit_pct") === "profit_pct" && u.commission_pct > 0);
   const repCut = previewRep ? sample * (previewRep.commission_pct / 100) : 0;
   const remainder = sample - repCut;
@@ -4237,25 +4244,24 @@ function SplitsTab() {
         )}
       </SettingCard>
 
-      <SettingCard icon={Split} title="Owner split" purpose="Whatever's left after the rep's cut is divided by these shares. Saves when the total is exactly 100%."
+      <SettingCard icon={Split} title="Profit split" purpose="Whatever's left after the rep's cut is divided by these recipients — people, the business, investment set-asides, anything. Saves when the total is exactly 100%."
         aside={
           <span className={`text-[12.5px] font-medium tabular-nums ${valid ? "text-success-ink" : "text-warning-ink"}`}>
             Total: {total.toFixed(1)}%{!valid && (remaining > 0 ? ` · ${remaining}% left` : ` · ${Math.abs(remaining)}% over`)}
           </span>
         }>
         {shares.length === 0 ? (
-          <div className="text-[12.5px] text-muted">No shares yet — add an owner or the business to define the split.</div>
+          <div className="text-[12.5px] text-muted">No recipients yet — add people, the business, or an investment share to define the split.</div>
         ) : (
           <div className="space-y-2">
             {shares.map((s, i) => (
-              <div key={i} className="grid grid-cols-[minmax(0,1fr)_112px_28px] items-center gap-2">
-                <div className="relative min-w-0">
-                  <input value={s.name} onChange={(e) => setShare(i, { name: e.target.value })} placeholder={s.is_business ? "Business" : "Name"}
-                    className={`${inpSm}${s.is_business ? " pr-20" : ""}`} />
-                  {s.is_business && (
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full pointer-events-none">Business</span>
-                  )}
-                </div>
+              <div key={i} className="grid grid-cols-[128px_minmax(0,1fr)_112px_28px] items-center gap-2">
+                <select value={s.kind} onChange={(e) => { const k = e.target.value as ShareKind; setShare(i, { kind: k, is_business: k === "business" }); }} className={inpSm}>
+                  {(Object.keys(KIND_LABEL) as ShareKind[]).map((k) => (
+                    <option key={k} value={k} disabled={k === "business" && s.kind !== "business" && shares.some((o, oi) => oi !== i && o.is_business)}>{KIND_LABEL[k]}</option>
+                  ))}
+                </select>
+                <input value={s.name} onChange={(e) => setShare(i, { name: e.target.value })} placeholder={NAME_PLACEHOLDER[s.kind]} className={`${inpSm} min-w-0`} />
                 <div className="flex items-center gap-1.5">
                   <input type="number" min={0} step="0.1" value={s.pct} onChange={(e) => setShare(i, { pct: parseFloat(e.target.value) || 0 })}
                     className={`${inpSm} text-right tabular-nums`} />
@@ -4267,27 +4273,33 @@ function SplitsTab() {
           </div>
         )}
         <div className="flex items-center gap-2 mt-4 flex-wrap">
-          <button onClick={() => setShares([...shares, { name: "", pct: Math.max(0, remaining), is_business: false }])}
-            className="inline-flex items-center gap-1.5 text-[12px] font-medium border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2 transition-colors"><Plus size={13} /> Add owner</button>
-          {!shares.some((s) => s.is_business) && (
-            <button onClick={() => setShares([...shares, { name: "Business", pct: Math.max(0, remaining), is_business: true }])}
-              className="inline-flex items-center gap-1.5 text-[12px] font-medium border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2 transition-colors"><Plus size={13} /> Add business share</button>
-          )}
+          <button onClick={() => setShares([...shares, { name: "", pct: Math.max(0, remaining), is_business: false, kind: "person" }])}
+            className="inline-flex items-center gap-1.5 text-[12px] font-medium border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2 transition-colors"><Plus size={13} /> Add recipient</button>
           {!valid && shares.length > 0 && (
             <button onClick={balance} className="ml-auto text-[12px] font-medium border border-accent/40 text-accent rounded-lg px-3 h-8 hover:bg-accent/10 transition-colors">Balance to 100%</button>
           )}
         </div>
       </SettingCard>
 
-      <SettingCard icon={Eye} title="Preview" purpose="How a sample $1,000 deal profit would be divided under today's rules.">
+      <SettingCard icon={Eye} title="Preview" purpose="Type any deal profit to see exactly how it would be divided under today's rules.">
+        <div className="grid grid-cols-[minmax(0,1fr)_140px] items-center gap-2 mb-3">
+          <span className="text-[13px] text-muted">Amount to analyze</span>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 shrink-0 text-[12px] text-muted">$</span>
+            <input type="number" min={0} step="100" value={sample} onChange={(e) => setSample(Math.max(0, parseFloat(e.target.value) || 0))}
+              className={`${inpSm} text-right tabular-nums`} />
+          </div>
+        </div>
         <div className="text-[13px] space-y-1.5">
-          <div className="flex justify-between"><span className="text-muted">Sample deal profit</span><span className="tabular-nums text-ink font-medium">${sample.toFixed(0)}</span></div>
           {previewRep && <div className="flex justify-between"><span className="text-ink-2">Rep cut — {previewRep.display_name} ({previewRep.commission_pct}%)</span><span className="tabular-nums text-ink">${repCut.toFixed(2)}</span></div>}
-          <div className="flex justify-between border-t border-line pt-1.5"><span className="text-ink-2 font-medium">Remainder to owners</span><span className="tabular-nums text-ink font-medium">${remainder.toFixed(2)}</span></div>
+          <div className="flex justify-between border-t border-line pt-1.5"><span className="text-ink-2 font-medium">Remainder</span><span className="tabular-nums text-ink font-medium">${remainder.toFixed(2)}</span></div>
           {shares.map((s, i) => (
-            <div key={i} className="flex justify-between pl-3"><span className="text-muted">{s.name || "—"}{s.is_business ? " · Business" : ""} · {s.pct}%</span><span className="tabular-nums text-ink">${(remainder * (Number(s.pct) || 0) / 100).toFixed(2)}</span></div>
+            <div key={i} className="flex justify-between pl-3">
+              <span className="text-muted">{s.name || "—"} <span className="text-faint">· {KIND_LABEL[s.kind]}</span> · <span className="tabular-nums">{s.pct}%</span></span>
+              <span className="tabular-nums text-ink">${(remainder * (Number(s.pct) || 0) / 100).toFixed(2)}</span>
+            </div>
           ))}
-          {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet — the full profit goes to the owner split.</p>}
+          {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet — the full profit goes to the split above.</p>}
         </div>
       </SettingCard>
     </div>
