@@ -4189,9 +4189,22 @@ function SplitsTab() {
   const total = shares.reduce((a, s) => a + (Number(s.pct) || 0), 0);
   const valid = Math.abs(total - 100) < 0.01;
   const remaining = Math.round((100 - total) * 100) / 100;
+  // Honest save state: the old autosave silently did NOTHING when the total wasn't
+  // exactly 100 (and swallowed API errors), so an edit could look saved while the
+  // brief kept paying out the previously stored split. Now the card always says
+  // whether what's on screen is actually stored.
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "error">("saved");
+  const [saveErr, setSaveErr] = useState("");
   const persist = (next: Share[]) => {
     setShares(next);
-    if (Math.abs(next.reduce((a, s) => a + (Number(s.pct) || 0), 0) - 100) < 0.01) api.savePayoutSplit(next).catch(() => {});
+    if (Math.abs(next.reduce((a, s) => a + (Number(s.pct) || 0), 0) - 100) < 0.01) {
+      setSaveState("saving");
+      api.savePayoutSplit(next)
+        .then(() => { setSaveState("saved"); setSaveErr(""); })
+        .catch((e: any) => { setSaveState("error"); setSaveErr(String(e)); });
+    } else {
+      setSaveState("unsaved");
+    }
   };
   // Auto-math: drop the leftover (or overage) onto the Business share — or the last
   // recipient if none is marked Business — so the split always totals 100% and no
@@ -4246,8 +4259,14 @@ function SplitsTab() {
 
       <SettingCard icon={Split} title="Profit split" purpose="Whatever's left after the rep's cut is divided by these recipients — people, the business, investment set-asides, anything. Saves when the total is exactly 100%."
         aside={
-          <span className={`text-[12.5px] font-medium tabular-nums ${valid ? "text-success-ink" : "text-warning-ink"}`}>
-            Total: {total.toFixed(1)}%{!valid && (remaining > 0 ? ` · ${remaining}% left` : ` · ${Math.abs(remaining)}% over`)}
+          <span className={`text-[12.5px] font-medium tabular-nums ${
+            !valid ? "text-warning-ink" : saveState === "error" ? "text-danger-ink" : saveState === "saved" ? "text-success-ink" : "text-muted"
+          }`}>
+            {!valid
+              ? `Not saved — total is ${total.toFixed(1)}% (${remaining > 0 ? `${remaining}% left` : `${Math.abs(remaining)}% over`})`
+              : saveState === "error" ? `Couldn't save — ${saveErr}`
+              : saveState === "saved" ? "Saved · 100%"
+              : "Saving…"}
           </span>
         }>
         {shares.length === 0 ? (

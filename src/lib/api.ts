@@ -1779,9 +1779,9 @@ export const api = {
   adminPlatformUsers: () =>
     invoke<{ users: { id: string; email: string; display_name: string | null; org_id: string; org_name: string; plan: string; role: string; status: string; created_at: string | null; org_clients: number; org_invoices: number }[] }>("admin_platform_users"),
   adminBroadcastPreview: (includeAccounts: boolean, includeWaitlist: boolean) =>
-    invoke<{ recipients: number; sample: string[] }>("admin_broadcast_preview", { includeAccounts, includeWaitlist }),
-  adminBroadcastSend: (subject: string, body: string, includeAccounts: boolean, includeWaitlist: boolean) =>
-    invoke<{ ok: boolean; id: string; recipients: number }>("admin_broadcast_send", { subject, body, includeAccounts, includeWaitlist }),
+    invoke<{ recipients: number; emails: string[] }>("admin_broadcast_preview", { includeAccounts, includeWaitlist }),
+  adminBroadcastSend: (subject: string, body: string, includeAccounts: boolean, includeWaitlist: boolean, emails?: string[]) =>
+    invoke<{ ok: boolean; id: string; recipients: number }>("admin_broadcast_send", { subject, body, includeAccounts, includeWaitlist, emails: emails ?? null }),
   adminBroadcastTest: (subject?: string, body?: string) =>
     invoke<{ ok: boolean; to: string }>("admin_broadcast_test", { subject: subject ?? null, body: body ?? null }),
   netsyncWhoami: () =>

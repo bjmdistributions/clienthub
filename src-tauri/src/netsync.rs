@@ -1207,17 +1207,24 @@ pub async fn admin_broadcast_send(
     body: String,
     include_accounts: bool,
     include_waitlist: bool,
+    emails: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let cfg = config().ok_or("Sign in to the server first.")?;
+    let mut payload = serde_json::json!({
+        "subject": subject,
+        "body": body,
+        "include_accounts": include_accounts,
+        "include_waitlist": include_waitlist,
+    });
+    // Explicit recipient list from the composer's checklist — server uses it verbatim
+    // (minus dedupe/unsubscribes) instead of re-resolving from the source flags.
+    if let Some(list) = emails {
+        payload["emails"] = serde_json::json!(list);
+    }
     let resp = http()
         .post(format!("{}/api/admin/broadcast/send", cfg.url.trim_end_matches('/')))
         .bearer_auth(&cfg.token)
-        .json(&serde_json::json!({
-            "subject": subject,
-            "body": body,
-            "include_accounts": include_accounts,
-            "include_waitlist": include_waitlist,
-        }))
+        .json(&payload)
         .send()
         .await
         .map_err(|_| "Couldn't reach the server.".to_string())?;

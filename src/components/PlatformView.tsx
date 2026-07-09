@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "./Toast";
-import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus, Search, Trash2, AlertTriangle } from "lucide-react";
+import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus, Search, Trash2, AlertTriangle, Plus } from "lucide-react";
 
 function fmtDate(s?: string | null): string {
   if (!s) return "—";
@@ -259,23 +259,59 @@ function Broadcast() {
   const [body, setBody] = useState("");
   const [accounts, setAccounts] = useState(true);
   const [waitlist, setWaitlist] = useState(false);
-  const [preview, setPreview] = useState<{ recipients: number; sample: string[] } | null>(null);
+  const [preview, setPreview] = useState<{ recipients: number; emails: string[] } | null>(null);
+  const [recipients, setRecipients] = useState<string[]>([]);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState("");
+  const [addValue, setAddValue] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [sending, setSending] = useState(false);
   const [testing, setTesting] = useState(false);
   const [confirm, setConfirm] = useState(false);
 
   // Any edit to the audience or content invalidates a stale preview so Send
-  // can never fire against a count the owner didn't actually see.
-  const resetPreview = () => setPreview(null);
+  // can never fire against a list the owner didn't actually see.
+  const resetPreview = () => {
+    setPreview(null);
+    setRecipients([]);
+    setChecked(new Set());
+    setFilter("");
+    setAddValue("");
+  };
 
   const runPreview = () => {
     if (!accounts && !waitlist) { toast("Pick at least one audience.", "error"); return; }
     setPreviewing(true);
     api.adminBroadcastPreview(accounts, waitlist)
-      .then((r) => setPreview(r))
-      .catch((e) => { setPreview(null); toast(String(e), "error"); })
+      .then((r) => {
+        setPreview(r);
+        setRecipients(r.emails);
+        setChecked(new Set(r.emails)); // everyone starts included
+        setFilter("");
+        setAddValue("");
+      })
+      .catch((e) => { resetPreview(); toast(String(e), "error"); })
       .finally(() => setPreviewing(false));
+  };
+
+  const toggleRecipient = (email: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(email)) next.delete(email); else next.add(email);
+      return next;
+    });
+  };
+
+  const addRecipient = () => {
+    const v = addValue.trim();
+    if (!v.includes("@")) { toast("Enter a valid email address.", "error"); return; }
+    if (recipients.some((r) => r.toLowerCase() === v.toLowerCase())) {
+      toast("That address is already in the list.", "error");
+      return;
+    }
+    setRecipients((prev) => [...prev, v]);
+    setChecked((prev) => new Set(prev).add(v));
+    setAddValue("");
   };
 
   // Only ever emails the caller's own address, so it needs no preview gate —
@@ -291,16 +327,18 @@ function Broadcast() {
   const doSend = () => {
     setConfirm(false);
     setSending(true);
-    api.adminBroadcastSend(subject.trim(), body.trim(), accounts, waitlist)
+    api.adminBroadcastSend(subject.trim(), body.trim(), accounts, waitlist, Array.from(checked))
       .then((r) => {
         toast(`Broadcast queued — ${r.recipients} recipients (id ${r.id.slice(0, 8)})`);
-        setSubject(""); setBody(""); setPreview(null);
+        setSubject(""); setBody(""); resetPreview();
       })
       .catch((e) => toast(String(e), "error"))
       .finally(() => setSending(false));
   };
 
-  const canSend = !!preview && preview.recipients > 0 && subject.trim().length > 0 && body.trim().length > 0;
+  const canSend = !!preview && checked.size > 0 && subject.trim().length > 0 && body.trim().length > 0;
+  const q = filter.trim().toLowerCase();
+  const visible = q ? recipients.filter((r) => r.toLowerCase().includes(q)) : recipients;
 
   return (
     <div className="bg-surface border border-line rounded-xl p-5">
@@ -339,11 +377,55 @@ function Broadcast() {
       </div>
 
       {preview && (
-        <div className="bg-surface-2 border border-line rounded-lg px-3 py-2.5 mb-4 text-[12.5px] text-ink-2">
-          <span className="font-medium text-ink tabular-nums">{preview.recipients}</span> recipient{preview.recipients === 1 ? "" : "s"}
-          {preview.sample.length > 0 && (
-            <span className="text-muted"> · {preview.sample.slice(0, 5).join(", ")}{preview.recipients > preview.sample.length ? "…" : ""}</span>
-          )}
+        <div className="bg-surface-2 border border-line rounded-lg mb-4">
+          <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter recipients"
+                className="w-full border border-line rounded-lg bg-surface pl-7 pr-3 h-8 text-[12.5px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
+              />
+            </div>
+            <span className="text-[12px] text-muted tabular-nums whitespace-nowrap">
+              {checked.size} of {recipients.length} selected
+            </span>
+          </div>
+          <div className="max-h-[280px] overflow-y-auto">
+            {visible.length === 0 && (
+              <div className="px-3 py-4 text-center text-[12.5px] text-muted">
+                {recipients.length === 0 ? "No recipients." : "No matches."}
+              </div>
+            )}
+            {visible.map((email) => (
+              <label key={email} className="flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] text-ink-2 cursor-pointer hover:bg-surface border-b border-line last:border-0">
+                <input
+                  type="checkbox"
+                  checked={checked.has(email)}
+                  onChange={() => toggleRecipient(email)}
+                  className="accent-accent"
+                />
+                <span className="truncate" title={email}>{email}</span>
+              </label>
+            ))}
+          </div>
+          <div className="px-3 py-2 border-t border-line flex items-center gap-2">
+            <input
+              value={addValue}
+              onChange={(e) => setAddValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addRecipient(); } }}
+              placeholder="Add an email address"
+              className="flex-1 border border-line rounded-lg bg-surface px-3 h-8 text-[12.5px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
+            />
+            <button
+              onClick={addRecipient}
+              disabled={!addValue.trim()}
+              className="border border-line text-ink-2 hover:bg-surface px-3 h-8 rounded-lg text-[12.5px] font-medium flex items-center gap-1 disabled:opacity-50 transition-colors"
+            >
+              <Plus size={13} /> Add
+            </button>
+          </div>
         </div>
       )}
 
@@ -365,7 +447,7 @@ function Broadcast() {
         <button
           onClick={() => setConfirm(true)}
           disabled={!canSend || sending}
-          title={!preview ? "Preview recipients first" : undefined}
+          title={!preview ? "Preview recipients first" : checked.size === 0 ? "Select at least one recipient" : undefined}
           className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50 transition-colors"
         >
           <Send size={14} /> {sending ? "Sending…" : "Send"}
@@ -377,11 +459,11 @@ function Broadcast() {
           <div className="bg-surface border border-line rounded-2xl p-5 max-w-sm w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-[15px] font-semibold text-ink">Send this broadcast?</h3>
             <p className="text-[13px] text-muted mt-1.5 leading-relaxed">
-              This emails <span className="font-medium text-ink tabular-nums">{preview.recipients}</span> recipient{preview.recipients === 1 ? "" : "s"} from the Ecliptr platform email. This can't be undone.
+              This emails <span className="font-medium text-ink tabular-nums">{checked.size}</span> selected recipient{checked.size === 1 ? "" : "s"} from the Ecliptr platform email. This can't be undone.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setConfirm(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
-              <button onClick={doSend} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Send to {preview.recipients}</button>
+              <button onClick={doSend} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Send to {checked.size}</button>
             </div>
           </div>
         </div>
