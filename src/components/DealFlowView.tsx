@@ -1261,7 +1261,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   // Backlog date: defaults to today but user can pick any past date
   const todayStr = new Date().toISOString().slice(0, 10);
   const [completedDate, setCompletedDate] = useState(todayStr);
-  const [payoutIncluded, setPayoutIncluded] = useState(false);
+  // Default = apply the configured split. The old default (false) silently routed
+  // 100% of every completed deal to the business share, burying the user's split.
+  const [payoutIncluded, setPayoutIncluded] = useState(true);
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
 
@@ -1338,10 +1340,21 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
                          focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
             />
           </div>
-          <label className="flex items-center gap-2 text-[12px] text-muted cursor-pointer select-none py-1">
-            <input type="checkbox" className="accent-accent" checked={payoutIncluded} onChange={(e) => setPayoutIncluded(e.target.checked)} />
-            Include in Payout
-          </label>
+          {/* Explicit payout decision — the old tiny checkbox defaulted everything to
+              business-keeps-all without the user noticing. */}
+          <div className="py-1 space-y-1">
+            <div className="text-[11px] text-muted">Where does this deal's profit go?</div>
+            <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
+              <button type="button" onClick={() => setPayoutIncluded(true)}
+                className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                Apply profit split
+              </button>
+              <button type="button" onClick={() => setPayoutIncluded(false)}
+                className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                Business keeps 100%
+              </button>
+            </div>
+          </div>
           <button
             onClick={handleCompleteClick}
             disabled={saving}

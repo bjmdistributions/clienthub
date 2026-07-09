@@ -211,6 +211,12 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   Never assumes a split or shows partner names. */}
               {brief.payout_totals && brief.payout_totals.length > 0 ? (
                 <>
+                  {/* The boxes are the ROLLING brief period (can span a month boundary),
+                      the line below is the calendar month — label both so a 14-day period
+                      exceeding month-to-date reads correctly instead of looking broken. */}
+                  <div className="text-[11px] text-muted">
+                    Each recipient's cut this period ({brief.week_start} – {brief.week_end})
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                     {(() => {
                       let nb = 0;
@@ -231,7 +237,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                     <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3"
                       style={{ borderTop: "1px solid var(--t-b1)" }}>
                       <span>
-                        This month: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
+                        {new Date().toLocaleString("en-US", { month: "long" })} so far: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
                       </span>
                       <span className="text-right">
                         {brief.payout_totals.map((r, i) => (
