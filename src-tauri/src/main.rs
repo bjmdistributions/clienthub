@@ -247,6 +247,12 @@ fn main() {
             netsync::netsync_diagnostics,
             netsync::get_my_plan,
             netsync::get_platform_signups,
+            netsync::admin_waitlist_all,
+            netsync::admin_feedback_all,
+            netsync::admin_set_org_plan,
+            netsync::admin_onboarding,
+            netsync::admin_broadcast_preview,
+            netsync::admin_broadcast_send,
             netsync::upload_company_logo,
             // Google Sheet clone (read-and-rebuild view-only supplier load sheets)
             sheet_clone::clone_google_sheet,

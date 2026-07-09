@@ -1014,3 +1014,166 @@ pub async fn get_platform_signups() -> Result<serde_json::Value, String> {
     }
     resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
+
+/// Early-access waitlist signups (superadmin). Server returns a bare JSON array.
+#[tauri::command]
+pub async fn admin_waitlist_all() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .get(format!("{}/api/waitlist/all", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
+/// Feedback / bug reports (superadmin). Server returns a bare JSON array.
+#[tauri::command]
+pub async fn admin_feedback_all() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .get(format!("{}/api/feedback/all", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
+/// Superadmin: set any workspace's plan tier (free|pro|business|unlimited|founder).
+#[tauri::command]
+pub async fn admin_set_org_plan(org_id: String, plan: String) -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .post(format!("{}/api/admin/org/plan", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "org_id": org_id, "plan": plan }))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("Workspace not found.".into());
+    }
+    if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+        return Err("Invalid plan.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
+/// Superadmin: per-org onboarding signals (who's set up, who's stuck).
+#[tauri::command]
+pub async fn admin_onboarding() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .get(format!("{}/api/admin/onboarding", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
+/// Superadmin: preview how many recipients a broadcast would reach. The broadcast
+/// endpoints answer 200 with an `error` field on failure (superadmin gate etc.),
+/// so surface that as a command error rather than trusting the HTTP status alone.
+#[tauri::command]
+pub async fn admin_broadcast_preview(
+    include_accounts: bool,
+    include_waitlist: bool,
+) -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .post(format!("{}/api/admin/broadcast/preview", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({
+            "include_accounts": include_accounts,
+            "include_waitlist": include_waitlist,
+        }))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(e) = body.get("error").and_then(|v| v.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(body)
+}
+
+/// Superadmin: send the broadcast. The UI gates this behind an explicit two-step
+/// confirm; this command just proxies. Surfaces the server's `error` body (e.g.
+/// "Platform email is not configured") as a command error.
+#[tauri::command]
+pub async fn admin_broadcast_send(
+    subject: String,
+    body: String,
+    include_accounts: bool,
+    include_waitlist: bool,
+) -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .post(format!("{}/api/admin/broadcast/send", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({
+            "subject": subject,
+            "body": body,
+            "include_accounts": include_accounts,
+            "include_waitlist": include_waitlist,
+        }))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    let out: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(e) = out.get("error").and_then(|v| v.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(out)
+}

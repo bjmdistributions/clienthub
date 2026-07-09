@@ -1764,6 +1764,19 @@ export const api = {
   }>("netsync_diagnostics"),
   getMyPlan: () => invoke<{ name: string; plan: string; members: number; member_limit: number | null; clients: number; client_limit: number | null; is_superadmin: boolean }>("get_my_plan"),
   getPlatformSignups: () => invoke<{ orgs: any[] }>("get_platform_signups"),
+  // Superadmin admin console
+  adminWaitlistAll: () =>
+    invoke<{ id: string; first_name: string; email: string; features: string; created_at: string }[]>("admin_waitlist_all"),
+  adminFeedbackAll: () =>
+    invoke<{ id: string; org_id: string | null; submitter_name: string | null; submitter_email: string | null; kind: string; title: string; body: string; app: string; status: string; created_at: string }[]>("admin_feedback_all"),
+  adminSetOrgPlan: (orgId: string, plan: string) =>
+    invoke<{ ok: boolean }>("admin_set_org_plan", { orgId, plan }),
+  adminOnboarding: () =>
+    invoke<{ orgs: { org_id: string; name: string; plan: string; created_at: string | null; members: number; has_client: boolean; has_invoice: boolean; has_inventory: boolean; email_configured: boolean }[] }>("admin_onboarding"),
+  adminBroadcastPreview: (includeAccounts: boolean, includeWaitlist: boolean) =>
+    invoke<{ recipients: number; sample: string[] }>("admin_broadcast_preview", { includeAccounts, includeWaitlist }),
+  adminBroadcastSend: (subject: string, body: string, includeAccounts: boolean, includeWaitlist: boolean) =>
+    invoke<{ ok: boolean; id: string; recipients: number }>("admin_broadcast_send", { subject, body, includeAccounts, includeWaitlist }),
 
   // Sticky notes
   listNotes: () => invoke<Note[]>("list_notes"),
