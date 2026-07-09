@@ -18,6 +18,7 @@ import {
   StickyNote,
   Grid3X3,
   Bot,
+  ChevronRight,
   Columns2,
   X,
   FileSignature,
@@ -81,6 +82,18 @@ export default function App() {
     setPageKey(k => k + 1);
     localStorage.setItem("clienthub_last_tab", t);
   };
+  // Which expandable nav groups the user has manually opened (the active group is
+  // always shown regardless). Persisted so the tree restores on relaunch.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("clienthub_nav_open") || "[]")); }
+    catch { return new Set(); }
+  });
+  const toggleGroup = (gid: string) => setOpenGroups((prev) => {
+    const next = new Set(prev);
+    next.has(gid) ? next.delete(gid) : next.add(gid);
+    localStorage.setItem("clienthub_nav_open", JSON.stringify([...next]));
+    return next;
+  });
 
   // Split-screen: optional second pane showing another tab alongside the main one.
   const [splitTab, setSplitTabState] = useState<Tab | null>(
@@ -370,36 +383,93 @@ export default function App() {
     }
   };
 
-  const allTabs: { id: Tab; label: string; icon: any }[] = [
-    { id: "dashboard", label: "Dashboard",  icon: LayoutDashboard },
-    { id: "clients",   label: "Clients",    icon: Users },
-    { id: "checkup",   label: "Checkup",    icon: ClipboardCheck },
-    { id: "health",    label: "Tiers",      icon: Layers },
-    { id: "deals",     label: "Completed",  icon: Briefcase },
-    { id: "analytics", label: "Analytics",  icon: BarChart3 },
-    { id: "invoices",  label: "Invoices",   icon: FileText },
-    { id: "receivables", label: "Receivables", icon: Wallet },
-    { id: "payables",  label: "Payables",   icon: Banknote },
-    { id: "quotes",    label: "Quotes",     icon: FileSignature },
-    { id: "dealflow",  label: "Deal Flow",  icon: GitBranch },
-    { id: "suppliers", label: "Suppliers",  icon: Package },
-    { id: "inventory", label: "Inventory",  icon: Grid3X3 },
-    { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
-    { id: "email",     label: "Newsletter", icon: Mail },
-    { id: "brief",     label: "Brief",      icon: FileText },
-    { id: "automation", label: "Automation",  icon: Bot },
-    { id: "globe",     label: "Globe",      icon: Globe },
-    { id: "notes",     label: "Notes",      icon: StickyNote },
-    { id: "archive",   label: "Archive",    icon: ArchiveIcon },
-    { id: "platform",  label: "Platform",   icon: Building2 },
-    { id: "settings",  label: "Settings",   icon: SettingsIcon },
+  // Consolidated sidebar: workflow mains, each expandable to reveal its sub-items
+  // (Jack's "drop down on a main category"), plus a bottom utility zone. Every id
+  // still maps to a real view in paneContent — nothing was dropped, only regrouped.
+  type NavKid = { id: Tab; label: string; icon: any };
+  type NavNode = NavKid & { children?: NavKid[] };
+  const NAV: NavNode[] = [
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { id: "clients", label: "Clients", icon: Users, children: [
+      { id: "checkup", label: "Checkup", icon: ClipboardCheck },
+      { id: "health",  label: "Tiers",   icon: Layers },
+      { id: "approvals", label: "Approvals", icon: Bell },
+    ] },
+    { id: "suppliers", label: "Suppliers", icon: Package },
+    { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
+      { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
+    ] },
+    { id: "quotes", label: "Quote", icon: FileSignature },
+    { id: "invoices", label: "Invoice", icon: FileText, children: [
+      { id: "dealflow",   label: "Deal Flow",  icon: GitBranch },
+      { id: "deals",      label: "Completed",  icon: Briefcase },
+      { id: "receivables", label: "Receivables", icon: Wallet },
+      { id: "payables",   label: "Payables",   icon: Banknote },
+    ] },
+    { id: "email", label: "Newsletter", icon: Mail },
+    { id: "brief", label: "Brief", icon: FileText },
+    { id: "analytics", label: "Analytics", icon: BarChart3, children: [
+      { id: "automation", label: "Automation", icon: Bot },
+      { id: "globe",      label: "Globe",      icon: Globe },
+    ] },
   ];
-  const tabs = allTabs.filter((t) =>
-    t.id === "platform" ? superadmin
-    : t.id === "archive" ? isAdmin(me)              // admin-only, like the money views
-    : t.id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
-    : canViewTab(me, t.id as any)
-  );
+  const UTILITY: NavKid[] = [
+    { id: "notes",    label: "Notes",    icon: StickyNote },
+    { id: "archive",  label: "Archive",  icon: ArchiveIcon },
+    { id: "platform", label: "Platform", icon: Building2 },
+    { id: "settings", label: "Settings", icon: SettingsIcon },
+  ];
+
+  // Same per-id gating as before (parents, children, and utility items alike).
+  const visible = (id: Tab): boolean =>
+    id === "platform" ? superadmin
+    : id === "archive" ? isAdmin(me)              // admin-only, like the money views
+    : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
+    : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
+    : canViewTab(me, id as any);
+
+  // Flat list of every visible destination (mains + sub-items + utility) — used by
+  // the split-view picker, which needs one flat menu rather than the grouped tree.
+  const flatTabs: NavKid[] = [
+    ...NAV.flatMap((n) => [{ id: n.id, label: n.label, icon: n.icon } as NavKid, ...(n.children || [])]),
+    ...UTILITY,
+  ].filter((t) => visible(t.id));
+
+  // A group is open when the user opened it, or the active tab lives inside it.
+  const parentOfActive = NAV.find((n) => n.children?.some((c) => c.id === tab))?.id ?? null;
+  const isGroupOpen = (n: NavNode) => openGroups.has(n.id) || parentOfActive === n.id || tab === n.id;
+
+  // One nav row: a leaf main or an indented sub-item. Group parents pair this with a
+  // sibling chevron button (see the render below) rather than nesting one.
+  const navButton = (item: NavKid, isChild: boolean) => {
+    const Icon = item.icon;
+    const active = tab === item.id;
+    return (
+      <button
+        key={item.id}
+        ref={(el) => { buttonRefs.current[item.id] = el; }}
+        onClick={() => setTab(item.id)}
+        className={`relative w-full flex items-center gap-2.5 ${isChild ? "pl-8 pr-2" : "px-2.5"} h-9 rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
+          active ? "text-white font-medium" : "text-[#6B6B7A] hover:text-white/80"
+        }`}
+        style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
+      >
+        <Icon size={isChild ? 13 : 15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
+        {item.label}
+        {item.id === "email" && draftCount > 0 && (
+          <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
+            style={{ background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }}>
+            {draftCount}
+          </span>
+        )}
+        {item.id === "approvals" && apCount > 0 && (
+          <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+            {apCount > 9 ? "9+" : apCount}
+          </span>
+        )}
+      </button>
+    );
+  };
 
   // Background per tab (globe is full-bleed dark); shared by single + split panes.
   const paneBg = (t: Tab) => (t === "globe" ? "#0a0a14" : "var(--t-bg)");
@@ -520,34 +590,40 @@ export default function App() {
             style={{ top: indicatorStyle.top, opacity: indicatorStyle.opacity }}
           />
 
-          {tabs.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              ref={el => { buttonRefs.current[id] = el; }}
-              onClick={() => setTab(id)}
-              className={`relative w-full flex items-center gap-2.5 px-2.5 h-9 rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
-                tab === id
-                  ? "text-white font-medium"
-                  : "text-[#6B6B7A] hover:text-white/80"
-              }`}
-              style={tab === id ? {
-                background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)",
-              } : undefined}
-            >
-              <Icon
-                size={15}
-                strokeWidth={tab === id ? 2.1 : 1.6}
-                style={tab === id ? { color: "var(--accent-400)" } : undefined}
-              />
-              {label}
-              {id === "email" && draftCount > 0 && (
-                <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
-                  style={{ background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }}>
-                  {draftCount}
-                </span>
-              )}
-            </button>
-          ))}
+          {NAV.map((node) => {
+            const kids = (node.children || []).filter((c) => visible(c.id));
+            // Parent gated out: don't strand independently-visible children (e.g.
+            // null-perm Automation/Globe under Analytics) — promote them to top level.
+            if (!visible(node.id)) {
+              return kids.length
+                ? <div key={node.id} className="space-y-0.5">{kids.map((c) => navButton(c, false))}</div>
+                : null;
+            }
+            if (kids.length === 0) return navButton(node, false);
+            const open = isGroupOpen(node);
+            return (
+              <div key={node.id} className="space-y-0.5">
+                <div className="relative">
+                  {navButton(node, false)}
+                  {/* Sibling (not nested) chevron so it stays valid, focusable HTML. */}
+                  <button
+                    type="button"
+                    aria-label={open ? `Collapse ${node.label}` : `Expand ${node.label}`}
+                    onClick={() => toggleGroup(node.id)}
+                    className="absolute top-0 right-1 h-9 w-7 flex items-center justify-center rounded-md hover:bg-white/10 transition-colors"
+                  >
+                    <ChevronRight size={13} style={{ color: "#6B6B7A", transform: open ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }} />
+                  </button>
+                </div>
+                {open && kids.map((c) => navButton(c, true))}
+              </div>
+            );
+          })}
+
+          {/* Utility zone — configuration & housekeeping, set apart from the workflow mains */}
+          <div className="mt-2 pt-2 space-y-0.5" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+            {UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
+          </div>
         </nav>
 
         {/* Status footer */}
@@ -654,7 +730,7 @@ export default function App() {
                   className="text-[12px] rounded-md px-2 h-7"
                   style={{ background: "var(--t-input-bg)", color: "var(--t-tx1)", border: "1px solid var(--t-b1)" }}
                 >
-                  {tabs.filter((t) => t.id !== "globe").map((t) => (
+                  {flatTabs.filter((t) => t.id !== "globe").map((t) => (
                     <option key={t.id} value={t.id}>{t.label}</option>
                   ))}
                 </select>

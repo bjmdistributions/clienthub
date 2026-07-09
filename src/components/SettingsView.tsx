@@ -248,11 +248,29 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
   // (e.g. Team), where it would look like the current action is stuck.
   useEffect(() => { setSaveState("idle"); }, [tab]);
 
+  // The whole Settings page (nav + content) scrolls together inside an ancestor
+  // scroll container. If the nav is scrolled down to reach a low item and the
+  // opened section is short, its content renders above the fold. Reset the
+  // nearest scrollable ancestor to the top on every tab change so the freshly
+  // opened section is always in view.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let el: HTMLElement | null = rootRef.current?.parentElement ?? null;
+    while (el) {
+      const oy = getComputedStyle(el).overflowY;
+      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight) {
+        el.scrollTop = 0;
+        break;
+      }
+      el = el.parentElement;
+    }
+  }, [tab]);
+
   const active = groups.flatMap((g) => g.items).find((i) => i.id === tab);
 
   return (
    <SaveStatusCtx.Provider value={setSaveState}>
-    <div className="flex gap-5 lg:gap-8 max-w-[1100px]">
+    <div ref={rootRef} className="flex gap-5 lg:gap-8 max-w-[1100px]">
       {/* Left rail */}
       <aside className="w-[200px] lg:w-[232px] shrink-0">
         <div className="mb-5 px-1">
