@@ -1773,6 +1773,8 @@ export const api = {
     invoke<{ ok: boolean }>("admin_set_org_plan", { orgId, plan }),
   adminOnboarding: () =>
     invoke<{ orgs: { org_id: string; name: string; plan: string; created_at: string | null; members: number; has_client: boolean; has_invoice: boolean; has_inventory: boolean; email_configured: boolean }[] }>("admin_onboarding"),
+  adminPlatformUsers: () =>
+    invoke<{ users: { id: string; email: string; display_name: string | null; org_id: string; org_name: string; plan: string; role: string; status: string; created_at: string | null; org_clients: number; org_invoices: number }[] }>("admin_platform_users"),
   adminBroadcastPreview: (includeAccounts: boolean, includeWaitlist: boolean) =>
     invoke<{ recipients: number; sample: string[] }>("admin_broadcast_preview", { includeAccounts, includeWaitlist }),
   adminBroadcastSend: (subject: string, body: string, includeAccounts: boolean, includeWaitlist: boolean) =>

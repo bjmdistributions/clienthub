@@ -1110,6 +1110,28 @@ pub async fn admin_onboarding() -> Result<serde_json::Value, String> {
     resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
+/// Superadmin: every signed-up user across all workspaces (owner's god-view).
+#[tauri::command]
+pub async fn admin_platform_users() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .get(format!("{}/api/admin/platform-users", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
 /// Superadmin: preview how many recipients a broadcast would reach. The broadcast
 /// endpoints answer 200 with an `error` field on failure (superadmin gate etc.),
 /// so surface that as a command error rather than trusting the HTTP status alone.

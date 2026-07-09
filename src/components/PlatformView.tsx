@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "./Toast";
-import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus } from "lucide-react";
+import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus, Search } from "lucide-react";
 
 function fmtDate(s?: string | null): string {
   if (!s) return "—";
@@ -23,7 +23,7 @@ function relTime(s?: string | null): string {
 const PLANS = ["free", "pro", "business", "unlimited", "founder"];
 const COLS = "grid grid-cols-[1.4fr_1.7fr_1fr_0.9fr_0.55fr_0.55fr_0.8fr] gap-2";
 
-type Tab = "orgs" | "broadcast" | "waitlist" | "feedback" | "onboarding";
+type Tab = "orgs" | "users" | "broadcast" | "waitlist" | "feedback" | "onboarding";
 
 export default function PlatformView() {
   const [orgs, setOrgs] = useState<any[]>([]);
@@ -76,6 +76,7 @@ export default function PlatformView() {
 
           <div className="flex items-center gap-1 mb-4 border-b border-line">
             <TabBtn active={tab === "orgs"} onClick={() => setTab("orgs")}>Workspaces</TabBtn>
+            <TabBtn active={tab === "users"} onClick={() => setTab("users")}>Users</TabBtn>
             <TabBtn active={tab === "broadcast"} onClick={() => setTab("broadcast")}>Broadcast</TabBtn>
             <TabBtn active={tab === "waitlist"} onClick={() => setTab("waitlist")}>Waitlist</TabBtn>
             <TabBtn active={tab === "feedback"} onClick={() => setTab("feedback")}>Feedback</TabBtn>
@@ -111,6 +112,7 @@ export default function PlatformView() {
             </div>
           )}
 
+          {tab === "users" && <PlatformUsers />}
           {tab === "broadcast" && <Broadcast />}
           {tab === "waitlist" && <Waitlist />}
           {tab === "feedback" && <Feedback />}
@@ -386,4 +388,71 @@ function Mark({ on }: { on: boolean }) {
   return on
     ? <Check size={15} className="text-accent" />
     : <Minus size={15} className="text-faint" />;
+}
+
+// ── Platform users (every signed-up user across all workspaces) ─────────────
+function PlatformUsers() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    api.adminPlatformUsers()
+      .then((r) => { setRows(r.users || []); setErr(null); })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (err) return <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>;
+
+  const term = q.trim().toLowerCase();
+  const filtered = term
+    ? rows.filter((u) =>
+        (u.email || "").toLowerCase().includes(term) ||
+        (u.display_name || "").toLowerCase().includes(term) ||
+        (u.org_name || "").toLowerCase().includes(term))
+    : rows;
+
+  const cols = "grid grid-cols-[2fr_1.3fr_0.8fr_0.8fr_0.7fr_0.8fr_0.9fr] gap-2";
+  return (
+    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-line flex items-center gap-3">
+        <div className="flex items-center gap-2 text-[12.5px] text-muted shrink-0">
+          <Users size={13} /> <span className="font-medium text-ink-2 tabular-nums">{filtered.length}</span> of <span className="tabular-nums">{rows.length}</span> user{rows.length === 1 ? "" : "s"}
+        </div>
+        <div className="relative ml-auto w-64 max-w-full">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search name, email, or workspace"
+            className="w-full border border-line h-8 pl-8 pr-2.5 rounded-md text-[12.5px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
+          />
+        </div>
+      </div>
+      <div className={`${cols} px-4 py-2 text-[12px] font-medium text-muted border-b border-line`}>
+        <div>User</div><div>Workspace</div><div>Plan</div><div>Role</div><div>Status</div><div>Joined</div><div>Activity</div>
+      </div>
+      {filtered.length === 0 && !loading && <div className="px-4 py-10 text-center text-[13px] text-muted">{rows.length === 0 ? "No users yet." : "No matches."}</div>}
+      {filtered.map((u) => (
+        <div key={u.id} className={`${cols} px-4 py-2.5 text-[12.5px] items-center border-b border-line last:border-0`}>
+          <div className="min-w-0">
+            <div className="text-ink font-medium truncate" title={u.display_name || ""}>{u.display_name || "—"}</div>
+            <div className="text-muted truncate" title={u.email}>{u.email}</div>
+          </div>
+          <div className="text-ink-2 truncate" title={u.org_name}>{u.org_name || "—"}</div>
+          <div><span className="text-[11px] px-2 py-0.5 rounded-full border border-line text-ink-2 capitalize">{u.plan || "free"}</span></div>
+          <div className="text-ink-2 capitalize truncate">{u.role || "—"}</div>
+          <div>
+            <span className={`text-[11px] px-2 py-0.5 rounded-full border capitalize ${u.status === "active" ? "border-accent/40 text-accent" : "border-line text-muted"}`}>
+              {u.status || "—"}
+            </span>
+          </div>
+          <div className="text-muted tabular-nums">{fmtDate(u.created_at)}</div>
+          <div className="text-ink-2 tabular-nums">{u.org_clients ?? 0} clients · {u.org_invoices ?? 0} inv</div>
+        </div>
+      ))}
+    </div>
+  );
 }

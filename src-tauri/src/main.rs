@@ -251,6 +251,7 @@ fn main() {
             netsync::admin_feedback_all,
             netsync::admin_set_org_plan,
             netsync::admin_onboarding,
+            netsync::admin_platform_users,
             netsync::admin_broadcast_preview,
             netsync::admin_broadcast_send,
             netsync::upload_company_logo,
