@@ -204,6 +204,11 @@ export default function App() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [showTour, setShowTour] = useState(false);
   const [superadmin, setSuperadmin] = useState(false);
+  // Superadmin is confirmed two ways so the Platform tab is reliable across a user's
+  // devices: the server (netsync session) OR the locally signed-in owner account. The
+  // netsync session can be a different/stale server identity on one device even when the
+  // local login is the same account, which hid the tab on one machine but not another.
+  const [localSuper, setLocalSuper] = useState(false);
   // Org plan id ("unlimited" = top tier). Drives the Sheet-copy tab gate. The UI
   // gate is convenience only — the Rust command is the authoritative check.
   const [plan, setPlan] = useState<string | null>(null);
@@ -224,7 +229,10 @@ export default function App() {
     return () => window.removeEventListener("replay-tour", replay);
   }, []);
   useEffect(() => {
-    if (me) api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); }).catch(() => { setSuperadmin(false); setPlan(null); });
+    if (me) {
+      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); }).catch(() => { setSuperadmin(false); setPlan(null); });
+      api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false));
+    }
   }, [me]);
 
   // Poll the notification queue for the bell badge. This MUST match exactly what
@@ -422,7 +430,7 @@ export default function App() {
 
   // Same per-id gating as before (parents, children, and utility items alike).
   const visible = (id: Tab): boolean =>
-    id === "platform" ? superadmin
+    id === "platform" ? (superadmin || localSuper)
     : id === "archive" ? isAdmin(me)              // admin-only, like the money views
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item

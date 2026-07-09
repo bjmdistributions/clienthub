@@ -416,6 +416,7 @@ fn main() {
             // Unified accounts + team management (RBAC)
             employees::employee_status,
             employees::employee_me,
+            employees::local_is_superadmin,
             employees::update_my_account,
             employees::employee_logout,
             employees::employee_bootstrap,

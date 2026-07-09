@@ -278,6 +278,27 @@ pub fn employee_me() -> Result<Option<Me>, String> {
     Ok(current_staff_id().and_then(|id| load_me(&id)))
 }
 
+/// The platform superadmin's email (the owner). Mirrors the server; env-overridable
+/// via CLIENTHUB_SUPERADMIN_EMAIL.
+fn superadmin_email() -> String {
+    std::env::var("CLIENTHUB_SUPERADMIN_EMAIL")
+        .unwrap_or_else(|_| "jackjohnm7@gmail.com".to_string())
+        .trim()
+        .to_lowercase()
+}
+
+/// Whether the LOCALLY signed-in account is the platform owner/superadmin — decided from
+/// the account you're actually signed in as on this device, not the separate netsync
+/// server session (which can be a stale or different identity per device). This keeps the
+/// Platform tab appearing for the owner consistently across their machines.
+#[tauri::command]
+pub fn local_is_superadmin() -> Result<bool, String> {
+    let email = current_staff_id()
+        .and_then(|id| load_me(&id))
+        .map(|m| m.email.trim().to_lowercase());
+    Ok(email.map(|e| e == superadmin_email()).unwrap_or(false))
+}
+
 #[tauri::command]
 pub fn employee_logout() -> Result<(), String> { set_current_staff(None) }
 

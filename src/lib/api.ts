@@ -1550,6 +1550,7 @@ export const api = {
   // ── Unified accounts + RBAC (synced with web/mobile) ──
   employeeStatus: () => invoke<{ has_accounts: boolean; signed_in: boolean }>("employee_status"),
   employeeMe: () => invoke<Me | null>("employee_me"),
+  localIsSuperadmin: () => invoke<boolean>("local_is_superadmin"),
   updateMyAccount: (p: { display_name?: string; title?: string; phone?: string; avatar?: string }) =>
     invoke<Me>("update_my_account", p),
   employeeLogout: () => invoke<void>("employee_logout"),
