@@ -1233,3 +1233,65 @@ pub async fn admin_broadcast_send(
     }
     Ok(out)
 }
+
+/// Superadmin: send the broadcast as a single test email to the caller's own
+/// address. Subject/body are optional — when omitted the server sends its
+/// canned test message. Same 200-with-`error` handling as the send endpoint.
+#[tauri::command]
+pub async fn admin_broadcast_test(
+    subject: Option<String>,
+    body: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let mut payload = serde_json::Map::new();
+    if let Some(s) = subject {
+        payload.insert("subject".into(), serde_json::Value::String(s));
+    }
+    if let Some(b) = body {
+        payload.insert("body".into(), serde_json::Value::String(b));
+    }
+    let resp = http()
+        .post(format!("{}/api/admin/broadcast/test", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::Value::Object(payload))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    let out: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(e) = out.get("error").and_then(|v| v.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(out)
+}
+
+/// Who the SERVER-SYNC session is signed in as. The desktop has two identities —
+/// the local login and this sync token — and they can disagree (a stale sync
+/// session makes superadmin data calls fail with no explanation). The Platform
+/// tab uses this to say exactly which account the server sees.
+#[tauri::command]
+pub async fn netsync_whoami() -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .get(format!("{}/api/auth/whoami", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("session expired".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    let out: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(e) = out.get("error").and_then(|v| v.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(out)
+}

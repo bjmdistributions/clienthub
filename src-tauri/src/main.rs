@@ -255,6 +255,8 @@ fn main() {
             netsync::admin_platform_users,
             netsync::admin_broadcast_preview,
             netsync::admin_broadcast_send,
+            netsync::admin_broadcast_test,
+            netsync::netsync_whoami,
             netsync::upload_company_logo,
             // Google Sheet clone (read-and-rebuild view-only supplier load sheets)
             sheet_clone::clone_google_sheet,

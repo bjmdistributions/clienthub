@@ -32,6 +32,23 @@ export default function PlatformView() {
   const [tab, setTab] = useState<Tab>("orgs");
   const [savingPlan, setSavingPlan] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
+  const [syncWarn, setSyncWarn] = useState<{ kind: "expired" } | { kind: "mismatch"; email: string } | null>(null);
+
+  // This tab is gated on the LOCAL login, but every data call in it uses the
+  // separate server-sync session — which can be an expired or different account
+  // on this device (classic symptom: loads on one machine, blank on another).
+  // Ask the server who it thinks this device is and warn when that identity
+  // can't read platform data.
+  useEffect(() => {
+    Promise.all([
+      api.netsyncWhoami().catch(() => null),
+      api.localIsSuperadmin().catch(() => true),
+    ]).then(([who, localSuper]) => {
+      if (!localSuper) return; // reconnect copy is owner-directed
+      if (!who) setSyncWarn({ kind: "expired" });
+      else if (!who.is_superadmin) setSyncWarn({ kind: "mismatch", email: who.email });
+    });
+  }, []);
 
   const load = () => {
     setLoading(true);
@@ -64,6 +81,17 @@ export default function PlatformView() {
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
       </div>
+
+      {syncWarn && (
+        <div className="flex items-start gap-2.5 bg-warning-bg border border-warning rounded-lg px-4 py-3 mb-4">
+          <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-px" />
+          <p className="text-[12.5px] text-warning-ink leading-relaxed">
+            {syncWarn.kind === "expired"
+              ? "Your server connection has expired — reconnect in Settings → Sync, then reopen this tab."
+              : <>This device's server connection is signed in as <span className="font-medium">{syncWarn.email}</span>, which doesn't have platform access. Reconnect the server sync with your owner account, then reopen this tab.</>}
+          </p>
+        </div>
+      )}
 
       {err ? (
         <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>
@@ -234,6 +262,7 @@ function Broadcast() {
   const [preview, setPreview] = useState<{ recipients: number; sample: string[] } | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [confirm, setConfirm] = useState(false);
 
   // Any edit to the audience or content invalidates a stale preview so Send
@@ -247,6 +276,16 @@ function Broadcast() {
       .then((r) => setPreview(r))
       .catch((e) => { setPreview(null); toast(String(e), "error"); })
       .finally(() => setPreviewing(false));
+  };
+
+  // Only ever emails the caller's own address, so it needs no preview gate —
+  // uses the draft subject/body when present, else the server's canned test.
+  const sendTest = () => {
+    setTesting(true);
+    api.adminBroadcastTest(subject.trim() || undefined, body.trim() || undefined)
+      .then((r) => toast(`Test sent to ${r.to} — check your inbox (and spam).`))
+      .catch((e) => toast(String(e), "error"))
+      .finally(() => setTesting(false));
   };
 
   const doSend = () => {
@@ -309,6 +348,13 @@ function Broadcast() {
       )}
 
       <div className="flex items-center gap-2">
+        <button
+          onClick={sendTest}
+          disabled={testing}
+          className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+        >
+          {testing ? "Sending test…" : "Send test to my email"}
+        </button>
         <button
           onClick={runPreview}
           disabled={previewing || (!accounts && !waitlist)}

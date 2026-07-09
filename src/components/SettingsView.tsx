@@ -4199,7 +4199,7 @@ function SplitsTab() {
   const setShare = (i: number, patch: Partial<Share>) => persist(shares.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   const removeShare = (i: number) => persist(shares.filter((_, idx) => idx !== i));
 
-  const PAY_TYPES: [string, string][] = [["profit_pct", "% of profit"], ["gross_pct", "% of gross"], ["fixed", "Fixed $"]];
+  const PAY_TYPES: [string, string][] = [["profit_pct", "Profit %"], ["gross_pct", "Gross %"], ["fixed", "Fixed $"]];
   const setRepType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); reloadStaff(); };
   const setRepVal = async (id: string, commissionPct: number) => { await api.updateStaff(id, { commissionPct }); };
 
@@ -4212,58 +4212,75 @@ function SplitsTab() {
   if (!loaded) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
 
   return (
-    <div className="max-w-2xl space-y-7">
-      <div>
-        <SectionLabel>Sales reps</SectionLabel>
-        <p className="text-[12px] text-muted mt-0.5 mb-3">Each person's cut when they're the deal's lead rep — taken first, off the top.</p>
-        <div className="space-y-2">
-          {staff.length === 0 && <div className="text-[12px] text-muted">No team members yet.</div>}
-          {staff.map((u) => (
-            <div key={u.id} className="flex items-center gap-2 bg-surface border border-line rounded-lg px-3 py-2">
-              <div className="flex-1 min-w-0 text-[13px] text-ink truncate">{u.display_name}{u.role_name ? <span className="text-muted text-[11px] ml-1.5">{u.role_name}</span> : null}</div>
-              <select defaultValue={(u as any).pay_type || "profit_pct"} onChange={(e) => setRepType(u.id, e.target.value)}
-                className="bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink shrink-0">
-                {PAY_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-              </select>
-              <input type="number" min={0} step="0.1" defaultValue={u.commission_pct} onBlur={(e) => setRepVal(u.id, parseFloat(e.target.value) || 0)}
-                className="w-20 bg-surface-2 border border-line rounded-lg h-8 px-2 text-[12px] text-ink text-right shrink-0" />
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <SectionLabel>Owners &amp; Business — split the remainder</SectionLabel>
-        <p className="text-[12px] text-muted mt-0.5 mb-3">Whatever's left after the rep's cut is divided by these shares. Must total 100%.</p>
-        <div className="space-y-2">
-          {shares.map((s, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input value={s.name} onChange={(e) => setShare(i, { name: e.target.value })} placeholder={s.is_business ? "Business" : "Name"}
-                className="flex-1 min-w-0 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
-              {s.is_business && <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full shrink-0">Business</span>}
-              <input type="number" min={0} step="0.1" value={s.pct} onChange={(e) => setShare(i, { pct: parseFloat(e.target.value) || 0 })}
-                className="w-20 bg-surface-2 border border-line rounded-lg h-9 px-2 text-[13px] text-ink text-right shrink-0" />
-              <span className="text-[12px] text-muted shrink-0">%</span>
-              <button onClick={() => removeShare(i)} className="text-muted hover:text-danger-ink px-1 shrink-0" title="Remove"><X size={13} /></button>
-            </div>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 mt-3 flex-wrap">
-          <button onClick={() => setShares([...shares, { name: "", pct: Math.max(0, remaining), is_business: false }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Owner</button>
-          {!shares.some((s) => s.is_business) && <button onClick={() => setShares([...shares, { name: "Business", pct: Math.max(0, remaining), is_business: true }])} className="text-[12px] border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2">+ Business</button>}
-          {!valid && shares.length > 0 && (
-            <button onClick={balance} className="text-[12px] border border-accent/40 text-accent rounded-lg px-3 h-8 hover:bg-accent/10">Balance to 100%</button>
-          )}
-          <div className={`ml-auto flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12px] border ${valid ? "border-success bg-success-bg text-success-ink" : "border-danger bg-danger-bg text-danger-ink"}`}>
-            {valid ? <Check size={13} /> : <AlertCircle size={13} />} {total.toFixed(1)}%
-            {!valid && (remaining > 0 ? ` · ${remaining}% left` : ` · ${Math.abs(remaining)}% over`)}
+    <div className="max-w-2xl space-y-4">
+      <SettingCard icon={Users} title="Sales reps" purpose="Each person's cut when they're the deal's lead rep — taken first, off the top.">
+        {staff.length === 0 ? (
+          <div className="text-[12.5px] text-muted">No team members yet — invite people from the Team tab.</div>
+        ) : (
+          <div className="divide-y divide-line">
+            {staff.map((u) => (
+              <div key={u.id} className="grid grid-cols-[minmax(0,1fr)_220px_96px] items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-medium text-ink truncate">{u.display_name}</div>
+                  {u.role_name ? <div className="text-[11px] text-muted truncate">{u.role_name}</div> : null}
+                </div>
+                <Segmented value={(u as any).pay_type || "profit_pct"} onChange={(v) => setRepType(u.id, v)}
+                  options={PAY_TYPES.map(([v, l]) => ({ value: v, label: l }))} />
+                <div className="flex items-center gap-1.5">
+                  <input type="number" min={0} step="0.1" defaultValue={u.commission_pct} onBlur={(e) => setRepVal(u.id, parseFloat(e.target.value) || 0)}
+                    className={`${inpSm} text-right tabular-nums`} />
+                  <span className="w-3 shrink-0 text-[12px] text-muted">{((u as any).pay_type || "profit_pct") === "fixed" ? "$" : "%"}</span>
+                </div>
+              </div>
+            ))}
           </div>
-        </div>
-      </div>
+        )}
+      </SettingCard>
 
-      <div>
-        <SectionLabel>Preview</SectionLabel>
-        <div className="bg-surface border border-line rounded-xl p-4 mt-2 text-[13px] space-y-1.5">
+      <SettingCard icon={Split} title="Owner split" purpose="Whatever's left after the rep's cut is divided by these shares. Saves when the total is exactly 100%."
+        aside={
+          <span className={`text-[12.5px] font-medium tabular-nums ${valid ? "text-success-ink" : "text-warning-ink"}`}>
+            Total: {total.toFixed(1)}%{!valid && (remaining > 0 ? ` · ${remaining}% left` : ` · ${Math.abs(remaining)}% over`)}
+          </span>
+        }>
+        {shares.length === 0 ? (
+          <div className="text-[12.5px] text-muted">No shares yet — add an owner or the business to define the split.</div>
+        ) : (
+          <div className="space-y-2">
+            {shares.map((s, i) => (
+              <div key={i} className="grid grid-cols-[minmax(0,1fr)_112px_28px] items-center gap-2">
+                <div className="relative min-w-0">
+                  <input value={s.name} onChange={(e) => setShare(i, { name: e.target.value })} placeholder={s.is_business ? "Business" : "Name"}
+                    className={`${inpSm}${s.is_business ? " pr-20" : ""}`} />
+                  {s.is_business && (
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full pointer-events-none">Business</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input type="number" min={0} step="0.1" value={s.pct} onChange={(e) => setShare(i, { pct: parseFloat(e.target.value) || 0 })}
+                    className={`${inpSm} text-right tabular-nums`} />
+                  <span className="w-3 shrink-0 text-[12px] text-muted">%</span>
+                </div>
+                <button onClick={() => removeShare(i)} className="h-9 w-7 flex items-center justify-center text-muted hover:text-danger-ink transition-colors" title="Remove"><X size={14} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2 mt-4 flex-wrap">
+          <button onClick={() => setShares([...shares, { name: "", pct: Math.max(0, remaining), is_business: false }])}
+            className="inline-flex items-center gap-1.5 text-[12px] font-medium border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2 transition-colors"><Plus size={13} /> Add owner</button>
+          {!shares.some((s) => s.is_business) && (
+            <button onClick={() => setShares([...shares, { name: "Business", pct: Math.max(0, remaining), is_business: true }])}
+              className="inline-flex items-center gap-1.5 text-[12px] font-medium border border-line rounded-lg px-3 h-8 text-ink-2 hover:bg-surface-2 transition-colors"><Plus size={13} /> Add business share</button>
+          )}
+          {!valid && shares.length > 0 && (
+            <button onClick={balance} className="ml-auto text-[12px] font-medium border border-accent/40 text-accent rounded-lg px-3 h-8 hover:bg-accent/10 transition-colors">Balance to 100%</button>
+          )}
+        </div>
+      </SettingCard>
+
+      <SettingCard icon={Eye} title="Preview" purpose="How a sample $1,000 deal profit would be divided under today's rules.">
+        <div className="text-[13px] space-y-1.5">
           <div className="flex justify-between"><span className="text-muted">Sample deal profit</span><span className="tabular-nums text-ink font-medium">${sample.toFixed(0)}</span></div>
           {previewRep && <div className="flex justify-between"><span className="text-ink-2">Rep cut — {previewRep.display_name} ({previewRep.commission_pct}%)</span><span className="tabular-nums text-ink">${repCut.toFixed(2)}</span></div>}
           <div className="flex justify-between border-t border-line pt-1.5"><span className="text-ink-2 font-medium">Remainder to owners</span><span className="tabular-nums text-ink font-medium">${remainder.toFixed(2)}</span></div>
@@ -4272,7 +4289,7 @@ function SplitsTab() {
           ))}
           {!previewRep && <p className="text-[11px] text-muted pt-1">No rep with a profit-% rule yet — the full profit goes to the owner split.</p>}
         </div>
-      </div>
+      </SettingCard>
     </div>
   );
 }
@@ -4433,40 +4450,63 @@ function PayoutsPanel() {
 
   const payouts: any[] = (data && data.payouts) || [];
   return (
-    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
-      {data && !data.enabled && (
-        <div className="text-[12.5px] text-muted">Rep payouts are off. Turn them on under <strong>People</strong> first.</div>
-      )}
-      <div className="flex items-center gap-2 text-[12px] flex-wrap">
-        <span className="text-muted">Period</span>
-        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface" />
-        <span className="text-muted">to</span>
-        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="border border-line px-2 h-8 rounded-lg text-[12px] bg-surface" />
-        <button onClick={load} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2">Show</button>
+    <SettingCard icon={Receipt} title="Rep payouts" purpose="What each rep is owed for completed deals in the period.">
+      <div className="space-y-4">
+        {data && !data.enabled && (
+          <div className="text-[12.5px] text-muted">Rep payouts are off. Turn them on under <strong>People</strong> first.</div>
+        )}
+        <div className="flex items-end gap-2 flex-wrap">
+          <div>
+            <label className="block text-[12px] font-medium text-muted mb-1.5">From</label>
+            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className={`${inpSm} w-36`} />
+          </div>
+          <div>
+            <label className="block text-[12px] font-medium text-muted mb-1.5">To</label>
+            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className={`${inpSm} w-36`} />
+          </div>
+          <button onClick={load} className="h-9 px-3.5 border border-line rounded-lg text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 transition-colors">Show</button>
+        </div>
+        {payouts.length === 0 ? (
+          <div className="text-[12.5px] text-muted py-4 text-center">No rep payouts for completed deals in this period.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="border-b border-line">
+                  <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Rep</th>
+                  <th className="text-left px-3 py-2 text-[12px] font-medium text-muted">Deals</th>
+                  <th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Owed</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {payouts.map((p) => (
+                  <tr key={p.rep_id}>
+                    <td className="px-3 py-2.5 font-medium text-ink">{p.name}</td>
+                    <td className="px-3 py-2.5 text-muted">{p.deals}{p.refunded_deals > 0 ? ` · ${p.refunded_deals} refunded` : ""}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-medium text-ink">{fmtAmount(p.owed)}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button disabled={busy} onClick={() => markPaid(p.rep_id, p.owed)}
+                        className="px-2.5 h-7 border border-line rounded-lg text-[11.5px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">Mark paid</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              {payouts.length > 1 && (
+                <tfoot>
+                  <tr className="border-t border-line">
+                    <td colSpan={2} className="px-3 py-2.5 text-[12px] text-muted">Total owed</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-medium text-ink">{fmtAmount(payouts.reduce((a, p) => a + (Number(p.owed) || 0), 0))}</td>
+                    <td />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        )}
+        {err && <div className="text-[12px] text-danger-ink flex items-center gap-1.5"><AlertCircle size={13} /> {err}</div>}
       </div>
-      {payouts.length === 0 ? (
-        <div className="text-[12.5px] text-muted">No rep payouts for completed deals in this period.</div>
-      ) : (
-        <table className="w-full text-[13px]">
-          <thead><tr style={{ borderBottom: "1px solid var(--t-b2)" }}>
-            {["Rep", "Deals", "Owed", ""].map((h, i) => <th key={i} className={`text-left px-3 py-2 text-[12px] font-medium text-muted ${i === 3 ? "text-right" : ""}`}>{h}</th>)}
-          </tr></thead>
-          <tbody>
-            {payouts.map((p) => (
-              <tr key={p.rep_id} style={{ borderBottom: "1px solid var(--t-b2)" }}>
-                <td className="px-3 py-2.5 text-ink">{p.name}</td>
-                <td className="px-3 py-2.5 text-muted">{p.deals}{p.refunded_deals > 0 ? ` · ${p.refunded_deals} refunded` : ""}</td>
-                <td className="px-3 py-2.5 tabular-nums font-semibold text-ink">{fmtAmount(p.owed)}</td>
-                <td className="px-3 py-2.5 text-right">
-                  <button disabled={busy} onClick={() => markPaid(p.rep_id, p.owed)} className="px-2.5 h-7 border border-line rounded-lg text-[11.5px] hover:bg-surface-2">Mark paid</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {err && <div className="text-[11.5px] text-danger-ink">{err}</div>}
-    </div>
+    </SettingCard>
   );
 }
 
