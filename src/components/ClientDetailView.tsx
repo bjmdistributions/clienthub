@@ -1,5 +1,5 @@
 import { useEffect, useState, Children } from "react";
-import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField } from "../lib/api";
+import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo, PaymentMethod } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
 import CreditPanel from "./CreditPanel";
@@ -24,6 +24,8 @@ import {
   Trash2,
   AlertTriangle,
   X,
+  Send,
+  Check,
 } from "lucide-react";
 
 interface Props {
@@ -131,6 +133,7 @@ function SubHeading({ icon, children }: { icon: React.ReactNode; children: React
 export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }: Props) {
   const [client, setClient] = useState<Client | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showSendDetails, setShowSendDetails] = useState(false);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
@@ -240,6 +243,13 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           }}
         />
       )}
+      {showSendDetails && (
+        <SendOurDetailsModal
+          clientName={client.name}
+          clientEmail={client.email}
+          onClose={() => setShowSendDetails(false)}
+        />
+      )}
       {/* Back */}
       <button
         onClick={onBack}
@@ -279,6 +289,13 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             {/* Edit / Delete — restored after the profile redesign. Delete is a
                 deliberate two-step (type-the-name) confirm to prevent data loss. */}
             <div className="flex items-center gap-1.5 mb-0.5">
+              <button
+                onClick={() => setShowSendDetails(true)}
+                title="Email this contact your company + payment details so they can invoice or pay you."
+                className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+              >
+                <Send size={13} /> Send our details
+              </button>
               <button
                 onClick={() => onEdit?.(client)}
                 className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
@@ -848,5 +865,151 @@ function CopyEmail({ email }: { email: string }) {
     >
       {copied ? "Copied!" : "Copy"}
     </button>
+  );
+}
+
+// Compose the default body from the org's own company info + active payment
+// methods. Every missing value is skipped so the email never shows blank lines,
+// and the whole payment section drops out when there are no active methods.
+// This intentionally only reflects the org's own details — never any supplier
+// or cost data.
+function composeDetailsBody(clientName: string, info: CompanyInfo | null, methods: PaymentMethod[]): string {
+  const firstName = (clientName || "").trim().split(/\s+/)[0] || "there";
+  const lines: string[] = [`Hi ${firstName},`, "", "Here are our details for invoicing or payment:", ""];
+
+  const detailBlock = [info?.name, info?.address, info?.email, info?.phone]
+    .map((v) => (v || "").toString().trim())
+    .filter(Boolean);
+  lines.push(...detailBlock);
+
+  const active = methods.filter((m) => m.active);
+  if (active.length > 0) {
+    lines.push("", "Payment methods:");
+    for (const m of active) {
+      const kind = (m.kind || "").trim();
+      const label = (m.label || "").trim();
+      const details = (m.details || "").trim();
+      const head = [kind, label].filter(Boolean).join(" — ");
+      const line = details ? (head ? `${head}: ${details}` : details) : head;
+      if (line) lines.push(`- ${line}`);
+    }
+  }
+
+  const signOff = (info?.name || "").toString().trim();
+  lines.push("", "Thanks,", signOff || "");
+  return lines.filter((l, i, arr) => !(l === "" && arr[i - 1] === "")).join("\n").trim() + "\n";
+}
+
+const looksLikeEmail = (v: string): boolean => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+
+// Review modal for "Send our details". Pre-fills recipient / subject / body from
+// the org's own company info + active payment methods, all editable. The review
+// step IS the confirmation — nothing sends until the user clicks Send.
+function SendOurDetailsModal({ clientName, clientEmail, onClose }: {
+  clientName: string;
+  clientEmail: string | null;
+  onClose: () => void;
+}) {
+  const [recipient, setRecipient] = useState(clientEmail || "");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [info, methods] = await Promise.all([
+        api.getCompanyInfo().catch(() => null),
+        api.listPaymentMethods().catch(() => [] as PaymentMethod[]),
+      ]);
+      if (cancelled) return;
+      const companyName = (info?.name || "").toString().trim();
+      setSubject(`Our billing & payment details${companyName ? ` — ${companyName}` : ""}`);
+      setBody(composeDetailsBody(clientName, info, methods));
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [clientName]);
+
+  const canSend = !loading && !sending && looksLikeEmail(recipient) && !!body.trim();
+
+  const send = async () => {
+    if (!canSend) return;
+    setSending(true);
+    setError(null);
+    try {
+      await api.sendEmail(recipient.trim(), subject, body);
+      setSent(true);
+      setTimeout(onClose, 1200);
+    } catch (e: any) {
+      setError(typeof e === "string" ? e : (e?.message || "Failed to send. Check your email settings."));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-5 pt-5 pb-3">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 text-accent-hover flex-shrink-0"><Send size={16} /></span>
+            <div>
+              <h2 className="text-[16px] font-semibold text-ink">Send our details</h2>
+              <p className="text-[12px] text-muted mt-0.5">Review before sending — nothing goes out until you click Send.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-ink transition-colors p-1 -mr-1 -mt-1"><X size={18} /></button>
+        </div>
+
+        <div className="px-5 pb-4 space-y-3 overflow-auto">
+          <div>
+            <label className="block text-[12px] font-medium text-muted mb-1">Recipient</label>
+            <input
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              placeholder="name@example.com"
+              className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            />
+          </div>
+          <div>
+            <label className="block text-[12px] font-medium text-muted mb-1">Subject</label>
+            <input
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            />
+          </div>
+          <div>
+            <label className="block text-[12px] font-medium text-muted mb-1">Message</label>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={12}
+              placeholder={loading ? "Loading your details…" : ""}
+              className="w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y"
+            />
+          </div>
+          {error && <p className="text-[12px] text-danger-ink">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">
+          <button onClick={onClose} disabled={sending}
+            className="px-4 h-9 rounded-lg border border-line text-ink-2 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={send}
+            disabled={!canSend}
+            className="inline-flex items-center gap-1.5 px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {sent ? <><Check size={14} /> Sent</> : sending ? <><RefreshCw size={14} className="animate-spin" /> Sending…</> : <><Send size={14} /> Send</>}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
