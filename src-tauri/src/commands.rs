@@ -2037,18 +2037,72 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     Ok(id)
 }
 
+/// Parse the trailing run of digits off a document number ("INV-0042" -> 42, "Q-7" -> 7).
+fn trailing_number(s: &str) -> Option<u32> {
+    let start = s.rfind(|c: char| !c.is_ascii_digit()).map(|i| i + 1).unwrap_or(0);
+    let tail = &s[start..];
+    if tail.is_empty() { None } else { tail.parse().ok() }
+}
+
+/// Next number for a document `table` that has a UNIQUE `number` column.
+///
+/// The old scheme handed out `{prefix}{stored_counter}` and bumped the counter. That
+/// counter lives in `settings` and does NOT reliably reach a second device before it
+/// generates its own document, so switching PC↔Mac produced a stale counter and a
+/// duplicate/rewound number (Jack had to fix these by hand). Instead we assign
+/// `max(configured counter, highest number already present + 1)` and skip past any exact
+/// collision — so the number is always ahead of everything already synced onto this
+/// device, regardless of counter drift. The stored counter is still advanced so the
+/// settings preview stays in step.
+fn next_document_number(
+    conn: &rusqlite::Connection,
+    table: &str,
+    prefix_key: &str,
+    padding_key: &str,
+    counter_key: &str,
+    default_prefix: &str,
+) -> anyhow::Result<String> {
+    let prefix: String = conn
+        .query_row("SELECT value FROM settings WHERE key=?1", [prefix_key], |r| r.get(0))
+        .ok().unwrap_or_else(|| default_prefix.into());
+    let padding: usize = conn
+        .query_row("SELECT value FROM settings WHERE key=?1", [padding_key], |r| r.get::<_, String>(0))
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let configured: u32 = conn
+        .query_row("SELECT value FROM settings WHERE key=?1", [counter_key], |r| r.get::<_, String>(0))
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+
+    // Highest numeric suffix already present, so a stale counter can never hand out a
+    // number at or below one that's already been used and synced onto this device.
+    let mut highest_used = 0u32;
+    if let Ok(mut stmt) = conn.prepare(&format!("SELECT number FROM {}", table)) {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for n in rows.flatten() {
+                if let Some(v) = trailing_number(&n) { highest_used = highest_used.max(v); }
+            }
+        }
+    }
+
+    let mut assigned = configured.max(highest_used + 1);
+    loop {
+        let candidate = format!("{}{:0>width$}", prefix, assigned, width = padding);
+        let taken = conn
+            .query_row(&format!("SELECT 1 FROM {} WHERE number=?1 LIMIT 1", table), [&candidate], |_| Ok(()))
+            .is_ok();
+        if !taken {
+            conn.execute(
+                "INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![counter_key, (assigned + 1).to_string()],
+            )?;
+            return Ok(candidate);
+        }
+        assigned += 1;
+    }
+}
+
 fn generate_invoice_number() -> anyhow::Result<String> {
     let conn = pool().get()?;
-    let prefix: String = conn.query_row("SELECT value FROM settings WHERE key='invoice_prefix'", [], |r| r.get(0)).ok().unwrap_or_else(|| "INV-".into());
-    let padding: usize = conn.query_row("SELECT value FROM settings WHERE key='invoice_padding'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(4);
-    let next_key = "invoice_next_number".to_string();
-    let current: u32 = conn.query_row("SELECT value FROM settings WHERE key=?1", [&next_key], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(1);
-    let next = current + 1;
-    conn.execute(
-        "INSERT INTO settings (key,value) VALUES ('invoice_next_number',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [next.to_string()],
-    )?;
-    Ok(format!("{}{:0>width$}", prefix, current, width = padding))
+    next_document_number(&conn, "invoices", "invoice_prefix", "invoice_padding", "invoice_next_number", "INV-")
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2136,12 +2190,7 @@ pub async fn get_quote(id: String) -> Result<Quote, String> {
 
 fn generate_quote_number() -> anyhow::Result<String> {
     let conn = pool().get()?;
-    let prefix: String = conn.query_row("SELECT value FROM settings WHERE key='quote_prefix'", [], |r| r.get(0)).ok().unwrap_or_else(|| "QUO-".into());
-    let padding: usize = conn.query_row("SELECT value FROM settings WHERE key='quote_padding'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(4);
-    let current: u32 = conn.query_row("SELECT value FROM settings WHERE key='quote_next_number'", [], |r| r.get::<_,String>(0)).ok().and_then(|s| s.parse().ok()).unwrap_or(1);
-    let next = current + 1;
-    conn.execute("INSERT INTO settings (key,value) VALUES ('quote_next_number',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [next.to_string()])?;
-    Ok(format!("{}{:0>width$}", prefix, current, width = padding))
+    next_document_number(&conn, "quotes", "quote_prefix", "quote_padding", "quote_next_number", "QUO-")
 }
 
 #[derive(Deserialize)]
@@ -2741,6 +2790,28 @@ pub async fn get_invoice_template() -> Result<crate::invoice::InvoiceTemplate, S
 #[tauri::command]
 pub async fn save_invoice_template(template: crate::invoice::InvoiceTemplate) -> Result<(), String> {
     crate::invoice::save_template(&template).map_err(|e| e.to_string())
+}
+
+/// Current quote branding template (defaults to the invoice shape with a "QUOTE" title).
+#[tauri::command]
+pub async fn get_quote_template() -> Result<crate::invoice::InvoiceTemplate, String> {
+    Ok(crate::invoice::load_quote_template())
+}
+
+/// Save the quote branding template (upsert into settings `quote_template`).
+#[tauri::command]
+pub async fn save_quote_template(template: crate::invoice::InvoiceTemplate) -> Result<(), String> {
+    crate::invoice::save_quote_template(&template).map_err(|e| e.to_string())
+}
+
+/// Render a sample quote PDF (current company_info + quote_template + dummy data) and open
+/// it in the OS viewer, so the quote branding editor can preview the real layout.
+#[tauri::command]
+pub async fn render_sample_quote_pdf(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let path = crate::invoice::render_sample_quote_pdf().map_err(|e| e.to_string())?;
+    use tauri_plugin_shell::ShellExt;
+    app_handle.shell().open(path.clone(), None).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 /// Render a sample invoice PDF (current company_info + template + dummy data) and

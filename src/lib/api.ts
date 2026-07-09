@@ -1727,6 +1727,9 @@ export const api = {
   getInvoiceTemplate: () => invoke<InvoiceTemplate>("get_invoice_template"),
   saveInvoiceTemplate: (template: InvoiceTemplate) => invoke<void>("save_invoice_template", { template }),
   renderSampleInvoicePdf: () => invoke<string>("render_sample_invoice_pdf"),
+  getQuoteTemplate: () => invoke<InvoiceTemplate>("get_quote_template"),
+  saveQuoteTemplate: (template: InvoiceTemplate) => invoke<void>("save_quote_template", { template }),
+  renderSampleQuotePdf: () => invoke<string>("render_sample_quote_pdf"),
 
   getOnboardingStatus: () => invoke<boolean>("get_onboarding_status"),
   completeOnboarding: () => invoke<void>("complete_onboarding"),

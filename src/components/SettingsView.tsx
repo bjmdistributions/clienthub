@@ -47,6 +47,7 @@ import {
   Sparkles,
   RefreshCw,
   Image,
+  Hash,
   ChevronUp,
   ChevronDown,
   Edit2,
@@ -160,7 +161,7 @@ const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:ou
 const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 type SettingsTab =
-  | "account" | "appearance" | "company" | "invoice" | "storefront" | "categories" | "customfields"
+  | "account" | "appearance" | "company" | "invoice" | "quote" | "storefront" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
   | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "webforms"
   | "sync" | "splits" | "backup" | "team";
@@ -175,7 +176,8 @@ const SETTINGS_GROUPS: {
       { id: "account",      label: "My Account",     icon: Users,             desc: "Your name, photo & contact info" },
       { id: "appearance",   label: "Appearance",    icon: Palette,           desc: "Theme, accent color & display" },
       { id: "company",      label: "Company",        icon: Building2,         desc: "Business details & invoice logo" },
-      { id: "invoice",      label: "Invoice",        icon: Receipt,           desc: "Invoice branding & preview" },
+      { id: "invoice",      label: "Invoice",        icon: Receipt,           desc: "Invoice branding, numbering & preview" },
+      { id: "quote",        label: "Quote",          icon: FileText,          desc: "Quote branding, numbering & preview" },
       { id: "storefront",   label: "Storefront",     icon: Globe,             desc: "Public inventory catalog link" },
       { id: "categories",   label: "Categories",     icon: Tag,               desc: "Client & deal categories" },
       { id: "customfields", label: "Custom Fields",  icon: SlidersHorizontal, desc: "Extra fields on client records" },
@@ -312,7 +314,8 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "email"       && <EmailTab />}
           {tab === "whatsapp"    && <WhatsAppTab />}
           {tab === "company"     && <CompanyTab />}
-          {tab === "invoice"     && <div className="space-y-8"><InvoiceTab /><PaymentsTab /></div>}
+          {tab === "invoice"     && <div className="space-y-8"><DocBrandingTab kind="invoice" /><PaymentsTab /></div>}
+          {tab === "quote"       && <DocBrandingTab kind="quote" />}
           {tab === "storefront"  && <StorefrontTab />}
           {tab === "categories"  && <CategoriesTab />}
           {tab === "ai"          && <AiTab />}
@@ -1419,14 +1422,8 @@ function CompanyTab() {
       </Field>
     </SettingCard>
 
-    <SettingCard icon={FileText} title="Numbering & share footer" purpose="How invoice and quote numbers are generated, plus the WhatsApp share line.">
-      <InvoiceNumberingSection />
-      <div className="mt-5 pt-5 border-t border-line-2">
-        <QuoteNumberingSection />
-      </div>
-      <div className="mt-5 pt-5 border-t border-line-2">
-        <WhatsAppFooterField />
-      </div>
+    <SettingCard icon={FileText} title="Share footer" purpose="The sign-off line appended when you share inventory over WhatsApp.">
+      <WhatsAppFooterField />
     </SettingCard>
     </div>
   );
@@ -1467,9 +1464,17 @@ function Segmented<T extends string>({ value, onChange, options }: {
   );
 }
 
-function InvoiceTab() {
+// Shared branding studio for both invoices and quotes. `kind` swaps the template
+// store (invoice_template vs quote_template), the sample-PDF renderer, the numbering
+// section, and the copy — the layout and controls are identical, which is exactly what
+// Jack asked for ("built out identical to invoice"). The logo lives in company_info and
+// is shared by both documents.
+function DocBrandingTab({ kind }: { kind: "invoice" | "quote" }) {
+  const isQuote = kind === "quote";
+  const noun = isQuote ? "quote" : "invoice";
+  const defaultTitle = isQuote ? "QUOTE" : "INVOICE";
   const [info, setInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
-  const [tpl, setTpl] = useState<InvoiceTemplate>(TEMPLATE_DEFAULT);
+  const [tpl, setTpl] = useState<InvoiceTemplate>(isQuote ? { ...TEMPLATE_DEFAULT, title_label: "QUOTE" } : TEMPLATE_DEFAULT);
   const [ready, setReady] = useState(false);
   const [logoError, setLogoError] = useState(false);
   const [logoVersion, setLogoVersion] = useState(0);
@@ -1478,14 +1483,14 @@ function InvoiceTab() {
   useEffect(() => {
     Promise.all([
       api.getCompanyInfo().then((c) => { if (c) setInfo(c); }).catch(() => {}),
-      api.getInvoiceTemplate().then((t) => { if (t) setTpl(t); }).catch(() => {}),
+      (isQuote ? api.getQuoteTemplate() : api.getInvoiceTemplate()).then((t) => { if (t) setTpl(t); }).catch(() => {}),
     ]).finally(() => setReady(true));
-  }, []);
+  }, [isQuote]);
 
   // Two independent stores: the logo lives in company_info, everything else in
   // the template. Both autosave through the shared SaveStatus pill.
   useAutosave(info, () => api.saveCompanyInfo(info), ready);
-  useAutosave(tpl, () => api.saveInvoiceTemplate(tpl), ready);
+  useAutosave(tpl, () => (isQuote ? api.saveQuoteTemplate(tpl) : api.saveInvoiceTemplate(tpl)), ready);
 
   const setT = (patch: Partial<InvoiceTemplate>) => setTpl((t) => ({ ...t, ...patch }));
 
@@ -1502,7 +1507,7 @@ function InvoiceTab() {
     setRendering(true);
     // The backend renders the sample, opens it in the OS viewer, and returns
     // its path (same mechanism as invoice preview) — we just await it.
-    try { await api.renderSampleInvoicePdf(); }
+    try { await (isQuote ? api.renderSampleQuotePdf() : api.renderSampleInvoicePdf()); }
     catch (e: any) { toast(String(e), "error"); }
     finally { setRendering(false); }
   };
@@ -1518,7 +1523,10 @@ function InvoiceTab() {
     <div className="flex flex-col lg:flex-row gap-5 items-start">
       {/* Controls */}
       <div className="w-full lg:w-[380px] lg:flex-shrink-0 space-y-4">
-        <SettingCard icon={Image} title="Logo" purpose="Shown at the top of every invoice.">
+        <SettingCard icon={Hash} title="Numbering" purpose={`How new ${noun} numbers are generated. Numbers stay unique across your devices.`}>
+          {isQuote ? <QuoteNumberingSection /> : <InvoiceNumberingSection />}
+        </SettingCard>
+        <SettingCard icon={Image} title="Logo" purpose={`Shown at the top of every ${noun}.`}>
           <div className="flex items-center gap-4">
             {info.logo_path ? (
               <div className="relative group">
@@ -1551,7 +1559,7 @@ function InvoiceTab() {
           <label className="mt-4 flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer select-none">
             <input type="checkbox" className="accent-accent" checked={tpl.show_company_name}
               onChange={(e) => setT({ show_company_name: e.target.checked })} />
-            Show company name on invoices
+            Show company name on {noun}s
             <span className="text-[11px] text-muted">(off if your logo has it)</span>
           </label>
 
@@ -1591,9 +1599,9 @@ function InvoiceTab() {
           </div>
         </SettingCard>
 
-        <SettingCard icon={FileText} title="Details & text" purpose="What appears on the invoice.">
+        <SettingCard icon={FileText} title="Details & text" purpose={`What appears on the ${noun}.`}>
           <div className="space-y-2.5 mb-4">
-            <div className="text-[12.5px] font-medium text-muted">Show on invoice</div>
+            <div className="text-[12.5px] font-medium text-muted">Show on {noun}</div>
             <div className="grid grid-cols-2 gap-2">
               <Check2 label="Address" k="show_address" />
               <Check2 label="Email" k="show_email" />
@@ -1602,7 +1610,7 @@ function InvoiceTab() {
             </div>
           </div>
           <Field label="Title label">
-            <input className={inpSm} value={tpl.title_label} placeholder="INVOICE"
+            <input className={inpSm} value={tpl.title_label} placeholder={defaultTitle}
               onChange={(e) => setT({ title_label: e.target.value })} />
           </Field>
           <Field label="Footer note">
@@ -1622,15 +1630,16 @@ function InvoiceTab() {
             {rendering ? <RefreshCw size={13} className="animate-spin" /> : <ExternalLink size={13} />} View actual PDF
           </button>
         </div>
-        <InvoicePreview info={info} tpl={tpl} logoVersion={logoVersion} />
+        <InvoicePreview info={info} tpl={tpl} logoVersion={logoVersion} kind={kind} />
         <p className="text-[11px] text-muted mt-2 text-center">A close approximation — the PDF is the ground truth.</p>
       </div>
     </div>
   );
 }
 
-// Visual A4-proportion sample invoice — mirrors the backend PDF layout.
-function InvoicePreview({ info, tpl, logoVersion }: { info: CompanyInfo; tpl: InvoiceTemplate; logoVersion: number }) {
+// Visual A4-proportion sample document — mirrors the backend PDF layout (invoice or quote).
+function InvoicePreview({ info, tpl, logoVersion, kind = "invoice" }: { info: CompanyInfo; tpl: InvoiceTemplate; logoVersion: number; kind?: "invoice" | "quote" }) {
+  const isQuote = kind === "quote";
   const accent = tpl.accent_color || "#111827";
   const logoH = tpl.logo_size === "small" ? 30 : tpl.logo_size === "large" ? 64 : 44;
   const align = tpl.logo_placement === "center" ? "items-center text-center" : tpl.logo_placement === "right" ? "items-end text-right" : "items-start text-left";
@@ -1672,8 +1681,8 @@ function InvoicePreview({ info, tpl, logoVersion }: { info: CompanyInfo; tpl: In
             )}
           </div>
           <div className="text-right flex-shrink-0">
-            <div className="font-extrabold tracking-wide text-[18px]" style={{ color: accent }}>{tpl.title_label || "INVOICE"}</div>
-            <div className="mt-0.5" style={{ color: "#6b7280" }}># INV-0001</div>
+            <div className="font-extrabold tracking-wide text-[18px]" style={{ color: accent }}>{tpl.title_label || (isQuote ? "QUOTE" : "INVOICE")}</div>
+            <div className="mt-0.5" style={{ color: "#6b7280" }}># {isQuote ? "QUO-0001" : "INV-0001"}</div>
           </div>
         </div>
 
@@ -1689,7 +1698,7 @@ function InvoicePreview({ info, tpl, logoVersion }: { info: CompanyInfo; tpl: In
           </div>
           <div className="text-right">
             <div><span style={{ color: "#9ca3af" }}>Issue </span><span style={{ color: "#374151" }}>Jan 1, 2025</span></div>
-            <div><span style={{ color: "#9ca3af" }}>Due </span><span style={{ color: "#374151" }}>Jan 15, 2025</span></div>
+            <div><span style={{ color: "#9ca3af" }}>{isQuote ? "Valid until " : "Due "}</span><span style={{ color: "#374151" }}>Jan 15, 2025</span></div>
           </div>
         </div>
 
@@ -4859,8 +4868,6 @@ function InvoiceNumberingSection() {
 
   return (
     <div>
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Invoice Numbering</h3>
-      <p className="text-[12px] text-muted mb-4">Customize how new invoice numbers are generated.</p>
       <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1">Prefix</label>
@@ -4878,7 +4885,7 @@ function InvoiceNumberingSection() {
             onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
         </div>
       </div>
-      <p className="text-[11px] text-muted mb-3">Preview: <span className="font-mono font-semibold text-accent-hover">{cfg.preview}</span></p>
+      <p className="text-[11px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
       <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>
@@ -4908,8 +4915,6 @@ function QuoteNumberingSection() {
 
   return (
     <div>
-      <h3 className="text-[14px] font-semibold text-ink mb-1">Quote Numbering</h3>
-      <p className="text-[12px] text-muted mb-4">Customize how new quote numbers are generated — including which number to start at.</p>
       <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1">Prefix</label>
@@ -4927,7 +4932,7 @@ function QuoteNumberingSection() {
             onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
         </div>
       </div>
-      <p className="text-[11px] text-muted mb-3">Preview: <span className="font-mono font-semibold text-accent-hover">{cfg.preview}</span></p>
+      <p className="text-[11px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
       <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[12px] font-medium">
         {saved ? "Saved" : "Save"}
       </button>

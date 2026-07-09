@@ -174,6 +174,78 @@ pub fn save_template(tpl: &InvoiceTemplate) -> Result<()> {
     Ok(())
 }
 
+/// Load the QUOTE branding template (settings key `quote_template`). Reuses the
+/// `InvoiceTemplate` shape — the two documents share every branding field. The only
+/// difference is the default title: quotes read "QUOTE" (not "INVOICE") when the key is
+/// absent or the saved JSON never specified a title. Never fails — defaults on any error.
+pub fn load_quote_template() -> InvoiceTemplate {
+    let raw: Option<String> = pool().get().ok().and_then(|conn| {
+        conn.query_row("SELECT value FROM settings WHERE key='quote_template'", [], |r| r.get::<_, String>(0)).ok()
+    });
+    match raw {
+        Some(json) => {
+            let mut tpl: InvoiceTemplate = serde_json::from_str(&json).unwrap_or_default();
+            let has_title = serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|v| v.get("title_label").cloned())
+                .is_some();
+            if !has_title { tpl.title_label = "QUOTE".into(); }
+            tpl
+        }
+        None => {
+            let mut tpl = InvoiceTemplate::default();
+            tpl.title_label = "QUOTE".into();
+            tpl
+        }
+    }
+}
+
+pub fn save_quote_template(tpl: &InvoiceTemplate) -> Result<()> {
+    let conn = pool().get()?;
+    let json = serde_json::to_string(tpl)?;
+    conn.execute(
+        "INSERT INTO settings (key,value) VALUES ('quote_template',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [json],
+    )?;
+    Ok(())
+}
+
+/// Render a SAMPLE quote PDF using the current company_info + `quote_template` and dummy
+/// data. Mirrors `render_sample_pdf` but with `kind="quote"`, so the quote branding editor
+/// previews the real layout. Writes to app-data and returns the path.
+pub fn render_sample_quote_pdf() -> Result<String> {
+    let company = load_company()?;
+    let items = vec![
+        LineItem { description: "Website design & build".into(), qty: 1.0, rate: 2400.00, amount: 2400.00 },
+        LineItem { description: "Monthly hosting & maintenance".into(), qty: 3.0, rate: 120.00, amount: 360.00 },
+        LineItem { description: "Content migration (per page)".into(), qty: 12.0, rate: 25.00, amount: 300.00 },
+        LineItem { description: "Priority support add-on".into(), qty: 1.0, rate: 150.00, amount: 150.00 },
+    ];
+    let (subtotal, tax, total) = compute_totals(&items, 0.08);
+    let client_address = Some(ClientAddress {
+        lines: vec!["100 Market Street, Suite 200".into(), "San Francisco, CA 94105".into(), "United States".into()],
+    });
+    let now = Utc::now().to_rfc3339();
+    let valid = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+
+    let pdf_bytes = build_pdf_bytes(
+        "SAMPLE-Q001", &now, &valid, &items, subtotal, tax, total,
+        "Sample Client",
+        &Some("sample@client.com".into()),
+        &Some("Acme Retail Co.".into()),
+        &client_address, &company,
+        "This estimate is valid until the date above. Line items and totals here are illustrative.",
+        "draft", "quote",
+    )?;
+
+    let dir = crate::db::app_data_dir().join("preview");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("sample_quote.pdf");
+    std::fs::write(&path, pdf_bytes)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 // ---------- Settings loaders ----------
 
 pub fn load_company() -> Result<CompanyInfo> {
@@ -328,17 +400,18 @@ pub fn build_pdf_bytes(
     // swaps the title, the due→valid-until label, drops payment options for
     // a validity note, and omits paid/overdue watermarks.
     let is_quote = kind == "quote";
-    // Branding template (defaults keep invoices looking identical). Loaded here so
-    // ALL render paths (real invoice, quote, preview, sample) get it for free.
-    let tpl = load_template();
+    // Branding template (defaults keep documents looking identical). Quotes carry their
+    // OWN template (`quote_template`) so their appearance is configurable independently
+    // of invoices; invoices use `invoice_template`. Loaded here so ALL render paths
+    // (real invoice, quote, preview, sample) get the right branding for free.
+    let tpl = if is_quote { load_quote_template() } else { load_template() };
     let accent = tpl.accent();
     let black = Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None));
-    // Quotes keep their "QUOTE" title; invoices use the configurable title_label
-    // (falling back to "INVOICE" when blank).
-    let title: &str = if is_quote {
-        "QUOTE"
-    } else if !tpl.title_label.trim().is_empty() {
+    // Configurable title from the document's own template (defaults: "QUOTE" / "INVOICE").
+    let title: &str = if !tpl.title_label.trim().is_empty() {
         tpl.title_label.trim()
+    } else if is_quote {
+        "QUOTE"
     } else {
         "INVOICE"
     };

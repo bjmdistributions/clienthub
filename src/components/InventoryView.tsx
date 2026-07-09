@@ -439,7 +439,7 @@ export default function InventoryView() {
             onBlast={() => setBlastLot(lot)}
             unitCost={unitCost(lot)}
             unitAsk={unitAsk(lot)}
-            marginPct={marginPct(lot)}
+            loadPrice={totalAsk(lot)}
             marginStr={margin(lot)}
             profit={totalProfit(lot)}
           />
@@ -548,12 +548,12 @@ export default function InventoryView() {
 function LotCard({
   lot, index, mediaBase, selectMode, selected,
   onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast,
-  unitCost, unitAsk, marginPct, marginStr, profit,
+  unitCost, unitAsk, loadPrice, marginStr, profit,
 }: {
   lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean;
   onOpen: () => void; onToggleSent: (c: "whatsapp" | "email") => void;
   onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void;
-  unitCost: number; unitAsk: number; marginPct: number; marginStr: string; profit: number;
+  unitCost: number; unitAsk: number; loadPrice: number; marginStr: string; profit: number;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [imgErr, setImgErr] = useState(false);
@@ -567,8 +567,6 @@ function LotCard({
   const reserved = lot.status === "reserved";
   // Stagger cap 8, +20ms each — enter feedback, not decoration.
   const delay = `${Math.min(index, 8) * 20}ms`;
-  // Margin bar: honest three-band. <0 danger / 0–25 warning / >25 success.
-  const barColor = marginPct < 0 ? "bg-danger" : marginPct <= 25 ? "bg-warning" : "bg-success";
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -646,29 +644,16 @@ function LotCard({
           <p className="text-[11px] text-muted truncate mt-0.5">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
         )}
 
-        {/* Money block */}
-        <div className={`flex items-end justify-between mt-3 ${sold ? "opacity-90" : ""}`}>
-          <div>
-            <div className="text-[11px] text-muted">Unit cost → ask</div>
-            <div className={`text-[13px] tabular-nums mt-0.5 ${sold ? "text-muted" : "text-ink-2"}`}>
-              <span className="font-semibold">{fmtAmount(unitCost)}</span>
-              <span className="text-faint mx-1">→</span>
-              <span className="font-semibold">{fmtAmount(unitAsk)}</span>
+        {/* Money block — load price is the headline, per-unit muted under it,
+            profit a discreet internal line (hidden when cost is unset). */}
+        <div className={`mt-3 ${sold ? "opacity-90" : ""}`}>
+          <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : "text-ink"}`}>{fmtAmount(loadPrice)}</div>
+          <div className="text-[11px] text-muted tabular-nums mt-1">{fmtAmount(unitAsk)} / unit</div>
+          {unitCost > 0 && (
+            <div className="text-[11px] text-muted tabular-nums mt-1.5">
+              Profit {fmtAmount(profit)} · {marginStr}
             </div>
-          </div>
-          <div className="text-right flex-shrink-0">
-            <div className="text-[11px] text-muted">Profit</div>
-            <div className={`text-[15px] font-bold tabular-nums mt-0.5 leading-none ${profit >= 0 ? "text-success-ink" : "text-danger-ink"} ${sold ? "opacity-80" : ""}`}>{fmtAmount(profit)}</div>
-          </div>
-        </div>
-
-        {/* Margin bar */}
-        <div className="flex items-center gap-2 mt-2.5">
-          <div className="flex-1 h-1.5 bg-surface-3 rounded-full overflow-hidden">
-            <div className={`h-full rounded-full transition-[width] duration-[400ms] ease-out ${barColor}`}
-              style={{ width: `${Math.min(Math.max(marginPct, 0), 100)}%` }} />
-          </div>
-          <span className="text-[10px] font-semibold tabular-nums text-muted w-9 text-right">{marginStr}</span>
+          )}
         </div>
 
         {/* Footer strip — sent readouts + stale, always visible & quiet */}
@@ -1411,26 +1396,19 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
             </button>
           </div>
 
-          {/* Financials */}
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uCost)}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask/unit</p><p className="text-[14px] font-bold text-ink tabular-nums">{fmtAmount(uAsk)}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Margin</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{marginStr}</p></div>
-            <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Profit total</p><p className={`text-[14px] font-bold tabular-nums ${profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(profit)}</p></div>
+          {/* Financials — load price is the headline, per-unit under it. */}
+          <div className="bg-surface-2 rounded-xl px-4 py-3.5">
+            <p className="text-[12px] font-medium text-muted">Load price</p>
+            <p className="text-[26px] font-semibold text-ink tabular-nums leading-none mt-1">{fmtAmount(totalAskAll)}</p>
+            <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{fmtAmount(uAsk)} / unit · {lot.quantity.toLocaleString()} units</p>
+            {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
+            {uCost > 0 && (
+              <div className="mt-3 pt-3 border-t border-line flex items-center justify-between text-[12px] text-muted tabular-nums">
+                <span>Your cost {fmtAmount(totalCostAll)} · {fmtAmount(uCost)} / unit</span>
+                <span>Profit {fmtAmount(profit)} · {marginStr}</span>
+              </div>
+            )}
           </div>
-          {lot.price_type === "total" && lot.quantity > 1 && (
-            <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
-              <div className={inp + " text-[11px] text-muted bg-surface-2 flex items-center justify-center rounded-lg"}>×{lot.quantity} units</div>
-            </div>
-          )}
-          {lot.price_type === "per_unit" && (
-            <div className="grid grid-cols-3 gap-3 mt-0.5">
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Cost total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalCostAll)}</p></div>
-              <div className="bg-surface-2 rounded-lg px-3 py-2"><p className="text-[11.5px] font-medium text-muted">Ask total</p><p className="text-[13px] font-bold text-ink tabular-nums">{fmtAmount(totalAskAll)}</p></div>
-            </div>
-          )}
 
           {/* Details grid */}
           <div className="grid grid-cols-2 gap-4">
