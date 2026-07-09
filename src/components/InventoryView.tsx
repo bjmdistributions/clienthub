@@ -48,7 +48,9 @@ const INV_MOTION_CSS = `
 // Photos are stored as device-independent relative paths ("media/<uuid>.jpg")
 // inside the synced folder. Legacy absolute paths are passed through as-is.
 const isAbsPath = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\\\");
-const resolvePhoto = (p: string, base: string) => (isAbsPath(p) || !base) ? p : `${base}/${p}`;
+// Normalize backslashes so a Windows base ("C:\…\sync") + a forward-slash relative
+// photo path don't produce a mixed-separator path that convertFileSrc mishandles.
+const resolvePhoto = (p: string, base: string) => (isAbsPath(p) || !base) ? p.replace(/\\/g, "/") : `${base.replace(/\\/g, "/")}/${p}`;
 
 // Close a popover when clicking outside its container or pressing Escape.
 function useDismiss(ref: React.RefObject<HTMLElement>, open: boolean, close: () => void) {
@@ -550,6 +552,7 @@ function LotCard({
   unitCost: number; unitAsk: number; marginPct: number; marginStr: string; profit: number;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [imgErr, setImgErr] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   useDismiss(menuRef, menuOpen, () => setMenuOpen(false));
 
@@ -571,10 +574,10 @@ function LotCard({
       className={`group relative bg-surface border rounded-xl overflow-hidden transition-[box-shadow,border-color] duration-150 cursor-pointer flex flex-col inv-rise hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] ${selected ? "border-accent ring-2 ring-accent/20" : "border-line hover:border-line-3"} ${reserved ? "border-l-2 border-l-info" : ""}`}>
       {/* Media */}
       <div className="relative w-full h-36 bg-surface-2 flex items-center justify-center overflow-hidden">
-        {photos.length > 0 ? (
+        {photos.length > 0 && !imgErr ? (
           <img src={convertFileSrc(resolvePhoto(photos[0], mediaBase))} alt=""
             className={`w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03] inv-photo-zoom ${sold ? "opacity-70" : archived ? "opacity-60 grayscale-[0.3]" : ""}`}
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+            onError={() => setImgErr(true)} />
         ) : (
           <Package size={26} className={`text-faint ${archived ? "opacity-60" : ""}`} strokeWidth={1.5} />
         )}
@@ -692,7 +695,7 @@ function LotCard({
               <Send size={13} /> WhatsApp
             </button>
             <button onClick={onBlast}
-              className="flex-1 flex items-center justify-center gap-1.5 text-[12px] font-medium text-accent border border-accent/40 bg-accent/5 hover:bg-accent/10 h-8 rounded-lg transition-colors">
+              className="flex-1 flex items-center justify-center gap-1.5 text-[12px] font-medium bg-accent hover:bg-accent-hover text-on-accent h-8 rounded-lg transition-colors">
               <Mail size={13} /> Blast
             </button>
           </div>
