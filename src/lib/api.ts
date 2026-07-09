@@ -1771,6 +1771,8 @@ export const api = {
     invoke<{ id: string; org_id: string | null; submitter_name: string | null; submitter_email: string | null; kind: string; title: string; body: string; app: string; status: string; created_at: string }[]>("admin_feedback_all"),
   adminSetOrgPlan: (orgId: string, plan: string) =>
     invoke<{ ok: boolean }>("admin_set_org_plan", { orgId, plan }),
+  adminDeleteWorkspace: (orgId: string) =>
+    invoke<{ ok: boolean; deleted: string }>("admin_delete_workspace", { orgId }),
   adminOnboarding: () =>
     invoke<{ orgs: { org_id: string; name: string; plan: string; created_at: string | null; members: number; has_client: boolean; has_invoice: boolean; has_inventory: boolean; email_configured: boolean }[] }>("admin_onboarding"),
   adminPlatformUsers: () =>

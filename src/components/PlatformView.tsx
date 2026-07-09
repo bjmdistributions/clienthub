@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "./Toast";
-import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus, Search } from "lucide-react";
+import { Building2, Users, UserCircle, RefreshCw, Send, Mail, MessageSquare, ClipboardList, Check, Minus, Search, Trash2, AlertTriangle } from "lucide-react";
 
 function fmtDate(s?: string | null): string {
   if (!s) return "—";
@@ -21,7 +21,7 @@ function relTime(s?: string | null): string {
 }
 
 const PLANS = ["free", "pro", "business", "unlimited", "founder"];
-const COLS = "grid grid-cols-[1.4fr_1.7fr_1fr_0.9fr_0.55fr_0.55fr_0.8fr] gap-2";
+const COLS = "grid grid-cols-[1.4fr_1.7fr_1fr_0.9fr_0.55fr_0.55fr_0.8fr_36px] gap-2";
 
 type Tab = "orgs" | "users" | "broadcast" | "waitlist" | "feedback" | "onboarding";
 
@@ -31,6 +31,7 @@ export default function PlatformView() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("orgs");
   const [savingPlan, setSavingPlan] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -86,7 +87,7 @@ export default function PlatformView() {
           {tab === "orgs" && (
             <div className="bg-surface border border-line rounded-xl overflow-hidden">
               <div className={`${COLS} px-4 py-2.5 text-[12.5px] font-medium text-muted border-b border-line`}>
-                <div>Workspace</div><div>Owner</div><div>Plan</div><div>Signed up</div><div>Members</div><div>Clients</div><div>Last active</div>
+                <div>Workspace</div><div>Owner</div><div>Plan</div><div>Signed up</div><div>Members</div><div>Clients</div><div>Last active</div><div></div>
               </div>
               {orgs.length === 0 && !loading && <div className="px-4 py-10 text-center text-[13px] text-muted">No signups yet.</div>}
               {orgs.map((o) => (
@@ -107,6 +108,17 @@ export default function PlatformView() {
                   <div className="text-ink-2 tabular-nums">{o.members ?? 0}</div>
                   <div className="text-ink-2 tabular-nums">{o.clients ?? 0}</div>
                   <div className="text-muted">{relTime(o.last_event_at)}</div>
+                  <div className="flex justify-end">
+                    {o.org_id !== "org_default" && (
+                      <button
+                        onClick={() => setDeleteTarget(o)}
+                        title="Delete workspace"
+                        className="text-faint hover:text-danger-ink hover:bg-danger-bg p-1 rounded-md transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -119,6 +131,76 @@ export default function PlatformView() {
           {tab === "onboarding" && <Onboarding />}
         </>
       )}
+
+      {deleteTarget && (
+        <DeleteWorkspaceModal
+          key={deleteTarget.org_id}
+          org={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => { setDeleteTarget(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Delete workspace confirmation ──────────────────────────────────────────
+// Permanent, so the delete button stays disabled until the owner types the
+// workspace name (or owner email, when unnamed) exactly — never one click.
+function DeleteWorkspaceModal({ org, onClose, onDeleted }: { org: any; onClose: () => void; onDeleted: () => void }) {
+  const [typed, setTyped] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const confirmValue = (org.name || org.owner_email || "").trim();
+  const label = org.name ? "workspace name" : "owner email";
+  const matches = typed.trim() === confirmValue && confirmValue.length > 0;
+
+  const doDelete = () => {
+    if (!matches) return;
+    setDeleting(true);
+    api.adminDeleteWorkspace(org.org_id)
+      .then(() => { toast("Workspace deleted"); onDeleted(); })
+      .catch((e) => { toast(String(e), "error"); setDeleting(false); });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl p-5 max-w-md w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 mb-1">
+          <AlertTriangle size={16} className="text-danger-ink" />
+          <h3 className="text-[15px] font-semibold text-ink">Delete this workspace?</h3>
+        </div>
+        <p className="text-[13px] text-muted mt-1.5 leading-relaxed">
+          This permanently deletes the workspace <span className="font-medium text-ink">{org.name || "—"}</span>
+          {org.owner_email ? <> (<span className="text-ink-2">{org.owner_email}</span>)</> : null} and all of its data — clients, invoices, inventory, everything. This cannot be undone.
+        </p>
+
+        <div className="bg-danger-bg border border-danger-ink/25 rounded-lg px-3 py-2.5 mt-3 text-[12.5px] text-danger-ink">
+          You're removing <span className="font-medium tabular-nums">{org.members ?? 0}</span> member{(org.members ?? 0) === 1 ? "" : "s"} and <span className="font-medium tabular-nums">{org.clients ?? 0}</span> client{(org.clients ?? 0) === 1 ? "" : "s"}.
+        </div>
+
+        <label className="block text-[12.5px] font-medium text-ink-2 mt-4 mb-1">
+          Type the {label} to confirm: <span className="text-ink font-semibold">{confirmValue}</span>
+        </label>
+        <input
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && matches && !deleting) doDelete(); }}
+          autoFocus
+          placeholder={confirmValue}
+          className="w-full bg-surface-2 border border-line rounded-lg h-10 px-3 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-danger/40 focus:border-danger transition-colors"
+        />
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
+          <button
+            onClick={doDelete}
+            disabled={!matches || deleting}
+            className="inline-flex items-center gap-1.5 px-4 h-9 rounded-lg bg-danger text-white text-[13px] font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+          >
+            <Trash2 size={14} /> {deleting ? "Deleting…" : "Delete permanently"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

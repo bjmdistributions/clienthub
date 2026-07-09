@@ -1088,6 +1088,40 @@ pub async fn admin_set_org_plan(org_id: String, plan: String) -> Result<serde_js
     resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
+/// Superadmin: permanently delete a whole workspace (org) and all its data.
+/// The server guards against deleting `org_default` or the caller's own workspace.
+#[tauri::command]
+pub async fn admin_delete_workspace(org_id: String) -> Result<serde_json::Value, String> {
+    let cfg = config().ok_or("Sign in to the server first.")?;
+    let resp = http()
+        .delete(format!("{}/api/admin/workspace/{}", cfg.url.trim_end_matches('/'), org_id))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Superadmin only.".into());
+    }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Your session expired — sign in again.".into());
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("Workspace not found.".into());
+    }
+    if !resp.status().is_success() {
+        // Surface the server's explanation (e.g. "You can't delete your own
+        // workspace here.") when it sends a JSON error body, else the status.
+        let status = resp.status();
+        if let Ok(body) = resp.json::<serde_json::Value>().await {
+            if let Some(msg) = body.get("error").and_then(|v| v.as_str()) {
+                return Err(msg.to_string());
+            }
+        }
+        return Err(format!("Server returned {}", status));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
 /// Superadmin: per-org onboarding signals (who's set up, who's stuck).
 #[tauri::command]
 pub async fn admin_onboarding() -> Result<serde_json::Value, String> {

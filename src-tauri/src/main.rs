@@ -250,6 +250,7 @@ fn main() {
             netsync::admin_waitlist_all,
             netsync::admin_feedback_all,
             netsync::admin_set_org_plan,
+            netsync::admin_delete_workspace,
             netsync::admin_onboarding,
             netsync::admin_platform_users,
             netsync::admin_broadcast_preview,
