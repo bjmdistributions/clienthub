@@ -50,7 +50,11 @@ const INV_MOTION_CSS = `
 const isAbsPath = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\\\");
 // Normalize backslashes so a Windows base ("C:\…\sync") + a forward-slash relative
 // photo path don't produce a mixed-separator path that convertFileSrc mishandles.
-const resolvePhoto = (p: string, base: string) => (isAbsPath(p) || !base) ? p.replace(/\\/g, "/") : `${base.replace(/\\/g, "/")}/${p}`;
+// Tolerates a falsy path (a stale index after photos shrink) instead of throwing.
+const resolvePhoto = (p: string, base: string) => {
+  if (!p) return "";
+  return (isAbsPath(p) || !base) ? p.replace(/\\/g, "/") : `${base.replace(/\\/g, "/")}/${p}`;
+};
 
 // Close a popover when clicking outside its container or pressing Escape.
 function useDismiss(ref: React.RefObject<HTMLElement>, open: boolean, close: () => void) {
@@ -371,7 +375,7 @@ export default function InventoryView() {
           {/* Status segmented control */}
           <div className="flex items-center bg-surface-3 rounded-lg p-0.5">
             {STATUS_FILTERS.map((f) => (
-              <button key={f} onClick={() => setFilter(f)}
+              <button key={f} onClick={() => { setFilter(f); if (f !== "all" && f !== "available") setRenewOnly(false); }}
                 className={`text-[12px] font-medium px-2.5 h-8 rounded-md transition-all duration-[140ms] flex items-center gap-1 ${filter === f ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
                 <span>{f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}</span>
                 <span className="text-faint tabular-nums">{counts[f]}</span>
@@ -381,7 +385,7 @@ export default function InventoryView() {
 
           {/* Need renewing */}
           {staleCount > 0 && (
-            <button onClick={() => setRenewOnly((r) => !r)}
+            <button onClick={() => { const next = !renewOnly; setRenewOnly(next); if (next && filter !== "all" && filter !== "available") setFilter("available"); }}
               title="Available lots not re-shared in over 2 days"
               className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-[12px] font-medium border transition-colors ${renewOnly ? "bg-warning-bg text-warning-ink border-warning" : "bg-surface text-warning-ink border-warning/50 hover:bg-warning-bg"}`}>
               <RefreshCw size={12} /> <span className="tabular-nums">{staleCount}</span> need renewing
@@ -1035,7 +1039,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
   const [qty, setQty] = useState(initial?.quantity ?? prefill?.quantity ?? 1);
   const [cost, setCost] = useState(initial?.total_cost ?? prefill?.total_cost ?? 0);
   const [ask, setAsk] = useState(initial?.asking_price ?? prefill?.asking_price ?? 0);
-  const [priceType, setPriceType] = useState(initial?.price_type ?? "per_unit");
+  const [priceType, setPriceType] = useState(initial?.price_type ?? prefill?.price_type ?? "per_unit");
   const [supplier, setSupplier] = useState(initial?.supplier ?? prefill?.supplier ?? "");
   const [location, setLocation] = useState(initial?.location ?? prefill?.location ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? prefill?.notes ?? "");
@@ -1095,9 +1099,12 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
       // Build the public/internal extras blob. Undefined when everything's empty
       // so we don't persist an empty object.
       const cleanRun = sizeRun.filter((r) => r.size.trim());
-      const hasDetails = !!pallets || !!msrp || !!moq || cleanRun.length > 0;
+      // Carry avg_msrp through (it's parser-derived, not an editable field) so an
+      // edit-save doesn't silently drop it from the blast.
+      const avgMsrp = details0.avg_msrp ?? null;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0;
       const detailsJson = hasDetails
-        ? JSON.stringify({ pallets: pallets || null, msrp: msrp || null, moq: moq || null, size_run: cleanRun })
+        ? JSON.stringify({ pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun })
         : undefined;
       if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
@@ -1320,6 +1327,9 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
   const [big, setBig] = useState(0);
   const [zoom, setZoom] = useState(false);
   const [mBusy, setMBusy] = useState(false);
+  // If the photo set shrinks (sync/edit elsewhere) while the detail is open, keep
+  // the selected index in range so photos[big] never becomes undefined.
+  useEffect(() => { if (big > photos.length - 1) setBig(0); }, [photos.length, big]);
 
   const addManifest = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
@@ -1379,6 +1389,7 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
                 <div className="flex gap-2 mt-2 flex-wrap">
                   {photos.map((p, i) => (
                     <img key={i} src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" onClick={() => setBig(i)}
+                      onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.2"; }}
                       className={`w-14 h-14 object-cover rounded-lg border cursor-pointer transition-colors ${i === big ? "border-accent ring-2 ring-accent/20" : "border-line hover:border-line-3"}`} />
                   ))}
                 </div>
