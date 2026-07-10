@@ -744,6 +744,45 @@ export function dealPayoutIncluded(flow: { metadata?: string | null }): boolean 
   try { return !!JSON.parse(flow.metadata || "{}").payout_included; } catch { return false; }
 }
 
+/**
+ * The recipients breakdown captured when the deal was completed
+ * (metadata.payout_recipients, written by complete_deal_flow). These are the
+ * authoritative per-deal amounts — they reflect the split configured at
+ * completion time, not today's config. Null for deals completed before
+ * breakdowns existed (callers fall back to allocateDealPayout + live config).
+ */
+export function dealPayoutRecipients(
+  flow: { metadata?: string | null },
+): { name: string; pct: number; is_business: boolean; kind?: string; amount: number }[] | null {
+  try {
+    const arr = JSON.parse(flow.metadata || "{}").payout_recipients;
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    return arr
+      .filter((r) => r && typeof r === "object" && (r.name || r.is_business))
+      .map((r) => ({
+        name: r.is_business && !r.name ? "Business" : String(r.name ?? ""),
+        pct: Number(r.pct) || 0,
+        is_business: !!r.is_business,
+        kind: typeof r.kind === "string" ? r.kind : undefined,
+        amount: Number(r.amount) || 0,
+      }));
+  } catch { return null; }
+}
+
+/**
+ * Per-deal profit split for display: the completion-time breakdown when the
+ * deal has one, otherwise re-derived from the CURRENT config (old deals).
+ * Empty when payouts aren't set up.
+ */
+export function dealPayoutSplit(
+  flow: { metadata?: string | null; net_profit: number },
+  recipients: PayoutShare[],
+): { name: string; is_business: boolean; amount: number }[] {
+  const stored = dealPayoutRecipients(flow);
+  if (stored) return stored;
+  return allocateDealPayout(flow.net_profit, dealPayoutIncluded(flow), recipients);
+}
+
 export interface DealFlow {
   id: string;
   name?: string | null;
@@ -1519,6 +1558,7 @@ export const api = {
   completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean) =>
     invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
+  setDealPayoutIncluded: (id: string, included: boolean) => invoke<void>("set_deal_payout_included", { id, included }),
   updateDealCompletedAt: (id: string, date: string) =>
     invoke<void>("update_deal_completed_at", { id, date }),
   updateDealFlowNotes: (id: string, notes: string | null) =>

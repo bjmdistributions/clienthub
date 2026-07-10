@@ -3662,6 +3662,11 @@ fn recalc_completed_deal_flow(id: &str, gross: f64, payments: &[SupplierPayment]
     // Preserve existing metadata (payout_included, shipping_status, ...) and only
     // refresh is_loss — do NOT overwrite the whole object with just {is_loss}.
     meta_obj.insert("is_loss".into(), Value::Bool(is_loss));
+    // Recompute the per-deal recipients breakdown against the new net, reusing
+    // the shares captured at completion (the split the deal was agreed under);
+    // deals completed before breakdowns existed pick up the current config.
+    let shares = shares_from_breakdown(&meta_obj).unwrap_or_else(read_profit_split_shares_raw);
+    meta_obj.insert("payout_recipients".into(), Value::Array(build_payout_breakdown(&shares, net, include_payout)));
     let meta_json = serde_json::to_string(&Value::Object(meta_obj)).map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
 
@@ -3842,6 +3847,17 @@ pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> R
 /// Shared helper: wipe completion data from a deal_flow + its invoice.
 /// Called when cascading an undo back through the 'complete' stage.
 fn clear_completion(df: &DealFlow, id: &str, now: &str) -> Result<(), String> {
+    // Drop the completion-time recipients breakdown too — the deal is no longer
+    // complete, so a stale per-deal split must not linger in metadata. Other
+    // metadata keys (shipping_status, payout_included, ...) are preserved.
+    let meta_json: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT metadata FROM deal_flows WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0)).ok().flatten()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .filter(|o| o.contains_key("payout_recipients"))
+            .map(|mut o| { o.remove("payout_recipients"); serde_json::to_string(&Value::Object(o)).unwrap_or_else(|_| "{}".into()) })
+    };
     let mut cols = Map::new();
     cols.insert("completed_at".into(), Value::Null);
     cols.insert("gross_revenue".into(), json!(0));
@@ -3850,14 +3866,15 @@ fn clear_completion(df: &DealFlow, id: &str, now: &str) -> Result<(), String> {
     cols.insert("profit_jack".into(), json!(0));
     cols.insert("profit_ben".into(), json!(0));
     cols.insert("profit_business".into(), json!(0));
+    if let Some(ref m) = meta_json { cols.insert("metadata".into(), Value::String(m.clone())); }
     cols.insert("updated_at".into(), Value::String(now.to_string()));
     sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE deal_flows SET completed_at=NULL, gross_revenue=0, net_profit=0, total_cost=0, \
-             profit_jack=0, profit_ben=0, profit_business=0, updated_at=?1 WHERE id=?2",
-            rusqlite::params![now, id],
+             profit_jack=0, profit_ben=0, profit_business=0, metadata=COALESCE(?3, metadata), updated_at=?1 WHERE id=?2",
+            rusqlite::params![now, id, meta_json],
         ).map_err(|e| e.to_string())?;
     }
     let mut inv_cols = Map::new();
@@ -4129,7 +4146,11 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
 
     let shipping_status = shipping_status.unwrap_or_else(|| "none".into());
     let awaiting_shipping = shipping_status == "awaiting";
-    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout})).map_err(|e| e.to_string())?;
+    // Persist the N-way recipients breakdown alongside the legacy 3-way columns.
+    // This is the authoritative per-deal split going forward; the jack/ben
+    // columns above remain only so already-shipped readers keep working.
+    let breakdown = build_payout_breakdown(&read_profit_split_shares_raw(), net, include_payout);
+    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout, "payout_recipients": breakdown})).map_err(|e| e.to_string())?;
 
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("complete".into()));
@@ -4361,16 +4382,18 @@ pub async fn delete_refund(id: String) -> Result<(), String> {
 /// Returns an empty list when the org has not configured a split — we never fall
 /// back to a default split or partner names. Each share takes pct% of the profit.
 fn read_profit_split_shares() -> Vec<(String, f64, bool)> {
+    read_profit_split_shares_raw().into_iter().map(|(n, p, b, _)| (n, p, b)).collect()
+}
+
+/// Same as `read_profit_split_shares` but keeps the optional `kind` field
+/// (person | business | investment | other) so completion can persist it in
+/// the per-deal breakdown.
+fn read_profit_split_shares_raw() -> Vec<(String, f64, bool, String)> {
     if let Ok(conn) = pool().get() {
         if let Ok(j) = conn.query_row("SELECT value FROM settings WHERE key='profit_split_json'", [], |r| r.get::<_, String>(0)) {
             if !j.trim().is_empty() {
                 if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&j) {
-                    let shares: Vec<(String, f64, bool)> = arr.iter().filter_map(|e| {
-                        let name = e.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                        let pct = e.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                        let is_biz = e.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false);
-                        if name.is_empty() && !is_biz { None } else { Some((if is_biz && name.is_empty() { "Business".into() } else { name }, pct, is_biz)) }
-                    }).collect();
+                    let shares = parse_split_shares(&arr);
                     if !shares.is_empty() { return shares; }
                 }
             }
@@ -4379,6 +4402,46 @@ fn read_profit_split_shares() -> Vec<(String, f64, bool)> {
     // No configured split → unconfigured. We never assume a default split or
     // partner names; callers treat an empty list as "payouts not set up yet".
     Vec::new()
+}
+
+/// Parse split-share rows ([{name,pct,is_business,kind}]) into tuples, applying
+/// the same skip/label rules everywhere: nameless non-business rows are dropped,
+/// a nameless business row is labeled "Business".
+fn parse_split_shares(arr: &[Value]) -> Vec<(String, f64, bool, String)> {
+    arr.iter().filter_map(|e| {
+        let name = e.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let pct = e.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let is_biz = e.get("is_business").and_then(|x| x.as_bool()).unwrap_or(false);
+        if name.is_empty() && !is_biz { return None; }
+        let name = if is_biz && name.is_empty() { "Business".to_string() } else { name };
+        let kind = e.get("kind").and_then(|x| x.as_str()).map(|s| s.to_string())
+            .unwrap_or_else(|| if is_biz { "business".into() } else { "person".into() });
+        Some((name, pct, is_biz, kind))
+    }).collect()
+}
+
+/// Build the per-deal recipients breakdown persisted at completion
+/// (metadata.payout_recipients). Splits this deal's net across the N-way
+/// configured shares via `allocate_payout`: payout_included=true divides by
+/// pct; false routes 100% of net to the business share(s) (the net_excl rule).
+/// Empty when the split is unconfigured — display sites then fall back to the
+/// legacy profit columns for old deals.
+pub fn build_payout_breakdown(shares: &[(String, f64, bool, String)], net: f64, include_payout: bool) -> Vec<Value> {
+    let tuples: Vec<(String, f64, bool)> = shares.iter().map(|(n, p, b, _)| (n.clone(), *p, *b)).collect();
+    let (net_incl, net_excl) = if include_payout { (net, 0.0) } else { (0.0, net) };
+    allocate_payout(net_incl, net_excl, &tuples).into_iter().zip(shares.iter())
+        .map(|((name, is_biz, amount), (_, pct, _, kind))| json!({
+            "name": name, "pct": pct, "is_business": is_biz, "kind": kind, "amount": amount
+        })).collect()
+}
+
+/// Shares captured in a deal's stored breakdown (metadata.payout_recipients).
+/// None when the deal predates per-deal breakdowns or the array is empty, so
+/// callers can fall back to the current org config.
+fn shares_from_breakdown(meta_obj: &Map<String, Value>) -> Option<Vec<(String, f64, bool, String)>> {
+    let arr = meta_obj.get("payout_recipients")?.as_array()?;
+    let shares = parse_split_shares(arr);
+    if shares.is_empty() { None } else { Some(shares) }
 }
 
 /// Split a period's net profit across the configured recipients.
@@ -4406,6 +4469,34 @@ pub fn allocate_payout(net_incl: f64, net_excl: f64, recipients: &[(String, f64,
         };
         (name.clone(), *is_biz, ((base + extra) * 100.0).round() / 100.0)
     }).collect()
+}
+
+/// Flip a completed deal's payout_included flag in place (metadata JSON), so past
+/// deals can adopt or leave the configured split without uncomplete→recomplete.
+/// Drops any stored payout_recipients breakdown so displays re-derive it from the
+/// live split config (matching the migration's fallback behavior).
+#[tauri::command]
+pub async fn set_deal_payout_included(id: String, included: bool) -> Result<(), String> {
+    let meta_json: String = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT COALESCE(metadata,'{}') FROM deal_flows WHERE id=?1", [&id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+    };
+    let mut meta: Value = serde_json::from_str(&meta_json).unwrap_or_else(|_| json!({}));
+    if !meta.is_object() { meta = json!({}); }
+    let obj = meta.as_object_mut().unwrap();
+    obj.insert("payout_included".into(), json!(included));
+    obj.remove("payout_recipients");
+    let new_meta = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET metadata=?1 WHERE id=?2", rusqlite::params![new_meta, id])
+            .map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), Value::String(new_meta));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -4464,9 +4555,9 @@ pub async fn save_payout_split(shares: Vec<Value>) -> Result<(), String> {
 pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     let enabled = setting_bool("rep_payouts_enabled");
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let (net, gross, refund_owed, payout_included): (f64, f64, f64, bool) = conn.query_row(
-        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0), COALESCE(json_extract(metadata,'$.payout_included'),0) FROM deal_flows WHERE id=?1",
-        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))).map_err(|_| "Deal not found".to_string())?;
+    let (net, gross, refund_owed, payout_included, meta_raw): (f64, f64, f64, bool, Option<String>) = conn.query_row(
+        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0), COALESCE(json_extract(metadata,'$.payout_included'),0), metadata FROM deal_flows WHERE id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0, r.get(4)?))).map_err(|_| "Deal not found".to_string())?;
     // Resolve the rep: a manual per-deal override (deal_reps) wins; otherwise the
     // deal earns for its CLIENT's assigned rep (client.metadata.lead_representative),
     // matched to an active employee by name. If the client has a rep name that isn't
@@ -4500,6 +4591,15 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     let has_cut = enabled && rep_id.is_some() && hide == 0;
     let cut = if !has_cut { 0.0 } else if keep != 0 { rep_cut(&pay_type, pct, gross, net) } else { rep_cut_after_refund(&pay_type, pct, eff_gross, eff_net) };
     let remaining = eff_net - cut;
+    // Split the remaining net across the shares captured at completion
+    // (metadata.payout_recipients) so the deal keeps the split it was agreed
+    // under; deals completed before breakdowns existed use the current config.
+    let shares = meta_raw
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .and_then(|o| shares_from_breakdown(&o))
+        .unwrap_or_else(read_profit_split_shares_raw);
+    let split_amounts = build_payout_breakdown(&shares, remaining, payout_included);
     Ok(json!({
         "rep_payouts_enabled": enabled,
         "lead_rep_id": rep_id, "lead_rep_name": rep_name, "commission_pct": pct, "pay_type": pay_type, "hide_pay_cuts": hide != 0,
@@ -4510,14 +4610,15 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         "unmatched_rep_name": unmatched_name,
         "rep_cut": if has_cut { r2(cut) } else { 0.0 },
         "remaining_profit": r2(remaining),
-        // Honor the deal's payout decision: when payout_included is false the deal was
-        // completed 100%-to-business, so partners get 0 and the business gets the full
-        // remaining net. Only split by pct when payout was included at completion.
-        "splits": read_profit_split_shares().into_iter().map(|(name, pct, is_business)| {
-            let amount = if payout_included { remaining * pct / 100.0 }
-                         else if is_business { remaining } else { 0.0 };
-            json!({ "name": name, "amount": r2(amount), "is_business": is_business })
-        }).collect::<Vec<_>>(),
+        // Honor the deal's payout decision: when payout_included is false the deal
+        // was completed 100%-to-business (allocate_payout's net_excl rule); only
+        // split by pct when payout was included at completion.
+        "splits": split_amounts.iter().map(|s| json!({
+            "name": s.get("name").cloned().unwrap_or(Value::Null),
+            "amount": r2(s.get("amount").and_then(|a| a.as_f64()).unwrap_or(0.0)),
+            "is_business": s.get("is_business").and_then(|b| b.as_bool()).unwrap_or(false),
+            "kind": s.get("kind").cloned().unwrap_or(Value::Null),
+        })).collect::<Vec<_>>(),
     }))
 }
 
@@ -11082,4 +11183,108 @@ pub async fn delete_note(id: String) -> Result<(), String> {
     }
     sync::record_delete("notes", &id).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod payout_tests {
+    use super::{allocate_payout, build_payout_breakdown, parse_split_shares, shares_from_breakdown};
+    use serde_json::{json, Map, Value};
+
+    // Real-shaped config: an investment share + two people + the business —
+    // the exact case the legacy jack/ben columns could not represent.
+    fn shares() -> Vec<(String, f64, bool, String)> {
+        vec![
+            ("Jack".into(), 30.0, false, "person".into()),
+            ("Ben".into(), 25.0, false, "person".into()),
+            ("Fund".into(), 10.0, false, "investment".into()),
+            ("Business".into(), 35.0, true, "business".into()),
+        ]
+    }
+
+    fn amounts(b: &[Value]) -> Vec<f64> {
+        b.iter().map(|s| s.get("amount").and_then(|a| a.as_f64()).unwrap()).collect()
+    }
+
+    #[test]
+    fn included_splits_by_pct_across_all_recipients() {
+        let b = build_payout_breakdown(&shares(), 1000.0, true);
+        assert_eq!(amounts(&b), vec![300.0, 250.0, 100.0, 350.0]);
+        assert_eq!(amounts(&b).iter().sum::<f64>(), 1000.0);
+        assert_eq!(b[2].get("kind").unwrap(), "investment");
+        assert_eq!(b[3].get("is_business").unwrap(), true);
+    }
+
+    #[test]
+    fn excluded_routes_everything_to_business() {
+        let b = build_payout_breakdown(&shares(), 1000.0, false);
+        assert_eq!(amounts(&b), vec![0.0, 0.0, 0.0, 1000.0]);
+    }
+
+    #[test]
+    fn loss_deal_splits_negative_net() {
+        let b = build_payout_breakdown(&shares(), -500.0, true);
+        assert_eq!(amounts(&b), vec![-150.0, -125.0, -50.0, -175.0]);
+        let b = build_payout_breakdown(&shares(), -500.0, false);
+        assert_eq!(amounts(&b), vec![0.0, 0.0, 0.0, -500.0]);
+    }
+
+    #[test]
+    fn unconfigured_split_yields_empty_breakdown() {
+        assert!(build_payout_breakdown(&[], 1000.0, true).is_empty());
+        assert!(build_payout_breakdown(&[], 1000.0, false).is_empty());
+    }
+
+    #[test]
+    fn excluded_net_divided_among_multiple_business_shares_by_pct() {
+        let s = vec![
+            ("Jack".to_string(), 40.0, false, "person".to_string()),
+            ("Ops LLC".to_string(), 45.0, true, "business".to_string()),
+            ("Holdings".to_string(), 15.0, true, "business".to_string()),
+        ];
+        let b = build_payout_breakdown(&s, 1000.0, false);
+        assert_eq!(amounts(&b), vec![0.0, 750.0, 250.0]);
+    }
+
+    #[test]
+    fn no_business_share_excluded_falls_back_to_pct_split() {
+        let s = vec![
+            ("Jack".to_string(), 60.0, false, "person".to_string()),
+            ("Ben".to_string(), 40.0, false, "person".to_string()),
+        ];
+        let b = build_payout_breakdown(&s, 1000.0, false);
+        assert_eq!(amounts(&b), vec![600.0, 400.0]);
+    }
+
+    #[test]
+    fn amounts_round_to_cents() {
+        let b = build_payout_breakdown(&shares(), 100.01, true);
+        assert_eq!(amounts(&b), vec![30.0, 25.0, 10.0, 35.0]);
+        let a = allocate_payout(0.10, 0.0, &[("A".into(), 33.0, false), ("B".into(), 67.0, true)]);
+        assert_eq!(a[0].2, 0.03);
+        assert_eq!(a[1].2, 0.07);
+    }
+
+    #[test]
+    fn parse_drops_nameless_people_and_labels_nameless_business() {
+        let rows = vec![
+            json!({"name": "", "pct": 10, "is_business": false}),
+            json!({"name": "Jack", "pct": 55}),
+            json!({"name": "", "pct": 35, "is_business": true}),
+        ];
+        let s = parse_split_shares(&rows);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0], ("Jack".to_string(), 55.0, false, "person".to_string()));
+        assert_eq!(s[1], ("Business".to_string(), 35.0, true, "business".to_string()));
+    }
+
+    #[test]
+    fn breakdown_round_trips_through_metadata() {
+        let breakdown = build_payout_breakdown(&shares(), 1000.0, true);
+        let mut meta = Map::new();
+        meta.insert("payout_recipients".into(), Value::Array(breakdown));
+        let restored = shares_from_breakdown(&meta).unwrap();
+        assert_eq!(restored, shares());
+        let empty = Map::new();
+        assert!(shares_from_breakdown(&empty).is_none());
+    }
 }

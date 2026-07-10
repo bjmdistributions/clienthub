@@ -400,6 +400,7 @@ fn main() {
             unmark_supplier_payment_paid,
             complete_deal_flow,
             uncomplete_deal_flow,
+            set_deal_payout_included,
             update_deal_completed_at,
             update_deal_flow_notes,
             update_deal_flow_name,

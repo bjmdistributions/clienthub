@@ -1504,6 +1504,17 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
   const margin = flow.gross_revenue > 0 ? (flow.net_profit / flow.gross_revenue) * 100 : 0;
   const payments = flow.supplier_payments || [];
 
+  // Current payout routing for this completed deal, flippable in place — so deals
+  // completed under the old silent default (excluded → 100% business) can adopt the
+  // configured split without uncomplete→recomplete.
+  const payoutIncluded = (() => { try { return !!JSON.parse((flow as any).metadata || "{}").payout_included; } catch { return false; } })();
+  const setIncluded = async (v: boolean) => {
+    if (v === payoutIncluded || saving) return;
+    setSaving(true);
+    try { await api.setDealPayoutIncluded(flow.id, v); onReload(); } catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+
   const handleReopen = async () => {
     setSaving(true);
     try { await api.uncompleteDealFlow(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
@@ -1519,6 +1530,21 @@ function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () =
 
   return (
     <div className="space-y-4">
+      {/* Payout routing — flip past deals onto (or off) the configured split */}
+      <div className="space-y-1">
+        <div className="text-[11px] text-muted">Where does this deal's profit go?</div>
+        <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
+          <button type="button" disabled={saving} onClick={() => setIncluded(true)}
+            className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+            Apply profit split
+          </button>
+          <button type="button" disabled={saving} onClick={() => setIncluded(false)}
+            className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+            Business keeps 100%
+          </button>
+        </div>
+      </div>
+
       {/* P&L summary */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {[
