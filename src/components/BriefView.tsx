@@ -175,9 +175,9 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
               <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
                 <HeroCell label="Revenue" value={fmtAmount(brief.revenue_this_week)} extra={changePct(brief.revenue_change_pct)} />
                 <HeroCell label="Profit" value={fmtAmount(brief.profit_this_week)} extra={changePct(brief.profit_change_pct)}
-                  sub={`${brief.avg_margin_this_week.toFixed(1)}% margin`} />
+                  sub={`${(+brief.avg_margin_this_week || 0).toFixed(1)}% margin`} />
                 <HeroCell label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} />
-                <HeroCell label="Win rate" value={`${brief.win_rate_this_week.toFixed(0)}%`} />
+                <HeroCell label="Win rate" value={`${(+brief.win_rate_this_week || 0).toFixed(0)}%`} />
               </div>
             </div>
           </div>
