@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, CompanyInfo } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, CompanyInfo, StorefrontConfig } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
 
 const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as const;
@@ -174,13 +175,23 @@ export default function InventoryView() {
   const [categories, setCategories] = useState<string[]>([]);
   const [mediaBase, setMediaBase] = useState("");
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [storefront, setStorefront] = useState<StorefrontConfig | null>(null);
   const load = async () => { const l = await api.listInventory(); setLots(l); };
   useEffect(() => {
     load();
     api.listSuppliers().then((s) => setSuppliers(s.map((x) => x.name).filter(Boolean))).catch(() => {});
     api.listCategories().then((cs) => setCategories(cs.map((c) => c.label).filter(Boolean))).catch(() => {});
     api.mediaBaseDir().then(setMediaBase).catch(() => {});
+    api.getStorefrontConfig().then(setStorefront).catch(() => {});
   }, []);
+  // Live storefront link (null unless the storefront is on) — powers the header bar
+  // and the per-lot "copy storefront link" actions.
+  const storeUrl = storefront?.enabled ? (storefront.url ?? null) : null;
+  const copyStoreLink = (lotId?: string) => {
+    if (!storeUrl) return;
+    const link = lotId ? `${storeUrl}?lot=${lotId}` : storeUrl;
+    navigator.clipboard.writeText(link).then(() => toast("Link copied")).catch(() => {});
+  };
   // Category suggestions = the org's managed categories (buyer segments) plus any
   // category already used on a lot, so picking one keeps blasts aligned to a segment.
   const categoryOptions = Array.from(new Set([
@@ -242,12 +253,14 @@ export default function InventoryView() {
   // In select mode the card click selects instead of opening detail.
   const onCardOpen = (id: string) => { if (selectMode) toggleSelect(id); else setDetailId(id); };
 
+  // Custom-priced lots have no numeric ask, so every ask/profit/margin helper
+  // returns a neutral zero/dash for them — the display never renders those lines.
   const unitCost = (lot: Lot) => lot.price_type === "total" && lot.quantity > 0 ? lot.total_cost / lot.quantity : lot.total_cost;
-  const unitAsk = (lot: Lot) => lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
-  const margin = (lot: Lot) => unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "—";
-  const marginPct = (lot: Lot) => unitCost(lot) > 0 ? ((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100 : 0;
-  const totalProfit = (lot: Lot) => lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
-  const totalAsk = (lot: Lot) => lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
+  const unitAsk = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity : lot.asking_price;
+  const margin = (lot: Lot) => lot.price_type === "custom" ? "—" : unitCost(lot) > 0 ? `${(((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100).toFixed(0)}%` : "—";
+  const marginPct = (lot: Lot) => lot.price_type === "custom" ? 0 : unitCost(lot) > 0 ? ((unitAsk(lot) - unitCost(lot)) / unitCost(lot)) * 100 : 0;
+  const totalProfit = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "total" ? lot.asking_price - lot.total_cost : (lot.asking_price - lot.total_cost) * lot.quantity;
+  const totalAsk = (lot: Lot) => lot.price_type === "custom" ? 0 : lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
   const totalCostAll = (lot: Lot) => lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
 
   // "All" hides sold/archived unless the include-toggle is on, so its count must
@@ -341,6 +354,29 @@ export default function InventoryView() {
           )}
         </div>
       </div>
+
+      {/* Storefront link — one calm row; live link when on, quiet hint when off */}
+      {storefront && !selectMode && (
+        storeUrl ? (
+          <div className="flex items-center gap-2 mb-4 bg-surface-2 border border-line rounded-lg px-3 h-10">
+            <Link2 size={13} className="text-muted flex-shrink-0" />
+            <span className="text-[12px] text-muted flex-shrink-0">Storefront</span>
+            <span className="text-[12px] text-ink-2 truncate min-w-0 flex-1" title={storeUrl}>{storeUrl}</span>
+            <button onClick={() => copyStoreLink()}
+              className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-line-3 px-2.5 h-7 rounded-md hover:bg-surface-2 transition-colors flex-shrink-0">
+              <Clipboard size={12} /> Copy link
+            </button>
+            <button onClick={() => api.openExternal(storeUrl)}
+              className="flex items-center gap-1.5 text-[12px] text-accent px-2.5 h-7 rounded-md hover:bg-accent/10 transition-colors flex-shrink-0">
+              <ExternalLink size={12} /> Open
+            </button>
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted flex items-center gap-1.5 mb-4">
+            <Link2 size={13} className="text-faint flex-shrink-0" /> Your public storefront is off — turn it on in Settings → Storefront.
+          </p>
+        )
+      )}
 
       {/* Bulk action bar */}
       {selectMode && (
@@ -437,6 +473,8 @@ export default function InventoryView() {
             onStatus={(s) => setStatus(lot, s)}
             onDelete={() => deleteOne(lot)}
             onBlast={() => setBlastLot(lot)}
+            storeUrl={storeUrl}
+            onCopyStoreLink={() => copyStoreLink(lot.id)}
             unitCost={unitCost(lot)}
             unitAsk={unitAsk(lot)}
             loadPrice={totalAsk(lot)}
@@ -521,6 +559,8 @@ export default function InventoryView() {
             onLink={() => openLink(detail.id)}
             onDelete={() => deleteOne(detail)}
             onChanged={load}
+            storeUrl={storeUrl}
+            onCopyStoreLink={() => copyStoreLink(detail.id)}
           />
         );
       })()}
@@ -547,12 +587,13 @@ export default function InventoryView() {
 // behind a hover bar + a MoreVertical menu so the grid reads quiet.
 function LotCard({
   lot, index, mediaBase, selectMode, selected,
-  onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast,
+  onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, storeUrl, onCopyStoreLink,
   unitCost, unitAsk, loadPrice, marginStr, profit,
 }: {
   lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean;
   onOpen: () => void; onToggleSent: (c: "whatsapp" | "email") => void;
   onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void;
+  storeUrl: string | null; onCopyStoreLink: () => void;
   unitCost: number; unitAsk: number; loadPrice: number; marginStr: string; profit: number;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -561,6 +602,9 @@ function LotCard({
   useDismiss(menuRef, menuOpen, () => setMenuOpen(false));
 
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
+  // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
+  const isCustom = lot.price_type === "custom";
+  const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
   const stale = isStale(lot);
   const sold = lot.status === "sold";
   const archived = lot.status === "archived";
@@ -626,6 +670,9 @@ function LotCard({
                 {(sold || archived) && (
                   <button onClick={() => { setMenuOpen(false); onStatus("available"); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><RotateCcw size={13} className="text-muted" /> Restore</button>
                 )}
+                {storeUrl && lot.status === "available" && (
+                  <button onClick={() => { setMenuOpen(false); onCopyStoreLink(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><Link2 size={13} className="text-muted" /> Copy storefront link</button>
+                )}
                 <div className="my-1 border-t border-line" />
                 <button onClick={() => { setMenuOpen(false); onDelete(); }} className="w-full text-left px-3 py-2 text-[13px] text-danger-ink hover:bg-danger-bg flex items-center gap-2 transition-colors"><Trash2 size={13} /> Delete</button>
               </div>
@@ -645,14 +692,21 @@ function LotCard({
         )}
 
         {/* Money block — load price is the headline, per-unit muted under it,
-            profit a discreet internal line (hidden when cost is unset). */}
+            profit a discreet internal line (hidden when cost is unset).
+            Custom-priced lots show their free text verbatim, no per-unit / profit. */}
         <div className={`mt-3 ${sold ? "opacity-90" : ""}`}>
-          <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : "text-ink"}`}>{fmtAmount(loadPrice)}</div>
-          <div className="text-[11px] text-muted tabular-nums mt-1">{fmtAmount(unitAsk)} / unit</div>
-          {unitCost > 0 && (
-            <div className="text-[11px] text-muted tabular-nums mt-1.5">
-              Profit {fmtAmount(profit)} · {marginStr}
-            </div>
+          {isCustom ? (
+            <div className={`text-[19px] font-semibold leading-snug line-clamp-2 ${sold ? "text-muted" : "text-ink"}`}>{priceText || "—"}</div>
+          ) : (
+            <>
+              <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : "text-ink"}`}>{fmtAmount(loadPrice)}</div>
+              <div className="text-[11px] text-muted tabular-nums mt-1">{fmtAmount(unitAsk)} / unit</div>
+              {unitCost > 0 && (
+                <div className="text-[11px] text-muted tabular-nums mt-1.5">
+                  Profit {fmtAmount(profit)} · {marginStr}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -801,6 +855,11 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Guard against losing a half-typed paste — confirm only when there's content.
+  const requestClose = () => {
+    if (text.trim() && !confirm("Discard this load? Your text will be lost.")) return;
+    onClose();
+  };
 
   const parse = async () => {
     setBusy(true); setErr(null);
@@ -835,11 +894,11 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]">
       <div className="bg-surface rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-1">
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
+          <button onClick={requestClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
         <p className="text-[12px] text-muted mb-3">Paste one or more loads — whole WhatsApp messages are fine. It strips the junk, splits multiple loads, and fills a form for each. Review, add photos and category, then save. Free — no AI, no key.</p>
 
@@ -853,7 +912,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
         />
         {err && <div className="text-[11.5px] text-danger-ink mt-2">{err}</div>}
         <div className="flex justify-end gap-2 mt-4">
-          <button onClick={onClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
+          <button onClick={requestClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
           <button onClick={parse} disabled={busy || !text.trim()}
             className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
             {busy ? <><RefreshCw size={14} className="animate-spin" /> Reading…</> : <>Format loads →</>}
@@ -1046,6 +1105,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
   const [moq, setMoq] = useState<number>(details0.moq ?? 0);
   const [sizeRun, setSizeRun] = useState<{ size: string; qty: number }[]>(details0.size_run ?? []);
+  // Third price mode: a free-text price shown verbatim (no per-unit math).
+  const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
+  const [dragActive, setDragActive] = useState(false); // dropzone highlight while dragging files
 
   const pickManifest = async () => {
     const f = await openDialog({ multiple: false, filters: [{ name: "Manifest", extensions: ["pdf", "csv", "xlsx", "xls"] }] });
@@ -1077,6 +1139,62 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
     return () => window.removeEventListener("keydown", handler);
   }, [lightbox]);
 
+  // Import photos (drag-dropped or dialog-picked). For an existing lot, copy into
+  // the synced media folder now; for a new lot, stage raw paths until it's created.
+  const importPhotos = async (picked: string[]) => {
+    if (picked.length === 0) return;
+    try {
+      if (initial) {
+        const rel = await api.importLotPhotos(initial.id, picked);
+        setPhotos((prev) => [...prev, ...rel]);
+      } else {
+        setPhotos((prev) => [...prev, ...picked]);
+      }
+    } catch (e: any) { toast(String(e), "error"); }
+  };
+  const openPicker = async () => {
+    const f = await openDialog({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
+    const picked = Array.isArray(f) ? f : (typeof f === "string" ? [f] : []);
+    importPhotos(picked);
+  };
+
+  // Native file drag-drop onto the form (Tauri webview). Registered while the form
+  // is open; the highlight tracks enter/over, drop imports the image files.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let cancelled = false;
+    getCurrentWebview().onDragDropEvent((e) => {
+      const p = e.payload;
+      if (p.type === "enter" || p.type === "over") setDragActive(true);
+      else if (p.type === "leave") setDragActive(false);
+      else if (p.type === "drop") {
+        setDragActive(false);
+        const imgs = p.paths.filter((path) => /\.(jpe?g|png|webp|gif)$/i.test(path));
+        if (imgs.length) importPhotos(imgs);
+      }
+    }).then((fn) => { if (cancelled) fn(); else un = fn; }).catch(() => {});
+    return () => { cancelled = true; if (un) un(); };
+  }, []);
+
+  // Confirm before discarding an edited form — a stray backdrop click can't close it.
+  const initialSnapshot = useRef({
+    name, desc, category, qty, cost, ask, priceType, priceText,
+    supplier, location, notes, sentWa, sentEmail,
+    photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
+  }).current;
+  const isDirty = () =>
+    name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
+    qty !== initialSnapshot.qty || cost !== initialSnapshot.cost || ask !== initialSnapshot.ask ||
+    priceType !== initialSnapshot.priceType || priceText !== initialSnapshot.priceText ||
+    supplier !== initialSnapshot.supplier || location !== initialSnapshot.location || notes !== initialSnapshot.notes ||
+    sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
+    photos.length !== initialSnapshot.photos || pallets !== initialSnapshot.pallets || msrp !== initialSnapshot.msrp ||
+    moq !== initialSnapshot.moq || JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile;
+  const requestClose = () => {
+    if (isDirty() && !confirm("Discard this lot? Your changes will be lost.")) return;
+    onClose();
+  };
+
   const submit = async () => {
     if (!name.trim()) return;
     setSaving(true);
@@ -1087,14 +1205,18 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
       // Carry avg_msrp through (it's parser-derived, not an editable field) so an
       // edit-save doesn't silently drop it from the blast.
       const avgMsrp = details0.avg_msrp ?? null;
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0;
-      const detailsJson = hasDetails
-        ? JSON.stringify({ pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun })
-        : undefined;
+      // Custom price: persist the free text in details_json; the numeric ask is 0/ignored.
+      const isCustom = priceType === "custom";
+      const priceTextClean = isCustom ? priceText.trim() : "";
+      const effAsk = isCustom ? 0 : ask;
+      const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun };
+      if (priceTextClean) detailsObj.price_text = priceTextClean;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean;
+      const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       if (initial) {
-        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: ask, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
+        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
       } else {
-        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: ask, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType, detailsJson });
+        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: effAsk, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType, detailsJson });
         // Photos were picked as raw paths; copy them into the lot's synced media folder now that it has an id.
         if (photos.length > 0) {
           const rel = await api.importLotPhotos(lot.id, photos);
@@ -1110,11 +1232,11 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
 
   return (
     <>
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/25 backdrop-blur-[3px]">
       <div className="bg-surface rounded-2xl shadow-xl w-[440px] max-w-[92vw] max-h-[82vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
+          <button onClick={requestClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
         <div className="space-y-3">
           <div>
@@ -1152,20 +1274,23 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
           </div>
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">Selling price</label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
+            <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5 mb-2">
+              {(["per_unit", "total", "custom"] as const).map(pt => (
+                <button key={pt} onClick={() => setPriceType(pt)}
+                  className={`flex-1 text-[12px] font-medium h-8 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                  {pt === "per_unit" ? "Per unit" : pt === "total" ? "Fixed total" : "Custom text"}
+                </button>
+              ))}
+            </div>
+            {priceType === "custom" ? (
+              <input className={inp} value={priceText} maxLength={80} onChange={(e) => setPriceText(e.target.value)}
+                placeholder="e.g. 10,000+ units at $10/unit, or Best offer" />
+            ) : (
+              <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} placeholder="0.00" />
               </div>
-              <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5 flex-shrink-0">
-                {(["per_unit", "total"] as const).map(pt => (
-                  <button key={pt} onClick={() => setPriceType(pt)}
-                    className={`text-[12px] font-medium px-2.5 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                    {pt === "per_unit" ? "Per unit" : "Fixed total"}
-                  </button>
-                ))}
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Size run editor */}
@@ -1201,35 +1326,28 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
           </div>
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">Photos</label>
-            <div className="flex flex-wrap gap-2 mb-1">
-              {photos.map((p, i) => (
-                <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
-                  <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-line cursor-pointer hover:border-accent transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
-                   <button onClick={async () => {
-                     if (initial) {
-                       try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { toast(String(e), "error"); }
-                     }
-                     setPhotos(photos.filter((_, idx) => idx !== i));
-                   }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-danger text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
-                </div>
-              ))}
-              <button onClick={async () => {
-                const f = await openDialog({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
-                const picked = Array.isArray(f) ? f : (typeof f === "string" ? [f] : []);
-                if (picked.length === 0) return;
-                try {
-                  if (initial) {
-                    const rel = await api.importLotPhotos(initial.id, picked);
-                    setPhotos([...photos, ...rel]);
-                  } else {
-                    setPhotos([...photos, ...picked]);
-                  }
-                } catch (e: any) { toast(String(e), "error"); }
-              }} className="w-[72px] h-[72px] border-2 border-dashed border-line-3 rounded-lg flex items-center justify-center hover:border-accent hover:bg-accent/10 transition-colors group">
-                <Plus size={18} className="text-muted group-hover:text-accent transition-colors" />
-              </button>
-            </div>
-            <p className="text-[9px] text-muted flex items-center gap-1">
+            {photos.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {photos.map((p, i) => (
+                  <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
+                    <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-line cursor-pointer hover:border-accent transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
+                     <button onClick={async () => {
+                       if (initial) {
+                         try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { toast(String(e), "error"); }
+                       }
+                       setPhotos(photos.filter((_, idx) => idx !== i));
+                     }} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-danger text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={10} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Dropzone — click to pick, or drag image files onto the form */}
+            <button type="button" onClick={openPicker}
+              className={`w-full border-2 border-dashed rounded-lg px-3 py-4 flex flex-col items-center justify-center gap-1.5 text-[12px] transition-colors ${dragActive ? "border-accent bg-accent/10 text-accent" : "border-line-3 text-muted hover:border-accent hover:text-accent hover:bg-accent/5"}`}>
+              <Upload size={16} />
+              <span>Drag photos here or choose files</span>
+            </button>
+            <p className="text-[9px] text-muted flex items-center gap-1 mt-1.5">
               <Image size={10} /> Photos are copied into your synced folder, so they show on all your devices.
             </p>
           </div>
@@ -1284,7 +1402,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
 
         </div>
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
+          <button onClick={requestClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
           <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
             {saving ? "Saving…" : initial ? "Save" : "Create lot"}
           </button>
@@ -1304,9 +1422,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
   );
 }
 
-function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged }: {
+function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink }: {
   lot: Lot; mediaBase: string; onClose: () => void; onEdit: () => void;
   onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
+  storeUrl: string | null; onCopyStoreLink: () => void;
 }) {
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
   const [big, setBig] = useState(0);
@@ -1336,6 +1455,9 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
   const marginStr = uCost > 0 ? `${marginPct.toFixed(0)}%` : "—";
   const totalCostAll = lot.price_type === "per_unit" ? lot.total_cost * lot.quantity : lot.total_cost;
   const totalAskAll = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
+  // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
+  const isCustom = lot.price_type === "custom";
+  const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
 
   const Row = ({ label, value }: { label: string; value: string }) => (
     <div>
@@ -1396,17 +1518,33 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
             </button>
           </div>
 
-          {/* Financials — load price is the headline, per-unit under it. */}
+          {/* Financials — load price is the headline, per-unit under it.
+              Custom-priced lots show the free text verbatim (no per-unit / profit). */}
           <div className="bg-surface-2 rounded-xl px-4 py-3.5">
-            <p className="text-[12px] font-medium text-muted">Load price</p>
-            <p className="text-[26px] font-semibold text-ink tabular-nums leading-none mt-1">{fmtAmount(totalAskAll)}</p>
-            <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{fmtAmount(uAsk)} / unit · {lot.quantity.toLocaleString()} units</p>
-            {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
-            {uCost > 0 && (
-              <div className="mt-3 pt-3 border-t border-line flex items-center justify-between text-[12px] text-muted tabular-nums">
-                <span>Your cost {fmtAmount(totalCostAll)} · {fmtAmount(uCost)} / unit</span>
-                <span>Profit {fmtAmount(profit)} · {marginStr}</span>
-              </div>
+            {isCustom ? (
+              <>
+                <p className="text-[12px] font-medium text-muted">Price</p>
+                <p className="text-[20px] font-semibold text-ink leading-snug mt-1 break-words">{priceText || "—"}</p>
+                {/* Cost may still show internally; no profit/margin without a numeric ask. */}
+                {uCost > 0 && (
+                  <div className="mt-3 pt-3 border-t border-line text-[12px] text-muted tabular-nums">
+                    Your cost {fmtAmount(totalCostAll)}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="text-[12px] font-medium text-muted">Load price</p>
+                <p className="text-[26px] font-semibold text-ink tabular-nums leading-none mt-1">{fmtAmount(totalAskAll)}</p>
+                <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{fmtAmount(uAsk)} / unit · {lot.quantity.toLocaleString()} units</p>
+                {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
+                {uCost > 0 && (
+                  <div className="mt-3 pt-3 border-t border-line flex items-center justify-between text-[12px] text-muted tabular-nums">
+                    <span>Your cost {fmtAmount(totalCostAll)} · {fmtAmount(uCost)} / unit</span>
+                    <span>Profit {fmtAmount(profit)} · {marginStr}</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -1453,6 +1591,9 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
           {lot.status !== "sold" && lot.status !== "archived" && (
             <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to Deal</button>
+          )}
+          {storeUrl && lot.status === "available" && (
+            <button onClick={onCopyStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Copy storefront link</button>
           )}
           {lot.status !== "sold" && (
             <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><DollarSign size={13} /> Mark Sold</button>

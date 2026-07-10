@@ -1146,6 +1146,7 @@ export interface LotDetails {
   avg_msrp?: number | null;
   moq?: number | null;
   size_run?: { size: string; qty: number }[] | null;
+  price_text?: string | null;   // free-text price shown verbatim when price_type === "custom"
 }
 
 export interface FollowUpRule {
