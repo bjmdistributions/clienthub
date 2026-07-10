@@ -1466,6 +1466,7 @@ export const api = {
   deleteInvoice: (id: string) => invoke<void>("delete_invoice", { id }),
   generateInvoicePdf: (invoiceId: string) =>
     invoke<string>("generate_invoice_pdf", { invoiceId }),
+  openInvoicePdf: (invoiceId: string) => invoke<string>("open_invoice_pdf", { invoiceId }),
   previewInvoicePdf: (input: InvoiceInput) =>
     invoke<string>("preview_invoice_pdf", { input }),
   sendInvoice: (invoiceId: string) => invoke<void>("send_invoice", { invoiceId }),

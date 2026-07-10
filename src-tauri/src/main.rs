@@ -340,6 +340,7 @@ fn main() {
             resume_recurring_invoice,
             delete_recurring_invoice,
             generate_invoice_pdf,
+            open_invoice_pdf,
             get_invoice_template,
             save_invoice_template,
             render_sample_invoice_pdf,

@@ -1035,14 +1035,27 @@ pub async fn send_invoice(invoice_id: &str) -> Result<()> {
     crate::email::send(&to, &subject, &body, Some(&pdf)).await?;
 
     let now = Utc::now().to_rfc3339();
+    // Only a draft is promoted to 'sent'. A paid-but-never-emailed invoice keeps
+    // its 'paid' status so sending doesn't silently un-mark it paid.
+    let was_draft: bool = {
+        let conn = pool().get()?;
+        conn.query_row(
+            "SELECT status FROM invoices WHERE id=?1",
+            [invoice_id],
+            |r| r.get::<_, String>(0),
+        )? == "draft"
+    };
+
     let mut cols = serde_json::Map::new();
-    cols.insert("status".into(), serde_json::Value::String("sent".into()));
+    if was_draft {
+        cols.insert("status".into(), serde_json::Value::String("sent".into()));
+    }
     cols.insert("sent_at".into(), serde_json::Value::String(now.clone()));
     crate::sync::record_upsert("invoices", invoice_id, cols)?;
 
     let conn = pool().get()?;
     conn.execute(
-        "UPDATE invoices SET status='sent', sent_at=?1 WHERE id=?2",
+        "UPDATE invoices SET status = CASE WHEN status='draft' THEN 'sent' ELSE status END, sent_at=?1 WHERE id=?2",
         rusqlite::params![now, invoice_id],
     )?;
     Ok(())

@@ -192,6 +192,12 @@ export default function InventoryView() {
     const link = lotId ? `${storeUrl}?lot=${lotId}` : storeUrl;
     navigator.clipboard.writeText(link).then(() => toast("Link copied")).catch(() => {});
   };
+  // Open the product's storefront listing in the browser (the buyer-facing page).
+  const openStoreLink = (lotId?: string) => {
+    if (!storeUrl) return;
+    const link = lotId ? `${storeUrl}?lot=${lotId}` : storeUrl;
+    api.openExternal(link).catch(() => {});
+  };
   // Category suggestions = the org's managed categories (buyer segments) plus any
   // category already used on a lot, so picking one keeps blasts aligned to a segment.
   const categoryOptions = Array.from(new Set([
@@ -561,6 +567,7 @@ export default function InventoryView() {
             onChanged={load}
             storeUrl={storeUrl}
             onCopyStoreLink={() => copyStoreLink(detail.id)}
+            onOpenStoreLink={() => openStoreLink(detail.id)}
           />
         );
       })()}
@@ -670,8 +677,8 @@ function LotCard({
                 {(sold || archived) && (
                   <button onClick={() => { setMenuOpen(false); onStatus("available"); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><RotateCcw size={13} className="text-muted" /> Restore</button>
                 )}
-                {storeUrl && lot.status === "available" && (
-                  <button onClick={() => { setMenuOpen(false); onCopyStoreLink(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><Link2 size={13} className="text-muted" /> Copy storefront link</button>
+                {storeUrl && lot.status !== "archived" && (
+                  <button onClick={() => { setMenuOpen(false); onCopyStoreLink(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><Link2 size={13} className="text-muted" /> Copy product link</button>
                 )}
                 <div className="my-1 border-t border-line" />
                 <button onClick={() => { setMenuOpen(false); onDelete(); }} className="w-full text-left px-3 py-2 text-[13px] text-danger-ink hover:bg-danger-bg flex items-center gap-2 transition-colors"><Trash2 size={13} /> Delete</button>
@@ -1422,10 +1429,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
   );
 }
 
-function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink }: {
+function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
   lot: Lot; mediaBase: string; onClose: () => void; onEdit: () => void;
   onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
-  storeUrl: string | null; onCopyStoreLink: () => void;
+  storeUrl: string | null; onCopyStoreLink: () => void; onOpenStoreLink: () => void;
 }) {
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
   const [big, setBig] = useState(0);
@@ -1592,8 +1599,11 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           {lot.status !== "sold" && lot.status !== "archived" && (
             <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to Deal</button>
           )}
-          {storeUrl && lot.status === "available" && (
-            <button onClick={onCopyStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Copy storefront link</button>
+          {storeUrl && lot.status !== "archived" && (
+            <>
+              <button onClick={onOpenStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><ExternalLink size={13} /> Open listing</button>
+              <button onClick={onCopyStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Copy product link</button>
+            </>
           )}
           {lot.status !== "sold" && (
             <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><DollarSign size={13} /> Mark Sold</button>

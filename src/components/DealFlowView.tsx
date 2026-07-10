@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
-  DollarSign, CheckCircle2, Truck, FileDown, XCircle,
+  DollarSign, CheckCircle2, Truck, Package, FileDown, XCircle,
 } from "lucide-react";
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare,
@@ -854,46 +854,60 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
         </div>
       )}
 
-      {/* Add freight / wire fee / other cost (categorized → counted in net profit) */}
-      {!isDone && (
-        showCost ? (
-          <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-            <div className="text-[12.5px] font-medium text-muted">Add cost</div>
-            <select value={costType} onChange={(e) => setCostType(e.target.value)} className={inp}>
-              {COST_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-            </select>
-            <input type="text" placeholder="Note (optional — e.g. DHL, bank ref)" value={costNote}
-              onChange={(e) => setCostNote(e.target.value)} className={inp} />
-            <input type="number" inputMode="decimal" placeholder="Amount" value={costAmt}
-              onChange={(e) => setCostAmt(e.target.value)} className={inp} />
-            <div className="flex gap-2">
-              <button onClick={handleAddCost} disabled={saving}
-                className="flex-1 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold disabled:opacity-50">Add cost</button>
-              <button onClick={() => { setShowCost(false); setCostAmt(""); setCostNote(""); }}
-                className="px-4 h-9 rounded-lg border border-line text-[13px] text-muted">Cancel</button>
-            </div>
+      {/* Chooser — pick which kind of cost to add (supplier primary + first) */}
+      {!isDone && !showForm && !showCost && (
+        <div className="space-y-2">
+          <div className="text-[13px] font-semibold text-ink-2">Add a cost to this deal</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button onClick={() => { setShowForm(true); setShowCost(false); }}
+              className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
+              <Package size={16} className="text-accent shrink-0 mt-0.5" />
+              <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Supplier cost</div><div className="text-[11.5px] text-muted">What you pay for the goods, itemized</div></div>
+            </button>
+            <button onClick={() => { setShowCost(true); setShowForm(false); }}
+              className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
+              <Truck size={16} className="text-accent shrink-0 mt-0.5" />
+              <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Freight or fee</div><div className="text-[11.5px] text-muted">Shipping, wire fees, other costs</div></div>
+            </button>
           </div>
-        ) : (
-          <button onClick={() => setShowCost(true)}
-            className="flex items-center gap-1.5 text-[12px] text-accent hover:text-accent-hover font-medium">
-            <Plus size={13} /> Add freight / wire fee
-          </button>
-        )
+        </div>
       )}
 
-      {/* Add supplier form */}
+      {/* Add freight / wire fee / other cost form (categorized → counted in net profit) */}
+      {!isDone && showCost && (
+        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Truck size={15} className="text-accent" />
+            <div className="text-[13px] font-medium text-ink">Freight or fee</div>
+          </div>
+          <select value={costType} onChange={(e) => setCostType(e.target.value)} className={inp}>
+            {COST_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+          <input type="text" placeholder="Note (optional — e.g. DHL, bank ref)" value={costNote}
+            onChange={(e) => setCostNote(e.target.value)} className={inp} />
+          <input type="number" inputMode="decimal" placeholder="Amount" value={costAmt}
+            onChange={(e) => setCostAmt(e.target.value)} className={inp} />
+          <div className="flex gap-2">
+            <button onClick={handleAddCost} disabled={saving}
+              className="flex-1 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold disabled:opacity-50">Add cost</button>
+            <button onClick={() => { setShowCost(false); setCostAmt(""); setCostNote(""); }}
+              className="px-4 h-9 rounded-lg border border-line text-[13px] text-muted">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Supplier form + deposit + mark payment received */}
       {!isDone && (
         <>
-          {!showForm ? (
-            <button
-              onClick={() => setShowForm(true)}
-              className="flex items-center gap-1.5 text-[12px] text-accent hover:text-accent-hover font-medium"
-            >
-              <Plus size={13} /> Add Supplier
-            </button>
-          ) : (
+          {showForm && (
             <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-              <div className="text-[12.5px] font-medium text-muted">Supplier</div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <Package size={15} className="text-accent" />
+                  <div className="text-[13px] font-medium text-ink">Supplier cost</div>
+                </div>
+                <div className="text-[11.5px] text-muted mt-0.5">Itemized — your cost vs the client quote per line</div>
+              </div>
 
               {/* Supplier search */}
               <div className="relative">

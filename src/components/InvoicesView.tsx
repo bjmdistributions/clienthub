@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, PayoutShare, CompanyInfo, InvoiceTemplate } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
 import RecurringView from "./RecurringView";
-import CostProfitPanel from "./CostProfitPanel";
 import InvoicePreview, { DEFAULT_INVOICE_TEMPLATE } from "./InvoicePreview";
 import { toast } from "./Toast";
 
@@ -380,18 +379,19 @@ export default function InvoicesView() {
                         className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors">
                         <Edit2 size={13} />
                       </button>
+                      {!voided && !inv.sent_at && (
+                        <button title="Send invoice" onClick={() => handleSend(inv.id)}
+                          className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
+                      )}
                       {!voided && inv.status.toLowerCase() !== "paid" && (
-                        <>
-                          <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                            className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
-                          <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                            className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
-                        </>
+                        <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
+                          className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
                       )}
                       <RowActionsMenu>
                         {(close) => (
                           <>
                             <MenuItem icon={FileDown} label="Save PDF" onClick={() => { handlePdf(inv.id); close(); }} />
+                            <MenuItem icon={ExternalLink} label="View" onClick={() => { api.openInvoicePdf(inv.id).catch((e: any) => toast(String(e), "error")); close(); }} />
                             {!voided && inv.is_complete && inv.deal_flow_id && (
                               <MenuItem icon={RotateCcw} label="Reopen deal" onClick={async () => {
                                 close();
@@ -453,7 +453,6 @@ export default function InvoicesView() {
             try { await api.deleteInvoice(detailInvoice.id); toast("Moved to Archive"); } catch (e: any) { toast(String(e), "error"); }
             setDetailId(null); setDetailInvoice(null); load();
           }}
-          onCostSaved={() => { setDetailInvoice(null); api.getInvoice(detailInvoice.id).then(setDetailInvoice); }}
           onVoid={async (voided) => {
             await handleVoid(detailInvoice.id, voided);
             api.getInvoice(detailInvoice.id).then(setDetailInvoice).catch(() => {});
@@ -887,30 +886,13 @@ function MenuItem({ icon: Icon, label, onClick, danger }: {
   );
 }
 
-function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onDelete, onCostSaved, onVoid }: {
+function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onDelete, onVoid }: {
   invoice: Invoice; clientName: string; onClose: () => void;
-  onPdf: () => void; onResend: () => void; onDelete: () => void; onCostSaved: () => void;
+  onPdf: () => void; onResend: () => void; onDelete: () => void;
   onVoid: (voided: boolean) => void;
 }) {
   const voided = isVoided(invoice);
   const items: LineItem[]  = JSON.parse(invoice.line_items_json || "[]");
-  const costItems: CostItem[] = JSON.parse(invoice.cost_items_json || "[]");
-  const [editingCosts, setEditingCosts]   = useState(false);
-  const [costs, setCosts]                 = useState<CostItem[]>(() => costItems.length > 0 ? costItems : [{ description: "", amount: 0 }]);
-  const [savingCosts, setSavingCosts]     = useState(false);
-  const [editingShipping, setEditingShipping] = useState(invoice.status === "paid" && !invoice.is_complete);
-  const [shipping, setShipping]           = useState<ShippingInfo>({ carrier: invoice.carrier ?? "", tracking_number: invoice.tracking_number ?? "", shipping_charged: invoice.shipping_charged ?? 0, pickup_date: invoice.pickup_date ?? "", delivery_date: invoice.delivery_date ?? "", is_complete: invoice.is_complete ?? false });
-  const [savingShipping, setSavingShipping] = useState(false);
-  // Cost & Profit is owned by the linked Deal Flow (single source of truth).
-  // Fetch it so the invoice shows the identical P&L panel as the Deal Flow view.
-  const [dealFlow, setDealFlow] = useState<DealFlow | null>(null);
-  const [recipients, setRecipients] = useState<PayoutShare[]>([]);
-  useEffect(() => {
-    let active = true;
-    api.getDealFlowByInvoice(invoice.id).then((df) => { if (active) setDealFlow(df); }).catch(() => {});
-    api.getPayoutSplit().then((s) => { if (active) setRecipients(s); }).catch(() => {});
-    return () => { active = false; };
-  }, [invoice.id]);
 
   const statCol = (s: string) => {
     if (s === "void")    return "bg-surface-3 text-muted";
@@ -926,7 +908,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
       <div className="fixed inset-y-0 right-0 w-[480px] max-w-[92vw] bg-surface shadow-[0_0_50px_rgba(0,0,0,0.12)] h-full overflow-auto z-50 animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-surface/95 backdrop-blur-sm border-b border-line px-6 py-4 flex items-center justify-between z-10">
           <h3 className="text-[14px] font-semibold text-ink font-mono">{invoice.number}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
+          <button onClick={onClose} title="Close" className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
         </div>
 
         <div className="px-6 py-5 space-y-5">
@@ -993,109 +975,6 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             </div>
           </div>
 
-          {/* Cost & Profit */}
-          <div className="border-t border-line pt-4">
-            <button onClick={() => setEditingCosts(!editingCosts)}
-              className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2 hover:text-ink w-full transition-colors">
-              <ChevronDown size={13} className={`transition-transform ${editingCosts ? "rotate-180" : ""}`} />
-              Cost &amp; profit
-            </button>
-            {editingCosts && (
-              dealFlow ? (
-                /* Linked to a Deal Flow — show the identical, synced P&L panel */
-                <div className="mt-3 space-y-2">
-                  <CostProfitPanel flow={dealFlow} recipients={recipients} />
-                  <div className="flex items-center gap-2 px-3 py-2 bg-info-bg border border-info rounded-lg">
-                    <GitBranch size={11} className="text-info-ink flex-shrink-0" />
-                    <p className="text-[11px] text-info-ink">
-                      Cost &amp; profit are managed in the Deal Flow workflow and stay in sync here.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                /* Editable for invoices not yet in a Deal Flow */
-                <div className="mt-3 space-y-2">
-                  <div className="text-[12.5px] font-medium text-muted mb-1">Cost items</div>
-                  {costs.map((ci, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <input className="flex-1 border border-line px-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors" placeholder="Description"
-                        value={ci.description} onChange={(e) => { const c = [...costs]; c[i] = { ...c[i], description: e.target.value }; setCosts(c); }} />
-                      <div className="relative w-28">
-                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
-                        <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-5 pr-2 h-8 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-                          value={ci.amount || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); const c = [...costs]; c[i] = { ...c[i], amount: isNaN(v) ? 0 : v }; setCosts(c); }} />
-                      </div>
-                      <button onClick={() => setCosts(costs.filter((_, j) => j !== i))} className="text-faint hover:text-danger-ink p-1 transition-colors"><X size={12} /></button>
-                    </div>
-                  ))}
-                  <button onClick={() => setCosts([...costs, { description: "", amount: 0 }])}
-                    className="text-[11px] font-medium text-accent hover:text-accent-hover flex items-center gap-1 transition-colors">
-                    <Plus size={11} /> Add cost item
-                  </button>
-                  <div className="border-t border-line pt-2 space-y-1 text-[12px]">
-                    <div className="flex justify-between text-muted"><span>Revenue</span><span className="tabular-nums">{fmtAmount(invoice.total)}</span></div>
-                    <div className="flex justify-between text-muted"><span>Cost</span><span className="tabular-nums">{fmtAmount(costs.reduce((s, c) => s + c.amount, 0))}</span></div>
-                    <div className={`flex justify-between font-semibold ${(invoice.total - costs.reduce((s, c) => s + c.amount, 0)) >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
-                      <span>Profit</span><span className="tabular-nums">{fmtAmount(invoice.total - costs.reduce((s, c) => s + c.amount, 0))}</span>
-                    </div>
-                  </div>
-                  <button onClick={async () => { setSavingCosts(true); try { await api.saveInvoiceCosts(invoice.id, costs); onCostSaved(); } catch (e: any) { toast(String(e), "error"); } setSavingCosts(false); }}
-                    className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
-                    {savingCosts ? "Saving…" : "Save costs"}
-                  </button>
-                </div>
-              )
-            )}
-          </div>
-
-          {/* Shipping */}
-          <div className="border-t border-line pt-4">
-            <button onClick={() => setEditingShipping(!editingShipping)}
-              className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2 hover:text-ink w-full transition-colors">
-              <Package size={13} />
-              <ChevronDown size={13} className={`transition-transform ${editingShipping ? "rotate-180" : ""}`} />
-              Shipping
-              {!invoice.is_complete && invoice.status === "paid" && <span className="text-warning-ink text-[11px] ml-1">— needs info</span>}
-              {invoice.is_complete && <span className="text-success-ink text-[11px] ml-1">— complete</span>}
-            </button>
-            {editingShipping && (
-              <div className="mt-3 space-y-2">
-                <div className="grid grid-cols-2 gap-3">
-                  {[
-                    { label: "Carrier", key: "carrier" as const, type: "text", placeholder: "UPS / FedEx / etc." },
-                    { label: "Tracking #", key: "tracking_number" as const, type: "text", placeholder: "1Z..." },
-                    { label: "Pickup date", key: "pickup_date" as const, type: "date", placeholder: "" },
-                  ].map((f) => (
-                    <div key={f.key}>
-                      <label className="text-[12.5px] font-medium text-muted">{f.label}</label>
-                      <input type={f.type} placeholder={f.placeholder}
-                        className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-                        value={(shipping[f.key] as string) || ""}
-                        onChange={(e) => setShipping({ ...shipping, [f.key]: e.target.value })} />
-                    </div>
-                  ))}
-                  <div>
-                    <label className="text-[12.5px] font-medium text-muted">Shipping charged</label>
-                    <div className="relative mt-0.5">
-                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
-                      <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-5 pr-2 h-9 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-                        value={shipping.shipping_charged || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setShipping({ ...shipping, shipping_charged: isNaN(v) ? 0 : v }); }} />
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[12.5px] font-medium text-muted">Delivery date</label>
-                  <input type="date" className="mt-0.5 border border-line px-2 h-9 rounded-lg text-[12px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-                    value={shipping.delivery_date || ""} onChange={(e) => setShipping({ ...shipping, delivery_date: e.target.value })} />
-                </div>
-                <button onClick={async () => { setSavingShipping(true); try { await api.saveInvoiceShipping(invoice.id, shipping); } catch (e: any) { toast(String(e), "error"); } setSavingShipping(false); }}
-                  className="w-full bg-accent hover:bg-accent-hover text-on-accent h-9 rounded-lg text-[12px] font-medium transition-colors">
-                  {savingShipping ? "Saving…" : "Save shipping"}
-                </button>
-              </div>
-            )}
-          </div>
-
           {invoice.notes && (
             <div className="bg-surface-2 border border-line px-4 py-3 rounded-xl text-[12px] text-ink-2">
               {invoice.notes}
@@ -1104,17 +983,22 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
         </div>
 
         <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">
-          <button onClick={onPdf}
+          <button onClick={async () => { try { await api.openInvoicePdf(invoice.id); } catch (e: any) { toast(String(e), "error"); } }}
+            title="Open the invoice PDF in your browser"
+            className="w-full bg-surface border border-line hover:bg-surface-2 text-ink-2 h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
+            <ExternalLink size={15} /> View invoice
+          </button>
+          <button onClick={onPdf} title="Save the invoice PDF to your invoices folder"
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-2">
             <Download size={15} /> Download PDF
           </button>
           {voided ? (
             <div className="flex gap-2.5">
-              <button onClick={() => onVoid(false)}
+              <button onClick={() => onVoid(false)} title="Restore this voided invoice"
                 className="flex-1 bg-surface border border-line hover:bg-success-bg hover:border-success text-ink-2 hover:text-success-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
                 <RotateCcw size={13} /> Un-void invoice
               </button>
-              <button onClick={onDelete}
+              <button onClick={onDelete} title="Move to Archive (restorable)"
                 className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
                 <Trash2 size={13} /> Delete
               </button>
@@ -1122,21 +1006,21 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
           ) : (
             <>
               <div className="flex gap-2.5">
-                <button onClick={onResend}
+                <button onClick={onResend} title={invoice.sent_at ? "Resend invoice" : "Send invoice"}
                   className="flex-1 bg-surface border border-line hover:bg-surface-2 text-ink-2 h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
-                  <Send size={13} /> Resend
+                  <Send size={13} /> {invoice.sent_at ? "Resend" : "Send"}
                 </button>
                 <button onClick={async () => { try { await api.createPaymentRequest(invoice.id); } catch(e: any) { toast(String(e), "error"); } }}
                   className="flex-1 bg-surface border border-line hover:bg-accent/10 hover:border-accent/30 text-accent h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5"
                   title="Request payment via Stripe">
                   <CreditCard size={13} /> Pay
                 </button>
-                <button onClick={onDelete}
+                <button onClick={onDelete} title="Move to Archive (restorable)"
                   className="flex-1 bg-surface border border-danger hover:bg-danger-bg text-danger-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
                   <Trash2 size={13} /> Delete
                 </button>
               </div>
-              <button onClick={() => onVoid(true)}
+              <button onClick={() => onVoid(true)} title="Void this invoice — drops it from receivables; nothing is deleted"
                 className="w-full bg-surface border border-line hover:bg-warning-bg hover:border-warning text-muted hover:text-warning-ink h-9 rounded-lg text-[13px] font-medium transition-colors flex items-center justify-center gap-1.5">
                 <XCircle size={13} /> Mark deal fell through
               </button>

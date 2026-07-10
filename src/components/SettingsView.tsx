@@ -4069,6 +4069,10 @@ function SplitsTab() {
   const [shares, setShares] = useState<Share[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // Raw editing buffer for the percentage inputs so a field can be cleared and
+  // partial values ("", "33.") survive while typing — the numeric state stays in
+  // sync. Without this a controlled number input coerces empty→0 and can't clear.
+  const [pctText, setPctText] = useState<Record<number, string>>({});
 
   const reloadStaff = () => api.listStaff().then((s) => setStaff(s.filter((x) => x.status === "active"))).catch(() => {});
   useEffect(() => {
@@ -4111,7 +4115,9 @@ function SplitsTab() {
     persist(shares.map((s, i) => (i === idx ? { ...s, pct: Math.round(Math.max(0, 100 - others) * 100) / 100 } : s)));
   };
   const setShare = (i: number, patch: Partial<Share>) => persist(shares.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
-  const removeShare = (i: number) => persist(shares.filter((_, idx) => idx !== i));
+  // Clear the edit buffer on removal so buffered strings don't misalign to the
+  // wrong row after indices shift.
+  const removeShare = (i: number) => { setPctText({}); persist(shares.filter((_, idx) => idx !== i)); };
 
   const PAY_TYPES: [string, string][] = [["profit_pct", "Profit %"], ["gross_pct", "Gross %"], ["fixed", "Fixed $"]];
   const setRepType = async (id: string, payType: string) => { await api.updateStaff(id, { payType }); reloadStaff(); };
@@ -4176,7 +4182,16 @@ function SplitsTab() {
                 </select>
                 <input value={s.name} onChange={(e) => setShare(i, { name: e.target.value })} placeholder={NAME_PLACEHOLDER[s.kind]} className={`${inpSm} min-w-0`} />
                 <div className="flex items-center gap-1.5">
-                  <input type="number" min={0} step="0.1" value={s.pct} onChange={(e) => setShare(i, { pct: parseFloat(e.target.value) || 0 })}
+                  <input
+                    type="text" inputMode="decimal"
+                    value={pctText[i] ?? (s.pct === 0 ? "" : String(s.pct))}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setPctText((m) => ({ ...m, [i]: raw }));
+                      const n = parseFloat(raw);
+                      setShare(i, { pct: Number.isFinite(n) ? n : 0 });
+                    }}
+                    onBlur={() => setPctText((m) => { const { [i]: _drop, ...rest } = m; return rest; })}
                     className={`${inpSm} text-right tabular-nums`} />
                   <span className="w-3 shrink-0 text-[12px] text-muted">%</span>
                 </div>

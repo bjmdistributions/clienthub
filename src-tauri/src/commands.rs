@@ -2826,6 +2826,16 @@ pub async fn render_sample_invoice_pdf(app_handle: tauri::AppHandle) -> Result<S
     Ok(path)
 }
 
+/// Render the invoice PDF for `invoice_id` (any status) and open it in the OS
+/// viewer, so an invoice can be viewed from the detail panel in any state.
+#[tauri::command]
+pub async fn open_invoice_pdf(app_handle: tauri::AppHandle, invoice_id: String) -> Result<String, String> {
+    let path = crate::invoice::generate_pdf(&invoice_id).await.map_err(|e| e.to_string())?;
+    use tauri_plugin_shell::ShellExt;
+    app_handle.shell().open(path.clone(), None).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInput) -> Result<String, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
