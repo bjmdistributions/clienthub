@@ -158,6 +158,11 @@ fn main() {
                     _ => {}
                 }
 
+                // 2c. Once per install, push all local inventory photos to the server so
+                // the hosted storefront can show photos added on any device (photo files
+                // don't ride the DB sync oplog). New photos upload at save time.
+                commands::startup_backfill_inventory_photos().await;
+
                 // 3. Fire a system notification if follow-ups are due today.
                 match due_followups().await {
                     Ok(clients) if !clients.is_empty() => {
@@ -546,6 +551,7 @@ fn main() {
             delete_lots,
             resync_inventory,
             import_lot_photos,
+            backfill_inventory_photos,
             remove_lot_photo,
             attach_lot_manifest,
             remove_lot_manifest,

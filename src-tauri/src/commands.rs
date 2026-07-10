@@ -6814,7 +6814,62 @@ pub async fn import_lot_photos(lot_id: String, paths: Vec<String>) -> Result<Vec
         std::fs::copy(src, &dest).map_err(|e| format!("Couldn't copy photo: {}", e))?;
         out.push(format!("media/inventory/{}/photos/{}", lot_id, fname));
     }
+    // Push each photo's bytes to the server so the hosted storefront can show it from
+    // ANY device (photo files don't ride the DB sync oplog). Best-effort: a network
+    // failure never fails the local import — the startup backfill re-uploads later.
+    for rel in &out {
+        let _ = crate::netsync::upload_inventory_photo(&lot_id, rel).await;
+    }
     Ok(out)
+}
+
+/// Upload every locally-present inventory photo to the server (idempotent). Backfills
+/// lots whose photos were added before per-photo upload existed, or from a device that
+/// never had a media bridge to the host — the fix for "shows in inventory but not the
+/// storefront". Run from a device that holds the files (the media-bridged host has them
+/// all). Returns the number of photos successfully uploaded.
+#[tauri::command]
+pub async fn backfill_inventory_photos() -> Result<u32, String> {
+    let base = crate::db::app_data_dir().join("sync").join("media").join("inventory");
+    let mut n = 0u32;
+    let lots = match std::fs::read_dir(&base) { Ok(l) => l, Err(_) => return Ok(0) };
+    for lot in lots.flatten() {
+        if !lot.path().is_dir() { continue; }
+        let lot_id = lot.file_name().to_string_lossy().to_string();
+        let pdir = lot.path().join("photos");
+        if let Ok(photos) = std::fs::read_dir(&pdir) {
+            for ph in photos.flatten() {
+                if !ph.path().is_file() { continue; }
+                let fname = ph.file_name().to_string_lossy().to_string();
+                let rel = format!("media/inventory/{}/photos/{}", lot_id, fname);
+                match crate::netsync::upload_inventory_photo(&lot_id, &rel).await {
+                    Ok(_) => n += 1,
+                    // Retryable (not signed in / server unreachable / 5xx): abort so the
+                    // caller can try again later instead of marking the backfill done.
+                    Err(e) if e.contains("sign") || e.contains("reach") || e.contains("server returned 5") => {
+                        return Err(e);
+                    }
+                    // Per-file issue (missing file, 4xx): skip and keep going.
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Run the photo backfill once per install, guarded by a local marker so it doesn't
+/// re-upload everything each launch. A retryable failure (offline / signed out) leaves
+/// the marker unset so it runs again next time. New photos upload at save time.
+pub async fn startup_backfill_inventory_photos() {
+    if read_setting("inv_photo_backfill_v1").is_some() { return; }
+    match backfill_inventory_photos().await {
+        Ok(n) => {
+            tracing::info!("storefront photo backfill: uploaded {}", n);
+            let _ = write_setting("inv_photo_backfill_v1", "done");
+        }
+        Err(e) => tracing::warn!("photo backfill deferred: {}", e),
+    }
 }
 
 /// Remove a single photo — deletes the file from disk and returns updated photo list path.

@@ -992,6 +992,41 @@ pub async fn upload_company_logo() -> Result<(), String> {
     Ok(())
 }
 
+/// Upload ONE inventory photo's bytes to the server so the hosted storefront can display
+/// it from any device. Photo files don't travel over the DB sync oplog (only the
+/// photos_json path text does), so a photo added on a device without a media bridge to the
+/// host would otherwise never reach the server. `rel` is the photos_json entry, e.g.
+/// "media/inventory/<lot>/photos/photo_001.jpg". Best-effort — callers ignore failures
+/// (the local copy still exists; a later save or backfill retries).
+pub async fn upload_inventory_photo(lot_id: &str, rel: &str) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let name = rel.rsplit('/').next().unwrap_or("");
+    if name.is_empty() || name.contains("..") {
+        return Err("bad photo path".into());
+    }
+    let local = crate::db::app_data_dir().join("sync").join(rel);
+    let bytes = std::fs::read(&local).map_err(|e| e.to_string())?;
+    let ctype = if name.ends_with(".png") {
+        "image/png"
+    } else if name.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    let resp = http()
+        .post(format!("{}/api/inventory/{}/photo/{}", cfg.url.trim_end_matches('/'), lot_id, name))
+        .bearer_auth(&cfg.token)
+        .header("content-type", ctype)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Platform-owner (superadmin) signups overview: every workspace with owner email,
 /// plan, signup date and usage. Server gates this to the org_default owner.
 #[tauri::command]
