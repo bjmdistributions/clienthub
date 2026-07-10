@@ -10,7 +10,7 @@ import {
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
-import RefundPanel from "./RefundPanel";
+import CompletedBreakdown from "./CompletedBreakdown";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -656,6 +656,12 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
   // enter a different amount (e.g. a slight underpayment they'll eat).
   const [receivedAmount, setReceivedAmount] = useState<string>((flow.invoice_total ? flow.invoice_total.toFixed(2) : ""));
   useEffect(() => { setReceivedAmount((flow.invoice_total ? flow.invoice_total.toFixed(2) : "")); }, [flow.invoice_total]);
+  // A partial up-front deposit — SEPARATE from the full amount received. The
+  // balance owed (invoice total − deposit) stays outstanding until the full
+  // payment is marked; recording a deposit does not advance the stage.
+  const [depositAmount, setDepositAmount] = useState<string>((flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""));
+  useEffect(() => { setDepositAmount(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""); }, [flow.deposit_amount]);
+  const [savingDeposit, setSavingDeposit] = useState(false);
   const [showCost, setShowCost] = useState(false);
   const [costType, setCostType] = useState("freight");
   const [costAmt,  setCostAmt]  = useState("");
@@ -776,6 +782,18 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
     setSaving(true);
     try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
+  };
+
+  const handleSaveDeposit = async () => {
+    const amt = parseFloat(depositAmount) || 0;
+    if (amt < 0) { toast("Enter a valid deposit amount", "error"); return; }
+    setSavingDeposit(true);
+    try {
+      await api.setDeposit(flow.id, amt);
+      toast(amt > 0 ? "Deposit saved" : "Deposit cleared", "success");
+      onReload();
+    } catch (e: any) { toast(String(e), "error"); }
+    setSavingDeposit(false);
   };
 
   return (
@@ -1058,6 +1076,37 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
             </div>
           )}
 
+          {/* Deposit — a partial up-front payment, separate from the full amount */}
+          <div className="rounded-lg border border-line bg-surface p-3">
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Deposit received (optional)</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
+                <input
+                  type="number" step="0.01" min="0"
+                  value={depositAmount}
+                  onChange={(e) => setDepositAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+                />
+              </div>
+              {(() => {
+                const dep = parseFloat(depositAmount) || 0;
+                const total = flow.invoice_total || 0;
+                if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
+                if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
+                return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
+              })()}
+              <button
+                onClick={handleSaveDeposit}
+                disabled={savingDeposit}
+                className="flex items-center gap-1.5 border border-line hover:bg-surface-3 text-ink-2 px-3 h-9 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors"
+              >
+                {flow.deposit_amount ? "Update deposit" : "Save deposit"}
+              </button>
+            </div>
+          </div>
+
           {/* Mark payment received */}
           <div className="space-y-2">
             {!hasSuppliers && (
@@ -1108,10 +1157,10 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
           <button
             onClick={handleUndo}
             disabled={saving}
-            className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                       px-2.5 py-1 rounded-lg hover:bg-surface-3 transition-colors"
+            className="flex items-center gap-1.5 text-[12px] text-warning-ink hover:text-warning-ink
+                       px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors"
           >
-            <RotateCcw size={11} /> Undo
+            <RotateCcw size={11} /> Undo payment
           </button>
         </div>
       )}
@@ -1215,10 +1264,10 @@ function PanelSupplierPaid({ flow, onReload, onGoToComplete }: { flow: DealFlow;
                 <button
                   onClick={unmarkAll}
                   disabled={saving}
-                  className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                             px-2.5 py-1 rounded-lg hover:bg-surface-3 transition-colors"
+                  className="flex items-center gap-1.5 text-[12px] text-warning-ink hover:text-warning-ink
+                             px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors"
                 >
-                  <RotateCcw size={11} /> Undo
+                  <RotateCcw size={11} /> Undo suppliers paid
                 </button>
               </div>
             ) : (
@@ -1493,134 +1542,6 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Completed deal full breakdown ────────────────────────────────────────
-function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
-  const [saving, setSaving] = useState(false);
-
-  const margin = flow.gross_revenue > 0 ? (flow.net_profit / flow.gross_revenue) * 100 : 0;
-  const payments = flow.supplier_payments || [];
-
-  // Current payout routing for this completed deal, flippable in place — so deals
-  // completed under the old silent default (excluded → 100% business) can adopt the
-  // configured split without uncomplete→recomplete.
-  const payoutIncluded = (() => { try { return !!JSON.parse((flow as any).metadata || "{}").payout_included; } catch { return false; } })();
-  const setIncluded = async (v: boolean) => {
-    if (v === payoutIncluded || saving) return;
-    setSaving(true);
-    try { await api.setDealPayoutIncluded(flow.id, v); onReload(); } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-
-  const handleReopen = async () => {
-    setSaving(true);
-    try { await api.uncompleteDealFlow(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-
-  const handleDelete = async () => {
-    if (!confirm("Delete this completed deal? This cannot be undone.")) return;
-    setSaving(true);
-    try { await api.deleteDealFlow(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* Payout routing — flip past deals onto (or off) the configured split */}
-      <div className="space-y-1">
-        <div className="text-[11px] text-muted">Where does this deal's profit go?</div>
-        <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
-          <button type="button" disabled={saving} onClick={() => setIncluded(true)}
-            className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-            Apply profit split
-          </button>
-          <button type="button" disabled={saving} onClick={() => setIncluded(false)}
-            className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-            Business keeps 100%
-          </button>
-        </div>
-      </div>
-
-      {/* P&L summary */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        {[
-          { label: "Revenue",                                    value: fmtAmount(flow.gross_revenue), clr: "text-ink"   },
-          { label: "Total costs",                                value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
-          {
-            label: flow.net_profit >= 0 ? "Profit" : "Loss",
-            value: fmtAmount(flow.net_profit),
-            clr:   flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink",
-          },
-          {
-            label: "Margin",
-            value: `${margin.toFixed(1)}%`,
-            clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
-          },
-        ].map((item) => (
-          <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
-            <div className="text-[12px] font-medium text-muted">{item.label}</div>
-            <div className={`text-[18px] font-bold tabular-nums mt-1 ${item.clr}`}>{item.value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Supplier breakdown */}
-      {payments.length > 0 && (
-        <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-line-2">
-            <SectionLabel>Supplier Payments</SectionLabel>
-          </div>
-          <div className="divide-y divide-line-2">
-            {payments.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 px-4 py-3">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-ink font-medium">{p.supplier_name}</div>
-                  {p.quantity != null && p.unit_price != null && (
-                    <div className="text-[11px] text-muted tabular-nums">
-                      {p.quantity} × {fmtAmount(p.unit_price)}
-                    </div>
-                  )}
-                </div>
-                <div className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(p.amount)}</div>
-              </div>
-            ))}
-            <div className="flex justify-between items-center px-4 py-2.5 bg-surface-2/60">
-              <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
-              <span className="text-[12px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.total_supplier_cost)}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Payout, lead rep & refunds (refund-aware owner split) */}
-      <RefundPanel dealFlowId={flow.id} />
-
-      {/* Actions */}
-      <div className="flex items-center gap-3 pt-1">
-        <button
-          onClick={handleReopen}
-          disabled={saving}
-          className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2
-                     px-3 h-8 border border-line rounded-lg hover:bg-surface-2 transition-colors"
-        >
-          <RotateCcw size={12} /> Reopen
-        </button>
-        <button
-          onClick={handleDelete}
-          disabled={saving}
-          className="flex items-center gap-1.5 text-[12px] text-danger-ink hover:text-danger-ink
-                     px-3 h-8 border border-danger rounded-lg hover:bg-danger-bg transition-colors ml-auto"
-        >
-          <Trash2 size={12} /> Delete
-        </button>
-      </div>
     </div>
   );
 }

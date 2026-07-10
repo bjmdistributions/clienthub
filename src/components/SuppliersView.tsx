@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Package, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronDown, TrendingUp } from "lucide-react";
-import { api, Supplier, SupplierInput, SupplierPriceEntry } from "../lib/api";
+import { Archive, Package, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronDown, TrendingUp, Loader2 } from "lucide-react";
+import { api, Supplier, SupplierInput, SupplierPriceEntry, DealFlow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
+import CompletedBreakdown from "./CompletedBreakdown";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -23,6 +24,9 @@ export default function SuppliersView() {
   const [history,       setHistory]       = useState<SupplierPriceEntry[]>([]);
   const [supplierDeals, setSupplierDeals] = useState<any[]>([]);
   const [dealsOpen,     setDealsOpen]     = useState(false);
+  const [expandedDealId,setExpandedDealId]= useState<string | null>(null);
+  const [dealFlow,      setDealFlow]      = useState<DealFlow | null>(null);
+  const [dealFlowLoading,setDealFlowLoading] = useState(false);
   const [query,         setQuery]         = useState("");
   const [filter,        setFilter]        = useState<"all" | "active" | "archived">("active");
   const [saving,        setSaving]        = useState(false);
@@ -52,8 +56,12 @@ export default function SuppliersView() {
     setShowForm(true);
     setDealsOpen(false);
     setSupplierDeals([]);
+    setExpandedDealId(null);
+    setDealFlow(null);
     api.getSupplierPriceHistory(s.id).then(setHistory).catch(() => setHistory([]));
-    api.getDealsForSupplier(s.id).then(setSupplierDeals).catch(() => setSupplierDeals([]));
+    api.getDealsForSupplier(s.id)
+      .then((deals) => { setSupplierDeals(deals); setDealsOpen(deals.length > 0); })
+      .catch(() => setSupplierDeals([]));
   };
 
   const filtered = useMemo(() => suppliers.filter((s) => {
@@ -84,18 +92,62 @@ export default function SuppliersView() {
     setSelected(null);
     setInput(emptyInput);
     setHistory([]);
+    setSupplierDeals([]);
+    setDealsOpen(false);
+    setExpandedDealId(null);
+    setDealFlow(null);
     setShowForm(true);
   };
 
   const closeForm = () => { setShowForm(false); setSelected(null); };
 
+  // Thin supplier-deal rows lack the full P&L, so fetch the whole flow on expand.
+  const toggleDeal = async (dealId: string) => {
+    if (expandedDealId === dealId) {
+      setExpandedDealId(null);
+      setDealFlow(null);
+      return;
+    }
+    setExpandedDealId(dealId);
+    setDealFlow(null);
+    setDealFlowLoading(true);
+    try {
+      setDealFlow(await api.getDealFlow(dealId));
+    } catch {
+      setDealFlow(null);
+    } finally {
+      setDealFlowLoading(false);
+    }
+  };
+
+  // Reopen/Delete/payout-toggle inside a breakdown → refresh supplier totals + its
+  // deals, then re-fetch or collapse the open breakdown depending on whether the
+  // deal is still completed.
+  const reloadDeal = async () => {
+    const rows = await api.listSuppliers();
+    setSuppliers(rows);
+    const fresh = selected ? rows.find((r) => r.id === selected.id) : null;
+    if (!fresh) return;
+    setSelected(fresh);
+    const deals = await api.getDealsForSupplier(fresh.id).catch(() => []);
+    setSupplierDeals(deals);
+    if (expandedDealId) {
+      if (deals.some((d: any) => d.id === expandedDealId)) {
+        setDealFlow(await api.getDealFlow(expandedDealId).catch(() => null));
+      } else {
+        setExpandedDealId(null);
+        setDealFlow(null);
+      }
+    }
+  };
+
   return (
     <div className="space-y-5">
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight">Suppliers</h2>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="min-w-0">
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Suppliers</h2>
           <p className="text-[12px] text-muted mt-0.5">
             {filtered.length} supplier{filtered.length !== 1 ? "s" : ""}
           </p>
@@ -154,7 +206,7 @@ export default function SuppliersView() {
             <button
               key={s.id}
               onClick={() => selectSupplier(s)}
-              className={`text-left bg-surface border rounded-xl p-4 hover:shadow-[0_4px_14px_rgba(0,0,0,0.07)] transition-all ${
+              className={`text-left bg-surface border rounded-xl p-4 min-w-0 hover:shadow-[0_4px_14px_rgba(0,0,0,0.07)] transition-all ${
                 selected?.id === s.id && showForm
                   ? "border-accent ring-2 ring-accent/10"
                   : "border-line hover:border-line"
@@ -203,7 +255,7 @@ export default function SuppliersView() {
       {showForm && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/20" onClick={closeForm} />
-          <div className="relative bg-surface w-full max-w-lg shadow-2xl flex flex-col overflow-y-auto">
+          <div className="relative bg-surface w-full max-w-[min(92vw,32rem)] shadow-2xl flex flex-col overflow-y-auto">
             {/* Form header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-line sticky top-0 bg-surface z-10">
               <div>
@@ -231,64 +283,15 @@ export default function SuppliersView() {
                         ? new Date(selected.last_deal_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                         : "None" },
                   ].map((st) => (
-                    <div key={st.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2">
-                      <div className="text-[11.5px] font-medium text-muted">{st.label}</div>
-                      <div className="text-[13px] font-bold text-ink mt-0.5 tabular-nums">{st.value}</div>
+                    <div key={st.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2 min-w-0">
+                      <div className="text-[11.5px] font-medium text-muted truncate">{st.label}</div>
+                      <div className="text-[13px] font-bold text-ink mt-0.5 tabular-nums truncate">{st.value}</div>
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* Core info */}
-              <div className="space-y-3">
-                <p className="text-[12.5px] font-medium text-muted">Supplier info</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Supplier name *">
-                    <input value={input.name} onChange={(e) => setInput({ ...input, name: e.target.value })} className="field-input" />
-                  </Field>
-                  <Field label="Contact name">
-                    <input value={input.contact_name || ""} onChange={(e) => setInput({ ...input, contact_name: e.target.value })} className="field-input" placeholder="e.g. John Smith" />
-                  </Field>
-                  <Field label="Email">
-                    <input type="email" value={input.email || ""} onChange={(e) => setInput({ ...input, email: e.target.value })} className="field-input" />
-                  </Field>
-                  <Field label="Phone">
-                    <input type="tel" value={input.phone || ""} onChange={(e) => setInput({ ...input, phone: e.target.value })} className="field-input" />
-                  </Field>
-                </div>
-                <Field label="Address">
-                  <input value={input.address || ""} onChange={(e) => setInput({ ...input, address: e.target.value })} className="field-input" placeholder="Street, City, State ZIP" />
-                </Field>
-              </div>
-
-              {/* Payment */}
-              <div className="space-y-3">
-                <p className="text-[12.5px] font-medium text-muted">Payment</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Payment method">
-                    <input value={input.payment_method || ""} onChange={(e) => setInput({ ...input, payment_method: e.target.value })} className="field-input" placeholder="e.g. Bank Transfer" />
-                  </Field>
-                  <Field label="Payment terms">
-                    <input value={input.payment_terms || ""} onChange={(e) => setInput({ ...input, payment_terms: e.target.value })} className="field-input" placeholder="e.g. Net 30" />
-                  </Field>
-                </div>
-                <Field label="Payment details">
-                  <textarea value={input.payment_details || ""} onChange={(e) => setInput({ ...input, payment_details: e.target.value })} rows={3} className="field-input resize-none" placeholder="Bank account, routing, etc." />
-                </Field>
-              </div>
-
-              {/* Logistics */}
-              <div className="space-y-3">
-                <p className="text-[12.5px] font-medium text-muted">Logistics</p>
-                <Field label="Typical lead time">
-                  <input value={input.typical_lead_time || ""} onChange={(e) => setInput({ ...input, typical_lead_time: e.target.value })} className="field-input" placeholder="e.g. 3-5 business days" />
-                </Field>
-                <Field label="Notes">
-                  <textarea value={input.notes || ""} onChange={(e) => setInput({ ...input, notes: e.target.value })} rows={3} className="field-input resize-none" />
-                </Field>
-              </div>
-
-              {/* Completed Deals */}
+              {/* Completed deals */}
               {selected && (
                 <div>
                   <button
@@ -298,7 +301,7 @@ export default function SuppliersView() {
                     <p className="text-[12.5px] font-medium text-muted">
                       Completed deals ({supplierDeals.length})
                     </p>
-                    <ChevronDown size={13} className={`text-muted transition-transform ${dealsOpen ? "rotate-180" : ""}`} />
+                    <ChevronDown size={13} className={`text-muted transition-transform duration-150 ${dealsOpen ? "rotate-180" : ""}`} />
                   </button>
 
                   {dealsOpen && (
@@ -313,16 +316,20 @@ export default function SuppliersView() {
                             const margin = d.gross_revenue > 0
                               ? ((d.net_profit / d.gross_revenue) * 100).toFixed(1)
                               : null;
+                            const open = expandedDealId === d.id;
                             return (
-                              <div key={d.id} className="px-4 py-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
+                              <div key={d.id}>
+                                <button
+                                  onClick={() => toggleDeal(d.id)}
+                                  className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-surface-2 transition-colors"
+                                >
+                                  <div className="min-w-0 flex-1">
                                     <div className="text-[12px] font-medium text-ink truncate">
                                       {d.client_name || "—"}
                                     </div>
-                                    <div className="text-[11px] text-muted flex items-center gap-1.5 mt-0.5">
+                                    <div className="text-[11px] text-muted flex items-center gap-1.5 mt-0.5 flex-wrap">
                                       {d.invoice_number && (
-                                        <span className="font-mono bg-surface-3 px-1 rounded text-ink-2">
+                                        <span className="bg-surface-3 px-1.5 py-0.5 rounded text-ink-2">
                                           {d.invoice_number}
                                         </span>
                                       )}
@@ -349,7 +356,24 @@ export default function SuppliersView() {
                                       </div>
                                     )}
                                   </div>
-                                </div>
+                                  <ChevronDown size={13} className={`flex-shrink-0 text-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
+                                </button>
+
+                                {open && (
+                                  <div className="border-t border-line-2 bg-surface-2/40 px-4 py-4">
+                                    {dealFlowLoading ? (
+                                      <div className="flex items-center justify-center gap-2 py-6 text-[12px] text-muted">
+                                        <Loader2 size={14} className="animate-spin" /> Loading breakdown…
+                                      </div>
+                                    ) : dealFlow ? (
+                                      <CompletedBreakdown flow={dealFlow} onReload={reloadDeal} />
+                                    ) : (
+                                      <div className="py-6 text-center text-[12px] text-muted">
+                                        Couldn't load this deal's breakdown
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -360,20 +384,70 @@ export default function SuppliersView() {
                 </div>
               )}
 
+              {/* Core info */}
+              <div className="space-y-3">
+                <p className="text-[12.5px] font-medium text-muted">Supplier info</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="Supplier name *">
+                    <input value={input.name} onChange={(e) => setInput({ ...input, name: e.target.value })} className="field-input" />
+                  </Field>
+                  <Field label="Contact name">
+                    <input value={input.contact_name || ""} onChange={(e) => setInput({ ...input, contact_name: e.target.value })} className="field-input" placeholder="e.g. John Smith" />
+                  </Field>
+                  <Field label="Email">
+                    <input type="email" value={input.email || ""} onChange={(e) => setInput({ ...input, email: e.target.value })} className="field-input" />
+                  </Field>
+                  <Field label="Phone">
+                    <input type="tel" value={input.phone || ""} onChange={(e) => setInput({ ...input, phone: e.target.value })} className="field-input" />
+                  </Field>
+                </div>
+                <Field label="Address">
+                  <input value={input.address || ""} onChange={(e) => setInput({ ...input, address: e.target.value })} className="field-input" placeholder="Street, City, State ZIP" />
+                </Field>
+              </div>
+
+              {/* Payment */}
+              <div className="space-y-3">
+                <p className="text-[12.5px] font-medium text-muted">Payment</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="Payment method">
+                    <input value={input.payment_method || ""} onChange={(e) => setInput({ ...input, payment_method: e.target.value })} className="field-input" placeholder="e.g. Bank Transfer" />
+                  </Field>
+                  <Field label="Payment terms">
+                    <input value={input.payment_terms || ""} onChange={(e) => setInput({ ...input, payment_terms: e.target.value })} className="field-input" placeholder="e.g. Net 30" />
+                  </Field>
+                </div>
+                <Field label="Payment details">
+                  <textarea value={input.payment_details || ""} onChange={(e) => setInput({ ...input, payment_details: e.target.value })} rows={3} className="field-input resize-none" placeholder="Bank account, routing, etc." />
+                </Field>
+              </div>
+
+              {/* Logistics */}
+              <div className="space-y-3">
+                <p className="text-[12.5px] font-medium text-muted">Logistics</p>
+                <Field label="Typical lead time">
+                  <input value={input.typical_lead_time || ""} onChange={(e) => setInput({ ...input, typical_lead_time: e.target.value })} className="field-input" placeholder="e.g. 3-5 business days" />
+                </Field>
+                <Field label="Notes">
+                  <textarea value={input.notes || ""} onChange={(e) => setInput({ ...input, notes: e.target.value })} rows={3} className="field-input resize-none" />
+                </Field>
+              </div>
+
               {/* Price history */}
               {selected && history.length > 0 && (
                 <div>
                   <p className="text-[12.5px] font-medium text-muted mb-2">Price history</p>
-                  <div className="border border-line rounded-lg overflow-hidden">
-                    <div className="grid grid-cols-4 px-3 py-2 bg-surface-2 text-[12.5px] font-medium text-muted">
-                      <span>Date</span><span>Item</span><span>Qty</span><span>Price</span>
-                    </div>
+                  <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
                     {history.map((h) => (
-                      <div key={h.id} className="grid grid-cols-4 px-3 py-2 text-[12px] border-t border-line-2">
-                        <span className="text-muted">{new Date(h.recorded_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
-                        <span className="text-ink-2 truncate">{h.item_description}</span>
-                        <span className="text-muted">{h.quantity || "—"}</span>
-                        <span className="font-medium text-ink tabular-nums">{fmtAmount(h.price)}</span>
+                      <div key={h.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-[12px] text-ink-2 truncate">{h.item_description}</div>
+                          <div className="text-[11px] text-muted tabular-nums">
+                            {new Date(h.recorded_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                            {h.quantity ? ` · Qty ${h.quantity}` : ""}
+                          </div>
+                        </div>
+                        <div className="text-[12px] font-medium text-ink tabular-nums flex-shrink-0">{fmtAmount(h.price)}</div>
                       </div>
                     ))}
                   </div>

@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, PayoutShare } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, CostItem, ShippingInfo, Payment, DealFlow, PayoutShare, CompanyInfo, InvoiceTemplate } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { FileDown, Send, Plus, X, Check, Trash2, RefreshCw, Eye, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle, Search } from "lucide-react";
+import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, ChevronDown, Package, GitBranch, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
 import RecurringView from "./RecurringView";
 import CostProfitPanel from "./CostProfitPanel";
+import InvoicePreview, { DEFAULT_INVOICE_TEMPLATE } from "./InvoicePreview";
 import { toast } from "./Toast";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
@@ -373,54 +374,43 @@ export default function InvoicesView() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                    {/* One segmented pill per row — consistent hit targets, quiet by default. */}
-                    <div className="inline-flex items-center rounded-lg border border-line-2 bg-surface-2/50 overflow-hidden divide-x divide-line-2">
+                    {/* Common actions inline; secondary and destructive ones live in the overflow menu. */}
+                    <div className="inline-flex items-center gap-0.5">
                       <button title="Edit" onClick={() => { setEditing(inv); setShowForm(true); }}
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors">
+                        className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors">
                         <Edit2 size={13} />
                       </button>
-                      <button title="Save PDF" onClick={() => handlePdf(inv.id)} disabled={busy === inv.id}
-                        className="flex items-center justify-center w-8 h-7 text-faint hover:text-accent hover:bg-accent/10 disabled:opacity-40 transition-colors">
-                        {busy === inv.id ? <RefreshCw size={13} className="animate-spin" /> : <FileDown size={13} />}
-                      </button>
-                      {voided ? (
-                        <button title="Un-void — restore this invoice" onClick={() => handleVoid(inv.id, false)}
-                          className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><RotateCcw size={13} /></button>
-                      ) : (
+                      {!voided && inv.status.toLowerCase() !== "paid" && (
                         <>
-                          {inv.is_complete && inv.deal_flow_id && (
-                            <button
-                              title="Reopen deal"
-                              onClick={async () => {
-                                if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
-                                try {
-                                  await api.uncompleteDealFlow(inv.deal_flow_id!);
-                                  await load();
-                                } catch (e: any) { toast(String(e), "error"); }
-                              }}
-                              className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"
-                            >
-                              <RotateCcw size={13} />
-                            </button>
-                          )}
-                          {inv.status.toLowerCase() !== "paid" && (
-                            <>
-                              <button title="Send invoice" onClick={() => handleSend(inv.id)}
-                                className="flex items-center justify-center w-8 h-7 text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
-                              <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
-                                className="flex items-center justify-center w-8 h-7 text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
-                            </>
-                          )}
-                          <button title="Mark deal fell through (void)" onClick={() => handleVoid(inv.id, true)}
-                            className="flex items-center justify-center w-8 h-7 text-faint hover:text-warning-ink hover:bg-warning-bg transition-colors"><XCircle size={13} /></button>
+                          <button title="Send invoice" onClick={() => handleSend(inv.id)}
+                            className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-info-ink hover:bg-info-bg transition-colors"><Send size={13} /></button>
+                          <button title="Mark as paid" onClick={() => handleMarkPaid(inv.id)}
+                            className="flex items-center justify-center w-8 h-7 rounded-md text-faint hover:text-success-ink hover:bg-success-bg transition-colors"><Check size={13} /></button>
                         </>
                       )}
-                      <button title="Delete" onClick={() => handleDelete(inv.id)}
-                        className={`flex items-center justify-center h-7 transition-colors ${confirmDelete === inv.id
-                          ? "px-2 text-danger-ink font-semibold text-[11px] bg-danger-bg"
-                          : "w-8 text-faint hover:text-danger-ink hover:bg-danger-bg"}`}>
-                        {confirmDelete === inv.id ? "Sure?" : <Trash2 size={13} />}
-                      </button>
+                      <RowActionsMenu>
+                        {(close) => (
+                          <>
+                            <MenuItem icon={FileDown} label="Save PDF" onClick={() => { handlePdf(inv.id); close(); }} />
+                            {!voided && inv.is_complete && inv.deal_flow_id && (
+                              <MenuItem icon={RotateCcw} label="Reopen deal" onClick={async () => {
+                                close();
+                                if (!confirm("Reopen this deal? It will move back to active Deal Flow.")) return;
+                                try { await api.uncompleteDealFlow(inv.deal_flow_id!); await load(); }
+                                catch (e: any) { toast(String(e), "error"); }
+                              }} />
+                            )}
+                            {voided ? (
+                              <MenuItem icon={RotateCcw} label="Restore invoice" onClick={() => { handleVoid(inv.id, false); close(); }} />
+                            ) : (
+                              <MenuItem icon={XCircle} label="Mark deal fell through" onClick={() => { handleVoid(inv.id, true); close(); }} />
+                            )}
+                            <div className="my-1 border-t border-line-2" />
+                            <MenuItem icon={Trash2} danger label={confirmDelete === inv.id ? "Confirm delete" : "Delete"}
+                              onClick={() => { const confirming = confirmDelete === inv.id; handleDelete(inv.id); if (confirming) close(); }} />
+                          </>
+                        )}
+                      </RowActionsMenu>
                     </div>
                   </td>
                 </tr>
@@ -498,8 +488,15 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const [submitting, setSubmitting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [templates, setTemplates]   = useState<LineItemTemplate[]>([]);
+  // Company info + branding drive the live in-app preview (same sources as Settings).
+  const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({ name: "", address: "", email: "", phone: "", tax_id: "" });
+  const [template, setTemplate]       = useState<InvoiceTemplate>(DEFAULT_INVOICE_TEMPLATE);
 
   useEffect(() => { api.listLineItemTemplates().then(setTemplates).catch(() => {}); }, []);
+  useEffect(() => {
+    api.getCompanyInfo().then((c) => { if (c) setCompanyInfo(c); }).catch(() => {});
+    api.getInvoiceTemplate().then((t) => { if (t) setTemplate(t); }).catch(() => {});
+  }, []);
 
   // Credit guardrail: for a NEW invoice, warn if it would push the buyer over limit.
   const [credit, setCredit] = useState<{ credit_limit: number; exposure: number } | null>(null);
@@ -520,11 +517,28 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const total = subtotal + tax;
   const overLimit = !!(credit && credit.credit_limit > 0 && credit.exposure + total > credit.credit_limit);
 
+  // Feed the live in-app preview with the current edits; missing fields fall back
+  // to sample content inside InvoicePreview.
+  const selectedClient = clients.find((c) => c.id === clientId);
+  const fmtPreviewDate = (d: string) => d ? new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }) : "";
+  const previewData = {
+    clientName: createNew ? (newClient.name.trim() || "New client") : (selectedClient?.name || "—"),
+    clientAddress: createNew ? "" : [selectedClient?.street_address, selectedClient?.city, selectedClient?.state, selectedClient?.zip_code].filter(Boolean).join(", "),
+    number: initial?.number,
+    issueDate: fmtPreviewDate(issueDate),
+    dueDate: fmtPreviewDate(dueDate),
+    items: items.filter((it) => it.description.trim() || it.amount),
+    taxRate,
+    notes,
+  };
+
+  // Opens the real generated PDF in the OS viewer. Disabled for a brand-new,
+  // unsaved client (there is no client_id to render against yet).
   const handlePreview = async () => {
     if (items.length === 0) return;
     setPreviewing(true);
     try {
-      await api.previewInvoicePdf({ client_id: createNew ? clientId : clientId, due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined });
+      await api.previewInvoicePdf({ client_id: clientId, due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined });
     } catch (e: any) { toast(`Preview failed: ${e}`, "error"); }
     finally { setPreviewing(false); }
   };
@@ -550,7 +564,8 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const filteredClients = clientSearch ? clients.filter((c) => c.name.toLowerCase().includes(clientSearch.toLowerCase())) : clients;
 
   return (
-    <div className="bg-surface border border-line rounded-xl p-6 mb-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
+    <div className="flex flex-col xl:flex-row gap-5 items-start mb-4">
+      <div className="w-full xl:flex-1 min-w-0 bg-surface border border-line rounded-xl p-6 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
       <div className="flex justify-between items-center mb-5">
         <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit invoice" : "New invoice"}</h3>
         <button onClick={onClose} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors"><X size={16} /></button>
@@ -719,16 +734,25 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           </span>
         </div>
       )}
-      <div className="flex justify-end gap-2 mt-4">
+      <div className="flex justify-end gap-2 mt-4 flex-wrap">
         <button onClick={onClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
-        <button onClick={handlePreview} disabled={previewing || items.length === 0}
-          className="bg-surface-3 hover:bg-surface-3 text-ink-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors">
-          <Eye size={13} /> {previewing ? "Opening…" : "Preview"}
+        <button onClick={handlePreview} disabled={previewing || items.length === 0 || createNew}
+          title={createNew ? "Save the new client first to open the real PDF" : undefined}
+          className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] flex items-center gap-1.5 disabled:opacity-40 transition-colors">
+          <ExternalLink size={13} /> {previewing ? "Opening…" : "View actual PDF"}
         </button>
         <button onClick={submit} disabled={submitting || (!createNew && !clientId) || items.length === 0}
           className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
           {submitting ? "Saving…" : initial ? "Save changes" : "Create invoice"}
         </button>
+      </div>
+      </div>
+
+      {/* Live in-app preview — reflects the current edits; the PDF stays the ground truth. */}
+      <div className="w-full xl:w-[360px] xl:flex-shrink-0 xl:sticky xl:top-4">
+        <div className="text-[12.5px] font-medium text-muted mb-2.5">Live preview</div>
+        <InvoicePreview info={companyInfo} tpl={template} logoVersion={0} data={previewData} />
+        <p className="text-[11px] text-muted mt-2 text-center">A close approximation — the PDF is the ground truth.</p>
       </div>
     </div>
   );
@@ -798,6 +822,68 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="block text-[11px] font-medium text-muted mb-1.5">{label}</label>
       {children}
     </div>
+  );
+}
+
+// Per-row overflow menu for secondary + destructive actions. Positioned with
+// fixed coords so it escapes the table's overflow-x-auto clipping.
+function RowActionsMenu({ children }: { children: (close: () => void) => React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos]   = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  const btnRef  = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const close = () => setOpen(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    const onScroll = () => close();
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (open) { close(); return; }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    setOpen(true);
+  };
+
+  return (
+    <>
+      <button ref={btnRef} title="More actions" onClick={toggle}
+        className={`flex items-center justify-center w-8 h-7 rounded-md transition-colors ${open ? "text-ink-2 bg-surface-3" : "text-faint hover:text-ink-2 hover:bg-surface-3"}`}>
+        <MoreVertical size={13} />
+      </button>
+      {open && (
+        <div ref={menuRef} className="fixed z-50 min-w-[184px] bg-surface border border-line rounded-lg shadow-[0_12px_32px_rgba(0,0,0,0.14)] py-1"
+          style={{ top: pos.top, right: pos.right }}>
+          {children(close)}
+        </div>
+      )}
+    </>
+  );
+}
+
+function MenuItem({ icon: Icon, label, onClick, danger }: {
+  icon: LucideIcon; label: string; onClick: () => void; danger?: boolean;
+}) {
+  return (
+    <button type="button" onClick={onClick}
+      className={`w-full flex items-center gap-2.5 px-3 h-8 text-[12.5px] text-left transition-colors ${danger ? "text-danger-ink hover:bg-danger-bg" : "text-ink-2 hover:bg-surface-2"}`}>
+      <Icon size={13} className="flex-shrink-0" /> {label}
+    </button>
   );
 }
 

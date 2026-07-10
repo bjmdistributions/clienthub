@@ -398,6 +398,7 @@ fn main() {
             list_deal_flows_by_stage,
             mark_payment_received,
             unmark_payment_received,
+            set_deposit,
             add_supplier_payment,
             update_supplier_payment,
             remove_supplier_payment,

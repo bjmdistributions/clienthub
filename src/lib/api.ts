@@ -789,6 +789,7 @@ export interface DealFlow {
   invoice_id: string;
   stage: 'invoiced' | 'payment_received' | 'supplier_paid' | 'complete';
   payment_received_amount: number;
+  deposit_amount: number;
   payment_received_method: string | null;
   payment_received_at: string | null;
   supplier_payments_json: string;
@@ -1546,6 +1547,8 @@ export const api = {
     invoke<void>("mark_payment_received", { id, input }),
   unmarkPaymentReceived: (id: string) =>
     invoke<void>("unmark_payment_received", { id }),
+  setDeposit: (id: string, amount: number) =>
+    invoke<void>("set_deposit", { id, amount }),
   addSupplierPayment: (id: string, input: SupplierPaymentInput) =>
     invoke<string>("add_supplier_payment", { id, input }),
   updateSupplierPayment: (id: string, paymentId: string, input: SupplierPaymentInput) =>

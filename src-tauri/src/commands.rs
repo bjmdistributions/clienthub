@@ -3516,6 +3516,8 @@ pub struct DealFlow {
     pub invoice_id: String,
     pub stage: String,
     pub payment_received_amount: f64,
+    #[serde(default)]
+    pub deposit_amount: f64,
     pub payment_received_method: Option<String>,
     pub payment_received_at: Option<String>,
     pub supplier_payments_json: String,
@@ -3555,6 +3557,7 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         invoice_id: r.get("invoice_id")?,
         stage: r.get("stage")?,
         payment_received_amount: r.get("payment_received_amount")?,
+        deposit_amount: r.get("deposit_amount").unwrap_or(0.0),
         payment_received_method: r.get("payment_received_method")?,
         payment_received_at: r.get("payment_received_at")?,
         supplier_payments_json: sp_json,
@@ -3812,6 +3815,9 @@ pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> R
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("payment_received".into()));
     cols.insert("payment_received_amount".into(), json!(input.amount));
+    // The full payment absorbs any earlier deposit — clear it so the two figures
+    // are never both live (balance owed is now 0).
+    cols.insert("deposit_amount".into(), json!(0));
     cols.insert("payment_received_method".into(), to_value(input.method.clone()));
     cols.insert("payment_received_at".into(), Value::String(received_at.clone()));
     if let Some(ref n) = input.notes {
@@ -3823,7 +3829,7 @@ pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> R
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE deal_flows SET stage='payment_received', payment_received_amount=?1, payment_received_method=?2, payment_received_at=?3, notes=COALESCE(?4, notes), updated_at=?5 WHERE id=?6",
+            "UPDATE deal_flows SET stage='payment_received', payment_received_amount=?1, deposit_amount=0, payment_received_method=?2, payment_received_at=?3, notes=COALESCE(?4, notes), updated_at=?5 WHERE id=?6",
             rusqlite::params![input.amount, input.method, received_at, input.notes, now, id],
         ).map_err(|e| e.to_string())?;
     }
@@ -3841,6 +3847,33 @@ pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> R
         "UPDATE invoices SET status='paid', paid_at=?1, payment_method_label=COALESCE(?2, payment_method_label) WHERE id=?3",
         rusqlite::params![received_at, input.method, df.invoice_id],
     ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Record a partial up-front deposit on a deal, SEPARATE from the full
+/// "payment received" amount. Does NOT advance the stage — the balance owed
+/// (invoice total − deposit) stays outstanding until the full payment is marked.
+/// Pass amount=0 to clear the deposit.
+#[tauri::command]
+pub async fn set_deposit(id: String, amount: f64) -> Result<(), String> {
+    let df = read_df(&id)?;
+    if df.stage != "invoiced" {
+        return Err("Deposits can only be recorded before the full payment is marked received".into());
+    }
+    let amount = if amount < 0.0 { 0.0 } else { (amount * 100.0).round() / 100.0 };
+    let now = Utc::now().to_rfc3339();
+
+    let mut cols = Map::new();
+    cols.insert("deposit_amount".into(), json!(amount));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET deposit_amount=?1, updated_at=?2 WHERE id=?3",
+            rusqlite::params![amount, now, id],
+        ).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -8024,10 +8057,12 @@ pub async fn dashboard_stats() -> Result<Value, String> {
                     COALESCE(MAX(s.contact_name), '') as contact_name,
                     COUNT(DISTINCT df.id) as deal_count,
                     COALESCE(SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)), 0) as total_paid
-             FROM deal_flows df,
+             FROM deal_flows df
+             JOIN invoices i ON i.id = df.invoice_id,
                   json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
              LEFT JOIN suppliers s ON json_extract(sp.value, '$.supplier_id') = s.id
              WHERE df.stage = 'complete' AND COALESCE(df.archived,0)=0
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
                AND json_extract(sp.value, '$.supplier_name') IS NOT NULL
                AND COALESCE(json_extract(sp.value, '$.category'), 'supplier') = 'supplier'
              GROUP BY json_extract(sp.value, '$.supplier_name')
@@ -8109,9 +8144,13 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
                  FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
                  WHERE json_extract(sp.value, '$.supplier_id') = ?1) as supplier_amount
          FROM deal_flows df
-         LEFT JOIN invoices i ON i.id = df.invoice_id
+         JOIN invoices i ON i.id = df.invoice_id
          LEFT JOIN clients c ON c.id = i.client_id
-         WHERE EXISTS (
+         WHERE df.stage = 'complete'
+           AND COALESCE(df.archived,0)=0
+           AND COALESCE(i.voided,0)=0
+           AND COALESCE(i.archived,0)=0
+           AND EXISTS (
              SELECT 1 FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp2
              WHERE json_extract(sp2.value, '$.supplier_id') = ?1
          )

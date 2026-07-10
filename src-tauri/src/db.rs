@@ -1242,4 +1242,13 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE inventory ADD COLUMN details_json TEXT;
         "#,
     ),
+    (
+        59,
+        // Up-front deposit taken on a deal, SEPARATE from the full payment_received_amount.
+        // Balance owed = invoice total − deposit (computed, not stored). Synced; the
+        // clienthub-api server backfills the same column in sync.rs so upserts round-trip.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN deposit_amount REAL NOT NULL DEFAULT 0;
+        "#,
+    ),
 ];
