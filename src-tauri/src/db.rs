@@ -1358,4 +1358,28 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_reserve_entry_ledger ON reserve_entry(org_id, ledger);
         "#,
     ),
+    (
+        61,
+        // Loans: money RECEIVED that must be paid back (a liability, not revenue — e.g.
+        // the Jan $15k that funded the first deal). `set_aside` = amount put aside/repaid
+        // toward it; outstanding = principal − set_aside; a loan drops off Free Cash when
+        // status='paid'. Synced + org-scoped (mirrored on clienthub-api).
+        r#"
+        CREATE TABLE IF NOT EXISTS loan (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            name TEXT NOT NULL DEFAULT '',
+            lender TEXT NOT NULL DEFAULT '',
+            principal REAL NOT NULL DEFAULT 0,
+            set_aside REAL NOT NULL DEFAULT 0,
+            received_at TEXT NOT NULL DEFAULT '',
+            bank_txn_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            paid_at TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        "#,
+    ),
 ];

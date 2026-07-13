@@ -245,6 +245,34 @@ Email:
     Ok(parsed)
 }
 
+/// Categorize a batch of bank transactions using the app's category vocabulary +
+/// extract the counterparty. Input: JSON array of {id, description, direction}.
+/// Returns {"results":[{"id","category","counterparty"}]}. Suggestions only.
+pub async fn categorize_transactions(items: &Value) -> Result<Value> {
+    let prompt = format!(
+        r#"You categorize business bank transactions for a wholesale-brokerage. For each transaction pick ONE category from EXACTLY this list:
+- receipt (money IN from a buyer/customer for goods)
+- payment (money OUT to a supplier for goods)
+- fee (bank or wire fees)
+- shipping (postage/carriers: Pirate Ship, USPS, UPS, FedEx)
+- software (SaaS: Shopify, Google, Airtable, Anthropic, GoDaddy)
+- owner_draw (personal: credit-card payments, Amex, Earnest, personal transfers)
+- internal_transfer (moving money between the owner's own accounts)
+- cash_in / cash_out (ATM or teller cash)
+- other
+Also extract the counterparty (the other party's name) when present, else "".
+Return ONLY valid JSON: {{"results":[{{"id":string,"category":string,"counterparty":string}}]}}
+
+Transactions:
+{}"#,
+        serde_json::to_string(items).unwrap_or_default()
+    );
+    let raw = generate(prompt, true, 0.1).await?;
+    let parsed: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("AI returned invalid JSON: {}", raw))?;
+    Ok(parsed)
+}
+
 /// Summarize a thread of historical interactions for context-injection into draft_reply.
 pub async fn summarize_history(interactions: &[String]) -> Result<String> {
     if interactions.is_empty() {

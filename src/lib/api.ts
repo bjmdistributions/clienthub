@@ -1364,6 +1364,39 @@ export interface BankAllocation {
   invoice_number: string;
   client_name: string;
 }
+export interface MoneyConfig {
+  bank_balance: number;
+  cash_floor: number;
+  tax_sweep_pct: number;
+  refund_reserve_pct: number;
+  war_chest: number;
+}
+export interface FinancialsOverview {
+  bank_balance: number;
+  supplier_payables: number;
+  refund_liability: number;
+  tax_reserve: number;
+  refund_reserve: number;
+  cash_floor: number;
+  loan_outstanding: number;
+  free_cash: number;
+  status: "green" | "yellow" | "red";
+  runway_months: number;
+  alerts: { refund_deals: number; stale_unallocated_in: number };
+}
+export interface Loan {
+  id: string;
+  name: string;
+  lender: string;
+  principal: number;
+  set_aside: number;
+  received_at: string;
+  bank_txn_id: string;
+  status: string;
+  paid_at: string;
+  note: string;
+  outstanding: number;
+}
 
 export interface SignupRule {
   id: string;
@@ -1929,6 +1962,17 @@ export const api = {
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
+  getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
+  setMoneyConfig: (bankBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
+    invoke<void>("set_money_config", { bankBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),
+  financialsOverview: () => invoke<FinancialsOverview>("financials_overview"),
+  aiCategorizeBankTxns: () => invoke<{ updated: number }>("ai_categorize_bank_txns"),
+  listLoans: () => invoke<Loan[]>("list_loans"),
+  createLoan: (name: string, lender: string, principal: number, receivedAt: string, bankTxnId: string, note: string) =>
+    invoke<string>("create_loan", { name, lender, principal, receivedAt, bankTxnId, note }),
+  updateLoan: (id: string, name: string, lender: string, principal: number, setAside: number, status: string, note: string) =>
+    invoke<void>("update_loan", { id, name, lender, principal, setAside, status, note }),
+  deleteLoan: (id: string) => invoke<void>("delete_loan", { id }),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),

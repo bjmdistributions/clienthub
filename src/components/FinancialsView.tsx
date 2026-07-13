@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
-  Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight,
+  Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnSummary, BankPreview, BankAllocation, DealFlow,
@@ -8,6 +8,8 @@ import {
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "./Toast";
+import FreeCashView from "./FreeCashView";
+import LoansView from "./LoansView";
 
 // Categories the statement parser produces (blank = uncategorized).
 const CATEGORIES: { value: string; label: string }[] = [
@@ -42,6 +44,9 @@ export default function FinancialsView() {
   const [summary, setSummary] = useState<BankTxnSummary | null>(null);
   const [deals, setDeals]     = useState<DealFlow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [tab, setTab]         = useState<"overview" | "transactions" | "loans">("overview");
+  const [aiBusy, setAiBusy]   = useState(false);
+  const [newDealBusy, setNewDealBusy] = useState(false);
 
   // Import
   const [accountId, setAccountId]     = useState("chase-business");
@@ -177,6 +182,44 @@ export default function FinancialsView() {
     } catch (e: any) { toast(String(e), "error"); }
   };
 
+  // Suggest categories with AI. Suggestions only — does NOT mark reviewed.
+  const aiCategorize = async () => {
+    setAiBusy(true);
+    try {
+      const { updated } = await api.aiCategorizeBankTxns();
+      toast(`AI categorized ${updated} transaction${updated === 1 ? "" : "s"}`);
+      await refreshAll(true);
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setAiBusy(false); }
+  };
+
+  // Rebuild a never-tracked brokering deal from a bank receipt:
+  // client → backfilled invoice → deal flow → allocate this receipt to it.
+  const createDealFromTxn = async (
+    t: BankTxn, dealName: string, buyerName: string, expectedSale: number, noteVal: string,
+  ): Promise<boolean> => {
+    setNewDealBusy(true);
+    try {
+      const client = await api.createClient({ name: buyerName });
+      const today = new Date().toISOString().slice(0, 10);
+      const invoiceId = await api.createInvoice({
+        client_id: client.id,
+        issue_date: today,
+        due_date: today,
+        line_items: [{ description: dealName, qty: 1, rate: expectedSale, amount: expectedSale }],
+        tax_rate: 0,
+        notes: "Backfilled from bank import",
+      });
+      const dealId = await api.createDealFlow(invoiceId, "Backfilled from bank import", dealName);
+      await api.allocateBankTxn(t.id, dealId, t.unallocated, "buyer_payment", noteVal);
+      toast("Deal created and receipt allocated");
+      setDeals(await api.listDealFlows());
+      await refreshAll(true);
+      return true;
+    } catch (e: any) { toast(String(e), "error"); return false; }
+    finally { setNewDealBusy(false); }
+  };
+
   const filtered = useMemo(
     () =>
       txns.filter((t) => {
@@ -221,31 +264,62 @@ export default function FinancialsView() {
 
   return (
     <div className="space-y-5">
-      {/* Header + import */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="min-w-0 flex items-center gap-2.5">
-          <Landmark size={20} className="text-accent flex-shrink-0" strokeWidth={1.8} />
-          <div className="min-w-0">
-            <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Financials</h2>
-            <p className="text-[12px] text-muted mt-0.5">Import statements, classify money, tie receipts to deals</p>
-          </div>
+      {/* Header */}
+      <div className="min-w-0 flex items-center gap-2.5">
+        <Landmark size={20} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+        <div className="min-w-0">
+          <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Financials</h2>
+          <p className="text-[12px] text-muted mt-0.5">Import statements, classify money, tie receipts to deals</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <label className="flex items-center gap-1.5 text-[12px] text-muted">
-            Account
-            <input
-              value={accountId}
-              onChange={(e) => setAccountId(e.target.value)}
-              className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-40 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-            />
-          </label>
+      </div>
+
+      {/* Sub-tabs */}
+      <div className="flex gap-1">
+        {([
+          ["overview", "Overview"],
+          ["transactions", "Transactions"],
+          ["loans", "Loans"],
+        ] as const).map(([v, label]) => (
           <button
-            onClick={pickAndPreview}
-            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
+            key={v}
+            onClick={() => setTab(v)}
+            className={`px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors ${
+              tab === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
+            }`}
           >
-            <Upload size={14} /> Import statement
+            {label}
           </button>
-        </div>
+        ))}
+      </div>
+
+      {tab === "overview" && <FreeCashView />}
+      {tab === "loans" && <LoansView />}
+
+      {tab === "transactions" && (
+      <div className="space-y-5">
+      {/* Import + AI toolbar */}
+      <div className="flex items-center justify-end gap-2 flex-wrap">
+        <button
+          onClick={aiCategorize}
+          disabled={aiBusy}
+          className="flex items-center gap-1.5 px-3 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+        >
+          {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Auto-categorize with AI
+        </button>
+        <label className="flex items-center gap-1.5 text-[12px] text-muted">
+          Account
+          <input
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-40 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
+          />
+        </label>
+        <button
+          onClick={pickAndPreview}
+          className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
+        >
+          <Upload size={14} /> Import statement
+        </button>
       </div>
 
       {/* Import preview / confirm card */}
@@ -482,6 +556,8 @@ export default function FinancialsView() {
                           busy={allocBusy}
                           onSubmit={submitAlloc}
                           onRemove={removeAlloc}
+                          newDealBusy={newDealBusy}
+                          onCreateDeal={createDealFromTxn}
                         />
                       </td>
                     </tr>
@@ -494,6 +570,8 @@ export default function FinancialsView() {
             <div className="text-center py-10 text-[12px] text-muted">No transactions match these filters</div>
           )}
         </div>
+      )}
+      </div>
       )}
     </div>
   );
@@ -529,11 +607,40 @@ function AllocationPanel(props: {
   busy: boolean;
   onSubmit: () => void;
   onRemove: (id: string) => void;
+  newDealBusy: boolean;
+  onCreateDeal: (t: BankTxn, name: string, buyer: string, sale: number, note: string) => Promise<boolean>;
 }) {
   const {
     txn, allocs, loading, filteredDeals, dealQuery, setDealQuery, dealListOpen, setDealListOpen,
     selectedDeal, onPickDeal, amountStr, setAmountStr, role, setRole, note, setNote, busy, onSubmit, onRemove,
+    newDealBusy, onCreateDeal,
   } = props;
+
+  // "Create a deal from this transaction" — retroactive backfill form (local state).
+  const [showNewDeal, setShowNewDeal] = useState(false);
+  const [ndName, setNdName]   = useState("");
+  const [ndBuyer, setNdBuyer] = useState("");
+  const [ndSale, setNdSale]   = useState("");
+  const [ndNote, setNdNote]   = useState("");
+
+  const openNewDeal = () => {
+    const base = txn.counterparty_name?.trim() || txn.description || "";
+    setNdName(base);
+    setNdBuyer(txn.counterparty_name?.trim() || base);
+    setNdSale(txn.unallocated > 0 ? String(txn.unallocated) : "");
+    setNdNote("");
+    setShowNewDeal(true);
+  };
+
+  const submitNewDeal = async () => {
+    const name = ndName.trim();
+    const buyer = ndBuyer.trim();
+    const sale = parseFloat(ndSale);
+    if (!name) { toast("Deal name required", "error"); return; }
+    if (!buyer) { toast("Buyer name required", "error"); return; }
+    if (!(sale > 0)) { toast("Enter an expected sale amount", "error"); return; }
+    if (await onCreateDeal(txn, name, buyer, sale, ndNote.trim())) setShowNewDeal(false);
+  };
 
   return (
     <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
@@ -641,13 +748,56 @@ function AllocationPanel(props: {
           className={`${inp} flex-1 min-w-[180px]`}
         />
         <button
-          disabled
-          title="Creating a new deal from a transaction is coming soon"
-          className="flex items-center gap-1.5 h-9 px-3 border border-line text-faint rounded-lg text-[12px] cursor-not-allowed"
+          onClick={() => (showNewDeal ? setShowNewDeal(false) : openNewDeal())}
+          className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
         >
-          <X size={12} /> New deal from txn (soon)
+          <Plus size={13} /> New deal from this transaction
         </button>
       </div>
+
+      {/* Create a deal retroactively from this transaction */}
+      {showNewDeal && (
+        <div className="border border-line rounded-xl p-3.5 space-y-3 bg-surface-2/40">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[12px] font-medium text-ink">Create a deal from this transaction</div>
+            <button
+              onClick={() => setShowNewDeal(false)}
+              title="Cancel"
+              className="text-faint hover:text-muted transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-0">
+            <label className="block min-w-0">
+              <span className="block text-[11px] text-muted mb-1">Deal name</span>
+              <input value={ndName} onChange={(e) => setNdName(e.target.value)} placeholder="Deal name" className={inp} />
+            </label>
+            <label className="block min-w-0">
+              <span className="block text-[11px] text-muted mb-1">Buyer / client</span>
+              <input value={ndBuyer} onChange={(e) => setNdBuyer(e.target.value)} placeholder="Buyer name" className={inp} />
+            </label>
+            <label className="block min-w-0">
+              <span className="block text-[11px] text-muted mb-1">Expected sale</span>
+              <input type="number" step="0.01" value={ndSale} onChange={(e) => setNdSale(e.target.value)} placeholder="0.00" className={`${inp} tabular-nums`} />
+            </label>
+            <label className="block min-w-0">
+              <span className="block text-[11px] text-muted mb-1">Note (optional)</span>
+              <input value={ndNote} onChange={(e) => setNdNote(e.target.value)} placeholder="Note" className={inp} />
+            </label>
+          </div>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <p className="text-[11px] text-muted min-w-0">Creates a client, a backfilled invoice and a deal, then ties this receipt to it.</p>
+            <button
+              onClick={submitNewDeal}
+              disabled={newDealBusy}
+              className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+            >
+              {newDealBusy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create deal
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

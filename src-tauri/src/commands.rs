@@ -9489,6 +9489,230 @@ pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Va
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+// ── Financial engine: money config, Free Cash, loans, AI categorize ─────────
+
+fn read_setting_f64(conn: &rusqlite::Connection, key: &str, default: f64) -> f64 {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(default)
+}
+
+#[tauri::command]
+pub async fn get_money_config() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(json!({
+        "bank_balance": read_setting_f64(&conn, "money_bank_balance", 0.0),
+        "cash_floor": read_setting_f64(&conn, "money_cash_floor", 0.0),
+        "tax_sweep_pct": read_setting_f64(&conn, "money_tax_sweep_pct", 0.30),
+        "refund_reserve_pct": read_setting_f64(&conn, "money_refund_reserve_pct", 0.10),
+        "war_chest": read_setting_f64(&conn, "money_war_chest", 25000.0),
+    }))
+}
+
+#[tauri::command]
+pub async fn set_money_config(bank_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64) -> Result<(), String> {
+    write_setting("money_bank_balance", &format!("{}", bank_balance))?;
+    write_setting("money_cash_floor", &format!("{}", cash_floor))?;
+    write_setting("money_tax_sweep_pct", &format!("{}", tax_sweep_pct))?;
+    write_setting("money_refund_reserve_pct", &format!("{}", refund_reserve_pct))?;
+    write_setting("money_war_chest", &format!("{}", war_chest))?;
+    Ok(())
+}
+
+/// The Free Cash engine: bank balance minus the liabilities the bank can't see.
+#[tauri::command]
+pub async fn financials_overview() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let round2 = |x: f64| (x * 100.0).round() / 100.0;
+    let bank_balance = read_setting_f64(&conn, "money_bank_balance", 0.0);
+    let cash_floor = read_setting_f64(&conn, "money_cash_floor", 0.0);
+
+    // Supplier payables: unpaid supplier cost on deals where the buyer HAS paid but
+    // the deal isn't complete (never ours — ring-fenced).
+    let supplier_payables: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(CAST(json_extract(sp.value,'$.amount') AS REAL)),0)
+         FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
+         WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
+           AND COALESCE(json_extract(sp.value,'$.paid'),0) != 1",
+        [], |r| r.get(0)).unwrap_or(0.0);
+
+    // Refund liability (we owe buyers back): refund_owed minus refunds already paid.
+    let refund_owed_total: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(refund_owed),0) FROM deal_flows WHERE COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
+    let refunds_paid: f64 = conn.query_row("SELECT COALESCE(SUM(amount),0) FROM refunds", [], |r| r.get(0)).unwrap_or(0.0);
+    let refund_liability = (refund_owed_total - refunds_paid).max(0.0);
+
+    // Reserve ledgers (append-only; in − out).
+    let reserve = |ledger: &str| -> f64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN direction='out' THEN -amount ELSE amount END),0) FROM reserve_entry WHERE ledger=?1",
+            [ledger], |r| r.get(0)).unwrap_or(0.0)
+    };
+    let tax_reserve = reserve("tax").max(0.0);
+    let refund_reserve = reserve("refund").max(0.0);
+
+    // Loans still owed (principal − set aside) for open loans.
+    let loan_outstanding: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(CASE WHEN principal - set_aside > 0 THEN principal - set_aside ELSE 0 END),0) FROM loan WHERE status='open'",
+        [], |r| r.get(0)).unwrap_or(0.0);
+
+    let free_cash = round2(bank_balance - supplier_payables - refund_liability - tax_reserve - refund_reserve - cash_floor - loan_outstanding);
+
+    // Trailing monthly opex (last 90 days / 3) for the runway/status.
+    let opex_3mo: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount),0) FROM business_expense WHERE date >= date('now','-90 days')", [], |r| r.get(0)).unwrap_or(0.0);
+    let trailing_opex = opex_3mo / 3.0;
+    let runway = if trailing_opex > 0.0 { free_cash / trailing_opex } else { f64::INFINITY };
+    let status = if free_cash > 0.0 && (trailing_opex <= 0.0 || runway >= 3.0) { "green" }
+                 else if free_cash > 0.0 { "yellow" } else { "red" };
+
+    let refund_deals: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM deal_flows WHERE COALESCE(archived,0)=0 AND refund_owed > 0.01", [], |r| r.get(0)).unwrap_or(0);
+    let stale_unallocated: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND bt.category != 'internal_transfer'
+           AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
+           AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
+        [], |r| r.get(0)).unwrap_or(0);
+
+    Ok(json!({
+        "bank_balance": round2(bank_balance),
+        "supplier_payables": round2(supplier_payables),
+        "refund_liability": round2(refund_liability),
+        "tax_reserve": round2(tax_reserve),
+        "refund_reserve": round2(refund_reserve),
+        "cash_floor": round2(cash_floor),
+        "loan_outstanding": round2(loan_outstanding),
+        "free_cash": free_cash,
+        "status": status,
+        "runway_months": if runway.is_finite() { round2(runway) } else { -1.0 },
+        "alerts": { "refund_deals": refund_deals, "stale_unallocated_in": stale_unallocated },
+    }))
+}
+
+#[tauri::command]
+pub async fn list_loans() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id,name,lender,principal,set_aside,received_at,bank_txn_id,status,paid_at,note FROM loan ORDER BY received_at DESC, created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let principal: f64 = r.get(3)?;
+        let set_aside: f64 = r.get(4)?;
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "name": r.get::<_, String>(1)?,
+            "lender": r.get::<_, String>(2)?,
+            "principal": principal,
+            "set_aside": set_aside,
+            "received_at": r.get::<_, String>(5)?,
+            "bank_txn_id": r.get::<_, String>(6)?,
+            "status": r.get::<_, String>(7)?,
+            "paid_at": r.get::<_, String>(8)?,
+            "note": r.get::<_, String>(9)?,
+            "outstanding": ((principal - set_aside).max(0.0) * 100.0).round() / 100.0,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn create_loan(name: String, lender: String, principal: f64, received_at: String, bank_txn_id: String, note: String) -> Result<String, String> {
+    let id = format!("loan_{}", uuid::Uuid::new_v4().simple());
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("name".into(), json!(name));
+    cols.insert("lender".into(), json!(lender));
+    cols.insert("principal".into(), json!(principal));
+    cols.insert("set_aside".into(), json!(0.0));
+    cols.insert("received_at".into(), json!(received_at));
+    cols.insert("bank_txn_id".into(), json!(bank_txn_id));
+    cols.insert("status".into(), json!("open"));
+    cols.insert("note".into(), json!(note));
+    cols.insert("created_at".into(), json!(now));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("loan", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO loan (id,name,lender,principal,set_aside,received_at,bank_txn_id,status,note,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,0,?5,?6,'open',?7,?8,?8)",
+        rusqlite::params![id, name, lender, principal, received_at, bank_txn_id, note, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_loan(id: String, name: String, lender: String, principal: f64, set_aside: f64, status: String, note: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let paid_at = if status == "paid" { now.clone() } else { String::new() };
+    let mut cols = Map::new();
+    cols.insert("name".into(), json!(name));
+    cols.insert("lender".into(), json!(lender));
+    cols.insert("principal".into(), json!(principal));
+    cols.insert("set_aside".into(), json!(set_aside));
+    cols.insert("status".into(), json!(status));
+    cols.insert("paid_at".into(), json!(paid_at));
+    cols.insert("note".into(), json!(note));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("loan", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE loan SET name=?1,lender=?2,principal=?3,set_aside=?4,status=?5,paid_at=?6,note=?7,updated_at=?8 WHERE id=?9",
+        rusqlite::params![name, lender, principal, set_aside, status, paid_at, note, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_loan(id: String) -> Result<(), String> {
+    sync::record_delete("loan", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM loan WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// AI-categorize unreviewed transactions (suggestions — does not mark reviewed).
+/// Uses the configured AI model; errors clearly if none is set up.
+#[tauri::command]
+pub async fn ai_categorize_bank_txns() -> Result<Value, String> {
+    let items: Vec<Value> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, description, direction FROM bank_txn WHERE reviewed=0 ORDER BY posted_at DESC LIMIT 40",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "description": r.get::<_, String>(1)?,
+            "direction": r.get::<_, String>(2)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    if items.is_empty() {
+        return Ok(json!({ "updated": 0, "remaining": 0 }));
+    }
+    let out = crate::ai::categorize_transactions(&json!(items)).await.map_err(|e| e.to_string())?;
+    let results = out.get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let now = Utc::now().to_rfc3339();
+    let mut updated = 0;
+    for r in results {
+        let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cat = r.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cp = r.get("counterparty").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if id.is_empty() || cat.is_empty() { continue; }
+        let mut cols = Map::new();
+        cols.insert("category".into(), json!(cat));
+        if !cp.is_empty() { cols.insert("counterparty_name".into(), json!(cp)); }
+        cols.insert("updated_at".into(), json!(now));
+        if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let _ = if !cp.is_empty() {
+            conn.execute("UPDATE bank_txn SET category=?1, counterparty_name=?2, updated_at=?3 WHERE id=?4", rusqlite::params![cat, cp, now, id])
+        } else {
+            conn.execute("UPDATE bank_txn SET category=?1, updated_at=?2 WHERE id=?3", rusqlite::params![cat, now, id])
+        };
+        updated += 1;
+    }
+    Ok(json!({ "updated": updated }))
+}
+
 // ============================================================
 //  Signup Rules
 // ============================================================
