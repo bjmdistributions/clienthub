@@ -97,8 +97,9 @@ export default function FreeCashView() {
         setBankStr(String(c.bank_balance));
         setCardStr(String(c.credit_card_balance));
         setFloorStr(String(c.cash_floor));
-        setTaxStr(String(c.tax_sweep_pct));
-        setRefundStr(String(c.refund_reserve_pct));
+        // Stored as fractions (0.30) — shown and edited as percentages (30).
+        setTaxStr(String(c.tax_sweep_pct * 100));
+        setRefundStr(String(c.refund_reserve_pct * 100));
         setWarStr(String(c.war_chest));
       })
       .catch(() => {});
@@ -116,8 +117,8 @@ export default function FreeCashView() {
         Number(bankStr)   || 0,
         Number(cardStr)   || 0,
         Number(floorStr)  || 0,
-        Number(taxStr)    || 0,
-        Number(refundStr) || 0,
+        (Number(taxStr)    || 0) / 100, // percent → fraction
+        (Number(refundStr) || 0) / 100,
         Number(warStr)    || 0,
       );
       setAdjustOpen(false);
@@ -142,6 +143,9 @@ export default function FreeCashView() {
       ]
     : [];
 
+  const reconciled = ov
+    ? ov.allocated_actuals.buyer_in + ov.allocated_actuals.supplier_paid + ov.allocated_actuals.refunds_out
+    : 0;
   const banner  = ov ? BANNER[ov.status] : null;
   const numCls  = ov && ov.status === "red" ? "text-danger-ink" : "text-ink";
   const hasAlerts = !!ov && (ov.alerts.refund_deals > 0 || ov.alerts.stale_unallocated_in > 0);
@@ -220,7 +224,32 @@ export default function FreeCashView() {
                   {fmtAmount(ov.free_cash)}
                 </span>
               </div>
+              {reconciled > 0 && (
+                <div className="border-t border-line-2 px-4 py-2.5 text-[11px] text-muted">
+                  {fmtAmount(reconciled)} reconciled from the bank feed
+                  {ov.allocated_actuals.supplier_paid > 0 && ` · ${fmtAmount(ov.allocated_actuals.supplier_paid)} to suppliers`}
+                  {ov.allocated_actuals.refunds_out > 0 && ` · ${fmtAmount(ov.allocated_actuals.refunds_out)} refunded`}
+                </div>
+              )}
             </div>
+
+            {/* ── War chest progress (informational target, not deducted) ── */}
+            {ov.war_chest > 0 && (
+              <div className="bg-surface border border-line rounded-2xl p-4 min-w-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="min-w-0 flex-1 text-[13px] text-ink-2">War chest target</span>
+                  <span className="text-[13px] tabular-nums text-muted flex-shrink-0">
+                    {fmtAmount(Math.max(0, ov.free_cash))} / {fmtAmount(ov.war_chest)}
+                  </span>
+                </div>
+                <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-accent transition-all"
+                    style={{ width: `${Math.min(100, Math.max(0, (ov.free_cash / ov.war_chest) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* ── Aging alerts (only when present) ───────── */}
             {hasAlerts && (
@@ -294,14 +323,14 @@ export default function FreeCashView() {
               />
               <NumField
                 label="Tax sweep"
-                hint="Share of profit set aside for taxes."
+                hint="Share of this year's completed-deal profit set aside for taxes."
                 suffix="%"
                 value={taxStr}
                 onChange={setTaxStr}
               />
               <NumField
                 label="Refund reserve"
-                hint="Share held back against future refunds."
+                hint="Share of this year's completed-deal revenue held back against future refunds."
                 suffix="%"
                 value={refundStr}
                 onChange={setRefundStr}

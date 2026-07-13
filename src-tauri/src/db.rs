@@ -1399,4 +1399,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        63,
+        // Stamp the Plaid environment each item was linked under. An access_token is
+        // only valid against the environment (and matching secret) it was created in,
+        // so sync must use the item's own env — otherwise a later env switch silently
+        // invalidates every previously-linked item. Device-local, like plaid_items.
+        r#"
+        ALTER TABLE plaid_items ADD COLUMN env TEXT NOT NULL DEFAULT 'production';
+        "#,
+    ),
 ];

@@ -57,9 +57,10 @@ fn http() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder().timeout(std::time::Duration::from_secs(45)).build()?)
 }
 
-/// POST to a Plaid endpoint with client_id + secret injected. Surfaces Plaid's
-/// error_message on non-2xx.
-async fn post(path: &str, mut body: Value) -> Result<Value> {
+/// POST to a Plaid endpoint with client_id + secret injected. Returns
+/// (is_success, body) so callers that need to inspect Plaid's structured
+/// `error_code` (e.g. PRODUCT_NOT_READY) can, instead of only a message string.
+async fn post_raw(path: &str, mut body: Value) -> Result<(bool, Value)> {
     let (cid, sec) = get_keys().ok_or_else(|| anyhow!(
         "Plaid isn't set up. Add your Plaid client_id and secret in Settings first."
     ))?;
@@ -68,7 +69,13 @@ async fn post(path: &str, mut body: Value) -> Result<Value> {
     let resp = http()?.post(format!("{}{}", base_url(), path)).json(&body).send().await?;
     let status = resp.status();
     let v: Value = resp.json().await.context("Plaid returned invalid JSON")?;
-    if !status.is_success() {
+    Ok((status.is_success(), v))
+}
+
+/// POST to a Plaid endpoint. Surfaces Plaid's error_message on non-2xx.
+async fn post(path: &str, body: Value) -> Result<Value> {
+    let (ok, v) = post_raw(path, body).await?;
+    if !ok {
         let msg = v.get("error_message").and_then(|m| m.as_str())
             .or_else(|| v.get("error_code").and_then(|m| m.as_str()))
             .unwrap_or("Plaid API error");
@@ -100,6 +107,9 @@ pub async fn create_hosted_link() -> Result<(String, String)> {
         "products": ["transactions"],
         "country_codes": ["US"],
         "language": "en",
+        // Pull up to 2 years of history (default is only 90 days) so books can be
+        // cleaned for the full year.
+        "transactions": { "days_requested": 730 },
         "hosted_link": {}
     })).await?;
     let token = v.get("link_token").and_then(|t| t.as_str()).map(String::from)
@@ -130,11 +140,30 @@ pub async fn accounts_get(access_token: &str) -> Result<Value> {
     post("/accounts/get", json!({ "access_token": access_token })).await
 }
 
-/// One page of the transactions sync (added/modified/removed + next_cursor + has_more).
-pub async fn transactions_sync(access_token: &str, cursor: &str) -> Result<Value> {
+/// Outcome of one transactions/sync poll: a normal page, or a signal that Plaid
+/// is still extracting this item's history (retry with backoff — don't error out).
+pub enum SyncOutcome {
+    /// A page of results (added/modified/removed + next_cursor + has_more).
+    Page(Value),
+    /// PRODUCT_NOT_READY — the initial extraction hasn't finished yet.
+    NotReady,
+}
+
+/// One page of the transactions sync. On a freshly-linked item Plaid returns
+/// HTTP 400 PRODUCT_NOT_READY while it extracts history (a 2-year pull can take
+/// up to ~90s); that maps to SyncOutcome::NotReady so the caller can wait+retry.
+pub async fn transactions_sync(access_token: &str, cursor: &str) -> Result<SyncOutcome> {
     let mut body = json!({ "access_token": access_token, "count": 500 });
     if !cursor.is_empty() { body["cursor"] = json!(cursor); }
-    post("/transactions/sync", body).await
+    let (ok, v) = post_raw("/transactions/sync", body).await?;
+    if ok { return Ok(SyncOutcome::Page(v)); }
+    let code = v.get("error_code").and_then(|c| c.as_str()).unwrap_or("");
+    if code == "PRODUCT_NOT_READY" { return Ok(SyncOutcome::NotReady); }
+    let msg = v.get("error_message").and_then(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+        .or(Some(code).filter(|s| !s.is_empty()))
+        .unwrap_or("transactions sync error");
+    Err(anyhow!("Plaid: {}", msg))
 }
 
 /// Best-effort: tell Plaid to forget an item when the user disconnects a bank.

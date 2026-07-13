@@ -9466,9 +9466,18 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
         "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND bt.category!='internal_transfer'
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
     );
+    // Money-out not yet tied to a deal (supplier payments / refunds out to reconcile).
+    let unallocated_out = one(
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='out' AND bt.category!='internal_transfer'
+           AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
+    );
+    // Not yet classified at all (no category) — the raw cleanup backlog.
+    let unclassified = one("SELECT COUNT(*) FROM bank_txn WHERE COALESCE(category,'')=''");
     Ok(json!({
         "total": total, "reviewed": reviewed,
-        "sum_in": sum_in, "sum_out": sum_out, "unallocated_in": unallocated_in,
+        "sum_in": sum_in, "sum_out": sum_out,
+        "unallocated_in": unallocated_in, "unallocated_out": unallocated_out,
+        "unclassified": unclassified,
     }))
 }
 
@@ -9502,14 +9511,23 @@ pub async fn set_bank_txn_review(
 pub async fn allocate_bank_txn(
     bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
 ) -> Result<String, String> {
-    let (txn_amount, allocated): (f64, f64) = {
+    let (txn_amount, allocated, direction): (f64, f64, String) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row(
-            "SELECT bt.amount, COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0)
+            "SELECT bt.amount, COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0), bt.direction
              FROM bank_txn bt WHERE bt.id=?1",
-            [&bank_txn_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            [&bank_txn_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ).map_err(|_| "Transaction not found".to_string())?
     };
+    // A role has to match the transaction's direction, or role-based reconciliation
+    // (supplier payables, refund liability) would book money against the wrong side.
+    let role_ok = match direction.as_str() {
+        "in" => matches!(role.as_str(), "buyer_payment" | "refund_in" | "adjustment"),
+        _    => matches!(role.as_str(), "supplier_payment" | "refund_out" | "adjustment"),
+    };
+    if !role_ok {
+        return Err(format!("\"{}\" can't be applied to a money-{} transaction", role, direction));
+    }
     let remaining = ((txn_amount - allocated) * 100.0).round() / 100.0;
     let amt = (amount * 100.0).round() / 100.0;
     if amt <= 0.0 { return Err("Allocation amount must be positive".into()); }
@@ -9569,6 +9587,46 @@ pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Va
         "client_name": r.get::<_, String>(7)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Bulk-remove bank transactions (and their allocations) by source, synced so the
+/// delete propagates to other devices/the server (a raw DB delete would resurrect
+/// via sync). scope: "statements" (everything NOT from the Plaid feed — pdf/ofx/
+/// csv/ai), "plaid", or "all". Use "statements" to drop manual imports once the
+/// live feed is connected.
+#[tauri::command]
+pub async fn clear_bank_txns(scope: String) -> Result<Value, String> {
+    let where_sql = match scope.as_str() {
+        "plaid" => "source_format = 'plaid'",
+        "all" => "1=1",
+        _ => "source_format != 'plaid'",
+    };
+    let ids: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&format!("SELECT id FROM bank_txn WHERE {}", where_sql)).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let mut deleted = 0i64;
+    let mut alloc_removed = 0i64;
+    for id in &ids {
+        let alloc_ids: Vec<String> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id FROM bank_allocation WHERE bank_txn_id=?1").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for aid in &alloc_ids {
+            let _ = sync::record_delete("bank_allocation", aid);
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let _ = conn.execute("DELETE FROM bank_allocation WHERE id=?1", [aid]);
+            alloc_removed += 1;
+        }
+        let _ = sync::record_delete("bank_txn", id);
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        if conn.execute("DELETE FROM bank_txn WHERE id=?1", [id]).unwrap_or(0) > 0 { deleted += 1; }
+    }
+    Ok(json!({ "deleted": deleted, "allocations_removed": alloc_removed }))
 }
 
 // ── Plaid live bank/card feed ───────────────────────────────────────────────
@@ -9652,10 +9710,11 @@ pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
         let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [&item_id], |_| Ok(())).is_ok();
         if !exists {
             let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
+            let env = crate::plaid::get_env();
             conn.execute(
-                "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at)
-                 VALUES (?1,?2,?3,?4,'',?5,?6)",
-                rusqlite::params![id, item_id, access, inst, accounts_json, now],
+                "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
+                 VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
+                rusqlite::params![id, item_id, access, inst, accounts_json, now, env],
             ).map_err(|e| e.to_string())?;
         }
         return Ok(json!({ "status": "connected", "institution": inst }));
@@ -9672,11 +9731,12 @@ pub async fn plaid_exchange(public_token: String, institution: String) -> Result
     let accounts_json = accounts.get("accounts").cloned().unwrap_or(json!([])).to_string();
     let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
+    let env = crate::plaid::get_env();
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at)
-         VALUES (?1,?2,?3,?4,'',?5,?6)",
-        rusqlite::params![id, item_id, access, institution, accounts_json, now],
+        "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
+         VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
+        rusqlite::params![id, item_id, access, institution, accounts_json, now, env],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -9715,12 +9775,13 @@ pub async fn plaid_remove_item(id: String) -> Result<(), String> {
 /// ledger (dedup on Plaid's transaction_id; cursor-based incremental sync).
 #[tauri::command]
 pub async fn plaid_sync() -> Result<Value, String> {
-    let items: Vec<(String, String, String, String)> = {
+    let items: Vec<(String, String, String, String, String)> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT id, access_token, cursor, accounts_json FROM plaid_items")
+        let mut stmt = conn.prepare("SELECT id, access_token, cursor, accounts_json, env FROM plaid_items")
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
         ))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -9728,10 +9789,20 @@ pub async fn plaid_sync() -> Result<Value, String> {
         return Err("No banks connected yet — click Connect a bank first.".into());
     }
     let now = Utc::now().to_rfc3339();
+    let current_env = crate::plaid::get_env();
     let mut imported = 0i64;
     let mut removed = 0i64;
+    let mut skipped_env = 0i64; // banks linked under a different environment (wrong secret)
+    let mut preparing = false;  // at least one item still extracting after we waited
+    // Shared budget (seconds) for waiting on freshly-linked items whose initial
+    // extraction is still running — bounds total command time regardless of count.
+    let mut wait_budget = 90u64;
 
-    for (item_pk, access, mut cursor, accounts_json) in items {
+    for (item_pk, access, mut cursor, accounts_json, item_env) in items {
+        // An access_token is only valid against the env (and secret) it was linked
+        // under. We only hold the current env's secret, so skip mismatched items
+        // rather than erroring the whole sync with an invalid-credentials failure.
+        if item_env != current_env { skipped_env += 1; continue; }
         let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
         let label_of = |aid: &str| -> String {
             for a in &accts {
@@ -9745,9 +9816,32 @@ pub async fn plaid_sync() -> Result<Value, String> {
         };
         let mut pages = 0;
         loop {
+            let page = match crate::plaid::transactions_sync(&access, &cursor).await.map_err(|e| e.to_string())? {
+                crate::plaid::SyncOutcome::Page(p) => p,
+                crate::plaid::SyncOutcome::NotReady => {
+                    // Extraction still running — back off and retry within the budget.
+                    if wait_budget == 0 { preparing = true; break; }
+                    let delay = wait_budget.min(if wait_budget > 74 { 4 } else { 6 });
+                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                    wait_budget -= delay;
+                    continue;
+                }
+            };
+            // A fresh item (no cursor yet) that returns an empty first page with no
+            // cursor issued is also still preparing — wait+retry rather than exit at 0.
+            let added_empty = page.get("added").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true);
+            let removed_empty = page.get("removed").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true);
+            let next_cursor_now = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("");
+            let has_more_now = page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
+            if cursor.is_empty() && next_cursor_now.is_empty() && added_empty && removed_empty && !has_more_now {
+                if wait_budget == 0 { preparing = true; break; }
+                let delay = wait_budget.min(if wait_budget > 74 { 4 } else { 6 });
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                wait_budget -= delay;
+                continue;
+            }
             pages += 1;
             if pages > 60 { break; } // safety cap
-            let page = crate::plaid::transactions_sync(&access, &cursor).await.map_err(|e| e.to_string())?;
             let conn = pool().get().map_err(|e| e.to_string())?;
             if let Some(added) = page.get("added").and_then(|v| v.as_array()) {
                 for t in added {
@@ -9799,13 +9893,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     if conn.execute("DELETE FROM bank_txn WHERE id=?1", [&id]).unwrap_or(0) > 0 { removed += 1; }
                 }
             }
-            cursor = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let has_more = page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
+            cursor = next_cursor_now.to_string();
             let _ = conn.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
-            if !has_more { break; }
+            if !has_more_now { break; }
         }
     }
-    Ok(json!({ "imported": imported, "removed": removed }))
+    Ok(json!({ "imported": imported, "removed": removed, "skipped_env": skipped_env, "preparing": preparing }))
 }
 
 // ── Financial engine: money config, Free Cash, loans, AI categorize ─────────
@@ -9849,28 +9942,48 @@ pub async fn financials_overview() -> Result<Value, String> {
     let cash_floor = read_setting_f64(&conn, "money_cash_floor", 0.0);
 
     // Supplier payables: unpaid supplier cost on deals where the buyer HAS paid but
-    // the deal isn't complete (never ours — ring-fenced).
+    // the deal isn't complete (never ours — ring-fenced). Netted per deal against any
+    // supplier-payment the user has already allocated from the bank feed (actuals),
+    // clamped at 0 so an over-allocation on one deal can't erase another's payable.
     let supplier_payables: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(CAST(json_extract(sp.value,'$.amount') AS REAL)),0)
-         FROM deal_flows df, json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
-         WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
-           AND COALESCE(json_extract(sp.value,'$.paid'),0) != 1",
+        "SELECT COALESCE(SUM(MAX(0,
+            (SELECT COALESCE(SUM(CAST(json_extract(sp.value,'$.amount') AS REAL)),0)
+               FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
+              WHERE COALESCE(json_extract(sp.value,'$.paid'),0) != 1)
+            - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+                 WHERE a.deal_flow_id=df.id AND a.role='supplier_payment')
+         )),0)
+         FROM deal_flows df
+         WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')",
         [], |r| r.get(0)).unwrap_or(0.0);
 
-    // Refund liability (we owe buyers back): refund_owed minus refunds already paid.
-    let refund_owed_total: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(refund_owed),0) FROM deal_flows WHERE COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
-    let refunds_paid: f64 = conn.query_row("SELECT COALESCE(SUM(amount),0) FROM refunds", [], |r| r.get(0)).unwrap_or(0.0);
-    let refund_liability = (refund_owed_total - refunds_paid).max(0.0);
+    // Refund liability (we owe buyers back): per deal, refund_owed minus refunds
+    // already paid AND minus refund-out actuals allocated from the bank feed, clamped
+    // per deal so an overpaid/archived-deal refund can't cancel another's owed amount.
+    let refund_liability: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(MAX(0,
+            df.refund_owed
+            - (SELECT COALESCE(SUM(amount),0) FROM refunds r WHERE r.deal_flow_id=df.id)
+            - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+                 WHERE a.deal_flow_id=df.id AND a.role='refund_out')
+         )),0)
+         FROM deal_flows df
+         WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01",
+        [], |r| r.get(0)).unwrap_or(0.0);
 
-    // Reserve ledgers (append-only; in − out).
-    let reserve = |ledger: &str| -> f64 {
-        conn.query_row(
-            "SELECT COALESCE(SUM(CASE WHEN direction='out' THEN -amount ELSE amount END),0) FROM reserve_entry WHERE ledger=?1",
-            [ledger], |r| r.get(0)).unwrap_or(0.0)
-    };
-    let tax_reserve = reserve("tax").max(0.0);
-    let refund_reserve = reserve("refund").max(0.0);
+    // Reserves: share of this calendar year's realized (completed-deal) profit set
+    // aside for taxes, and share of realized revenue held back against future refunds.
+    // Percentages are stored as fractions (0.30 = 30%).
+    let tax_sweep_pct = read_setting_f64(&conn, "money_tax_sweep_pct", 0.30);
+    let refund_reserve_pct = read_setting_f64(&conn, "money_refund_reserve_pct", 0.10);
+    let year_profit: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= date('now','start of year')",
+        [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
+    let year_revenue: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= date('now','start of year')",
+        [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
+    let tax_reserve = (year_profit * tax_sweep_pct).max(0.0);
+    let refund_reserve = (year_revenue * refund_reserve_pct).max(0.0);
 
     // Loans still owed (principal − set aside) for open loans.
     let loan_outstanding: f64 = conn.query_row(
@@ -9895,6 +10008,13 @@ pub async fn financials_overview() -> Result<Value, String> {
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
         [], |r| r.get(0)).unwrap_or(0);
 
+    // Actuals reconciled from the bank feed via allocations (totals by role), so the
+    // dashboard can show how much of the money math is backed by real transactions.
+    let war_chest = read_setting_f64(&conn, "money_war_chest", 25000.0).max(0.0);
+    let alloc_role_sum = |role: &str| -> f64 {
+        conn.query_row("SELECT COALESCE(SUM(amount),0) FROM bank_allocation WHERE role=?1", [role], |r| r.get(0)).unwrap_or(0.0)
+    };
+
     Ok(json!({
         "bank_balance": round2(bank_balance),
         "credit_card_balance": round2(credit_card_balance),
@@ -9904,10 +10024,16 @@ pub async fn financials_overview() -> Result<Value, String> {
         "refund_reserve": round2(refund_reserve),
         "cash_floor": round2(cash_floor),
         "loan_outstanding": round2(loan_outstanding),
+        "war_chest": round2(war_chest),
         "free_cash": free_cash,
         "status": status,
         "runway_months": if runway.is_finite() { round2(runway) } else { -1.0 },
         "alerts": { "refund_deals": refund_deals, "stale_unallocated_in": stale_unallocated },
+        "allocated_actuals": {
+            "buyer_in": round2(alloc_role_sum("buyer_payment")),
+            "supplier_paid": round2(alloc_role_sum("supplier_payment")),
+            "refunds_out": round2(alloc_role_sum("refund_out")),
+        },
     }))
 }
 
@@ -10033,7 +10159,14 @@ pub async fn ai_categorize_bank_txns() -> Result<Value, String> {
         };
         updated += 1;
     }
-    Ok(json!({ "updated": updated }))
+    // How many still need categorizing after this batch, so the UI can loop to zero.
+    let remaining: i64 = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM bank_txn WHERE reviewed=0 AND COALESCE(category,'')=''",
+            [], |r| r.get(0)).unwrap_or(0)
+    };
+    Ok(json!({ "updated": updated, "remaining": remaining }))
 }
 
 // ============================================================

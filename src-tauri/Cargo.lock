@@ -723,6 +723,7 @@ dependencies = [
  "native-tls",
  "notify",
  "oauth2",
+ "objc2",
  "pdf-extract",
  "printpdf",
  "r2d2",

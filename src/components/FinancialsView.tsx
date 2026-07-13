@@ -37,6 +37,17 @@ const ROLES: { value: string; label: string }[] = [
 const roleLabel = (v: string) => ROLES.find((r) => r.value === v)?.label ?? v;
 const dealLabel = (d: DealFlow) => (d.name?.trim() || d.invoice_number || "Deal");
 
+// Roles valid for a transaction's direction (must match the backend guard in
+// allocate_bank_txn — money-in can't be a supplier payment, etc.).
+const rolesFor = (direction: string) =>
+  direction === "out"
+    ? ROLES.filter((r) => ["supplier_payment", "refund_out", "adjustment"].includes(r.value))
+    : ROLES.filter((r) => ["buyer_payment", "refund_in", "adjustment"].includes(r.value));
+
+// Infer whether an account id names a card vs a checking account (statement imports
+// carry a free-text account id — "amex", "chase-card" → card; everything else → bank).
+const isCardAccount = (accountId: string) => /card|amex|visa|mastercard|credit|discover/i.test(accountId);
+
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -49,11 +60,12 @@ export default function FinancialsView() {
   const [aiBusy, setAiBusy]   = useState(false);
   const [newDealBusy, setNewDealBusy] = useState(false);
 
-  // Import
-  const [accountId, setAccountId]     = useState("chase-business");
+  // Import — default to the last account used on this device (generic fallback).
+  const [accountId, setAccountId]     = useState(() => localStorage.getItem("fin_last_account") || "business");
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [preview, setPreview]         = useState<BankPreview | null>(null);
   const [importing, setImporting]     = useState(false);
+  const [clearing, setClearing]       = useState(false);
 
   // Bulk import (multiple statement files in one go)
   const [bulkBusy, setBulkBusy]         = useState(false);
@@ -69,9 +81,13 @@ export default function FinancialsView() {
   const [plaidSyncing, setPlaidSyncing]     = useState(false);
   const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
   const [plaidTesting, setPlaidTesting]     = useState(false);
+  // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
+  // take ~a minute) — keep re-syncing in the background until transactions land.
+  const [plaidPreparing, setPlaidPreparing] = useState(false);
   // Hosted Link connect flow — poll the browser-based connect to completion.
   const pollTimerRef  = useRef<number | null>(null);
   const pollCancelRef = useRef(false);
+  const prepTimerRef  = useRef<number | null>(null);
 
   // AI import (any statement — credit cards / other banks)
   const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
@@ -84,9 +100,18 @@ export default function FinancialsView() {
   const [dirFilter, setDirFilter]     = useState<"all" | "in" | "out">("all");
   const [acctFilter, setAcctFilter]   = useState("all");
   const [catFilter, setCatFilter]     = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "unreviewed" | "unallocated_in">("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "unreviewed" | "unclassified" | "unallocated_in" | "unallocated_out"
+  >("all");
   const [fromDate, setFromDate]       = useState("");
   const [toDate, setToDate]           = useState("");
+
+  // Bulk selection + actions (clean a year fast — loop existing commands).
+  const [selected, setSelected]         = useState<Set<string>>(new Set());
+  const [bulkCat, setBulkCat]           = useState("");
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
+  const [bulkAllocOpen, setBulkAllocOpen]   = useState(false);
+  const [aiProgress, setAiProgress]     = useState("");
 
   // Allocation panel (inline expanding row)
   const [openId, setOpenId]           = useState<string | null>(null);
@@ -125,6 +150,7 @@ export default function FinancialsView() {
   useEffect(() => () => {
     pollCancelRef.current = true;
     if (pollTimerRef.current !== null) clearTimeout(pollTimerRef.current);
+    if (prepTimerRef.current !== null) clearTimeout(prepTimerRef.current);
   }, []);
 
   // Reload txns + summary, and (optionally) the open row's allocations.
@@ -171,6 +197,27 @@ export default function FinancialsView() {
     }
   };
 
+  // While a freshly-linked bank is still being prepared by Plaid, re-sync in the
+  // background a few times (~every 20s) until transactions land, then stop.
+  const schedulePrepRetries = (left: number) => {
+    if (prepTimerRef.current !== null) clearTimeout(prepTimerRef.current);
+    if (left <= 0) return;
+    prepTimerRef.current = window.setTimeout(async () => {
+      prepTimerRef.current = null;
+      try {
+        const r = await api.plaidSync();
+        if (r.imported > 0 || r.removed > 0) {
+          setPlaidPreparing(false);
+          await refreshAll(false);
+          toast(`Synced ${r.imported} transaction${r.imported === 1 ? "" : "s"}`);
+          return;
+        }
+        if (r.preparing) { schedulePrepRetries(left - 1); }
+        else { setPlaidPreparing(false); await refreshAll(false); }
+      } catch { schedulePrepRetries(left - 1); }
+    }, 20000);
+  };
+
   // Connect a bank via Plaid Hosted Link: open Plaid in the system browser (where
   // bank logins / OAuth actually work — the embedded widget stalls inside the
   // Tauri webview), then poll every 3s until the server reports it exchanged.
@@ -195,8 +242,15 @@ export default function FinancialsView() {
             toast(`Connected ${inst}`);
             setPlaidItems(await api.plaidListItems());
             const s = await api.plaidSync();
-            toast(`Synced ${s.imported} transaction${s.imported === 1 ? "" : "s"}`);
-            await refreshAll(false);
+            if (s.imported > 0) {
+              toast(`Synced ${s.imported} transaction${s.imported === 1 ? "" : "s"}`);
+              await refreshAll(false);
+            } else if (s.preparing) {
+              setPlaidPreparing(true);
+              schedulePrepRetries(6); // ~2 min of background re-syncs
+            } else {
+              await refreshAll(false);
+            }
             setPlaidConnecting(false);
             return;
           }
@@ -231,8 +285,18 @@ export default function FinancialsView() {
     setPlaidSyncing(true);
     try {
       const r = await api.plaidSync();
-      toast(`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
-      await refreshAll(false);
+      if (r.imported === 0 && r.removed === 0 && r.preparing) {
+        setPlaidPreparing(true);
+        schedulePrepRetries(6);
+        toast("Plaid is still preparing your transactions — this can take a minute.");
+      } else {
+        setPlaidPreparing(false);
+        toast(`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
+        await refreshAll(false);
+      }
+      if (r.skipped_env > 0) {
+        toast(`${r.skipped_env} bank${r.skipped_env === 1 ? "" : "s"} linked under a different environment — switch environment to sync ${r.skipped_env === 1 ? "it" : "them"}.`, "error");
+      }
     } catch (e: any) { toast(String(e), "error"); }
     finally { setPlaidSyncing(false); }
   };
@@ -242,7 +306,12 @@ export default function FinancialsView() {
     try {
       await api.plaidRemoveItem(item.id);
       toast("Bank disconnected");
-      setPlaidItems(await api.plaidListItems());
+      const items = await api.plaidListItems();
+      setPlaidItems(items);
+      if (items.length === 0) {
+        if (prepTimerRef.current !== null) { clearTimeout(prepTimerRef.current); prepTimerRef.current = null; }
+        setPlaidPreparing(false);
+      }
     } catch (e: any) { toast(String(e), "error"); }
   };
 
@@ -283,7 +352,8 @@ export default function FinancialsView() {
 
   // Import many statements sequentially, all into the current account.
   const bulkImport = async (paths: string[], ai: boolean) => {
-    const acct = accountId.trim() || "chase-business";
+    const acct = accountId.trim() || "business";
+    localStorage.setItem("fin_last_account", acct);
     setBulkBusy(true);
     let imported = 0, extracted = 0, skipped = 0;
     const errors: string[] = [];
@@ -312,7 +382,9 @@ export default function FinancialsView() {
     if (!previewPath) return;
     setImporting(true);
     try {
-      const s = await api.bankImport(previewPath, accountId.trim() || "chase-business");
+      const acct = accountId.trim() || "business";
+      localStorage.setItem("fin_last_account", acct);
+      const s = await api.bankImport(previewPath, acct);
       toast(`Imported ${s.imported}, skipped ${s.skipped} (already imported)`);
       setPreview(null); setPreviewPath(null);
       await refreshAll(false);
@@ -343,12 +415,34 @@ export default function FinancialsView() {
     if (!aiPreviewPath) return;
     setAiImporting(true);
     try {
-      const s = await api.bankImportAi(aiPreviewPath, accountId.trim() || "chase-business");
+      const acct = accountId.trim() || "business";
+      localStorage.setItem("fin_last_account", acct);
+      const s = await api.bankImportAi(aiPreviewPath, acct);
       toast(`AI imported ${s.imported} (extracted ${s.extracted}); skipped ${s.skipped} already-imported. Review + allocate below.`);
       setAiPreview(null); setAiPreviewPath(null);
       await refreshAll(false);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setAiImporting(false); }
+  };
+
+  // Remove statement-imported transactions (PDF/OFX/CSV/AI) — keeps the live
+  // bank feed (Plaid) so the two don't overlap. Allocations go with them.
+  const clearStatementImports = async () => {
+    if (clearing) return;
+    if (!window.confirm(
+      "Remove all transactions imported from statement files (PDF/OFX/CSV)? This keeps everything from the live bank feed (Plaid). Any allocations on the removed transactions are also cleared. This can't be undone (you can re-import statements later)."
+    )) return;
+    setClearing(true);
+    try {
+      const r = await api.clearBankTxns("statements");
+      toast(
+        r.allocations_removed > 0
+          ? `Removed ${r.deleted} statement transactions (${r.allocations_removed} allocations cleared)`
+          : `Removed ${r.deleted} statement transactions`,
+      );
+      await refreshAll(false);
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setClearing(false); }
   };
 
   // Save classification / reviewed flag (merges with existing fields).
@@ -394,14 +488,64 @@ export default function FinancialsView() {
     } catch (e: any) { toast(String(e), "error"); }
   };
 
-  // Suggest categories with AI. Suggestions only — does NOT mark reviewed.
+  // ── Bulk actions ────────────────────────────────────────────────────────────
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  const clearSelection = () => setSelected(new Set());
+
+  // Run an action over the current selection, one existing command at a time, with a
+  // running counter; then a single refresh. Skips rows already gone from the list.
+  const runBulk = async (fn: (t: BankTxn) => Promise<unknown> | undefined) => {
+    const ids = Array.from(selected);
+    setBulkActionBusy(true);
+    let done = 0, failed = 0;
+    for (const id of ids) {
+      const t = txns.find((x) => x.id === id);
+      if (!t) continue;
+      try { await fn(t); } catch { failed += 1; }
+      done += 1;
+      setBulkProgress(`Updating ${done} of ${ids.length}…`);
+    }
+    setBulkProgress("");
+    setBulkActionBusy(false);
+    clearSelection();
+    await refreshAll(true);
+    if (failed > 0) toast(`${failed} of ${ids.length} could not be updated`, "error");
+  };
+
+  const bulkSetCategory = (cat: string) =>
+    runBulk((t) => api.setBankTxnReview(t.id, cat, t.counterparty_name || "", t.counterparty_type || "", t.counterparty_id || "", t.reviewed));
+  const bulkSetReviewed = (val: boolean) =>
+    runBulk((t) => api.setBankTxnReview(t.id, t.category || "", t.counterparty_name || "", t.counterparty_type || "", t.counterparty_id || "", val));
+  // Allocate each selected txn's remaining amount to one deal; role auto-picked by
+  // direction so mixed in/out selections book to the correct side.
+  const bulkAllocate = (deal: DealFlow) =>
+    runBulk((t) => {
+      if (!(t.unallocated > 0.0001)) return undefined;
+      const r = t.direction === "out" ? "supplier_payment" : "buyer_payment";
+      return api.allocateBankTxn(t.id, deal.id, t.unallocated, r, "");
+    });
+
+  // Suggest categories with AI. Suggestions only — does NOT mark reviewed. Loops the
+  // batched command until the backlog is clear (or the model stops making progress).
   const aiCategorize = async () => {
     setAiBusy(true);
+    let total = 0;
     try {
-      const { updated } = await api.aiCategorizeBankTxns();
-      toast(`AI categorized ${updated} transaction${updated === 1 ? "" : "s"}`);
+      for (let round = 0; round < 25; round++) {
+        const { updated, remaining } = await api.aiCategorizeBankTxns();
+        total += updated;
+        if (remaining > 0 && updated > 0) setAiProgress(`Categorized ${total} — ${remaining} left…`);
+        if (remaining <= 0 || updated === 0) break;
+      }
+      setAiProgress("");
+      toast(`AI categorized ${total} transaction${total === 1 ? "" : "s"}`);
       await refreshAll(true);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { setAiProgress(""); toast(String(e), "error"); }
     finally { setAiBusy(false); }
   };
 
@@ -439,7 +583,9 @@ export default function FinancialsView() {
         if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
         if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
         if (statusFilter === "unreviewed" && t.reviewed) return false;
-        if (statusFilter === "unallocated_in" && !(t.direction === "in" && t.unallocated > 0.0001)) return false;
+        if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
+        if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
+        if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
         const d = (t.posted_at || "").slice(0, 10);
         if (fromDate && d < fromDate) return false;
         if (toDate && d > toDate) return false;
@@ -519,9 +665,17 @@ export default function FinancialsView() {
       {/* Import + AI toolbar */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-end gap-2 flex-wrap">
-          {bulkProgress && (
-            <span className="mr-auto flex items-center gap-1.5 text-[12px] text-muted">
-              <Loader2 size={13} className="animate-spin" /> {bulkProgress}
+          <button
+            onClick={clearStatementImports}
+            disabled={clearing || bulkBusy}
+            title="Delete transactions imported from statement files — keeps the live bank feed"
+            className="mr-auto flex items-center gap-1.5 px-3 h-9 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
+          >
+            {clearing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Remove statement imports
+          </button>
+          {(bulkProgress || aiProgress) && (
+            <span className="flex items-center gap-1.5 text-[12px] text-muted">
+              <Loader2 size={13} className="animate-spin" /> {bulkProgress || aiProgress}
             </span>
           )}
           <button
@@ -687,6 +841,16 @@ export default function FinancialsView() {
               </div>
             )}
 
+            {plaidPreparing && !plaidConnecting && (
+              <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
+                <Loader2 size={15} className="animate-spin text-accent flex-shrink-0" />
+                <p className="text-[12px] text-ink-2 flex-1 min-w-0">
+                  Plaid is preparing your transactions — this can take a minute. They'll appear here automatically, or
+                  use Sync now to check again.
+                </p>
+              </div>
+            )}
+
             {plaidItems.length > 0 && (
               <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
                 {plaidItems.map((it) => (
@@ -828,12 +992,13 @@ export default function FinancialsView() {
 
       {/* Summary tiles */}
       {summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
           <Tile label="Transactions" value={String(summary.total)} />
           <Tile label="Reviewed" value={`${summary.reviewed} / ${summary.total}`} />
           <Tile label="Money in" value={fmtAmount(summary.sum_in)} tone="in" />
           <Tile label="Money out" value={fmtAmount(summary.sum_out)} />
-          <Tile label="Needs a deal" value={String(summary.unallocated_in)} tone="warn" />
+          <Tile label="Uncategorized" value={String(summary.unclassified)} tone={summary.unclassified > 0 ? "warn" : undefined} />
+          <Tile label="Needs a deal" value={String(summary.unallocated_in + summary.unallocated_out)} tone={summary.unallocated_in + summary.unallocated_out > 0 ? "warn" : undefined} />
         </div>
       )}
 
@@ -890,7 +1055,9 @@ export default function FinancialsView() {
         >
           <option value="all">All statuses</option>
           <option value="unreviewed">Unreviewed</option>
-          <option value="unallocated_in">Needs a deal</option>
+          <option value="unclassified">Uncategorized</option>
+          <option value="unallocated_in">Needs a deal (in)</option>
+          <option value="unallocated_out">Needs a deal (out)</option>
         </select>
         <div className="flex items-center gap-1.5">
           <input
@@ -909,6 +1076,63 @@ export default function FinancialsView() {
         </div>
       </div>
 
+      {/* Bulk action bar — appears once rows are selected */}
+      {selected.size > 0 && (
+        <div className="sticky top-2 z-30 flex items-center gap-2 flex-wrap bg-surface border border-line rounded-xl px-3 py-2 shadow-lg">
+          <span className="text-[12px] font-medium text-ink whitespace-nowrap">
+            {selected.size} selected
+          </span>
+          <div className="w-px h-5 bg-line-2 mx-0.5" />
+          <select
+            value={bulkCat}
+            onChange={(e) => setBulkCat(e.target.value)}
+            disabled={bulkActionBusy}
+            className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <option value="">Set category…</option>
+            {CATEGORIES.filter((c) => c.value).map((c) => (
+              <option key={c.value} value={c.value}>{c.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => bulkCat && bulkSetCategory(bulkCat)}
+            disabled={bulkActionBusy || !bulkCat}
+            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+          >
+            Apply
+          </button>
+          <div className="w-px h-5 bg-line-2 mx-0.5" />
+          <button
+            onClick={() => bulkSetReviewed(true)}
+            disabled={bulkActionBusy}
+            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+          >
+            Mark reviewed
+          </button>
+          <button
+            onClick={() => bulkSetReviewed(false)}
+            disabled={bulkActionBusy}
+            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+          >
+            Unmark
+          </button>
+          <button
+            onClick={() => setBulkAllocOpen(true)}
+            disabled={bulkActionBusy}
+            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+          >
+            <Link2 size={13} /> Allocate to deal
+          </button>
+          <button
+            onClick={clearSelection}
+            disabled={bulkActionBusy}
+            className="ml-auto h-8 px-2.5 rounded-md text-[12px] text-muted hover:text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       {/* Transaction list */}
       {loading ? (
         <div className="flex items-center justify-center py-20 text-muted">
@@ -920,7 +1144,7 @@ export default function FinancialsView() {
             <Landmark size={18} className="text-faint" />
           </div>
           <p className="text-[14px] font-semibold text-ink-2">No transactions yet</p>
-          <p className="text-[12px] text-muted mt-1">Import a Chase statement to get started</p>
+          <p className="text-[12px] text-muted mt-1">Import a statement to get started</p>
           <button onClick={pickAndPreview} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
             Import statement
           </button>
@@ -930,6 +1154,26 @@ export default function FinancialsView() {
           <table className="w-full text-[13px] min-w-[820px]">
             <thead>
               <tr className="text-left text-muted border-b border-line bg-surface-2/40">
+                <th className="px-3 py-2.5 w-9">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all filtered transactions"
+                    checked={filtered.length > 0 && filtered.every((t) => selected.has(t.id))}
+                    ref={(el) => {
+                      if (el) el.indeterminate =
+                        filtered.some((t) => selected.has(t.id)) && !filtered.every((t) => selected.has(t.id));
+                    }}
+                    onChange={(e) =>
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) filtered.forEach((t) => next.add(t.id));
+                        else filtered.forEach((t) => next.delete(t.id));
+                        return next;
+                      })
+                    }
+                    className="align-middle accent-accent"
+                  />
+                </th>
                 <th className="font-medium px-3 py-2.5 whitespace-nowrap">Date</th>
                 <th className="font-medium px-3 py-2.5">Description</th>
                 <th className="font-medium px-3 py-2.5">Counterparty</th>
@@ -944,8 +1188,19 @@ export default function FinancialsView() {
                 <Fragment key={t.id}>
                   <tr
                     onClick={() => toggleRow(t)}
-                    className={`cursor-pointer transition-colors ${openId === t.id ? "bg-surface-2" : "hover:bg-surface-2/50"}`}
+                    className={`cursor-pointer transition-colors ${
+                      selected.has(t.id) ? "bg-accent/5" : openId === t.id ? "bg-surface-2" : "hover:bg-surface-2/50"
+                    }`}
                   >
+                    <td className="px-3 py-2.5 align-top" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select transaction"
+                        checked={selected.has(t.id)}
+                        onChange={() => toggleSelect(t.id)}
+                        className="align-middle accent-accent"
+                      />
+                    </td>
                     <td className="px-3 py-2.5 tabular-nums text-muted whitespace-nowrap align-top">
                       <span className="inline-flex items-center gap-1">
                         <ChevronRight
@@ -958,8 +1213,9 @@ export default function FinancialsView() {
                     <td className="px-3 py-2.5 text-ink-2 max-w-[280px] align-top">
                       <span className="truncate block" title={t.description}>{t.description}</span>
                       {t.account_id && (
-                        <span className="inline-block mt-0.5 text-[10px] text-muted bg-surface-2 border border-line-2 rounded px-1.5 py-0.5">
+                        <span className="inline-flex items-center gap-1 mt-0.5 text-[10px] text-muted bg-surface-2 border border-line-2 rounded px-1.5 py-0.5">
                           {t.account_id}
+                          <span className="text-faint">· {isCardAccount(t.account_id) ? "card" : "checking"}</span>
                         </span>
                       )}
                     </td>
@@ -999,7 +1255,7 @@ export default function FinancialsView() {
 
                   {openId === t.id && (
                     <tr className="bg-surface-2">
-                      <td colSpan={7} className="px-3 pb-4 pt-1">
+                      <td colSpan={8} className="px-3 pb-4 pt-1">
                         <AllocationPanel
                           txn={t}
                           allocs={allocs}
@@ -1035,8 +1291,93 @@ export default function FinancialsView() {
           )}
         </div>
       )}
+
+      {bulkAllocOpen && (
+        <BulkAllocateModal
+          deals={deals}
+          count={selected.size}
+          busy={bulkActionBusy}
+          onClose={() => setBulkAllocOpen(false)}
+          onPick={async (d) => { setBulkAllocOpen(false); await bulkAllocate(d); }}
+        />
+      )}
       </div>
       )}
+    </div>
+  );
+}
+
+// Pick one deal, then allocate every selected transaction's remaining amount to it.
+// Role is auto-picked per transaction by direction; fully-allocated rows are skipped.
+function BulkAllocateModal({
+  deals, count, busy, onClose, onPick,
+}: {
+  deals: DealFlow[];
+  count: number;
+  busy: boolean;
+  onClose: () => void;
+  onPick: (d: DealFlow) => void;
+}) {
+  const [q, setQ] = useState("");
+  const list = useMemo(() => {
+    const s = q.toLowerCase();
+    return deals
+      .filter((d) => `${d.name || ""} ${d.invoice_number || ""} ${d.client_name || ""}`.toLowerCase().includes(s))
+      .slice(0, 30);
+  }, [deals, q]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
+          <div>
+            <h2 className="text-[16px] font-semibold text-ink">Allocate {count} to a deal</h2>
+            <p className="text-[12px] text-muted mt-0.5">
+              Each remaining amount is tied to the deal you pick — receipts as buyer payments, payments as supplier payments.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-5 py-3 border-b border-line">
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search a deal…"
+            className={inp}
+          />
+        </div>
+        <div className="overflow-y-auto divide-y divide-line-2">
+          {list.length === 0 ? (
+            <div className="text-center py-10 text-[12px] text-muted">No deals match</div>
+          ) : (
+            list.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => onPick(d)}
+                disabled={busy}
+                className="w-full text-left px-5 py-2.5 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+              >
+                <div className="text-[13px] font-medium text-ink truncate">{dealLabel(d)}</div>
+                <div className="text-[11px] text-muted truncate">
+                  {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1192,7 +1533,7 @@ function AllocationPanel(props: {
           onChange={(e) => setRole(e.target.value)}
           className="sm:col-span-3 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
         >
-          {ROLES.map((r) => (
+          {rolesFor(txn.direction).map((r) => (
             <option key={r.value} value={r.value}>{r.label}</option>
           ))}
         </select>

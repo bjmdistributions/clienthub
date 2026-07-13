@@ -1353,6 +1353,8 @@ export interface BankTxnSummary {
   sum_in: number;
   sum_out: number;
   unallocated_in: number;
+  unallocated_out: number;
+  unclassified: number;
 }
 export interface BankAllocation {
   id: string;
@@ -1399,10 +1401,12 @@ export interface FinancialsOverview {
   refund_reserve: number;
   cash_floor: number;
   loan_outstanding: number;
+  war_chest: number;
   free_cash: number;
   status: "green" | "yellow" | "red";
   runway_months: number;
   alerts: { refund_deals: number; stale_unallocated_in: number };
+  allocated_actuals: { buyer_in: number; supplier_paid: number; refunds_out: number };
 }
 export interface Loan {
   id: string;
@@ -1989,7 +1993,7 @@ export const api = {
     invoke<void>("plaid_exchange", { publicToken, institution }),
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
-  plaidSync: () => invoke<{ imported: number; removed: number }>("plaid_sync"),
+  plaidSync: () => invoke<{ imported: number; removed: number; skipped_env: number; preparing: boolean }>("plaid_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
@@ -1997,13 +2001,15 @@ export const api = {
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string) =>
     invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note }),
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
+  clearBankTxns: (scope: "statements" | "plaid" | "all") =>
+    invoke<{ deleted: number; allocations_removed: number }>("clear_bank_txns", { scope }),
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
   setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
     invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),
   financialsOverview: () => invoke<FinancialsOverview>("financials_overview"),
-  aiCategorizeBankTxns: () => invoke<{ updated: number }>("ai_categorize_bank_txns"),
+  aiCategorizeBankTxns: () => invoke<{ updated: number; remaining: number }>("ai_categorize_bank_txns"),
   listLoans: () => invoke<Loan[]>("list_loans"),
   createLoan: (name: string, lender: string, principal: number, receivedAt: string, bankTxnId: string, note: string) =>
     invoke<string>("create_loan", { name, lender, principal, receivedAt, bankTxnId, note }),

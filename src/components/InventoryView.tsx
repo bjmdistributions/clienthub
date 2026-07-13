@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, CompanyInfo, StorefrontConfig } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -28,6 +28,10 @@ const statusColor = (s: string) => {
 const statusDot = (s: string) => {
   switch (s) { case "available": return "bg-success"; case "reserved": return "bg-info"; case "sold": return "bg-ink-2"; case "archived": return "bg-warning"; default: return "bg-ink-2"; }
 };
+// Pill tokens for a deal stage — negotiating leans on the accent, earlier stages
+// read as informational. Shared by the link picker and the linked-deal row.
+const dealStageColor = (s: string) => s === "negotiating" ? "bg-accent/10 text-accent" : "bg-info-bg text-info-ink";
+const dealStageLabel = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -154,6 +158,7 @@ export default function InventoryView() {
   const [showArchived, setShowArchived] = useState(false);
   const [linkModal, setLinkModal] = useState<string | null>(null);
   const [deals, setDeals] = useState<Deal[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [manifest, setManifest] = useState<ManifestAnalysis | null>(null);
   const [manifestBusy, setManifestBusy] = useState(false);
   const [showManifest, setShowManifest] = useState(false); // manifest analyzer slide-over
@@ -183,6 +188,8 @@ export default function InventoryView() {
     api.listCategories().then((cs) => setCategories(cs.map((c) => c.label).filter(Boolean))).catch(() => {});
     api.mediaBaseDir().then(setMediaBase).catch(() => {});
     api.getStorefrontConfig().then(setStorefront).catch(() => {});
+    api.listDeals().then(setDeals).catch(() => {});
+    api.listClients().then(setClients).catch(() => {});
   }, []);
   // Live storefront link (null unless the storefront is on) — powers the header bar
   // and the per-lot "copy storefront link" actions.
@@ -557,6 +564,7 @@ export default function InventoryView() {
         return (
           <LotDetail
             lot={detail}
+            deals={deals}
             mediaBase={mediaBase}
             onClose={() => setDetailId(null)}
             onEdit={() => { setEditing(detail); setShowForm(true); setDetailId(null); }}
@@ -572,19 +580,23 @@ export default function InventoryView() {
         );
       })()}
 
-      {linkModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-[3px]" onClick={() => setLinkModal(null)}>
-          <div className="bg-surface rounded-xl shadow-xl w-80 p-5" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-[14px] font-semibold text-ink mb-3">Link to deal</h3>
-            <div className="space-y-1 max-h-60 overflow-y-auto">
-              {deals.filter(d => d.stage !== "lost" && d.stage !== "won").map((d) => (
-                <button key={d.id} onClick={async () => { try { await api.linkLotToDeal(linkModal, d.id); setLinkModal(null); load(); } catch (e: any) { toast(String(e), "error"); } }}
-                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-accent/10 text-[13px] text-ink-2">{d.title}</button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      {linkModal && (() => {
+        const lot = lots.find((l) => l.id === linkModal);
+        if (!lot) return null;
+        return (
+          <LinkDealModal
+            lot={lot}
+            deals={deals}
+            clients={clients}
+            mediaBase={mediaBase}
+            onClose={() => setLinkModal(null)}
+            onLink={async (dealId) => {
+              try { await api.linkLotToDeal(lot.id, dealId); setLinkModal(null); load(); }
+              catch (e: any) { toast(String(e), "error"); }
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -1429,8 +1441,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
   );
 }
 
-function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
-  lot: Lot; mediaBase: string; onClose: () => void; onEdit: () => void;
+function LotDetail({ lot, deals, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
+  lot: Lot; deals: Deal[]; mediaBase: string; onClose: () => void; onEdit: () => void;
   onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void; onOpenStoreLink: () => void;
 }) {
@@ -1465,6 +1477,8 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
   const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+  // Resolve the linked deal (if any) so the link is visible, not just stored.
+  const linkedDeal = lot.linked_deal_id ? deals.find((d) => d.id === lot.linked_deal_id) : null;
 
   const Row = ({ label, value }: { label: string; value: string }) => (
     <div>
@@ -1491,6 +1505,16 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           </div>
           <button onClick={onClose} className="text-muted hover:text-ink-2 flex-shrink-0"><X size={18} /></button>
         </div>
+
+        {/* Linked deal — surfaces the otherwise-invisible link, with the deal's stage. */}
+        {linkedDeal && (
+          <div className="flex items-center gap-2 px-5 py-2.5 bg-surface-2 border-b border-line">
+            <Link2 size={13} className="text-muted flex-shrink-0" />
+            <span className="text-[12px] text-muted flex-shrink-0">Linked to</span>
+            <span className="text-[12.5px] font-medium text-ink truncate">{linkedDeal.title}</span>
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ${dealStageColor(linkedDeal.stage)}`}>{dealStageLabel(linkedDeal.stage)}</span>
+          </div>
+        )}
 
         <div className="p-5 space-y-5">
           {/* Photos */}
@@ -1593,27 +1617,30 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
           </div>
         </div>
 
-        {/* Actions */}
+        {/* Actions — grouped by concern (each cluster wraps as a unit) so the row
+            reads as edit · storefront · link · status · delete, not a flat wall. */}
         <div className="flex items-center gap-2 flex-wrap p-5 border-t border-line">
           <button onClick={onEdit} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium">Edit</button>
-          {lot.status !== "sold" && lot.status !== "archived" && (
-            <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to Deal</button>
-          )}
           {storeUrl && lot.status !== "archived" && (
-            <>
+            <div className="flex items-center gap-2">
               <button onClick={onOpenStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><ExternalLink size={13} /> Open listing</button>
               <button onClick={onCopyStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Copy product link</button>
-            </>
+            </div>
           )}
-          {lot.status !== "sold" && (
-            <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><DollarSign size={13} /> Mark Sold</button>
+          {lot.status !== "sold" && lot.status !== "archived" && (
+            <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to deal</button>
           )}
-          {lot.status !== "archived" && (
-            <button onClick={() => onStatus("archived")} className="flex items-center gap-1 border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg"><Ban size={13} /> Not Available</button>
-          )}
-          {(lot.status === "sold" || lot.status === "archived") && (
-            <button onClick={() => onStatus("available")} className="border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2">Restore</button>
-          )}
+          <div className="flex items-center gap-2">
+            {lot.status !== "sold" && (
+              <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><DollarSign size={13} /> Mark sold</button>
+            )}
+            {lot.status !== "archived" && (
+              <button onClick={() => onStatus("archived")} className="flex items-center gap-1 border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg"><Ban size={13} /> Mark unavailable</button>
+            )}
+            {(lot.status === "sold" || lot.status === "archived") && (
+              <button onClick={() => onStatus("available")} className="border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2">Restore</button>
+            )}
+          </div>
           <button onClick={onDelete} className="flex items-center gap-1 border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg ml-auto"><Trash2 size={13} /> Delete</button>
         </div>
       </div>
@@ -1625,5 +1652,104 @@ function LotDetail({ lot, mediaBase, onClose, onEdit, onStatus, onToggleSent, on
       </div>
     )}
     </>
+  );
+}
+
+// ── Link-to-deal picker ───────────────────────────────────────────────────────
+// Picks the open deal to attach this lot to. Carries the product's identity (so
+// you can't misfire onto the wrong lot), shows each deal's stage + client + ask,
+// and highlights the current link. Re-linking is a click; unlink needs a backend
+// command that doesn't exist yet, so it's intentionally omitted for now.
+function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
+  lot: Lot; deals: Deal[]; clients: Client[]; mediaBase: string;
+  onClose: () => void; onLink: (dealId: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useDismiss(ref, true, onClose);
+
+  const clientName = (id: string) => clients.find((c) => c.id === id)?.name || "";
+  // Only open deals are linkable — a won/lost deal is settled.
+  const open = deals.filter((d) => d.stage !== "lost" && d.stage !== "won");
+  const query = q.trim().toLowerCase();
+  const matches = open.filter((d) =>
+    !query || d.title.toLowerCase().includes(query) || clientName(d.client_id).toLowerCase().includes(query)
+  );
+
+  const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
+  const thumb = photos[0] ? convertFileSrc(resolvePhoto(photos[0], mediaBase)) : "";
+  // Headline price for the identity row — custom lots show their free text verbatim.
+  const isCustom = lot.price_type === "custom";
+  const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+  const totalAsk = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
+  const priceLabel = isCustom ? (priceText || "—") : fmtAmount(totalAsk);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[3px]" onClick={onClose}>
+      <div ref={ref} className="bg-surface rounded-2xl border border-line shadow-[0_8px_24px_rgba(0,0,0,0.12)] w-[420px] max-w-[92vw] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-line">
+          <div className="flex items-center gap-2 min-w-0">
+            <Link2 size={15} className="text-muted flex-shrink-0" />
+            <h3 className="text-[14px] font-semibold text-ink">Link to deal</h3>
+            <span className="text-[11px] text-muted flex-shrink-0">{open.length} open</span>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-ink-2 flex-shrink-0"><X size={16} /></button>
+        </div>
+
+        {/* Product identity — never leaves you guessing which lot you're linking. */}
+        <div className="flex items-center gap-3 px-5 py-3 bg-surface-2 border-b border-line">
+          <div className="w-10 h-10 rounded-lg bg-surface-3 overflow-hidden flex items-center justify-center flex-shrink-0">
+            {thumb ? <img src={thumb} alt="" className="w-full h-full object-cover" /> : <Package size={16} className="text-faint" strokeWidth={1.5} />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium text-ink truncate">{lot.name}</p>
+            <p className="text-[12px] text-muted tabular-nums truncate">{priceLabel}</p>
+          </div>
+        </div>
+
+        {/* Search — only when the list is long enough to warrant it. */}
+        {open.length > 6 && (
+          <div className="px-5 pt-3">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search deals or clients" autoFocus
+                className="border border-line pl-9 pr-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
+            </div>
+          </div>
+        )}
+
+        {open.length === 0 ? (
+          <div className="px-5 py-10 text-center">
+            <div className="w-11 h-11 rounded-xl bg-surface-2 flex items-center justify-center mx-auto mb-3"><GitBranch size={18} className="text-faint" strokeWidth={1.5} /></div>
+            <p className="text-[13px] font-medium text-ink">No open deals yet</p>
+            <p className="text-[12px] text-muted mt-1">Create a deal in Deals to link this product.</p>
+          </div>
+        ) : matches.length === 0 ? (
+          <div className="px-5 py-8 text-center text-[12px] text-muted">No deals match your search.</div>
+        ) : (
+          <div className="max-h-72 overflow-y-auto p-2">
+            {matches.map((d) => {
+              const linked = lot.linked_deal_id === d.id;
+              const client = clientName(d.client_id);
+              return (
+                <button key={d.id} onClick={() => onLink(d.id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg flex items-center gap-3 transition-colors ${linked ? "bg-accent/10 ring-1 ring-accent/30" : "hover:bg-surface-2"}`}>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-[13px] font-medium text-ink truncate">{d.title}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ${dealStageColor(d.stage)}`}>{dealStageLabel(d.stage)}</span>
+                    </div>
+                    {client && <p className="text-[11px] text-muted truncate mt-0.5">{client}</p>}
+                  </div>
+                  {d.asking_price > 0 && <span className="text-[12px] text-ink-2 tabular-nums flex-shrink-0">{fmtAmount(d.asking_price)}</span>}
+                  {linked && <Check size={15} className="text-accent flex-shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

@@ -88,3 +88,12 @@ regex = "1"
 image = "0.24"
 dirs = "5"
 rand = "0.8"
+
+# macOS 26 (Tahoe) launch-crash fix. macOS 26 changed the Obj-C type encoding for
+# fast enumeration (countByEnumeratingWithState:objects:count:) from 'q' to 'Q';
+# objc2's strict check then panics inside tao's did_finish_launching → SIGABRT on
+# launch. This feature (already present in the locked objc2 0.6.4, just off) makes
+# the signed/unsigned codes interchangeable. Cargo feature unification flips it for
+# tao/wry too — no version bump. See tauri-apps/tao#1171.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", features = ["relax-sign-encoding"] }

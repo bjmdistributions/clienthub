@@ -51,6 +51,64 @@ fn dirs_next_data_dir() -> Option<std::path::PathBuf> {
     { std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")) }
 }
 
+/// Show a native error dialog via a subprocess. Deliberately avoids the app's
+/// event loop and the Objective-C runtime: the setup hook runs on the main
+/// thread before the loop starts, and an in-process dialog would route through
+/// objc2 (the same runtime implicated in the macOS 26 startup abort). A separate
+/// process shows the message even when our own process can't. Best-effort — the
+/// text is passed via an env var so neither AppleScript nor PowerShell needs
+/// escaping. The message is always written to startup-error.log regardless.
+fn show_startup_error_dialog(body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("osascript")
+            .env("ECLIPTR_STARTUP_ERR", body)
+            .args([
+                "-e",
+                "display dialog (system attribute \"ECLIPTR_STARTUP_ERR\") with title \"Ecliptr - startup error\" buttons {\"OK\"} default button \"OK\" with icon stop",
+            ])
+            .status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("powershell")
+            .env("ECLIPTR_STARTUP_ERR", body)
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($env:ECLIPTR_STARTUP_ERR, 'Ecliptr - startup error', 'OK', 'Error')",
+            ])
+            .status();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    { let _ = body; }
+}
+
+/// Run a critical startup step. On failure, record it to startup-error.log and
+/// show a native error dialog, then exit — instead of returning `Err` from
+/// `setup`, which unwinds into tao's `did_finish_launching` (an `extern "C"`
+/// callback that cannot unwind) and aborts with a silent SIGABRT. On success,
+/// returns the step's value unchanged.
+fn expect_startup<T, E: std::fmt::Display>(step: &str, result: Result<T, E>) -> T {
+    match result {
+        Ok(v) => v,
+        Err(e) => {
+            let base = dirs_next_data_dir().unwrap_or_else(std::env::temp_dir);
+            let log_path = base
+                .join("com.bjmdistributions.clienthub")
+                .join("startup-error.log");
+            write_startup_log(&format!("SETUP FAILED [{step}]: {e}"));
+            show_startup_error_dialog(&format!(
+                "Ecliptr could not finish starting up.\n\n{step} failed: {e}\n\nDetails were saved to:\n{}",
+                log_path.display()
+            ));
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -77,8 +135,11 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_drag::init())
         .setup(|app| {
-            db::init(app)?;
-            signup_rules::ensure_table()?;
+            // Critical startup steps: on failure show a native dialog + log and
+            // exit, rather than returning Err (which aborts inside tao's
+            // did_finish_launching as a silent SIGABRT).
+            expect_startup("Database", db::init(app));
+            expect_startup("Signup rules table", signup_rules::ensure_table());
             // Unified RBAC tables + system roles (synced with the server).
             if let Err(e) = employees::ensure_rbac() {
                 tracing::warn!("rbac init failed: {}", e);
@@ -92,7 +153,7 @@ fn main() {
 
             // Sync folder lives next to the DB. Syncthing/Dropbox can target this.
             let sync_dir = db::app_data_dir().join("sync");
-            sync::init(sync_dir)?;
+            expect_startup("Sync", sync::init(sync_dir));
             // Phase 2 network sync: outbound queue + background push/pull loop.
             // Inert until a server connection is configured (BJM folder-sync unaffected).
             if let Err(e) = netsync::ensure_tables() {
@@ -627,6 +688,7 @@ fn main() {
             allocate_bank_txn,
             remove_bank_allocation,
             list_bank_allocations_for_txn,
+            clear_bank_txns,
             get_money_config,
             set_money_config,
             financials_overview,
