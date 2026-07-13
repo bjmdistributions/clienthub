@@ -1251,4 +1251,111 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE deal_flows ADD COLUMN deposit_amount REAL NOT NULL DEFAULT 0;
         "#,
     ),
+    (
+        60,
+        // ── Financial / treasury engine (BJM books) ────────────────────────────
+        // Deal-level terms the money engine needs (all optional; expected_sale/cost
+        // are DERIVED from invoice_total / total_supplier_cost, so not stored here).
+        // Plus five new synced tables: raw immutable bank transactions, allocations
+        // (bank money → deals, the core of the truth engine), cash purchases, business
+        // expenses, and the append-only reserve ledger (tax + refund holds).
+        // Every new table carries org_id + NOT NULL DEFAULTs so partial/out-of-order
+        // upserts can stub-insert. Column sets are kept BYTE-IDENTICAL with
+        // clienthub-api schema.sql + sync.rs ensure_meta_tables so upserts round-trip
+        // (the server has no schema-drift tolerance — a missing column stalls sync).
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN model TEXT;
+        ALTER TABLE deal_flows ADD COLUMN payment_rail TEXT;
+        ALTER TABLE deal_flows ADD COLUMN closed_by TEXT;
+        ALTER TABLE deal_flows ADD COLUMN settlement_days INTEGER;
+        ALTER TABLE deal_flows ADD COLUMN inspection_days INTEGER;
+
+        CREATE TABLE IF NOT EXISTS bank_txn (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            account_id TEXT NOT NULL DEFAULT '',
+            posted_at TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            direction TEXT NOT NULL DEFAULT 'out',
+            description TEXT NOT NULL DEFAULT '',
+            memo_raw TEXT NOT NULL DEFAULT '',
+            rail TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            counterparty_type TEXT NOT NULL DEFAULT '',
+            counterparty_id TEXT NOT NULL DEFAULT '',
+            counterparty_name TEXT NOT NULL DEFAULT '',
+            fitid TEXT NOT NULL DEFAULT '',
+            wire_ref TEXT NOT NULL DEFAULT '',
+            check_num TEXT NOT NULL DEFAULT '',
+            balance REAL NOT NULL DEFAULT 0,
+            source_format TEXT NOT NULL DEFAULT '',
+            reviewed INTEGER NOT NULL DEFAULT 0,
+            raw_json TEXT NOT NULL DEFAULT '',
+            imported_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_bank_txn_org_date ON bank_txn(org_id, posted_at);
+
+        CREATE TABLE IF NOT EXISTS bank_allocation (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            bank_txn_id TEXT NOT NULL DEFAULT '',
+            deal_flow_id TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            role TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_bank_allocation_txn ON bank_allocation(bank_txn_id);
+        CREATE INDEX IF NOT EXISTS idx_bank_allocation_deal ON bank_allocation(deal_flow_id);
+
+        CREATE TABLE IF NOT EXISTS cash_purchase (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            deal_flow_id TEXT NOT NULL DEFAULT '',
+            supplier_id TEXT NOT NULL DEFAULT '',
+            withdrawal_txn_id TEXT NOT NULL DEFAULT '',
+            paid_at TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            discount_pct REAL NOT NULL DEFAULT 0,
+            invoice_url TEXT NOT NULL DEFAULT '',
+            supplier_ein TEXT NOT NULL DEFAULT '',
+            returned_to_bank REAL NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_cash_purchase_deal ON cash_purchase(deal_flow_id);
+
+        CREATE TABLE IF NOT EXISTS business_expense (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            date TEXT NOT NULL DEFAULT '',
+            vendor TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            recurring INTEGER NOT NULL DEFAULT 0,
+            bank_txn_id TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS reserve_entry (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            date TEXT NOT NULL DEFAULT '',
+            ledger TEXT NOT NULL DEFAULT '',
+            direction TEXT NOT NULL DEFAULT 'in',
+            amount REAL NOT NULL DEFAULT 0,
+            deal_flow_id TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_reserve_entry_ledger ON reserve_entry(org_id, ledger);
+        "#,
+    ),
 ];

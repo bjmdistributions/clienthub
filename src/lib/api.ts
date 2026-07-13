@@ -1302,6 +1302,34 @@ export interface ImportSummary {
   errors: string[];
 }
 
+export interface BankRow {
+  posted_at: string;
+  amount: number;
+  direction: "in" | "out";
+  description: string;
+  memo_raw: string;
+  rail: string;
+  category: string;
+  counterparty_name: string;
+  fitid: string;
+  wire_ref: string;
+  check_num: string;
+  balance: number;
+}
+export interface BankPreview {
+  format: "ofx" | "csv";
+  total: number;
+  has_fitid: boolean;
+  sample: BankRow[];
+}
+export interface BankImportSummary {
+  imported: number;
+  skipped: number;
+  errors: string[];
+  format: "ofx" | "csv";
+  has_fitid: boolean;
+}
+
 export interface SignupRule {
   id: string;
   name: string;
@@ -1852,6 +1880,11 @@ export const api = {
   csvPreview: (path: string) => invoke<CsvPreview>("csv_preview", { path }),
   csvImport: (path: string, mapping: ColumnMapping) =>
     invoke<ImportSummary>("csv_import", { path, mapping }),
+
+  // Bank statement import (financial engine)
+  bankPreview: (path: string) => invoke<BankPreview>("bank_preview", { path }),
+  bankImport: (path: string, accountId: string) =>
+    invoke<BankImportSummary>("bank_import", { path, account_id: accountId }),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),

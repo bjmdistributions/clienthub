@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod bank_import;
 mod checkups;
 mod commands;
 mod csv_import;
@@ -603,6 +604,9 @@ fn main() {
             // CSV import
             csv_preview,
             csv_import,
+            // Bank statement import (financial engine)
+            bank_preview,
+            bank_import,
             // Signup rules
             list_signup_rules,
             create_signup_rule,

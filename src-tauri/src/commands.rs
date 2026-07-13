@@ -9318,6 +9318,19 @@ pub async fn csv_import(
     crate::csv_import::import(&path, &mapping).map_err(|e| e.to_string())
 }
 
+/// Preview a Chase statement (OFX/QBO/CSV) — parsed sample + detected format so the
+/// user can confirm before importing.
+#[tauri::command]
+pub async fn bank_preview(path: String) -> Result<crate::bank_import::BankPreview, String> {
+    crate::bank_import::preview(&path).map_err(|e| e.to_string())
+}
+
+/// Import a Chase statement into the immutable bank_txn ledger (deduped, synced).
+#[tauri::command]
+pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank_import::BankImportSummary, String> {
+    crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())
+}
+
 // ============================================================
 //  Signup Rules
 // ============================================================
