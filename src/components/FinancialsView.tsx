@@ -3,7 +3,7 @@ import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
 } from "lucide-react";
 import {
-  api, BankTxn, BankTxnSummary, BankPreview, BankAllocation, DealFlow,
+  api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAllocation, DealFlow,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -53,6 +53,12 @@ export default function FinancialsView() {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [preview, setPreview]         = useState<BankPreview | null>(null);
   const [importing, setImporting]     = useState(false);
+
+  // AI import (any statement — credit cards / other banks)
+  const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
+  const [aiPreview, setAiPreview]         = useState<BankAiPreview | null>(null);
+  const [aiExtracting, setAiExtracting]   = useState(false);
+  const [aiImporting, setAiImporting]     = useState(false);
 
   // Filters
   const [search, setSearch]           = useState("");
@@ -137,6 +143,35 @@ export default function FinancialsView() {
       await refreshAll(false);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setImporting(false); }
+  };
+
+  // AI import flow — reads ANY statement (credit cards, other banks) via LLM.
+  const pickAndPreviewAi = async () => {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: "Statement", extensions: ["pdf", "ofx", "qbo", "qfx", "csv"] }],
+    });
+    if (typeof selected !== "string") return;
+    setAiPreviewPath(selected);
+    setAiPreview(null);
+    setAiExtracting(true);
+    try {
+      const p = await api.bankPreviewAi(selected);
+      setAiPreview(p);
+    } catch (e: any) { toast(String(e), "error"); setAiPreviewPath(null); }
+    finally { setAiExtracting(false); }
+  };
+
+  const doImportAi = async () => {
+    if (!aiPreviewPath) return;
+    setAiImporting(true);
+    try {
+      const s = await api.bankImportAi(aiPreviewPath, accountId.trim() || "chase-business");
+      toast(`AI imported ${s.imported} (extracted ${s.extracted}); skipped ${s.skipped} already-imported. Review + allocate below.`);
+      setAiPreview(null); setAiPreviewPath(null);
+      await refreshAll(false);
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setAiImporting(false); }
   };
 
   // Save classification / reviewed flag (merges with existing fields).
@@ -298,28 +333,41 @@ export default function FinancialsView() {
       {tab === "transactions" && (
       <div className="space-y-5">
       {/* Import + AI toolbar */}
-      <div className="flex items-center justify-end gap-2 flex-wrap">
-        <button
-          onClick={aiCategorize}
-          disabled={aiBusy}
-          className="flex items-center gap-1.5 px-3 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
-        >
-          {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Auto-categorize with AI
-        </button>
-        <label className="flex items-center gap-1.5 text-[12px] text-muted">
-          Account
-          <input
-            value={accountId}
-            onChange={(e) => setAccountId(e.target.value)}
-            className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-40 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-        </label>
-        <button
-          onClick={pickAndPreview}
-          className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
-        >
-          <Upload size={14} /> Import statement
-        </button>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-end gap-2 flex-wrap">
+          <button
+            onClick={aiCategorize}
+            disabled={aiBusy}
+            className="flex items-center gap-1.5 px-3 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+          >
+            {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Auto-categorize with AI
+          </button>
+          <label className="flex items-center gap-1.5 text-[12px] text-muted">
+            Account
+            <input
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              className="border border-line px-2.5 h-9 rounded-lg text-[13px] w-40 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
+            />
+          </label>
+          <button
+            onClick={pickAndPreview}
+            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
+          >
+            <Upload size={14} /> Import statement
+          </button>
+          <button
+            onClick={pickAndPreviewAi}
+            disabled={aiExtracting}
+            className="flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+          >
+            {aiExtracting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Smart import (AI)
+          </button>
+        </div>
+        <p className="text-[11px] text-muted text-right leading-relaxed">
+          Smart import reads any statement with AI — for credit cards and other banks. Set a distinct account per card
+          (e.g. chase-card, amex) so each groups and dedupes separately.
+        </p>
       </div>
 
       {/* Import preview / confirm card */}
@@ -370,6 +418,63 @@ export default function FinancialsView() {
                     <td className="px-3 py-2 text-ink-2 max-w-0 truncate"><span className="truncate block">{r.description}</span></td>
                     <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${r.direction === "in" ? "text-success-ink" : "text-ink"}`}>
                       {fmtAmount(r.amount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* AI import preview / confirm card */}
+      {aiPreview && (
+        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="text-[13px] text-ink">
+              Extracted <span className="tabular-nums font-semibold">{aiPreview.total}</span> transaction{aiPreview.total !== 1 ? "s" : ""}
+              {aiPreview.ending_balance != null && (
+                <span className="text-muted">
+                  {" "}· statement ending balance{" "}
+                  <span className="tabular-nums font-semibold text-ink-2">{fmtAmount(aiPreview.ending_balance)}</span>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={doImportAi}
+                disabled={aiImporting}
+                className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              >
+                {aiImporting ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Import
+              </button>
+              <button
+                onClick={() => { setAiPreview(null); setAiPreviewPath(null); }}
+                className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          <div className="border border-line-2 rounded-lg overflow-x-auto">
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="text-left text-muted border-b border-line-2">
+                  <th className="font-medium px-3 py-2 whitespace-nowrap">Date</th>
+                  <th className="font-medium px-3 py-2">Description</th>
+                  <th className="font-medium px-3 py-2 whitespace-nowrap">Category</th>
+                  <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line-2">
+                {aiPreview.sample.slice(0, 8).map((r, i) => (
+                  <tr key={i}>
+                    <td className="px-3 py-2 tabular-nums text-muted whitespace-nowrap">{(r.date || "").slice(0, 10)}</td>
+                    <td className="px-3 py-2 text-ink-2 max-w-0 truncate"><span className="truncate block">{r.description}</span></td>
+                    <td className="px-3 py-2 text-muted whitespace-nowrap">{r.category || "—"}</td>
+                    <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${r.direction === "in" ? "text-success-ink" : "text-ink"}`}>
+                      {r.direction === "in" ? "+" : "-"}{fmtAmount(r.amount)}
                     </td>
                   </tr>
                 ))}

@@ -9331,6 +9331,63 @@ pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank
     crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())
 }
 
+/// Convert AI-extracted statement transactions into ParsedRows.
+fn ai_txns_to_rows(txns: &[Value]) -> Vec<crate::bank_import::ParsedRow> {
+    let mut rows = Vec::new();
+    for t in txns {
+        let amount = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0).abs();
+        if amount == 0.0 { continue; }
+        let desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let dir = t.get("direction").and_then(|v| v.as_str()).unwrap_or("out");
+        rows.push(crate::bank_import::ParsedRow {
+            posted_at: t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            amount,
+            direction: if dir == "in" { "in".into() } else { "out".into() },
+            description: desc.clone(),
+            memo_raw: desc,
+            rail: String::new(),
+            category: t.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            counterparty_name: t.get("counterparty").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+            fitid: String::new(),
+            wire_ref: String::new(),
+            check_num: String::new(),
+            balance: 0.0,
+        });
+    }
+    rows
+}
+
+/// SMART import — AI-extract transactions from ANY statement (credit cards, other
+/// banks, messy layouts) then dedupe + persist. Returns counts + the statement's
+/// ending balance for a reconciliation check.
+#[tauri::command]
+pub async fn bank_preview_ai(path: String) -> Result<Value, String> {
+    let text = crate::bank_import::statement_text(&path).map_err(|e| e.to_string())?;
+    let out = crate::ai::extract_statement(&text).await.map_err(|e| e.to_string())?;
+    let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    Ok(json!({
+        "total": txns.len(),
+        "ending_balance": out.get("ending_balance").cloned().unwrap_or(Value::Null),
+        "sample": txns.iter().take(10).cloned().collect::<Vec<_>>(),
+    }))
+}
+
+#[tauri::command]
+pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, String> {
+    let text = crate::bank_import::statement_text(&path).map_err(|e| e.to_string())?;
+    let out = crate::ai::extract_statement(&text).await.map_err(|e| e.to_string())?;
+    let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let rows = ai_txns_to_rows(&txns);
+    let summary = crate::bank_import::persist_rows(&rows, &account_id, "ai").map_err(|e| e.to_string())?;
+    Ok(json!({
+        "imported": summary.imported,
+        "skipped": summary.skipped,
+        "errors": summary.errors,
+        "extracted": txns.len(),
+        "ending_balance": out.get("ending_balance").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 // ── Financial engine: transactions, classification, allocation ──────────────
 
 /// All bank transactions with their allocated total + remaining unallocated.
@@ -9501,6 +9558,7 @@ pub async fn get_money_config() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     Ok(json!({
         "bank_balance": read_setting_f64(&conn, "money_bank_balance", 0.0),
+        "credit_card_balance": read_setting_f64(&conn, "money_credit_card_balance", 0.0),
         "cash_floor": read_setting_f64(&conn, "money_cash_floor", 0.0),
         "tax_sweep_pct": read_setting_f64(&conn, "money_tax_sweep_pct", 0.30),
         "refund_reserve_pct": read_setting_f64(&conn, "money_refund_reserve_pct", 0.10),
@@ -9509,8 +9567,9 @@ pub async fn get_money_config() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn set_money_config(bank_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64) -> Result<(), String> {
+pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64) -> Result<(), String> {
     write_setting("money_bank_balance", &format!("{}", bank_balance))?;
+    write_setting("money_credit_card_balance", &format!("{}", credit_card_balance))?;
     write_setting("money_cash_floor", &format!("{}", cash_floor))?;
     write_setting("money_tax_sweep_pct", &format!("{}", tax_sweep_pct))?;
     write_setting("money_refund_reserve_pct", &format!("{}", refund_reserve_pct))?;
@@ -9524,6 +9583,7 @@ pub async fn financials_overview() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let round2 = |x: f64| (x * 100.0).round() / 100.0;
     let bank_balance = read_setting_f64(&conn, "money_bank_balance", 0.0);
+    let credit_card_balance = read_setting_f64(&conn, "money_credit_card_balance", 0.0).max(0.0);
     let cash_floor = read_setting_f64(&conn, "money_cash_floor", 0.0);
 
     // Supplier payables: unpaid supplier cost on deals where the buyer HAS paid but
@@ -9555,7 +9615,7 @@ pub async fn financials_overview() -> Result<Value, String> {
         "SELECT COALESCE(SUM(CASE WHEN principal - set_aside > 0 THEN principal - set_aside ELSE 0 END),0) FROM loan WHERE status='open'",
         [], |r| r.get(0)).unwrap_or(0.0);
 
-    let free_cash = round2(bank_balance - supplier_payables - refund_liability - tax_reserve - refund_reserve - cash_floor - loan_outstanding);
+    let free_cash = round2(bank_balance - credit_card_balance - supplier_payables - refund_liability - tax_reserve - refund_reserve - cash_floor - loan_outstanding);
 
     // Trailing monthly opex (last 90 days / 3) for the runway/status.
     let opex_3mo: f64 = conn.query_row(
@@ -9575,6 +9635,7 @@ pub async fn financials_overview() -> Result<Value, String> {
 
     Ok(json!({
         "bank_balance": round2(bank_balance),
+        "credit_card_balance": round2(credit_card_balance),
         "supplier_payables": round2(supplier_payables),
         "refund_liability": round2(refund_liability),
         "tax_reserve": round2(tax_reserve),

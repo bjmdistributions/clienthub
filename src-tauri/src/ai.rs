@@ -439,6 +439,70 @@ pub async fn parse_load(text: &str, image_base64: Option<&str>, image_media_type
     Err(last_err.unwrap_or_else(|| anyhow!("AI request failed")))
 }
 
+/// Extract EVERY transaction from a bank or credit-card statement's raw text using
+/// Claude (handles any layout — checking, debit, Chase/Amex cards). Returns
+/// {"transactions":[{date,description,amount,direction,category,counterparty}],
+///  "ending_balance":number|null}. amount is positive; direction "in"/"out".
+pub async fn extract_statement(text: &str) -> Result<Value> {
+    let key = anthropic_key().ok_or_else(|| anyhow!(
+        "No AI key set. Add your Anthropic API key in Settings to enable smart statement import."
+    ))?;
+    if text.trim().is_empty() {
+        return Err(anyhow!("This statement had no readable text to extract."));
+    }
+    let system = "You extract EVERY money transaction from a bank or credit-card statement. \
+Return ONLY valid JSON, no markdown: \
+{\"transactions\":[{\"date\":\"YYYY-MM-DD\",\"description\":string,\"amount\":number,\"direction\":\"in\"|\"out\",\"category\":string,\"counterparty\":string}],\"ending_balance\":number|null}. \
+Rules: amount is ALWAYS a positive plain number (no sign, no $, no commas). \
+direction: for a checking/debit account, money leaving = \"out\" and money arriving = \"in\". \
+For a CREDIT CARD, a purchase/charge = \"out\" and a payment or credit to the card = \"in\". \
+category is exactly one of: receipt, payment, fee, shipping, software, owner_draw, card_payment, internal_transfer, cash_in, cash_out, interest, other. \
+Use \"card_payment\" for a payment made TO a credit card, \"internal_transfer\" for a transfer between the owner's own accounts, \"interest\" for interest charges, \"receipt\" for money in from a customer, \"payment\" for money out to a supplier. \
+counterparty is the merchant or other party's name, or \"\". \
+Infer the 4-digit year from the statement period (rows may show only MM/DD). \
+Include fees and interest as transactions. Do NOT emit running-balance, subtotal, 'new balance', 'minimum payment', 'previous balance', or any summary line — only real dated transactions. Never invent transactions.";
+    let body = serde_json::json!({
+        "model": LOAD_MODEL,
+        "max_tokens": 8192,
+        "system": system,
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": format!("Statement text:\n{}", text.trim()) }] }]
+    });
+    let client = http_client()?;
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let resp = client.post(ANTHROPIC_URL)
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body).send().await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                let v: Value = r.json().await.context("Anthropic returned invalid JSON")?;
+                let raw = v.get("content").and_then(|c| c.as_array())
+                    .and_then(|arr| arr.iter().find_map(|b| b.get("text").and_then(|t| t.as_str())))
+                    .ok_or_else(|| anyhow!("Unexpected AI response shape"))?;
+                let cleaned = raw.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                let parsed: Value = serde_json::from_str(cleaned)
+                    .with_context(|| format!("AI returned non-JSON: {}", cleaned))?;
+                return Ok(parsed);
+            }
+            Ok(r) => {
+                let status = r.status();
+                let txt = r.text().await.unwrap_or_default();
+                if status.as_u16() == 401 || status.as_u16() == 403 {
+                    return Err(anyhow!("AI key rejected ({}). Check your Anthropic API key in Settings.", status));
+                }
+                last_err = Some(anyhow!("AI HTTP {}: {}", status, txt));
+            }
+            Err(e) => last_err = Some(e.into()),
+        }
+        if attempt < MAX_RETRIES {
+            tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("AI request failed")))
+}
+
 pub async fn draft_newsletter(prompt: &str, tone: &str) -> Result<String> {
     let tone_instruction = match tone {
         "formal" => "formal, professional",

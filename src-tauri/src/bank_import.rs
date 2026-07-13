@@ -345,7 +345,9 @@ fn classify(row: &mut ParsedRow, txn_type: &str) {
     let up = hay.as_str();
     row.category = if up.contains("WIRE FEE") || up.contains("SERVICE FEE") || up.contains("MONTHLY SERVICE") {
         "fee"
-    } else if up.contains("CHASE CARD") || up.contains("AMERICAN EXPRESS") || up.contains("AMEX") || up.contains("EARNEST") {
+    } else if up.contains("PAYMENT TO CHASE CARD") || up.contains("CHASE CREDIT") || up.contains("AMERICAN EXPRESS") || up.contains("AMEX EPAYMENT") || (up.contains("AMEX") && !inbound) {
+        "card_payment" // paying down a card — reconciles against the card's charges, not a new expense
+    } else if up.contains("EARNEST") {
         "owner_draw"
     } else if up.contains("PIRATE SHIP") || up.contains("SHIPSTATION") || up.contains("USPS") || up.contains("UPS") || up.contains("FEDEX") {
         "shipping"
@@ -426,18 +428,33 @@ fn stable_id(account_id: &str, row: &ParsedRow) -> String {
     format!("bt_{:016x}", fnv1a(&key))
 }
 
+/// Raw statement text (PDF or text/OFX/CSV) — for the AI extraction path.
+pub fn statement_text(path: &str) -> Result<String> {
+    if path.to_lowercase().ends_with(".pdf") {
+        pdf_extract::extract_text(path).context("extract PDF text")
+    } else {
+        read_text(path)
+    }
+}
+
 pub fn import(path: &str, account_id: &str) -> Result<BankImportSummary> {
     let (format, rows) = detect_and_parse(path)?;
+    persist_rows(&rows, account_id, &format)
+}
+
+/// Dedupe (deterministic id) + insert parsed rows into the bank_txn ledger. Shared
+/// by the deterministic parser (`import`) and the AI extraction path (commands.rs).
+pub fn persist_rows(rows: &[ParsedRow], account_id: &str, format: &str) -> Result<BankImportSummary> {
     let has_fitid = rows.iter().any(|r| !r.fitid.is_empty());
     let now = chrono::Utc::now().to_rfc3339();
     let conn = crate::db::pool().get().context("db pool")?;
 
     let mut summary = BankImportSummary {
         imported: 0, skipped: 0, errors: Vec::new(),
-        format, has_fitid,
+        format: format.to_string(), has_fitid,
     };
 
-    for row in &rows {
+    for row in rows {
         let id = stable_id(account_id, row);
         // Immutable + deduped: if this exact txn already landed, skip (no re-emit).
         let exists: bool = conn

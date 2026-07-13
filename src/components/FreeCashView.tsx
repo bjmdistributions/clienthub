@@ -75,6 +75,7 @@ export default function FreeCashView() {
 
   // Config editor buffers (raw strings — coerced on save).
   const [bankStr, setBankStr]     = useState("");
+  const [cardStr, setCardStr]     = useState("");
   const [floorStr, setFloorStr]   = useState("");
   const [taxStr, setTaxStr]       = useState("");
   const [refundStr, setRefundStr] = useState("");
@@ -94,6 +95,7 @@ export default function FreeCashView() {
       .getMoneyConfig()
       .then((c: MoneyConfig) => {
         setBankStr(String(c.bank_balance));
+        setCardStr(String(c.credit_card_balance));
         setFloorStr(String(c.cash_floor));
         setTaxStr(String(c.tax_sweep_pct));
         setRefundStr(String(c.refund_reserve_pct));
@@ -112,6 +114,7 @@ export default function FreeCashView() {
     try {
       await api.setMoneyConfig(
         Number(bankStr)   || 0,
+        Number(cardStr)   || 0,
         Number(floorStr)  || 0,
         Number(taxStr)    || 0,
         Number(refundStr) || 0,
@@ -129,6 +132,7 @@ export default function FreeCashView() {
 
   const deductions = ov
     ? [
+        { label: "Credit cards owed",                  tag: "not yours",    value: ov.credit_card_balance },
         { label: "Supplier payables",                  tag: "not yours",    value: ov.supplier_payables },
         { label: "Refund liability (we owe buyers)",   tag: "not yours",    value: ov.refund_liability },
         { label: "Tax reserve",                        tag: "untouchable",  value: ov.tax_reserve },
@@ -273,6 +277,13 @@ export default function FreeCashView() {
                 prefix="$"
                 value={bankStr}
                 onChange={setBankStr}
+              />
+              <NumField
+                label="Credit card balance owed"
+                hint="Total owed across your business credit cards — enter from your latest statements."
+                prefix="$"
+                value={cardStr}
+                onChange={setCardStr}
               />
               <NumField
                 label="Cash floor"

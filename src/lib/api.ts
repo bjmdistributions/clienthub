@@ -1366,13 +1366,27 @@ export interface BankAllocation {
 }
 export interface MoneyConfig {
   bank_balance: number;
+  credit_card_balance: number;
   cash_floor: number;
   tax_sweep_pct: number;
   refund_reserve_pct: number;
   war_chest: number;
 }
+export interface BankAiPreview {
+  total: number;
+  ending_balance: number | null;
+  sample: { date: string; description: string; amount: number; direction: "in" | "out"; category: string; counterparty: string }[];
+}
+export interface BankAiImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
+  extracted: number;
+  ending_balance: number | null;
+}
 export interface FinancialsOverview {
   bank_balance: number;
+  credit_card_balance: number;
   supplier_payables: number;
   refund_liability: number;
   tax_reserve: number;
@@ -1953,6 +1967,9 @@ export const api = {
   bankPreview: (path: string) => invoke<BankPreview>("bank_preview", { path }),
   bankImport: (path: string, accountId: string) =>
     invoke<BankImportSummary>("bank_import", { path, account_id: accountId }),
+  bankPreviewAi: (path: string) => invoke<BankAiPreview>("bank_preview_ai", { path }),
+  bankImportAi: (path: string, accountId: string) =>
+    invoke<BankAiImportResult>("bank_import_ai", { path, accountId }),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
@@ -1963,8 +1980,8 @@ export const api = {
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
-  setMoneyConfig: (bankBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
-    invoke<void>("set_money_config", { bankBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),
+  setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
+    invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),
   financialsOverview: () => invoke<FinancialsOverview>("financials_overview"),
   aiCategorizeBankTxns: () => invoke<{ updated: number }>("ai_categorize_bank_txns"),
   listLoans: () => invoke<Loan[]>("list_loans"),

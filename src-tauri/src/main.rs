@@ -607,6 +607,8 @@ fn main() {
             // Bank statement import (financial engine)
             bank_preview,
             bank_import,
+            bank_preview_ai,
+            bank_import_ai,
             list_bank_txns,
             bank_txn_summary,
             set_bank_txn_review,
