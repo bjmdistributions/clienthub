@@ -28,6 +28,7 @@ import {
   Building2,
   Wallet,
   Banknote,
+  Landmark,
   Archive as ArchiveIcon,
   CopyPlus,
 } from "lucide-react";
@@ -54,6 +55,7 @@ import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
 import ArchiveView from "./components/ArchiveView";
 import SheetCopyView from "./components/SheetCopyView";
+import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import { FeedbackModal } from "./components/FeedbackModal";
 import CheckupView from "./components/CheckupView";
@@ -70,7 +72,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab, isAdmin } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -414,6 +416,7 @@ export default function App() {
       { id: "receivables", label: "Receivables", icon: Wallet },
       { id: "payables",   label: "Payables",   icon: Banknote },
     ] },
+    { id: "financials", label: "Financials", icon: Landmark },
     { id: "email", label: "Newsletter", icon: Mail },
     { id: "brief", label: "Brief", icon: FileText },
     { id: "analytics", label: "Analytics", icon: BarChart3, children: [
@@ -432,6 +435,8 @@ export default function App() {
   const visible = (id: Tab): boolean =>
     id === "platform" ? (superadmin || localSuper)
     : id === "archive" ? isAdmin(me)              // admin-only, like the money views
+    : id === "financials" ? isAdmin(me)           // owner/admin books area
+
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
     : canViewTab(me, id as any);
@@ -503,6 +508,7 @@ export default function App() {
           {t === "suppliers"  && <SuppliersView />}
           {t === "inventory"  && <InventoryView />}
           {t === "sheetcopy"  && <SheetCopyView />}
+          {t === "financials" && <FinancialsView />}
           {t === "deals"      && <CloseoutView />}
           {t === "analytics"  && <AnalyticsView />}
           {t === "health"     && <TiersView />}

@@ -607,6 +607,12 @@ fn main() {
             // Bank statement import (financial engine)
             bank_preview,
             bank_import,
+            list_bank_txns,
+            bank_txn_summary,
+            set_bank_txn_review,
+            allocate_bank_txn,
+            remove_bank_allocation,
+            list_bank_allocations_for_txn,
             // Signup rules
             list_signup_rules,
             create_signup_rule,

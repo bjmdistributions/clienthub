@@ -1329,6 +1329,41 @@ export interface BankImportSummary {
   format: "ofx" | "csv";
   has_fitid: boolean;
 }
+export interface BankTxn {
+  id: string;
+  posted_at: string;
+  amount: number;
+  direction: "in" | "out";
+  description: string;
+  rail: string;
+  category: string;
+  counterparty_name: string;
+  counterparty_type: string;
+  counterparty_id: string;
+  wire_ref: string;
+  reviewed: boolean;
+  account_id: string;
+  allocated: number;
+  alloc_count: number;
+  unallocated: number;
+}
+export interface BankTxnSummary {
+  total: number;
+  reviewed: number;
+  sum_in: number;
+  sum_out: number;
+  unallocated_in: number;
+}
+export interface BankAllocation {
+  id: string;
+  deal_flow_id: string;
+  amount: number;
+  role: string;
+  note: string;
+  deal_name: string;
+  invoice_number: string;
+  client_name: string;
+}
 
 export interface SignupRule {
   id: string;
@@ -1885,6 +1920,15 @@ export const api = {
   bankPreview: (path: string) => invoke<BankPreview>("bank_preview", { path }),
   bankImport: (path: string, accountId: string) =>
     invoke<BankImportSummary>("bank_import", { path, account_id: accountId }),
+  listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
+  bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
+  setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
+    invoke<void>("set_bank_txn_review", { id, category, counterpartyName, counterpartyType, counterpartyId, reviewed }),
+  allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string) =>
+    invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note }),
+  removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
+  listBankAllocationsForTxn: (bankTxnId: string) =>
+    invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),

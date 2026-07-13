@@ -9331,6 +9331,164 @@ pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank
     crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())
 }
 
+// ── Financial engine: transactions, classification, allocation ──────────────
+
+/// All bank transactions with their allocated total + remaining unallocated.
+#[tauri::command]
+pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description, bt.rail, bt.category,
+                bt.counterparty_name, bt.counterparty_type, bt.counterparty_id, bt.wire_ref, bt.reviewed, bt.account_id,
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
+                (SELECT COUNT(*) FROM bank_allocation a WHERE a.bank_txn_id=bt.id) AS alloc_count
+         FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let amount: f64 = r.get(2)?;
+        let allocated: f64 = r.get(13)?;
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "posted_at": r.get::<_, String>(1)?,
+            "amount": amount,
+            "direction": r.get::<_, String>(3)?,
+            "description": r.get::<_, String>(4)?,
+            "rail": r.get::<_, String>(5)?,
+            "category": r.get::<_, String>(6)?,
+            "counterparty_name": r.get::<_, String>(7)?,
+            "counterparty_type": r.get::<_, String>(8)?,
+            "counterparty_id": r.get::<_, String>(9)?,
+            "wire_ref": r.get::<_, String>(10)?,
+            "reviewed": r.get::<_, i64>(11)? != 0,
+            "account_id": r.get::<_, String>(12)?,
+            "allocated": allocated,
+            "alloc_count": r.get::<_, i64>(14)?,
+            "unallocated": ((amount - allocated) * 100.0).round() / 100.0,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Headline counts for the Financials review area.
+#[tauri::command]
+pub async fn bank_txn_summary() -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let one = |sql: &str| -> f64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0.0) };
+    let total = one("SELECT COUNT(*) FROM bank_txn");
+    let reviewed = one("SELECT COUNT(*) FROM bank_txn WHERE reviewed=1");
+    let sum_in = one("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='in'");
+    let sum_out = one("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='out'");
+    // Money-in transactions not yet fully tied to a deal (excludes internal transfers,
+    // which are not deal money).
+    let unallocated_in = one(
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND bt.category!='internal_transfer'
+           AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
+    );
+    Ok(json!({
+        "total": total, "reviewed": reviewed,
+        "sum_in": sum_in, "sum_out": sum_out, "unallocated_in": unallocated_in,
+    }))
+}
+
+/// Set a transaction's classification (category + counterparty) and reviewed flag.
+#[tauri::command]
+pub async fn set_bank_txn_review(
+    id: String, category: String, counterparty_name: String,
+    counterparty_type: String, counterparty_id: String, reviewed: bool,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let flag = if reviewed { 1 } else { 0 };
+    let mut cols = Map::new();
+    cols.insert("category".into(), json!(category));
+    cols.insert("counterparty_name".into(), json!(counterparty_name));
+    cols.insert("counterparty_type".into(), json!(counterparty_type));
+    cols.insert("counterparty_id".into(), json!(counterparty_id));
+    cols.insert("reviewed".into(), json!(flag));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("bank_txn", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bank_txn SET category=?1, counterparty_name=?2, counterparty_type=?3, counterparty_id=?4, reviewed=?5, updated_at=?6 WHERE id=?7",
+        rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, flag, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Allocate part (or all) of a bank transaction to a deal. Enforces
+/// SUM(allocations) <= txn.amount (spec invariant). Returns the allocation id.
+#[tauri::command]
+pub async fn allocate_bank_txn(
+    bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
+) -> Result<String, String> {
+    let (txn_amount, allocated): (f64, f64) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT bt.amount, COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0)
+             FROM bank_txn bt WHERE bt.id=?1",
+            [&bank_txn_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|_| "Transaction not found".to_string())?
+    };
+    let remaining = ((txn_amount - allocated) * 100.0).round() / 100.0;
+    let amt = (amount * 100.0).round() / 100.0;
+    if amt <= 0.0 { return Err("Allocation amount must be positive".into()); }
+    if amt > remaining + 0.001 {
+        return Err(format!("Only {:.2} is left unallocated on this transaction", remaining));
+    }
+    let id = format!("alloc_{}", uuid::Uuid::new_v4().simple());
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("bank_txn_id".into(), json!(bank_txn_id));
+    cols.insert("deal_flow_id".into(), json!(deal_flow_id));
+    cols.insert("amount".into(), json!(amt));
+    cols.insert("role".into(), json!(role));
+    cols.insert("note".into(), json!(note));
+    cols.insert("created_at".into(), json!(now));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("bank_allocation", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, note, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+        rusqlite::params![id, bank_txn_id, deal_flow_id, amt, role, note, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// Remove an allocation.
+#[tauri::command]
+pub async fn remove_bank_allocation(id: String) -> Result<(), String> {
+    sync::record_delete("bank_allocation", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Allocations on one transaction, with the deal name / invoice number.
+#[tauri::command]
+pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.deal_flow_id, a.amount, a.role, a.note,
+                COALESCE(df.name,''), COALESCE(i.number,''), COALESCE(c.name,'')
+         FROM bank_allocation a
+         LEFT JOIN deal_flows df ON df.id=a.deal_flow_id
+         LEFT JOIN invoices i ON i.id=df.invoice_id
+         LEFT JOIN clients c ON c.id=i.client_id
+         WHERE a.bank_txn_id=?1 ORDER BY a.created_at",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&bank_txn_id], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?,
+        "deal_flow_id": r.get::<_, String>(1)?,
+        "amount": r.get::<_, f64>(2)?,
+        "role": r.get::<_, String>(3)?,
+        "note": r.get::<_, String>(4)?,
+        "deal_name": r.get::<_, String>(5)?,
+        "invoice_number": r.get::<_, String>(6)?,
+        "client_name": r.get::<_, String>(7)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 // ============================================================
 //  Signup Rules
 // ============================================================
