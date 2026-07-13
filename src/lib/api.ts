@@ -1977,8 +1977,10 @@ export const api = {
   bankImportAi: (path: string, accountId: string) =>
     invoke<BankAiImportResult>("bank_import_ai", { path, accountId }),
   // Plaid live bank/card feed
-  plaidSetKeys: (clientId: string, secret: string) => invoke<void>("plaid_set_keys", { clientId, secret }),
+  plaidSetKeys: (clientId: string, secret: string, env: string) => invoke<void>("plaid_set_keys", { clientId, secret, env }),
   plaidHasKeys: () => invoke<boolean>("plaid_has_keys"),
+  plaidConfig: () => invoke<{ has_keys: boolean; env: string }>("plaid_config"),
+  plaidTestKeys: () => invoke<string>("plaid_test_keys"),
   plaidLinkToken: () => invoke<string>("plaid_link_token"),
   plaidExchange: (publicToken: string, institution: string) =>
     invoke<void>("plaid_exchange", { publicToken, institution }),

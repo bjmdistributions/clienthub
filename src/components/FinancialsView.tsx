@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
-  Building2, RefreshCw,
+  Building2, RefreshCw, Plug,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -71,6 +71,8 @@ export default function FinancialsView() {
   const [plaidSavingKeys, setPlaidSavingKeys] = useState(false);
   const [plaidConnecting, setPlaidConnecting] = useState(false);
   const [plaidSyncing, setPlaidSyncing]     = useState(false);
+  const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
+  const [plaidTesting, setPlaidTesting]     = useState(false);
 
   // AI import (any statement — credit cards / other banks)
   const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
@@ -111,7 +113,11 @@ export default function FinancialsView() {
     })();
     // Bank feed is secondary — load separately so a Plaid hiccup never blocks the list.
     (async () => {
-      try { setPlaidReady(await api.plaidHasKeys()); } catch { setPlaidReady(false); }
+      try {
+        const cfg = await api.plaidConfig();
+        setPlaidReady(cfg.has_keys);
+        if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
+      } catch { setPlaidReady(false); }
       try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
     })();
   }, []);
@@ -145,12 +151,22 @@ export default function FinancialsView() {
     if (!cid || !sec) { toast("Enter both the client ID and secret", "error"); return; }
     setPlaidSavingKeys(true);
     try {
-      await api.plaidSetKeys(cid, sec);
-      setPlaidReady(await api.plaidHasKeys());
+      await api.plaidSetKeys(cid, sec, plaidEnv);
+      const cfg = await api.plaidConfig();
+      setPlaidReady(cfg.has_keys);
+      if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
       setPlaidClientId(""); setPlaidSecret("");
       toast("Plaid keys saved");
     } catch (e: any) { toast(String(e), "error"); }
     finally { setPlaidSavingKeys(false); }
+  };
+
+  const testPlaidKeys = async () => {
+    setPlaidTesting(true);
+    try {
+      toast(await api.plaidTestKeys());
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setPlaidTesting(false); }
   };
 
   const connectBank = async () => {
@@ -525,9 +541,29 @@ export default function FinancialsView() {
           transactions appear in the list below to review and allocate.
         </p>
 
-        {plaidReady === false && (
+        {plaidReady !== null && (
           <div className="border border-line-2 rounded-lg p-3.5 space-y-3 bg-surface-2/40">
+            {plaidReady === true && (
+              <div className="flex items-center gap-1.5 text-[12px] text-ink-2 min-w-0">
+                <Check size={13} className="text-success-ink flex-shrink-0" />
+                <span className="truncate">
+                  Keys saved · environment:{" "}
+                  <span className="font-medium text-ink">{plaidEnv === "sandbox" ? "Sandbox" : "Production"}</span>
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-0">
+              <label className="block min-w-0 sm:col-span-2">
+                <span className="block text-[11px] text-muted mb-1">Environment</span>
+                <select
+                  value={plaidEnv}
+                  onChange={(e) => setPlaidEnv(e.target.value as "sandbox" | "production")}
+                  className={`${inp} text-ink-2`}
+                >
+                  <option value="sandbox">Sandbox (test)</option>
+                  <option value="production">Production (real data)</option>
+                </select>
+              </label>
               <label className="block min-w-0">
                 <span className="block text-[11px] text-muted mb-1">Client ID</span>
                 <input
@@ -543,15 +579,18 @@ export default function FinancialsView() {
                   type="password"
                   value={plaidSecret}
                   onChange={(e) => setPlaidSecret(e.target.value)}
-                  placeholder="Plaid secret"
+                  placeholder={plaidReady ? "Enter secret to update" : "Plaid secret"}
                   className={inp}
                 />
               </label>
             </div>
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <p className="text-[11px] text-muted min-w-0">
-                From your Plaid dashboard → Developers → Keys (use your Production/Trial secret). Stored only on this device.
-              </p>
+            <p className="text-[11px] text-muted leading-relaxed">
+              Each environment has its own secret. Start in Sandbox to test the flow instantly — in the connect popup,
+              log in with username <span className="font-medium text-ink-2">user_good</span> and password{" "}
+              <span className="font-medium text-ink-2">pass_good</span>. Switch to Production with your production secret
+              for real accounts once your Plaid OAuth is approved. Stored only on this device.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={savePlaidKeys}
                 disabled={plaidSavingKeys}
@@ -559,6 +598,15 @@ export default function FinancialsView() {
               >
                 {plaidSavingKeys ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save keys
               </button>
+              {plaidReady === true && (
+                <button
+                  onClick={testPlaidKeys}
+                  disabled={plaidTesting}
+                  className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                >
+                  {plaidTesting ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Test connection
+                </button>
+              )}
             </div>
           </div>
         )}

@@ -9,7 +9,23 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-const PLAID_BASE: &str = "https://production.plaid.com";
+/// The Plaid environment ("sandbox" for testing with a fake bank, "production" for
+/// real data on the free Trial plan). Each environment has its OWN secret.
+pub fn get_env() -> String {
+    let conn = match crate::db::pool().get() { Ok(c) => c, Err(_) => return "production".into() };
+    conn.query_row("SELECT value FROM settings WHERE key='plaid_env'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s == "sandbox" || s == "production")
+        .unwrap_or_else(|| "production".into())
+}
+
+fn base_url() -> String {
+    match get_env().as_str() {
+        "sandbox" => "https://sandbox.plaid.com".into(),
+        _ => "https://production.plaid.com".into(),
+    }
+}
 
 /// The stored Plaid client_id + secret (device-local), or None if not set up.
 pub fn get_keys() -> Option<(String, String)> {
@@ -22,11 +38,13 @@ pub fn get_keys() -> Option<(String, String)> {
 
 pub fn has_keys() -> bool { get_keys().is_some() }
 
-/// Store the keys device-local (plain execute — NOT record_upsert — so they never
-/// sync to other devices or the server, matching the anthropic_api_key pattern).
-pub fn set_keys(client_id: &str, secret: &str) -> Result<()> {
+/// Store the keys + environment device-local (plain execute — NOT record_upsert —
+/// so they never sync, matching the anthropic_api_key pattern). Each environment
+/// uses a different secret, so switching env means re-entering the matching secret.
+pub fn set_keys(client_id: &str, secret: &str, env: &str) -> Result<()> {
+    let env = if env.trim().eq_ignore_ascii_case("sandbox") { "sandbox" } else { "production" };
     let conn = crate::db::pool().get()?;
-    for (k, v) in [("plaid_client_id", client_id), ("plaid_secret", secret)] {
+    for (k, v) in [("plaid_client_id", client_id), ("plaid_secret", secret), ("plaid_env", env)] {
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2",
             rusqlite::params![k, v.trim()],
@@ -47,7 +65,7 @@ async fn post(path: &str, mut body: Value) -> Result<Value> {
     ))?;
     body["client_id"] = json!(cid);
     body["secret"] = json!(sec);
-    let resp = http()?.post(format!("{}{}", PLAID_BASE, path)).json(&body).send().await?;
+    let resp = http()?.post(format!("{}{}", base_url(), path)).json(&body).send().await?;
     let status = resp.status();
     let v: Value = resp.json().await.context("Plaid returned invalid JSON")?;
     if !status.is_success() {

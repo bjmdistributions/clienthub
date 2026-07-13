@@ -9589,12 +9589,27 @@ fn plaid_category(pfc: &str, direction: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn plaid_set_keys(client_id: String, secret: String) -> Result<(), String> {
-    crate::plaid::set_keys(&client_id, &secret).map_err(|e| e.to_string())
+pub async fn plaid_set_keys(client_id: String, secret: String, env: String) -> Result<(), String> {
+    crate::plaid::set_keys(&client_id, &secret, &env).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn plaid_has_keys() -> Result<bool, String> { Ok(crate::plaid::has_keys()) }
+
+/// Keys-set flag + current environment, for the settings UI.
+#[tauri::command]
+pub async fn plaid_config() -> Result<Value, String> {
+    Ok(json!({ "has_keys": crate::plaid::has_keys(), "env": crate::plaid::get_env() }))
+}
+
+/// Verify the client_id + secret work against the selected environment BEFORE
+/// connecting a bank — creates (and discards) a Link token. Clear pass/fail.
+#[tauri::command]
+pub async fn plaid_test_keys() -> Result<String, String> {
+    crate::plaid::create_link_token().await
+        .map(|_| format!("Connected to Plaid {} — keys are valid.", crate::plaid::get_env()))
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub async fn plaid_link_token() -> Result<String, String> {

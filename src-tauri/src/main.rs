@@ -612,6 +612,8 @@ fn main() {
             bank_import_ai,
             plaid_set_keys,
             plaid_has_keys,
+            plaid_config,
+            plaid_test_keys,
             plaid_link_token,
             plaid_exchange,
             plaid_list_items,
