@@ -90,6 +90,32 @@ pub async fn create_link_token() -> Result<String> {
         .ok_or_else(|| anyhow!("No link_token in Plaid response"))
 }
 
+/// Create a HOSTED Link token — the user completes the flow in their real browser
+/// (where bank logins/OAuth work, unlike an embedded webview). Returns
+/// (link_token, hosted_link_url). Poll link_token_get() for the result.
+pub async fn create_hosted_link() -> Result<(String, String)> {
+    let v = post("/link/token/create", json!({
+        "user": { "client_user_id": "bjm-owner" },
+        "client_name": "Ecliptr",
+        "products": ["transactions"],
+        "country_codes": ["US"],
+        "language": "en",
+        "hosted_link": {}
+    })).await?;
+    let token = v.get("link_token").and_then(|t| t.as_str()).map(String::from)
+        .ok_or_else(|| anyhow!("No link_token in Plaid response"))?;
+    let url = v.get("hosted_link_url").and_then(|t| t.as_str()).map(String::from)
+        .ok_or_else(|| anyhow!("Plaid didn't return a hosted link URL — enable Hosted Link in your Plaid dashboard (Link → Hosted Link)."))?;
+    Ok((token, url))
+}
+
+/// Poll a hosted-link session's status/results. After the user finishes, the
+/// public_token appears under link_sessions[].results.item_add_results[] (or
+/// on_success). Available for 6h after completion.
+pub async fn link_token_get(link_token: &str) -> Result<Value> {
+    post("/link/token/get", json!({ "link_token": link_token })).await
+}
+
 /// Exchange a Link public_token for a long-lived access_token + item_id.
 pub async fn exchange(public_token: &str) -> Result<(String, String)> {
     let v = post("/item/public_token/exchange", json!({ "public_token": public_token })).await?;

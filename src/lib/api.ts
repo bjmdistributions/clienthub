@@ -1982,6 +1982,9 @@ export const api = {
   plaidConfig: () => invoke<{ has_keys: boolean; env: string }>("plaid_config"),
   plaidTestKeys: () => invoke<string>("plaid_test_keys"),
   plaidLinkToken: () => invoke<string>("plaid_link_token"),
+  plaidConnectStart: () => invoke<{ hosted_link_url: string; link_token: string }>("plaid_connect_start"),
+  plaidConnectPoll: (linkToken: string) =>
+    invoke<{ status: string; institution?: string }>("plaid_connect_poll", { linkToken }),
   plaidExchange: (publicToken: string, institution: string) =>
     invoke<void>("plaid_exchange", { publicToken, institution }),
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),

@@ -9616,6 +9616,53 @@ pub async fn plaid_link_token() -> Result<String, String> {
     crate::plaid::create_link_token().await.map_err(|e| e.to_string())
 }
 
+/// Start a HOSTED-Link connect: returns { hosted_link_url, link_token }. The UI
+/// opens the URL in the system browser, then polls plaid_connect_poll(link_token).
+#[tauri::command]
+pub async fn plaid_connect_start() -> Result<Value, String> {
+    let (link_token, url) = crate::plaid::create_hosted_link().await.map_err(|e| e.to_string())?;
+    Ok(json!({ "link_token": link_token, "hosted_link_url": url }))
+}
+
+/// Poll a hosted-link session. Returns {status:"pending"} until the user finishes
+/// in the browser; once a public_token appears, exchanges it, stores the bank
+/// (deduped on item_id) and returns {status:"connected", institution}.
+#[tauri::command]
+pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
+    let v = crate::plaid::link_token_get(&link_token).await.map_err(|e| e.to_string())?;
+    let sessions = v.get("link_sessions").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+    for s in &sessions {
+        let public_token = s.get("results")
+            .and_then(|r| r.get("item_add_results"))
+            .and_then(|a| a.as_array())
+            .and_then(|arr| arr.iter().find_map(|it| it.get("public_token").and_then(|p| p.as_str())))
+            .or_else(|| s.get("on_success").and_then(|o| o.get("public_token")).and_then(|p| p.as_str()));
+        let public_token = match public_token { Some(p) => p, None => continue };
+
+        let inst = s.get("on_success").and_then(|o| o.get("metadata")).and_then(|m| m.get("institution")).and_then(|i| i.get("name")).and_then(|n| n.as_str())
+            .or_else(|| s.get("results").and_then(|r| r.get("item_add_results")).and_then(|a| a.as_array()).and_then(|arr| arr.first())
+                .and_then(|it| it.get("institution")).and_then(|i| i.get("name")).and_then(|n| n.as_str()))
+            .unwrap_or("Bank").to_string();
+
+        let (access, item_id) = crate::plaid::exchange(public_token).await.map_err(|e| e.to_string())?;
+        let accounts = crate::plaid::accounts_get(&access).await.map_err(|e| e.to_string())?;
+        let accounts_json = accounts.get("accounts").cloned().unwrap_or(json!([])).to_string();
+        let now = Utc::now().to_rfc3339();
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [&item_id], |_| Ok(())).is_ok();
+        if !exists {
+            let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
+            conn.execute(
+                "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at)
+                 VALUES (?1,?2,?3,?4,'',?5,?6)",
+                rusqlite::params![id, item_id, access, inst, accounts_json, now],
+            ).map_err(|e| e.to_string())?;
+        }
+        return Ok(json!({ "status": "connected", "institution": inst }));
+    }
+    Ok(json!({ "status": "pending" }))
+}
+
 /// Exchange a Link public_token, fetch the item's accounts (for labeling), and
 /// store the enrollment device-local.
 #[tauri::command]

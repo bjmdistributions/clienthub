@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
   Building2, RefreshCw, Plug,
@@ -11,10 +11,6 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "./Toast";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
-
-declare global {
-  interface Window { Plaid?: any }
-}
 
 // Categories the statement parser produces (blank = uncategorized).
 const CATEGORIES: { value: string; label: string }[] = [
@@ -73,6 +69,9 @@ export default function FinancialsView() {
   const [plaidSyncing, setPlaidSyncing]     = useState(false);
   const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
   const [plaidTesting, setPlaidTesting]     = useState(false);
+  // Hosted Link connect flow — poll the browser-based connect to completion.
+  const pollTimerRef  = useRef<number | null>(null);
+  const pollCancelRef = useRef(false);
 
   // AI import (any statement — credit cards / other banks)
   const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
@@ -122,6 +121,12 @@ export default function FinancialsView() {
     })();
   }, []);
 
+  // Stop any in-flight bank-connect polling when this view unmounts.
+  useEffect(() => () => {
+    pollCancelRef.current = true;
+    if (pollTimerRef.current !== null) clearTimeout(pollTimerRef.current);
+  }, []);
+
   // Reload txns + summary, and (optionally) the open row's allocations.
   const refreshAll = async (keepOpen = true) => {
     const [t, s] = await Promise.all([api.listBankTxns(), api.bankTxnSummary()]);
@@ -133,18 +138,6 @@ export default function FinancialsView() {
       setAmountStr(nt ? String(nt.unallocated) : "");
     }
   };
-
-  // Load Plaid's Link script once (CSP is disabled, so the CDN loads fine).
-  const loadPlaidSdk = (): Promise<void> =>
-    new Promise((resolve, reject) => {
-      if (window.Plaid) { resolve(); return; }
-      const s = document.createElement("script");
-      s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
-      s.async = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error("Could not load Plaid Link"));
-      document.head.appendChild(s);
-    });
 
   const savePlaidKeys = async () => {
     const cid = plaidClientId.trim(), sec = plaidSecret.trim();
@@ -169,31 +162,69 @@ export default function FinancialsView() {
     finally { setPlaidTesting(false); }
   };
 
+  // Stop the hosted-link poll loop (shared by success, timeout, error and Cancel).
+  const stopPolling = () => {
+    pollCancelRef.current = true;
+    if (pollTimerRef.current !== null) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  // Connect a bank via Plaid Hosted Link: open Plaid in the system browser (where
+  // bank logins / OAuth actually work — the embedded widget stalls inside the
+  // Tauri webview), then poll every 3s until the server reports it exchanged.
   const connectBank = async () => {
+    if (plaidConnecting) return; // guard against double-clicks
     setPlaidConnecting(true);
+    pollCancelRef.current = false;
     try {
-      const linkToken = await api.plaidLinkToken();
-      await loadPlaidSdk();
-      const handler = window.Plaid.create({
-        token: linkToken,
-        onSuccess: async (public_token: string, metadata: any) => {
-          try {
-            const inst = metadata?.institution?.name || "Bank";
-            await api.plaidExchange(public_token, inst);
+      const { hosted_link_url, link_token } = await api.plaidConnectStart();
+      await api.openExternal(hosted_link_url);
+      let attempts = 0;
+      const maxAttempts = 100; // ~5 minutes at 3s each
+      const tick = async () => {
+        if (pollCancelRef.current) return;
+        attempts += 1;
+        try {
+          const r = await api.plaidConnectPoll(link_token);
+          if (pollCancelRef.current) return;
+          if (r.status === "connected") {
+            stopPolling();
+            const inst = r.institution || "bank";
             toast(`Connected ${inst}`);
             setPlaidItems(await api.plaidListItems());
-            const r = await api.plaidSync();
-            toast(`Synced ${r.imported} transaction${r.imported === 1 ? "" : "s"}`);
+            const s = await api.plaidSync();
+            toast(`Synced ${s.imported} transaction${s.imported === 1 ? "" : "s"}`);
             await refreshAll(false);
-          } catch (e: any) { toast(String(e), "error"); }
-        },
-        onExit: (err: any) => {
-          if (err) toast(String(err?.display_message || err?.error_message || err), "error");
-        },
-      });
-      handler.open();
-    } catch (e: any) { toast(String(e), "error"); }
-    finally { setPlaidConnecting(false); }
+            setPlaidConnecting(false);
+            return;
+          }
+          if (attempts >= maxAttempts) {
+            stopPolling();
+            toast("Didn't detect a completed connection — click Connect a bank to try again.", "error");
+            setPlaidConnecting(false);
+            return;
+          }
+          pollTimerRef.current = window.setTimeout(tick, 3000);
+        } catch (e: any) {
+          stopPolling();
+          toast(String(e), "error");
+          setPlaidConnecting(false);
+        }
+      };
+      pollTimerRef.current = window.setTimeout(tick, 3000);
+    } catch (e: any) {
+      stopPolling();
+      toast(String(e), "error");
+      setPlaidConnecting(false);
+    }
+  };
+
+  // Cancel the wait — stops polling only; nothing is undone server-side.
+  const cancelConnect = () => {
+    stopPolling();
+    setPlaidConnecting(false);
   };
 
   const syncPlaid = async () => {
@@ -631,6 +662,30 @@ export default function FinancialsView() {
                 </button>
               )}
             </div>
+
+            <p className="text-[11px] text-muted leading-relaxed">
+              Connecting opens Plaid in your browser (that's where bank logins work). Finish there, then come back — it
+              syncs automatically.{plaidEnv === "sandbox" && (
+                <> Sandbox test login: <span className="font-medium text-ink-2">user_good</span> /{" "}
+                <span className="font-medium text-ink-2">pass_good</span>.</>
+              )}
+            </p>
+
+            {plaidConnecting && (
+              <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
+                <Loader2 size={15} className="animate-spin text-accent flex-shrink-0" />
+                <p className="text-[12px] text-ink-2 flex-1 min-w-0">
+                  Finish connecting your bank in the browser window that just opened, then come back here — it syncs
+                  automatically.
+                </p>
+                <button
+                  onClick={cancelConnect}
+                  className="flex-shrink-0 h-9 px-3 border border-line text-muted hover:bg-surface-2 rounded-lg text-[12px] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
 
             {plaidItems.length > 0 && (
               <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">

@@ -615,6 +615,8 @@ fn main() {
             plaid_config,
             plaid_test_keys,
             plaid_link_token,
+            plaid_connect_start,
+            plaid_connect_poll,
             plaid_exchange,
             plaid_list_items,
             plaid_remove_item,
