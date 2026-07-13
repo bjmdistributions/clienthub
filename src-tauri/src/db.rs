@@ -1382,4 +1382,21 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        62,
+        // Plaid linked banks — DEVICE-LOCAL ONLY (never synced): access tokens are
+        // secrets. The transactions they pull land in the synced bank_txn ledger.
+        // Deliberately NOT added to sync ALLOWED_TABLES.
+        r#"
+        CREATE TABLE IF NOT EXISTS plaid_items (
+            id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL DEFAULT '',
+            access_token TEXT NOT NULL DEFAULT '',
+            institution TEXT NOT NULL DEFAULT '',
+            cursor TEXT NOT NULL DEFAULT '',
+            accounts_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        "#,
+    ),
 ];

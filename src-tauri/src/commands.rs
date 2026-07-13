@@ -9571,6 +9571,181 @@ pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Va
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+// ── Plaid live bank/card feed ───────────────────────────────────────────────
+
+fn plaid_txn_id(transaction_id: &str) -> String {
+    let clean: String = transaction_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    format!("btpl_{}", clean)
+}
+
+/// Map Plaid's personal_finance_category.primary to our coarse category vocabulary.
+fn plaid_category(pfc: &str, direction: &str) -> String {
+    let p = pfc.to_uppercase();
+    if p.contains("BANK_FEES") { "fee" }
+    else if p.contains("LOAN_PAYMENTS") { "card_payment" }
+    else if p.contains("TRANSFER") { "internal_transfer" }
+    else if p.contains("INCOME") { "receipt" }
+    else if direction == "in" { "receipt" } else { "payment" }.to_string()
+}
+
+#[tauri::command]
+pub async fn plaid_set_keys(client_id: String, secret: String) -> Result<(), String> {
+    crate::plaid::set_keys(&client_id, &secret).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plaid_has_keys() -> Result<bool, String> { Ok(crate::plaid::has_keys()) }
+
+#[tauri::command]
+pub async fn plaid_link_token() -> Result<String, String> {
+    crate::plaid::create_link_token().await.map_err(|e| e.to_string())
+}
+
+/// Exchange a Link public_token, fetch the item's accounts (for labeling), and
+/// store the enrollment device-local.
+#[tauri::command]
+pub async fn plaid_exchange(public_token: String, institution: String) -> Result<(), String> {
+    let (access, item_id) = crate::plaid::exchange(&public_token).await.map_err(|e| e.to_string())?;
+    let accounts = crate::plaid::accounts_get(&access).await.map_err(|e| e.to_string())?;
+    let accounts_json = accounts.get("accounts").cloned().unwrap_or(json!([])).to_string();
+    let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at)
+         VALUES (?1,?2,?3,?4,'',?5,?6)",
+        rusqlite::params![id, item_id, access, institution, accounts_json, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn plaid_list_items() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, institution, accounts_json, created_at FROM plaid_items ORDER BY created_at",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let accts: Vec<Value> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "institution": r.get::<_, String>(1)?,
+            "account_count": accts.len(),
+            "created_at": r.get::<_, String>(3)?,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn plaid_remove_item(id: String) -> Result<(), String> {
+    let access: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT access_token FROM plaid_items WHERE id=?1", [&id], |r| r.get(0)).ok()
+    };
+    if let Some(a) = access { let _ = crate::plaid::remove_item(&a).await; }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM plaid_items WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pull new/changed transactions from every connected bank into the bank_txn
+/// ledger (dedup on Plaid's transaction_id; cursor-based incremental sync).
+#[tauri::command]
+pub async fn plaid_sync() -> Result<Value, String> {
+    let items: Vec<(String, String, String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id, access_token, cursor, accounts_json FROM plaid_items")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    if items.is_empty() {
+        return Err("No banks connected yet — click Connect a bank first.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut imported = 0i64;
+    let mut removed = 0i64;
+
+    for (item_pk, access, mut cursor, accounts_json) in items {
+        let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
+        let label_of = |aid: &str| -> String {
+            for a in &accts {
+                if a.get("account_id").and_then(|v| v.as_str()) == Some(aid) {
+                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+                    return if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
+                }
+            }
+            aid.to_string()
+        };
+        let mut pages = 0;
+        loop {
+            pages += 1;
+            if pages > 60 { break; } // safety cap
+            let page = crate::plaid::transactions_sync(&access, &cursor).await.map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            if let Some(added) = page.get("added").and_then(|v| v.as_array()) {
+                for t in added {
+                    let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if tid.is_empty() { continue; }
+                    let id = plaid_txn_id(tid);
+                    if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() { continue; }
+                    let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let direction = if amt > 0.0 { "out" } else { "in" };
+                    let amount = amt.abs();
+                    let label = label_of(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""));
+                    let desc = t.get("merchant_name").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| t.get("name").and_then(|v| v.as_str()))
+                        .unwrap_or("").to_string();
+                    let cp = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
+                    let cat = plaid_category(pfc, direction);
+                    let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let s = |v: &str| Value::String(v.to_string());
+                    let mut cols = Map::new();
+                    cols.insert("account_id".into(), s(&label));
+                    cols.insert("posted_at".into(), s(&date));
+                    cols.insert("amount".into(), json!(amount));
+                    cols.insert("direction".into(), s(direction));
+                    cols.insert("description".into(), s(&desc));
+                    cols.insert("memo_raw".into(), s(&desc));
+                    cols.insert("category".into(), s(&cat));
+                    cols.insert("counterparty_name".into(), s(&cp));
+                    cols.insert("source_format".into(), s("plaid"));
+                    cols.insert("imported_at".into(), s(&now));
+                    cols.insert("created_at".into(), s(&now));
+                    cols.insert("updated_at".into(), s(&now));
+                    if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, imported_at, created_at, updated_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
+                        rusqlite::params![id, label, date, amount, direction, desc, desc, cat, cp, now],
+                    );
+                    imported += 1;
+                }
+            }
+            if let Some(rem) = page.get("removed").and_then(|v| v.as_array()) {
+                for r in rem {
+                    let tid = r.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if tid.is_empty() { continue; }
+                    let id = plaid_txn_id(tid);
+                    let _ = sync::record_delete("bank_txn", &id);
+                    if conn.execute("DELETE FROM bank_txn WHERE id=?1", [&id]).unwrap_or(0) > 0 { removed += 1; }
+                }
+            }
+            cursor = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let has_more = page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
+            let _ = conn.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
+            if !has_more { break; }
+        }
+    }
+    Ok(json!({ "imported": imported, "removed": removed }))
+}
+
 // ── Financial engine: money config, Free Cash, loans, AI categorize ─────────
 
 fn read_setting_f64(conn: &rusqlite::Connection, key: &str, default: f64) -> f64 {

@@ -1384,6 +1384,12 @@ export interface BankAiImportResult {
   extracted: number;
   ending_balance: number | null;
 }
+export interface PlaidItem {
+  id: string;
+  institution: string;
+  account_count: number;
+  created_at: string;
+}
 export interface FinancialsOverview {
   bank_balance: number;
   credit_card_balance: number;
@@ -1970,6 +1976,15 @@ export const api = {
   bankPreviewAi: (path: string) => invoke<BankAiPreview>("bank_preview_ai", { path }),
   bankImportAi: (path: string, accountId: string) =>
     invoke<BankAiImportResult>("bank_import_ai", { path, accountId }),
+  // Plaid live bank/card feed
+  plaidSetKeys: (clientId: string, secret: string) => invoke<void>("plaid_set_keys", { clientId, secret }),
+  plaidHasKeys: () => invoke<boolean>("plaid_has_keys"),
+  plaidLinkToken: () => invoke<string>("plaid_link_token"),
+  plaidExchange: (publicToken: string, institution: string) =>
+    invoke<void>("plaid_exchange", { publicToken, institution }),
+  plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
+  plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
+  plaidSync: () => invoke<{ imported: number; removed: number }>("plaid_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>

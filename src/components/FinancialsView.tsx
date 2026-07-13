@@ -1,15 +1,20 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
+  Building2, RefreshCw,
 } from "lucide-react";
 import {
-  api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow,
+  api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "./Toast";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
+
+declare global {
+  interface Window { Plaid?: any }
+}
 
 // Categories the statement parser produces (blank = uncategorized).
 const CATEGORIES: { value: string; label: string }[] = [
@@ -58,6 +63,15 @@ export default function FinancialsView() {
   const [bulkBusy, setBulkBusy]         = useState(false);
   const [bulkProgress, setBulkProgress] = useState("");
 
+  // Bank feed (Plaid) — live transactions straight from the bank
+  const [plaidReady, setPlaidReady]         = useState<boolean | null>(null); // has keys
+  const [plaidItems, setPlaidItems]         = useState<PlaidItem[]>([]);
+  const [plaidClientId, setPlaidClientId]   = useState("");
+  const [plaidSecret, setPlaidSecret]       = useState("");
+  const [plaidSavingKeys, setPlaidSavingKeys] = useState(false);
+  const [plaidConnecting, setPlaidConnecting] = useState(false);
+  const [plaidSyncing, setPlaidSyncing]     = useState(false);
+
   // AI import (any statement — credit cards / other banks)
   const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
   const [aiPreview, setAiPreview]         = useState<BankAiPreview | null>(null);
@@ -95,6 +109,11 @@ export default function FinancialsView() {
       } catch (e: any) { toast(String(e), "error"); }
       finally { setLoading(false); }
     })();
+    // Bank feed is secondary — load separately so a Plaid hiccup never blocks the list.
+    (async () => {
+      try { setPlaidReady(await api.plaidHasKeys()); } catch { setPlaidReady(false); }
+      try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
+    })();
   }, []);
 
   // Reload txns + summary, and (optionally) the open row's allocations.
@@ -107,6 +126,77 @@ export default function FinancialsView() {
       const nt = t.find((x) => x.id === openId);
       setAmountStr(nt ? String(nt.unallocated) : "");
     }
+  };
+
+  // Load Plaid's Link script once (CSP is disabled, so the CDN loads fine).
+  const loadPlaidSdk = (): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (window.Plaid) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("Could not load Plaid Link"));
+      document.head.appendChild(s);
+    });
+
+  const savePlaidKeys = async () => {
+    const cid = plaidClientId.trim(), sec = plaidSecret.trim();
+    if (!cid || !sec) { toast("Enter both the client ID and secret", "error"); return; }
+    setPlaidSavingKeys(true);
+    try {
+      await api.plaidSetKeys(cid, sec);
+      setPlaidReady(await api.plaidHasKeys());
+      setPlaidClientId(""); setPlaidSecret("");
+      toast("Plaid keys saved");
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setPlaidSavingKeys(false); }
+  };
+
+  const connectBank = async () => {
+    setPlaidConnecting(true);
+    try {
+      const linkToken = await api.plaidLinkToken();
+      await loadPlaidSdk();
+      const handler = window.Plaid.create({
+        token: linkToken,
+        onSuccess: async (public_token: string, metadata: any) => {
+          try {
+            const inst = metadata?.institution?.name || "Bank";
+            await api.plaidExchange(public_token, inst);
+            toast(`Connected ${inst}`);
+            setPlaidItems(await api.plaidListItems());
+            const r = await api.plaidSync();
+            toast(`Synced ${r.imported} transaction${r.imported === 1 ? "" : "s"}`);
+            await refreshAll(false);
+          } catch (e: any) { toast(String(e), "error"); }
+        },
+        onExit: (err: any) => {
+          if (err) toast(String(err?.display_message || err?.error_message || err), "error");
+        },
+      });
+      handler.open();
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setPlaidConnecting(false); }
+  };
+
+  const syncPlaid = async () => {
+    setPlaidSyncing(true);
+    try {
+      const r = await api.plaidSync();
+      toast(`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
+      await refreshAll(false);
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setPlaidSyncing(false); }
+  };
+
+  const disconnectBank = async (item: PlaidItem) => {
+    if (!confirm(`Disconnect ${item.institution}? Its imported transactions stay in the list.`)) return;
+    try {
+      await api.plaidRemoveItem(item.id);
+      toast("Bank disconnected");
+      setPlaidItems(await api.plaidListItems());
+    } catch (e: any) { toast(String(e), "error"); }
   };
 
   // Open/close a row's allocation panel.
@@ -422,6 +512,101 @@ export default function FinancialsView() {
           (e.g. chase-card, amex) so each groups and dedupes separately. Selecting several files imports them all to the
           Account above, so import one account's statements together.
         </p>
+      </div>
+
+      {/* Bank feed (Plaid) — live transactions straight from the bank */}
+      <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Building2 size={15} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+          <div className="text-[13px] font-semibold text-ink">Bank feed (Plaid)</div>
+        </div>
+        <p className="text-[11px] text-muted leading-relaxed">
+          Plaid pulls clean transactions straight from the bank — no statement uploads. After connecting,
+          transactions appear in the list below to review and allocate.
+        </p>
+
+        {plaidReady === false && (
+          <div className="border border-line-2 rounded-lg p-3.5 space-y-3 bg-surface-2/40">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-0">
+              <label className="block min-w-0">
+                <span className="block text-[11px] text-muted mb-1">Client ID</span>
+                <input
+                  value={plaidClientId}
+                  onChange={(e) => setPlaidClientId(e.target.value)}
+                  placeholder="Plaid client ID"
+                  className={inp}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className="block text-[11px] text-muted mb-1">Secret</span>
+                <input
+                  type="password"
+                  value={plaidSecret}
+                  onChange={(e) => setPlaidSecret(e.target.value)}
+                  placeholder="Plaid secret"
+                  className={inp}
+                />
+              </label>
+            </div>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-[11px] text-muted min-w-0">
+                From your Plaid dashboard → Developers → Keys (use your Production/Trial secret). Stored only on this device.
+              </p>
+              <button
+                onClick={savePlaidKeys}
+                disabled={plaidSavingKeys}
+                className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              >
+                {plaidSavingKeys ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save keys
+              </button>
+            </div>
+          </div>
+        )}
+
+        {plaidReady === true && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={connectBank}
+                disabled={plaidConnecting}
+                className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              >
+                {plaidConnecting ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Connect a bank
+              </button>
+              {plaidItems.length > 0 && (
+                <button
+                  onClick={syncPlaid}
+                  disabled={plaidSyncing}
+                  className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                >
+                  {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync now
+                </button>
+              )}
+            </div>
+
+            {plaidItems.length > 0 && (
+              <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
+                {plaidItems.map((it) => (
+                  <div key={it.id} className="flex items-center gap-3 px-3 py-2 min-w-0">
+                    <Landmark size={14} className="text-muted flex-shrink-0" strokeWidth={1.8} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[12px] font-medium text-ink truncate">{it.institution}</div>
+                      <div className="text-[11px] text-muted tabular-nums">
+                        {it.account_count} account{it.account_count === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => disconnectBank(it)}
+                      className="flex-shrink-0 h-8 px-2.5 rounded-md text-[12px] text-muted hover:text-danger-ink hover:bg-danger-bg transition-colors"
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Import preview / confirm card */}

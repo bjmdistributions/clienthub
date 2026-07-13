@@ -14,6 +14,7 @@ mod google_contacts;
 mod invoice;
 mod manifest;
 mod oauth_flow;
+mod plaid;
 mod sheet_clone;
 mod sheet_writeback;
 mod signup_rules;
@@ -609,6 +610,13 @@ fn main() {
             bank_import,
             bank_preview_ai,
             bank_import_ai,
+            plaid_set_keys,
+            plaid_has_keys,
+            plaid_link_token,
+            plaid_exchange,
+            plaid_list_items,
+            plaid_remove_item,
+            plaid_sync,
             list_bank_txns,
             bank_txn_summary,
             set_bank_txn_review,
