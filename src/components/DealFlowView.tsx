@@ -7,7 +7,7 @@ import {
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare,
 } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, primarySupplierLabel } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
 import CompletedBreakdown from "./CompletedBreakdown";
@@ -251,6 +251,7 @@ export default function DealFlowView() {
                     ? (flow.net_profit / flow.gross_revenue) * 100
                     : 0;
                   const isExp = expandedDone === flow.id;
+                  const sup = primarySupplierLabel(flow.supplier_payments);
                   return (
                     <div key={flow.id}>
                       <button
@@ -265,11 +266,12 @@ export default function DealFlowView() {
                           <div className="text-[13px] font-medium text-ink">
                             {flow.client_name || "—"}
                           </div>
-                          <div className="text-[11px] text-muted mt-0.5">
+                          <div className="text-[11px] text-muted mt-0.5 truncate">
                             {flow.invoice_number}
                             {flow.completed_at
                               ? ` · ${new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
                               : ""}
+                            {sup ? ` → ${sup}` : ""}
                           </div>
                         </div>
                         <div className="flex items-center gap-5 flex-shrink-0">
@@ -416,14 +418,18 @@ function DealFlowCard({
           ))}
         </div>
 
-        {/* Invoice # + client + item preview */}
+        {/* Invoice # + client → supplier + item preview */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-baseline gap-2 min-w-0">
             <span className="text-[12px] font-mono text-muted flex-shrink-0">
               {flow.invoice_number}
             </span>
-            <span className="text-[14px] font-semibold text-ink truncate">
-              {flow.client_name || "Unknown"}
+            <span className="text-[14px] text-ink truncate min-w-0">
+              <span className="font-semibold">{flow.client_name || "Unknown"}</span>
+              {(() => {
+                const sup = primarySupplierLabel(flow.supplier_payments);
+                return sup ? <span className="text-[12px] text-muted"> → {sup}</span> : null;
+              })()}
             </span>
           </div>
           {invItems.length > 0 && (

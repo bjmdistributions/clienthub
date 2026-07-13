@@ -24,6 +24,27 @@ export function fmtPhone(raw: string | null | undefined): string {
   return digits;
 }
 
+/** The supplier name(s) to show on a deal — real product suppliers only
+ *  (category null or "supplier"; freight/wire_in/wire_out/other are cost lines,
+ *  NOT the supplier). Returns null when there is no supplier yet, a single name,
+ *  or "First +N" when there are several (full list belongs in a title/tooltip). */
+export function primarySupplierLabel(
+  payments: { supplier_name?: string | null; category?: string | null }[] | null | undefined,
+): string | null {
+  if (!payments || !payments.length) return null;
+  const names = Array.from(
+    new Set(
+      payments
+        .filter((p) => p.category == null || p.category === "supplier")
+        .map((p) => (p.supplier_name || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  if (!names.length) return null;
+  if (names.length === 1) return names[0];
+  return `${names[0]} +${names.length - 1}`;
+}
+
 export function fmtCompactCurrency(n: number): string {
   n = safeNum(n);
   const abs = Math.abs(n);

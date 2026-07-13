@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Package, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronDown, TrendingUp, Loader2 } from "lucide-react";
-import { api, Supplier, SupplierInput, SupplierPriceEntry, DealFlow } from "../lib/api";
+import { Archive, Package, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronRight, TrendingUp } from "lucide-react";
+import { api, Supplier, SupplierInput, SupplierPriceEntry } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
-import CompletedBreakdown from "./CompletedBreakdown";
+import SupplierDealsModal from "./SupplierDealsModal";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -23,10 +23,7 @@ export default function SuppliersView() {
   const [input,         setInput]         = useState<SupplierInput>(emptyInput);
   const [history,       setHistory]       = useState<SupplierPriceEntry[]>([]);
   const [supplierDeals, setSupplierDeals] = useState<any[]>([]);
-  const [dealsOpen,     setDealsOpen]     = useState(false);
-  const [expandedDealId,setExpandedDealId]= useState<string | null>(null);
-  const [dealFlow,      setDealFlow]      = useState<DealFlow | null>(null);
-  const [dealFlowLoading,setDealFlowLoading] = useState(false);
+  const [dealsModalOpen,setDealsModalOpen]= useState(false);
   const [query,         setQuery]         = useState("");
   const [filter,        setFilter]        = useState<"all" | "active" | "archived">("active");
   const [saving,        setSaving]        = useState(false);
@@ -54,13 +51,11 @@ export default function SuppliersView() {
       notes:             s.notes             || "",
     });
     setShowForm(true);
-    setDealsOpen(false);
+    setDealsModalOpen(false);
     setSupplierDeals([]);
-    setExpandedDealId(null);
-    setDealFlow(null);
     api.getSupplierPriceHistory(s.id).then(setHistory).catch(() => setHistory([]));
     api.getDealsForSupplier(s.id)
-      .then((deals) => { setSupplierDeals(deals); setDealsOpen(deals.length > 0); })
+      .then(setSupplierDeals)
       .catch(() => setSupplierDeals([]));
   };
 
@@ -93,36 +88,14 @@ export default function SuppliersView() {
     setInput(emptyInput);
     setHistory([]);
     setSupplierDeals([]);
-    setDealsOpen(false);
-    setExpandedDealId(null);
-    setDealFlow(null);
+    setDealsModalOpen(false);
     setShowForm(true);
   };
 
   const closeForm = () => { setShowForm(false); setSelected(null); };
 
-  // Thin supplier-deal rows lack the full P&L, so fetch the whole flow on expand.
-  const toggleDeal = async (dealId: string) => {
-    if (expandedDealId === dealId) {
-      setExpandedDealId(null);
-      setDealFlow(null);
-      return;
-    }
-    setExpandedDealId(dealId);
-    setDealFlow(null);
-    setDealFlowLoading(true);
-    try {
-      setDealFlow(await api.getDealFlow(dealId));
-    } catch {
-      setDealFlow(null);
-    } finally {
-      setDealFlowLoading(false);
-    }
-  };
-
   // Reopen/Delete/payout-toggle inside a breakdown → refresh supplier totals + its
-  // deals, then re-fetch or collapse the open breakdown depending on whether the
-  // deal is still completed.
+  // deals. The modal awaits this, then re-fetches its own open breakdown.
   const reloadDeal = async () => {
     const rows = await api.listSuppliers();
     setSuppliers(rows);
@@ -131,14 +104,6 @@ export default function SuppliersView() {
     setSelected(fresh);
     const deals = await api.getDealsForSupplier(fresh.id).catch(() => []);
     setSupplierDeals(deals);
-    if (expandedDealId) {
-      if (deals.some((d: any) => d.id === expandedDealId)) {
-        setDealFlow(await api.getDealFlow(expandedDealId).catch(() => null));
-      } else {
-        setExpandedDealId(null);
-        setDealFlow(null);
-      }
-    }
   };
 
   return (
@@ -291,97 +256,15 @@ export default function SuppliersView() {
                 </div>
               )}
 
-              {/* Completed deals */}
+              {/* Completed deals — opens the large browser modal */}
               {selected && (
-                <div>
-                  <button
-                    onClick={() => setDealsOpen((v) => !v)}
-                    className="w-full flex items-center justify-between text-left"
-                  >
-                    <p className="text-[12.5px] font-medium text-muted">
-                      Completed deals ({supplierDeals.length})
-                    </p>
-                    <ChevronDown size={13} className={`text-muted transition-transform duration-150 ${dealsOpen ? "rotate-180" : ""}`} />
-                  </button>
-
-                  {dealsOpen && (
-                    <div className="mt-2 border border-line rounded-lg overflow-hidden">
-                      {supplierDeals.length === 0 ? (
-                        <div className="px-4 py-6 text-center text-[12px] text-muted">
-                          No completed deals with this supplier yet
-                        </div>
-                      ) : (
-                        <div className="divide-y divide-line-2">
-                          {supplierDeals.map((d: any) => {
-                            const margin = d.gross_revenue > 0
-                              ? ((d.net_profit / d.gross_revenue) * 100).toFixed(1)
-                              : null;
-                            const open = expandedDealId === d.id;
-                            return (
-                              <div key={d.id}>
-                                <button
-                                  onClick={() => toggleDeal(d.id)}
-                                  className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-surface-2 transition-colors"
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <div className="text-[12px] font-medium text-ink truncate">
-                                      {d.client_name || "—"}
-                                    </div>
-                                    <div className="text-[11px] text-muted flex items-center gap-1.5 mt-0.5 flex-wrap">
-                                      {d.invoice_number && (
-                                        <span className="bg-surface-3 px-1.5 py-0.5 rounded text-ink-2">
-                                          {d.invoice_number}
-                                        </span>
-                                      )}
-                                      {d.completed_at && (
-                                        <span>
-                                          {new Date(d.completed_at).toLocaleDateString("en-US", {
-                                            month: "short", day: "numeric", year: "numeric",
-                                          })}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div className="text-right flex-shrink-0">
-                                    <div className="text-[12px] font-bold text-ink tabular-nums">
-                                      {fmtAmount(d.supplier_amount)}
-                                    </div>
-                                    {margin !== null && (
-                                      <div className={`text-[10px] tabular-nums font-medium ${
-                                        parseFloat(margin) >= 20 ? "text-success-ink"
-                                        : parseFloat(margin) >= 0 ? "text-warning-ink"
-                                        : "text-danger-ink"
-                                      }`}>
-                                        {margin}% margin
-                                      </div>
-                                    )}
-                                  </div>
-                                  <ChevronDown size={13} className={`flex-shrink-0 text-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
-                                </button>
-
-                                {open && (
-                                  <div className="border-t border-line-2 bg-surface-2/40 px-4 py-4">
-                                    {dealFlowLoading ? (
-                                      <div className="flex items-center justify-center gap-2 py-6 text-[12px] text-muted">
-                                        <Loader2 size={14} className="animate-spin" /> Loading breakdown…
-                                      </div>
-                                    ) : dealFlow ? (
-                                      <CompletedBreakdown flow={dealFlow} onReload={reloadDeal} />
-                                    ) : (
-                                      <div className="py-6 text-center text-[12px] text-muted">
-                                        Couldn't load this deal's breakdown
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <button
+                  onClick={() => setDealsModalOpen(true)}
+                  className="w-full flex items-center justify-between gap-2 px-3 h-10 bg-surface-2 border border-line rounded-lg text-[12.5px] font-medium text-ink-2 hover:border-line-3 transition-colors"
+                >
+                  <span>View completed deals ({supplierDeals.length})</span>
+                  <ChevronRight size={14} className="text-muted flex-shrink-0" />
+                </button>
               )}
 
               {/* Core info */}
@@ -489,6 +372,15 @@ export default function SuppliersView() {
             </div>
           </div>
         </div>
+      )}
+
+      {dealsModalOpen && selected && (
+        <SupplierDealsModal
+          supplier={selected}
+          deals={supplierDeals}
+          onClose={() => setDealsModalOpen(false)}
+          onReload={reloadDeal}
+        />
       )}
     </div>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, DealFlow, PayoutShare, allocateDealPayout, dealPayoutIncluded } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
+import { fmtAmount, primarySupplierLabel } from "../lib/format";
 import { toast } from "./Toast";
 import {
   CheckCircle2, RefreshCw, ChevronDown, RotateCcw, Trash2,
@@ -144,6 +144,7 @@ export default function CloseoutView() {
           {flows.map((flow) => {
             const margin = pct(flow.net_profit, flow.gross_revenue);
             const isExp  = expanded === flow.id;
+            const sup    = primarySupplierLabel(flow.supplier_payments);
             return (
               <div
                 key={flow.id}
@@ -171,6 +172,7 @@ export default function CloseoutView() {
                             })}
                           </span>
                         )}
+                        {sup && <span className="min-w-0 truncate">→ {sup}</span>}
                       </div>
                     </div>
 
@@ -225,7 +227,9 @@ function DealBreakdown({
   flow, recipients, onReload,
 }: { flow: DealFlow; recipients: PayoutShare[]; onReload: () => void }) {
   const [saving, setSaving] = useState(false);
-  const alloc = allocateDealPayout(flow.net_profit, dealPayoutIncluded(flow), recipients);
+  // Completed deals show the breakdown captured at completion; older deals
+  // (no stored breakdown) fall back to re-deriving from the current config.
+  const alloc = dealPayoutSplit(flow, recipients);
   const payments = flow.supplier_payments || [];
   const margin   = pct(flow.net_profit, flow.gross_revenue);
 
