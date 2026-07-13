@@ -3,7 +3,7 @@ import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
 } from "lucide-react";
 import {
-  api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAllocation, DealFlow,
+  api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -54,6 +54,10 @@ export default function FinancialsView() {
   const [preview, setPreview]         = useState<BankPreview | null>(null);
   const [importing, setImporting]     = useState(false);
 
+  // Bulk import (multiple statement files in one go)
+  const [bulkBusy, setBulkBusy]         = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
+
   // AI import (any statement — credit cards / other banks)
   const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
   const [aiPreview, setAiPreview]         = useState<BankAiPreview | null>(null);
@@ -63,6 +67,7 @@ export default function FinancialsView() {
   // Filters
   const [search, setSearch]           = useState("");
   const [dirFilter, setDirFilter]     = useState<"all" | "in" | "out">("all");
+  const [acctFilter, setAcctFilter]   = useState("all");
   const [catFilter, setCatFilter]     = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "unreviewed" | "unallocated_in">("all");
   const [fromDate, setFromDate]       = useState("");
@@ -118,19 +123,52 @@ export default function FinancialsView() {
       .finally(() => setAllocLoading(false));
   };
 
-  // Import flow
+  // Normalize the dialog result (string | string[] | null) to a list of paths.
+  const asPaths = (sel: string | string[] | null): string[] =>
+    Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
+
+  // Import flow — one file previews first; multiple files import straight through.
   const pickAndPreview = async () => {
-    const selected = await openDialog({
-      multiple: false,
+    const paths = asPaths(await openDialog({
+      multiple: true,
       filters: [{ name: "Bank statement", extensions: ["pdf", "ofx", "qbo", "qfx", "csv"] }],
-    });
-    if (typeof selected !== "string") return;
+    }));
+    if (paths.length === 0) return;
+    if (paths.length > 1) { await bulkImport(paths, false); return; }
+    const selected = paths[0];
     setPreviewPath(selected);
     setPreview(null);
     try {
       const p = await api.bankPreview(selected);
       setPreview(p);
     } catch (e: any) { toast(String(e), "error"); setPreviewPath(null); }
+  };
+
+  // Import many statements sequentially, all into the current account.
+  const bulkImport = async (paths: string[], ai: boolean) => {
+    const acct = accountId.trim() || "chase-business";
+    setBulkBusy(true);
+    let imported = 0, extracted = 0, skipped = 0;
+    const errors: string[] = [];
+    for (let i = 0; i < paths.length; i++) {
+      setBulkProgress(`Importing ${i + 1} of ${paths.length}…`);
+      try {
+        const s = ai ? await api.bankImportAi(paths[i], acct) : await api.bankImport(paths[i], acct);
+        imported += s.imported;
+        skipped += s.skipped;
+        if (ai) extracted += (s as BankAiImportResult).extracted;
+      } catch (e: any) { errors.push(String(e)); }
+    }
+    setBulkProgress("");
+    setBulkBusy(false);
+    const failNote = errors.length ? ` — ${errors.length} file${errors.length === 1 ? "" : "s"} failed` : "";
+    toast(
+      ai
+        ? `AI imported ${imported} (extracted ${extracted}), skipped ${skipped} across ${paths.length} files${failNote}`
+        : `Imported ${imported}, skipped ${skipped} across ${paths.length} files${failNote}`,
+      errors.length ? "error" : "success",
+    );
+    await refreshAll(false);
   };
 
   const doImport = async () => {
@@ -147,11 +185,13 @@ export default function FinancialsView() {
 
   // AI import flow — reads ANY statement (credit cards, other banks) via LLM.
   const pickAndPreviewAi = async () => {
-    const selected = await openDialog({
-      multiple: false,
+    const paths = asPaths(await openDialog({
+      multiple: true,
       filters: [{ name: "Statement", extensions: ["pdf", "ofx", "qbo", "qfx", "csv"] }],
-    });
-    if (typeof selected !== "string") return;
+    }));
+    if (paths.length === 0) return;
+    if (paths.length > 1) { await bulkImport(paths, true); return; }
+    const selected = paths[0];
     setAiPreviewPath(selected);
     setAiPreview(null);
     setAiExtracting(true);
@@ -259,6 +299,7 @@ export default function FinancialsView() {
     () =>
       txns.filter((t) => {
         if (dirFilter !== "all" && t.direction !== dirFilter) return false;
+        if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
         if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
         if (statusFilter === "unreviewed" && t.reviewed) return false;
         if (statusFilter === "unallocated_in" && !(t.direction === "in" && t.unallocated > 0.0001)) return false;
@@ -274,7 +315,13 @@ export default function FinancialsView() {
         }
         return true;
       }),
-    [txns, dirFilter, catFilter, statusFilter, fromDate, toDate, search],
+    [txns, dirFilter, acctFilter, catFilter, statusFilter, fromDate, toDate, search],
+  );
+
+  // Distinct account ids present in the loaded transactions (for the filter).
+  const accounts = useMemo(
+    () => Array.from(new Set(txns.map((t) => t.account_id).filter(Boolean))).sort(),
+    [txns],
   );
 
   const filteredDeals = useMemo(() => {
@@ -335,6 +382,11 @@ export default function FinancialsView() {
       {/* Import + AI toolbar */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-end gap-2 flex-wrap">
+          {bulkProgress && (
+            <span className="mr-auto flex items-center gap-1.5 text-[12px] text-muted">
+              <Loader2 size={13} className="animate-spin" /> {bulkProgress}
+            </span>
+          )}
           <button
             onClick={aiCategorize}
             disabled={aiBusy}
@@ -352,21 +404,23 @@ export default function FinancialsView() {
           </label>
           <button
             onClick={pickAndPreview}
-            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
+            disabled={bulkBusy}
+            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
           >
-            <Upload size={14} /> Import statement
+            {bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Import statement
           </button>
           <button
             onClick={pickAndPreviewAi}
-            disabled={aiExtracting}
+            disabled={aiExtracting || bulkBusy}
             className="flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
           >
-            {aiExtracting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Smart import (AI)
+            {aiExtracting || bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Smart import (AI)
           </button>
         </div>
         <p className="text-[11px] text-muted text-right leading-relaxed">
           Smart import reads any statement with AI — for credit cards and other banks. Set a distinct account per card
-          (e.g. chase-card, amex) so each groups and dedupes separately.
+          (e.g. chase-card, amex) so each groups and dedupes separately. Selecting several files imports them all to the
+          Account above, so import one account's statements together.
         </p>
       </div>
 
@@ -519,6 +573,18 @@ export default function FinancialsView() {
             </button>
           ))}
         </div>
+        {accounts.length > 0 && (
+          <select
+            value={acctFilter}
+            onChange={(e) => setAcctFilter(e.target.value)}
+            className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <option value="all">All accounts</option>
+            {accounts.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        )}
         <select
           value={catFilter}
           onChange={(e) => setCatFilter(e.target.value)}
@@ -603,6 +669,11 @@ export default function FinancialsView() {
                     </td>
                     <td className="px-3 py-2.5 text-ink-2 max-w-[280px] align-top">
                       <span className="truncate block" title={t.description}>{t.description}</span>
+                      {t.account_id && (
+                        <span className="inline-block mt-0.5 text-[10px] text-muted bg-surface-2 border border-line-2 rounded px-1.5 py-0.5">
+                          {t.account_id}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-muted max-w-[160px] align-top">
                       <span className="truncate block">{t.counterparty_name || "—"}</span>

@@ -443,13 +443,18 @@ pub async fn parse_load(text: &str, image_base64: Option<&str>, image_media_type
 /// Claude (handles any layout — checking, debit, Chase/Amex cards). Returns
 /// {"transactions":[{date,description,amount,direction,category,counterparty}],
 ///  "ending_balance":number|null}. amount is positive; direction "in"/"out".
-pub async fn extract_statement(text: &str) -> Result<Value> {
+pub async fn extract_statement(text: &str, year_hint: i32) -> Result<Value> {
     let key = anthropic_key().ok_or_else(|| anyhow!(
         "No AI key set. Add your Anthropic API key in Settings to enable smart statement import."
     ))?;
     if text.trim().is_empty() {
         return Err(anyhow!("This statement had no readable text to extract."));
     }
+    let year_rule = format!(
+        " This statement's transactions are from the year {yr}. Every date's year MUST be {yr}, \
+except a December date on a January statement uses {prev}. NEVER output any other year.",
+        yr = year_hint, prev = year_hint - 1
+    );
     let system = "You extract EVERY money transaction from a bank or credit-card statement. \
 Return ONLY valid JSON, no markdown: \
 {\"transactions\":[{\"date\":\"YYYY-MM-DD\",\"description\":string,\"amount\":number,\"direction\":\"in\"|\"out\",\"category\":string,\"counterparty\":string}],\"ending_balance\":number|null}. \
@@ -464,7 +469,7 @@ Include fees and interest as transactions. Do NOT emit running-balance, subtotal
     let body = serde_json::json!({
         "model": LOAD_MODEL,
         "max_tokens": 8192,
-        "system": system,
+        "system": format!("{}{}", system, year_rule),
         "messages": [{ "role": "user", "content": [{ "type": "text", "text": format!("Statement text:\n{}", text.trim()) }] }]
     });
     let client = http_client()?;

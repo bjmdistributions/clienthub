@@ -1966,7 +1966,7 @@ export const api = {
   // Bank statement import (financial engine)
   bankPreview: (path: string) => invoke<BankPreview>("bank_preview", { path }),
   bankImport: (path: string, accountId: string) =>
-    invoke<BankImportSummary>("bank_import", { path, account_id: accountId }),
+    invoke<BankImportSummary>("bank_import", { path, accountId }),
   bankPreviewAi: (path: string) => invoke<BankAiPreview>("bank_preview_ai", { path }),
   bankImportAi: (path: string, accountId: string) =>
     invoke<BankAiImportResult>("bank_import_ai", { path, accountId }),

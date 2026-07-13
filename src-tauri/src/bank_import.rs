@@ -212,13 +212,28 @@ const SEC_STOP: &[&str] = &[
 
 /// The statement's year (first `20xx` seen) — Chase transaction rows show only
 /// MM/DD, so we stamp the period year onto each.
-fn statement_year(text: &str) -> String {
-    for tok in text.split(|c: char| !c.is_ascii_digit()) {
-        if tok.len() == 4 && (tok.starts_with("20")) {
-            return tok.to_string();
+/// Infer the statement's year robustly — the most frequent 4-digit year in a
+/// plausible range [2015, current+1]. Guards against junk tokens (account/reference
+/// numbers) that a naive "first 20xx" grabbed (e.g. a bogus 2051). Falls back to
+/// the current year when the period isn't spelled out. Also used to hint the AI path.
+pub fn infer_statement_year(text: &str) -> i32 {
+    use chrono::Datelike;
+    let current = chrono::Utc::now().year();
+    let max_ok = current + 1;
+    let re = regex::Regex::new(r"(?:19|20)\d{2}").unwrap();
+    let mut counts: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+    for m in re.find_iter(text) {
+        if let Ok(y) = m.as_str().parse::<i32>() {
+            if (2015..=max_ok).contains(&y) {
+                *counts.entry(y).or_insert(0) += 1;
+            }
         }
     }
-    "".to_string()
+    counts.into_iter().max_by_key(|(_, c)| *c).map(|(y, _)| y).unwrap_or(current)
+}
+
+fn statement_year(text: &str) -> String {
+    infer_statement_year(text).to_string()
 }
 
 /// Parse the extracted statement text into transactions. Pure + unit-tested so the

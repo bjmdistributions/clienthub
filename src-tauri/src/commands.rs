@@ -9331,8 +9331,23 @@ pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank
     crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())
 }
 
+/// Replace an implausible year (e.g. an AI-hallucinated 2051) with the statement's
+/// inferred year, keeping the month/day. Leaves a plausible year (hint or hint-1
+/// for a December date on a January statement) alone.
+fn fix_year(date: &str, hint: i32) -> String {
+    let parts: Vec<&str> = date.split('-').collect();
+    if parts.len() == 3 {
+        if let Ok(y) = parts[0].parse::<i32>() {
+            if y < hint - 1 || y > hint {
+                return format!("{}-{}-{}", hint, parts[1], parts[2]);
+            }
+        }
+    }
+    date.to_string()
+}
+
 /// Convert AI-extracted statement transactions into ParsedRows.
-fn ai_txns_to_rows(txns: &[Value]) -> Vec<crate::bank_import::ParsedRow> {
+fn ai_txns_to_rows(txns: &[Value], year_hint: i32) -> Vec<crate::bank_import::ParsedRow> {
     let mut rows = Vec::new();
     for t in txns {
         let amount = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0).abs();
@@ -9340,7 +9355,7 @@ fn ai_txns_to_rows(txns: &[Value]) -> Vec<crate::bank_import::ParsedRow> {
         let desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
         let dir = t.get("direction").and_then(|v| v.as_str()).unwrap_or("out");
         rows.push(crate::bank_import::ParsedRow {
-            posted_at: t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            posted_at: fix_year(t.get("date").and_then(|v| v.as_str()).unwrap_or(""), year_hint),
             amount,
             direction: if dir == "in" { "in".into() } else { "out".into() },
             description: desc.clone(),
@@ -9363,21 +9378,31 @@ fn ai_txns_to_rows(txns: &[Value]) -> Vec<crate::bank_import::ParsedRow> {
 #[tauri::command]
 pub async fn bank_preview_ai(path: String) -> Result<Value, String> {
     let text = crate::bank_import::statement_text(&path).map_err(|e| e.to_string())?;
-    let out = crate::ai::extract_statement(&text).await.map_err(|e| e.to_string())?;
+    let year = crate::bank_import::infer_statement_year(&text);
+    let out = crate::ai::extract_statement(&text, year).await.map_err(|e| e.to_string())?;
     let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    // Apply the same year clamp to the sample so the preview shows correct dates.
+    let sample: Vec<Value> = txns.iter().take(10).map(|t| {
+        let mut t = t.clone();
+        if let Some(d) = t.get("date").and_then(|v| v.as_str()) {
+            t["date"] = json!(fix_year(d, year));
+        }
+        t
+    }).collect();
     Ok(json!({
         "total": txns.len(),
         "ending_balance": out.get("ending_balance").cloned().unwrap_or(Value::Null),
-        "sample": txns.iter().take(10).cloned().collect::<Vec<_>>(),
+        "sample": sample,
     }))
 }
 
 #[tauri::command]
 pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, String> {
     let text = crate::bank_import::statement_text(&path).map_err(|e| e.to_string())?;
-    let out = crate::ai::extract_statement(&text).await.map_err(|e| e.to_string())?;
+    let year = crate::bank_import::infer_statement_year(&text);
+    let out = crate::ai::extract_statement(&text, year).await.map_err(|e| e.to_string())?;
     let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let rows = ai_txns_to_rows(&txns);
+    let rows = ai_txns_to_rows(&txns, year);
     let summary = crate::bank_import::persist_rows(&rows, &account_id, "ai").map_err(|e| e.to_string())?;
     Ok(json!({
         "imported": summary.imported,
