@@ -186,6 +186,127 @@ fn parse_csv(path: &str) -> Result<Vec<ParsedRow>> {
     Ok(out)
 }
 
+// ── PDF (Chase statement) ───────────────────────────────────────────────────
+// Chase PDF statements carry the FULLEST wire detail (originator B/O names, Trn
+// refs) — richer than CSV/OFX. But direction comes from which SECTION a line sits
+// in (Deposits = in; ATM/Electronic Withdrawals/Fees/Checks = out), amounts are
+// unsigned, and wire rows WRAP across lines (description, then Trn ref, then the
+// amount on its own line). So we scan section-aware, accumulate a block until the
+// next dated line, and take the last decimal in the block as the amount.
+
+const SEC_IN: &str = "DEPOSITS AND ADDITIONS";
+const SEC_OUT: &[&str] = &[
+    "ATM & DEBIT CARD WITHDRAWAL",
+    "ELECTRONIC WITHDRAWAL",
+    "FEES",
+    "CHECKS PAID",
+    "OTHER WITHDRAWAL",
+];
+const SEC_STOP: &[&str] = &[
+    "DAILY ENDING BALANCE",
+    "ATM & DEBIT CARD SUMMARY",
+    "IN CASE OF ERRORS",
+    "OVERDRAFT AND RETURNED ITEM",
+    "SERVICE CHARGE SUMMARY",
+];
+
+/// The statement's year (first `20xx` seen) — Chase transaction rows show only
+/// MM/DD, so we stamp the period year onto each.
+fn statement_year(text: &str) -> String {
+    for tok in text.split(|c: char| !c.is_ascii_digit()) {
+        if tok.len() == 4 && (tok.starts_with("20")) {
+            return tok.to_string();
+        }
+    }
+    "".to_string()
+}
+
+/// Parse the extracted statement text into transactions. Pure + unit-tested so the
+/// tricky wrap/section logic is validated independently of the PDF extractor.
+fn parse_statement_text(text: &str) -> Vec<ParsedRow> {
+    let year = statement_year(text);
+    let amt_re = regex::Regex::new(r"-?[\d,]+\.\d{2}").unwrap();
+    let date_re = regex::Regex::new(r"^(\d{2})/(\d{2})\b").unwrap();
+
+    // Accumulate (direction, text) blocks, one per transaction.
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut cur: Option<(String, String)> = None;
+    let mut sec: Option<&str> = None;
+
+    for raw in text.lines() {
+        let l = raw.trim();
+        if l.is_empty() { continue; }
+        let u = l.to_uppercase();
+        if u.starts_with(SEC_IN) { if let Some(b) = cur.take() { blocks.push(b); } sec = Some("in"); continue; }
+        if SEC_OUT.iter().any(|h| u.starts_with(h)) { if let Some(b) = cur.take() { blocks.push(b); } sec = Some("out"); continue; }
+        if SEC_STOP.iter().any(|h| u.starts_with(h)) { if let Some(b) = cur.take() { blocks.push(b); } sec = None; continue; }
+        if u.starts_with("DATE DESCRIPTION") || u.starts_with("DATE AMOUNT") || u.starts_with("TOTAL ") { continue; }
+        let dir = match sec { Some(d) => d, None => continue };
+        if date_re.is_match(l) {
+            if let Some(b) = cur.take() { blocks.push(b); }
+            cur = Some((dir.to_string(), l.to_string()));
+        } else if let Some((_, t)) = cur.as_mut() {
+            t.push(' ');
+            t.push_str(l);
+        }
+    }
+    if let Some(b) = cur.take() { blocks.push(b); }
+
+    let mut rows = Vec::new();
+    for (dir, t) in blocks {
+        let amts: Vec<String> = amt_re.find_iter(&t).map(|m| m.as_str().to_string()).collect();
+        let last = match amts.last() { Some(a) => a.clone(), None => continue };
+        let amount: f64 = last.replace([',', '$'], "").parse().unwrap_or(0.0);
+        if amount == 0.0 { continue; }
+        // posted_at from the leading MM/DD + statement year.
+        let posted_at = date_re.captures(&t).map(|c| {
+            let mm = c.get(1).unwrap().as_str();
+            let dd = c.get(2).unwrap().as_str();
+            if year.is_empty() { format!("{}/{}", mm, dd) } else { format!("{}-{}-{}", year, mm, dd) }
+        }).unwrap_or_default();
+        // description = strip the leading date(s) and the trailing amount.
+        let mut d = date_re.replace(&t, "").trim().to_string();
+        d = date_re.replace(&d, "").trim().to_string(); // doubled date (posting + txn date)
+        if let Some(pos) = d.rfind(&last) { d.truncate(pos); }
+        let d = d.trim_end_matches(['$', ' ']).trim().to_string();
+        let mut row = ParsedRow {
+            posted_at,
+            amount: amount.abs(),
+            direction: dir,
+            description: d.clone(),
+            memo_raw: d,
+            rail: String::new(),
+            category: String::new(),
+            counterparty_name: String::new(),
+            fitid: String::new(),
+            wire_ref: String::new(),
+            check_num: String::new(),
+            balance: 0.0,
+        };
+        classify(&mut row, "");
+        rows.push(row);
+    }
+    rows
+}
+
+fn parse_chase_pdf(path: &str) -> Result<Vec<ParsedRow>> {
+    let text = pdf_extract::extract_text(path).context("extract PDF text")?;
+    Ok(parse_statement_text(&text))
+}
+
+/// Route a file to the right parser by extension/content. Returns (format, rows).
+fn detect_and_parse(path: &str) -> Result<(String, Vec<ParsedRow>)> {
+    if path.to_lowercase().ends_with(".pdf") {
+        return Ok(("pdf".to_string(), parse_chase_pdf(path)?));
+    }
+    let text = read_text(path)?;
+    if is_ofx(&text) {
+        Ok(("ofx".to_string(), parse_ofx(&text)))
+    } else {
+        Ok(("csv".to_string(), parse_csv(path)?))
+    }
+}
+
 // ── Auto-classify (spec §3) ─────────────────────────────────────────────────
 
 /// Extract the text after a `needle` up to end-of-line / next delimiter.
@@ -270,12 +391,7 @@ fn classify(row: &mut ParsedRow, txn_type: &str) {
 // ── Public API: preview + import ────────────────────────────────────────────
 
 pub fn preview(path: &str) -> Result<BankPreview> {
-    let text = read_text(path)?;
-    let (format, rows) = if is_ofx(&text) {
-        ("ofx".to_string(), parse_ofx(&text))
-    } else {
-        ("csv".to_string(), parse_csv(path)?)
-    };
+    let (format, rows) = detect_and_parse(path)?;
     let has_fitid = rows.iter().any(|r| !r.fitid.is_empty());
     Ok(BankPreview {
         format,
@@ -311,12 +427,7 @@ fn stable_id(account_id: &str, row: &ParsedRow) -> String {
 }
 
 pub fn import(path: &str, account_id: &str) -> Result<BankImportSummary> {
-    let text = read_text(path)?;
-    let (format, rows) = if is_ofx(&text) {
-        ("ofx".to_string(), parse_ofx(&text))
-    } else {
-        ("csv".to_string(), parse_csv(path)?)
-    };
+    let (format, rows) = detect_and_parse(path)?;
     let has_fitid = rows.iter().any(|r| !r.fitid.is_empty());
     let now = chrono::Utc::now().to_rfc3339();
     let conn = crate::db::pool().get().context("db pool")?;
@@ -410,6 +521,60 @@ mod tests {
         assert_eq!(b.direction, "out");
         assert_eq!(b.rail, "zelle");
         assert!(b.counterparty_name.to_uppercase().contains("NJH"), "cp={}", b.counterparty_name);
+    }
+
+    const SAMPLE_PDF_TEXT: &str = "June 01, 2026 through June 30, 2026\n\
+DEPOSITS AND ADDITIONS\n\
+DATE DESCRIPTION AMOUNT\n\
+06/03 Book Transfer Credit B/O: Gotokam LLC Orlando FL 32820-1811 US Trn: 1234Es 50,000.00\n\
+ELECTRONIC WITHDRAWALS\n\
+DATE DESCRIPTION AMOUNT\n\
+06/03 06/03 Online Domestic Wire Transfer A/C: Last Stock LLC Houston TX 77027-3635 US Trn:\n\
+9876Es\n\
+12,540.00\n\
+06/01 Zelle Payment To Mom 55555 $35.00\n\
+DAILY ENDING BALANCE\n\
+06/03 100,000.00\n";
+
+    #[test]
+    fn parses_pdf_sections_and_wrapped_wires() {
+        let rows = parse_statement_text(SAMPLE_PDF_TEXT);
+        assert_eq!(rows.len(), 3, "balance line must be excluded; got {:?}", rows.iter().map(|r| &r.description).collect::<Vec<_>>());
+
+        let dep = &rows[0];
+        assert_eq!(dep.direction, "in");
+        assert_eq!(dep.amount, 50000.0);
+        assert_eq!(dep.posted_at, "2026-06-03");
+        assert!(dep.counterparty_name.to_uppercase().contains("GOTOKAM"), "cp={}", dep.counterparty_name);
+
+        let wire = &rows[1]; // wrapped across 3 lines
+        assert_eq!(wire.direction, "out");
+        assert_eq!(wire.amount, 12540.0, "wrapped-wire amount must be the own-line value");
+        assert_eq!(wire.rail, "wire");
+        assert!(wire.counterparty_name.to_uppercase().contains("LAST STOCK"), "cp={}", wire.counterparty_name);
+
+        let zelle = &rows[2];
+        assert_eq!(zelle.direction, "out");
+        assert_eq!(zelle.amount, 35.0);
+        assert_eq!(zelle.rail, "zelle");
+    }
+
+    // End-to-end against a real Chase business statement (validates the pdf-extract
+    // crate + parser together). Ignored by default — run with:
+    //   cargo test validates_against_real_chase_pdf -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn validates_against_real_chase_pdf() {
+        let path = r"C:\Users\Jack\Downloads\20260630-statements-3655- (1).pdf";
+        let rows = parse_chase_pdf(path).expect("parse pdf");
+        let names = rows.iter().map(|r| r.counterparty_name.to_uppercase()).collect::<Vec<_>>().join("|");
+        for expect in ["GOTOKAM", "LAST STOCK", "NJH"] {
+            assert!(names.contains(expect), "missing counterparty {}", expect);
+        }
+        let ins = rows.iter().filter(|r| r.direction == "in").count();
+        let outs = rows.iter().filter(|r| r.direction == "out").count();
+        assert!(ins > 5 && outs > 5, "in={} out={}", ins, outs);
+        eprintln!("PDF parsed {} rows ({} in / {} out)", rows.len(), ins, outs);
     }
 
     #[test]
