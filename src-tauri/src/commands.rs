@@ -9642,11 +9642,20 @@ fn plaid_txn_id(transaction_id: &str) -> String {
 /// Map Plaid's personal_finance_category.primary to our coarse category vocabulary.
 fn plaid_category(pfc: &str, direction: &str) -> String {
     let p = pfc.to_uppercase();
-    if p.contains("BANK_FEES") { "fee" }
-    else if p.contains("LOAN_PAYMENTS") { "card_payment" }
+    if p.contains("INCOME") { "receipt" }
     else if p.contains("TRANSFER") { "internal_transfer" }
-    else if p.contains("INCOME") { "receipt" }
-    else if direction == "in" { "receipt" } else { "payment" }.to_string()
+    else if p.contains("LOAN_PAYMENTS") { "card_payment" }
+    else if p.contains("BANK_FEES") { "fee" }
+    else if p.contains("FOOD_AND_DRINK") { "meals" }
+    else if p.contains("GENERAL_MERCHANDISE") { "merchandise" }
+    else if p.contains("TRANSPORTATION") { "auto" }
+    else if p.contains("TRAVEL") { "travel" }
+    else if p.contains("RENT_AND_UTILITIES") { "utilities" }
+    else if p.contains("GENERAL_SERVICES") { "professional" }
+    else if p.contains("ENTERTAINMENT") { "meals" }
+    else if p.contains("PERSONAL_CARE") || p.contains("MEDICAL") || p.contains("HOME_IMPROVEMENT") { "other_expense" }
+    else if p.contains("GOVERNMENT_AND_NON_PROFIT") { "taxes" }
+    else if direction == "in" { "receipt" } else { "other_expense" }.to_string()
 }
 
 #[tauri::command]

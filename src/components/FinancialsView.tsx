@@ -13,19 +13,55 @@ import { toast } from "./Toast";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 
-// Categories the statement parser produces (blank = uncategorized).
-const CATEGORIES: { value: string; label: string }[] = [
-  { value: "",                 label: "Uncategorized" },
-  { value: "receipt",          label: "Receipt (money in)" },
-  { value: "payment",          label: "Payment (to supplier)" },
-  { value: "fee",              label: "Fee" },
-  { value: "owner_draw",       label: "Owner draw" },
-  { value: "shipping",         label: "Shipping" },
-  { value: "software",         label: "Software" },
-  { value: "internal_transfer",label: "Internal transfer" },
-  { value: "cash_in",          label: "Cash in" },
-  { value: "cash_out",         label: "Cash out" },
+// Chart of accounts (QuickBooks-style). Legacy values (receipt/payment/fee/
+// owner_draw/shipping/software/internal_transfer/cash_in/cash_out) are kept so
+// existing rows keep their category. Grouped for scannable <optgroup> dropdowns.
+const CATEGORIES: { value: string; label: string; group: string }[] = [
+  { value: "",                 label: "Uncategorized",             group: "" },
+  { value: "receipt",          label: "Sale / buyer payment",      group: "Income" },
+  { value: "other_income",     label: "Other income",              group: "Income" },
+  { value: "payment",          label: "Supplier payment",          group: "Cost of goods" },
+  { value: "merchandise",      label: "Inventory / merchandise",   group: "Cost of goods" },
+  { value: "shipping",         label: "Shipping & freight",        group: "Cost of goods" },
+  { value: "meals",            label: "Meals & food",              group: "Operating expenses" },
+  { value: "auto",             label: "Fuel & auto",               group: "Operating expenses" },
+  { value: "travel",           label: "Travel & lodging",          group: "Operating expenses" },
+  { value: "office",           label: "Office & supplies",         group: "Operating expenses" },
+  { value: "utilities",        label: "Utilities & phone",         group: "Operating expenses" },
+  { value: "rent",             label: "Rent & warehouse",          group: "Operating expenses" },
+  { value: "software",         label: "Software & subscriptions",  group: "Operating expenses" },
+  { value: "advertising",      label: "Advertising & marketing",   group: "Operating expenses" },
+  { value: "insurance",        label: "Insurance",                 group: "Operating expenses" },
+  { value: "professional",     label: "Professional & legal fees", group: "Operating expenses" },
+  { value: "payroll",          label: "Payroll & contractors",     group: "Operating expenses" },
+  { value: "fee",              label: "Bank & card fees",          group: "Operating expenses" },
+  { value: "taxes",            label: "Taxes",                     group: "Operating expenses" },
+  { value: "other_expense",    label: "Other expense",             group: "Operating expenses" },
+  { value: "internal_transfer",label: "Internal transfer",         group: "Transfers & owner" },
+  { value: "card_payment",     label: "Credit card payment",       group: "Transfers & owner" },
+  { value: "owner_draw",       label: "Owner draw",                group: "Transfers & owner" },
+  { value: "cash_in",          label: "Cash deposit",              group: "Transfers & owner" },
+  { value: "cash_out",         label: "Cash withdrawal",           group: "Transfers & owner" },
 ];
+
+const CAT_GROUP_ORDER = ["Income", "Cost of goods", "Operating expenses", "Transfers & owner"];
+
+// Grouped <option>s for any category <select>. Set includeUncat={false} to omit
+// the blank "Uncategorized" entry (e.g. a "Set category…" placeholder select).
+function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
+  return (
+    <>
+      {includeUncat && <option value="">Uncategorized</option>}
+      {CAT_GROUP_ORDER.map((g) => (
+        <optgroup key={g} label={g}>
+          {CATEGORIES.filter((c) => c.group === g).map((c) => (
+            <option key={c.value} value={c.value}>{c.label}</option>
+          ))}
+        </optgroup>
+      ))}
+    </>
+  );
+}
 
 const ROLES: { value: string; label: string }[] = [
   { value: "buyer_payment",    label: "Buyer payment" },
@@ -156,7 +192,7 @@ export default function FinancialsView() {
   const [statusFilter, setStatusFilter] = useState<
     "all" | "unclassified" | "unallocated_in" | "unallocated_out"
   >("all");
-  const [fromDate, setFromDate]       = useState("");
+  const [fromDate, setFromDate]       = useState(`${new Date().getFullYear()}-01-01`);
   const [toDate, setToDate]           = useState("");
 
   // Primary working mode: To-do (unbooked) hides rows once they're booked.
@@ -1262,9 +1298,7 @@ export default function FinancialsView() {
           className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
         >
           <option value="all">All categories</option>
-          {CATEGORIES.map((c) => (
-            <option key={c.value || "none"} value={c.value}>{c.label}</option>
-          ))}
+          <CategoryOptions />
         </select>
         <select
           value={statusFilter}
@@ -1307,9 +1341,7 @@ export default function FinancialsView() {
             className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             <option value="">Set category…</option>
-            {CATEGORIES.filter((c) => c.value).map((c) => (
-              <option key={c.value} value={c.value}>{c.label}</option>
-            ))}
+            <CategoryOptions includeUncat={false} />
           </select>
           <button
             onClick={() => bulkCat && bulkSetCategory(bulkCat)}
@@ -1450,9 +1482,7 @@ export default function FinancialsView() {
                           onChange={(e) => saveReview(t, { category: e.target.value })}
                           className="h-8 px-1.5 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 max-w-[150px]"
                         >
-                          {CATEGORIES.map((c) => (
-                            <option key={c.value || "none"} value={c.value}>{c.label}</option>
-                          ))}
+                          <CategoryOptions />
                         </select>
                       )}
                     </td>
@@ -2111,9 +2141,7 @@ function RulesCard({
               onChange={(e) => setCat(e.target.value)}
               className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
             >
-              {CATEGORIES.map((c) => (
-                <option key={c.value || "none"} value={c.value}>{c.label}</option>
-              ))}
+              <CategoryOptions />
             </select>
             <button
               onClick={add}

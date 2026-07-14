@@ -250,16 +250,31 @@ Email:
 /// Returns {"results":[{"id","category","counterparty"}]}. Suggestions only.
 pub async fn categorize_transactions(items: &Value) -> Result<Value> {
     let prompt = format!(
-        r#"You categorize business bank transactions for a wholesale-brokerage. For each transaction pick ONE category from EXACTLY this list:
-- receipt (money IN from a buyer/customer for goods)
+        r#"You categorize business bank transactions for a wholesale-brokerage. For each transaction pick ONE category value from EXACTLY this list:
+- receipt (money IN from a buyer/customer for goods sold)
+- other_income (money IN that isn't a product sale: interest, rebates, misc)
 - payment (money OUT to a supplier for goods)
-- fee (bank or wire fees)
-- shipping (postage/carriers: Pirate Ship, USPS, UPS, FedEx)
+- merchandise (inventory/stock purchases, general merchandise)
+- shipping (postage/freight/carriers: Pirate Ship, USPS, UPS, FedEx)
+- meals (food, restaurants, coffee, entertainment)
+- auto (fuel, gas, parking, rideshare, vehicle)
+- travel (flights, hotels, lodging)
+- office (office supplies, equipment)
+- utilities (phone, internet, electric, water)
+- rent (rent, warehouse, storage)
 - software (SaaS: Shopify, Google, Airtable, Anthropic, GoDaddy)
-- owner_draw (personal: credit-card payments, Amex, Earnest, personal transfers)
+- advertising (ads, marketing)
+- insurance (insurance premiums)
+- professional (legal, accounting, professional/general services)
+- payroll (wages, contractors, 1099s)
+- fee (bank, wire, or card fees)
+- taxes (taxes, government payments)
+- other_expense (money OUT that fits nothing above)
 - internal_transfer (moving money between the owner's own accounts)
-- cash_in / cash_out (ATM or teller cash)
-- other
+- card_payment (a payment made TO a credit card)
+- owner_draw (owner's personal draw)
+- cash_in (ATM or teller cash deposit)
+- cash_out (ATM or teller cash withdrawal)
 Also extract the counterparty (the other party's name) when present, else "".
 Return ONLY valid JSON: {{"results":[{{"id":string,"category":string,"counterparty":string}}]}}
 

@@ -301,6 +301,26 @@ fn main() {
                 });
             }
 
+            // Plaid bank feed: pull once ~30s after startup, then every 20 minutes.
+            // Best-effort — plaid_sync errors when no banks are connected or keys are
+            // missing, so we just log and keep looping. This also backfills Plaid's
+            // progressively-extracted history without the user clicking Sync.
+            tauri::async_runtime::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                match commands::plaid_sync().await {
+                    Ok(v) => tracing::info!("plaid auto-sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
+                    Err(e) => tracing::warn!("plaid auto-sync failed: {}", e),
+                }
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1200));
+                loop {
+                    interval.tick().await;
+                    match commands::plaid_sync().await {
+                        Ok(v) => tracing::info!("plaid auto-sync: imported {}", v.get("imported").and_then(|n| n.as_i64()).unwrap_or(0)),
+                        Err(e) => tracing::warn!("plaid auto-sync failed: {}", e),
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
