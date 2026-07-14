@@ -9329,7 +9329,7 @@ pub async fn bank_preview(path: String) -> Result<crate::bank_import::BankPrevie
 #[tauri::command]
 pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank_import::BankImportSummary, String> {
     let summary = crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())?;
-    let _ = apply_txn_rules_impl(); // best-effort pre-tag of newly imported rows
+    let _ = apply_txn_rules_impl(false); // best-effort pre-tag of newly imported rows
     Ok(summary)
 }
 
@@ -9406,7 +9406,7 @@ pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, S
     let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let rows = ai_txns_to_rows(&txns, year);
     let summary = crate::bank_import::persist_rows(&rows, &account_id, "ai").map_err(|e| e.to_string())?;
-    let _ = apply_txn_rules_impl(); // best-effort pre-tag of newly imported rows
+    let _ = apply_txn_rules_impl(false); // best-effort pre-tag of newly imported rows
     Ok(json!({
         "imported": summary.imported,
         "skipped": summary.skipped,
@@ -9875,11 +9875,15 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let direction = if amt > 0.0 { "out" } else { "in" };
                     let amount = amt.abs();
                     let label = label_of(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""));
-                    let desc = t.get("merchant_name").and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| t.get("name").and_then(|v| v.as_str()))
-                        .unwrap_or("").to_string();
-                    let cp = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // `name` is the true bank memo (e.g. "Zelle payment to Walmart
+                    // Loads JPM…"); Plaid's `merchant_name` over-collapses transfers to
+                    // a retailer. Show the real memo as the description so a Zelle to a
+                    // business isn't mistaken for a store purchase; keep the clean
+                    // merchant as the counterparty (falling back to the memo).
+                    let merchant = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let raw_name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let desc = if raw_name.is_empty() { merchant.clone() } else { raw_name };
+                    let cp = if merchant.is_empty() { desc.clone() } else { merchant };
                     let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
                     let cat = plaid_category(pfc, direction);
                     let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -9936,7 +9940,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
-    let _ = apply_txn_rules_impl();
+    let _ = apply_txn_rules_impl(false);
     Ok(json!({ "imported": imported, "removed": removed, "preparing": preparing, "results": results }))
 }
 
@@ -10422,7 +10426,7 @@ pub async fn delete_txn_rule(id: String) -> Result<(), String> {
 /// tag with a direction-derived loan_received/loan_repayment category) but LEAVES
 /// reviewed=0 so the row stays in the review queue. The resulting bank_txn edits
 /// are synced; the rules themselves are device-local. Returns the count updated.
-fn apply_txn_rules_impl() -> Result<i64, String> {
+fn apply_txn_rules_impl(override_existing: bool) -> Result<i64, String> {
     let rules: Vec<(String, String, String, String, String)> = {
         // (match_counterparty, category, target_type, target_id, direction)
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -10438,10 +10442,17 @@ fn apply_txn_rules_impl() -> Result<i64, String> {
     if rules.is_empty() { return Ok(0); }
     let candidates: Vec<(String, String, String, String)> = {
         // (id, counterparty_name, description, direction)
+        // Manual apply (override_existing) re-tags ANY unbooked row so a rule can
+        // overwrite Plaid's auto-guessed category — every import already has a
+        // category, so blank-only matching found nothing. The automatic post-sync
+        // pass keeps blank-only so it can't clobber categories you've set.
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT id, counterparty_name, description, direction FROM bank_txn WHERE reviewed=0 AND COALESCE(category,'')=''",
-        ).map_err(|e| e.to_string())?;
+        let sql = if override_existing {
+            "SELECT id, counterparty_name, description, direction FROM bank_txn WHERE reviewed=0"
+        } else {
+            "SELECT id, counterparty_name, description, direction FROM bank_txn WHERE reviewed=0 AND COALESCE(category,'')=''"
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
         ))).map_err(|e| e.to_string())?;
@@ -10499,7 +10510,7 @@ fn apply_txn_rules_impl() -> Result<i64, String> {
 /// Manually apply memorized auto-tag rules now. Returns { updated }.
 #[tauri::command]
 pub async fn apply_txn_rules() -> Result<Value, String> {
-    let n = apply_txn_rules_impl()?;
+    let n = apply_txn_rules_impl(true)?;
     Ok(json!({ "updated": n }))
 }
 

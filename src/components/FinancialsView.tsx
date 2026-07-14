@@ -170,6 +170,7 @@ export default function FinancialsView() {
   const [plaidSyncing, setPlaidSyncing]     = useState(false);
   const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
   const [plaidTesting, setPlaidTesting]     = useState(false);
+  const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
   // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
   // take ~a minute) — keep re-syncing in the background until transactions land.
   const [plaidPreparing, setPlaidPreparing] = useState(false);
@@ -935,72 +936,87 @@ export default function FinancialsView() {
         </p>
 
         {plaidReady !== null && (
-          <div className="border border-line-2 rounded-lg p-3.5 space-y-3 bg-surface-2/40">
-            {plaidReady === true && (
-              <div className="flex items-center gap-1.5 text-[12px] text-ink-2 min-w-0">
-                <Check size={13} className="text-success-ink flex-shrink-0" />
-                <span className="truncate">
-                  Keys saved · environment:{" "}
-                  <span className="font-medium text-ink">{plaidEnv === "sandbox" ? "Sandbox" : "Production"}</span>
-                </span>
+          <div className="border border-line-2 rounded-lg p-3.5 bg-surface-2/40">
+            {plaidReady === true && !showKeys ? (
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="flex items-center gap-1.5 text-[12px] text-ink-2 min-w-0">
+                  <Check size={13} className="text-success-ink flex-shrink-0" />
+                  <span className="truncate">
+                    Connected · <span className="font-medium text-ink">{plaidEnv === "sandbox" ? "Sandbox" : "Production"}</span>
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowKeys(true)}
+                  className="text-[11px] text-muted hover:text-ink-2 flex-shrink-0"
+                >
+                  Manage keys
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-0">
+                  <label className="block min-w-0 sm:col-span-2">
+                    <span className="block text-[11px] text-muted mb-1">Environment</span>
+                    <select
+                      value={plaidEnv}
+                      onChange={(e) => setPlaidEnv(e.target.value as "sandbox" | "production")}
+                      className={`${inp} text-ink-2`}
+                    >
+                      <option value="sandbox">Sandbox (test)</option>
+                      <option value="production">Production (real data)</option>
+                    </select>
+                  </label>
+                  <label className="block min-w-0">
+                    <span className="block text-[11px] text-muted mb-1">Client ID</span>
+                    <input
+                      value={plaidClientId}
+                      onChange={(e) => setPlaidClientId(e.target.value)}
+                      placeholder="Plaid client ID"
+                      className={inp}
+                    />
+                  </label>
+                  <label className="block min-w-0">
+                    <span className="block text-[11px] text-muted mb-1">Secret</span>
+                    <input
+                      type="password"
+                      value={plaidSecret}
+                      onChange={(e) => setPlaidSecret(e.target.value)}
+                      placeholder={plaidReady ? "Enter secret to update" : "Plaid secret"}
+                      className={inp}
+                    />
+                  </label>
+                </div>
+                <p className="text-[11px] text-muted leading-relaxed">
+                  Each environment has its own secret. Start in Sandbox to test the flow instantly — in the connect popup,
+                  log in with username <span className="font-medium text-ink-2">user_good</span> and password{" "}
+                  <span className="font-medium text-ink-2">pass_good</span>. Switch to Production with your production secret
+                  for real accounts once your Plaid OAuth is approved. Stored only on this device.
+                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={savePlaidKeys}
+                    disabled={plaidSavingKeys}
+                    className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+                  >
+                    {plaidSavingKeys ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save keys
+                  </button>
+                  {plaidReady === true && (
+                    <button
+                      onClick={testPlaidKeys}
+                      disabled={plaidTesting}
+                      className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                    >
+                      {plaidTesting ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Test connection
+                    </button>
+                  )}
+                  {plaidReady === true && (
+                    <button onClick={() => setShowKeys(false)} className="text-[11px] text-muted hover:text-ink-2 ml-auto">
+                      Done
+                    </button>
+                  )}
+                </div>
               </div>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-0">
-              <label className="block min-w-0 sm:col-span-2">
-                <span className="block text-[11px] text-muted mb-1">Environment</span>
-                <select
-                  value={plaidEnv}
-                  onChange={(e) => setPlaidEnv(e.target.value as "sandbox" | "production")}
-                  className={`${inp} text-ink-2`}
-                >
-                  <option value="sandbox">Sandbox (test)</option>
-                  <option value="production">Production (real data)</option>
-                </select>
-              </label>
-              <label className="block min-w-0">
-                <span className="block text-[11px] text-muted mb-1">Client ID</span>
-                <input
-                  value={plaidClientId}
-                  onChange={(e) => setPlaidClientId(e.target.value)}
-                  placeholder="Plaid client ID"
-                  className={inp}
-                />
-              </label>
-              <label className="block min-w-0">
-                <span className="block text-[11px] text-muted mb-1">Secret</span>
-                <input
-                  type="password"
-                  value={plaidSecret}
-                  onChange={(e) => setPlaidSecret(e.target.value)}
-                  placeholder={plaidReady ? "Enter secret to update" : "Plaid secret"}
-                  className={inp}
-                />
-              </label>
-            </div>
-            <p className="text-[11px] text-muted leading-relaxed">
-              Each environment has its own secret. Start in Sandbox to test the flow instantly — in the connect popup,
-              log in with username <span className="font-medium text-ink-2">user_good</span> and password{" "}
-              <span className="font-medium text-ink-2">pass_good</span>. Switch to Production with your production secret
-              for real accounts once your Plaid OAuth is approved. Stored only on this device.
-            </p>
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={savePlaidKeys}
-                disabled={plaidSavingKeys}
-                className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
-              >
-                {plaidSavingKeys ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save keys
-              </button>
-              {plaidReady === true && (
-                <button
-                  onClick={testPlaidKeys}
-                  disabled={plaidTesting}
-                  className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                >
-                  {plaidTesting ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Test connection
-                </button>
-              )}
-            </div>
           </div>
         )}
 
@@ -1232,7 +1248,7 @@ export default function FinancialsView() {
           <Tile label="Transactions" value={String(summary.total)} />
           <Tile label="Reviewed" value={`${summary.reviewed} / ${summary.total}`} />
           <Tile label="Money in" value={fmtAmount(summary.sum_in)} tone="in" />
-          <Tile label="Money out" value={fmtAmount(summary.sum_out)} />
+          <Tile label="Money out" value={fmtAmount(summary.sum_out)} tone="out" />
           <Tile label="Uncategorized" value={String(summary.unclassified)} tone={summary.unclassified > 0 ? "warn" : undefined} />
           <Tile label="Needs a deal" value={String(summary.unallocated_in + summary.unallocated_out)} tone={summary.unallocated_in + summary.unallocated_out > 0 ? "warn" : undefined} />
         </div>
@@ -1491,9 +1507,9 @@ export default function FinancialsView() {
                         </select>
                       )}
                     </td>
-                    <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap align-top ${t.direction === "in" ? "text-success-ink" : "text-ink"}`}>
-                      {t.direction === "in" ? "+" : ""}{fmtAmount(t.amount)}
-                      <div className="text-[10px] text-muted font-normal">{t.direction === "in" ? "in" : "out"}</div>
+                    <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                      {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
+                      <div className={`text-[10px] font-normal ${t.direction === "in" ? "text-success-ink/70" : "text-danger-ink/70"}`}>{t.direction === "in" ? "in" : "out"}</div>
                     </td>
                     <td className="px-3 py-2.5 text-[12px] whitespace-nowrap align-top">{allocIndicator(t)}</td>
                     <td className="px-3 py-2.5 text-center align-top" onClick={(e) => e.stopPropagation()}>
@@ -1695,8 +1711,8 @@ function BulkAllocateModal({
   );
 }
 
-function Tile({ label, value, tone }: { label: string; value: string; tone?: "in" | "warn" }) {
-  const valueColor = tone === "in" ? "text-success-ink" : tone === "warn" ? "text-warning-ink" : "text-ink";
+function Tile({ label, value, tone }: { label: string; value: string; tone?: "in" | "out" | "warn" }) {
+  const valueColor = tone === "in" ? "text-success-ink" : tone === "out" ? "text-danger-ink" : tone === "warn" ? "text-warning-ink" : "text-ink";
   return (
     <div className="bg-surface border border-line rounded-xl p-3.5 min-w-0">
       <div className="text-[11px] text-muted">{label}</div>
