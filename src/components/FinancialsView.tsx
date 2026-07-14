@@ -167,6 +167,7 @@ export default function FinancialsView() {
   const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
   const [plaidTesting, setPlaidTesting]     = useState(false);
   const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
+  const [bankFeedOpen, setBankFeedOpen]     = useState(false); // collapse the whole feed panel once connected
   // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
   // take ~a minute) — keep re-syncing in the background until transactions land.
   const [plaidPreparing, setPlaidPreparing] = useState(false);
@@ -975,7 +976,32 @@ export default function FinancialsView() {
         <div className="flex items-center gap-2 min-w-0">
           <Building2 size={15} className="text-muted flex-shrink-0" strokeWidth={1.8} />
           <div className="text-[13px] font-semibold text-ink">Bank feed (Plaid)</div>
+          {plaidItems.length > 0 && (
+            <>
+              <span className="text-[12px] text-muted tabular-nums">· {plaidItems.length} connected</span>
+              <div className="ml-auto flex items-center gap-2">
+                {!bankFeedOpen && (
+                  <button
+                    onClick={() => syncPlaid(false)}
+                    disabled={plaidSyncing}
+                    className="flex items-center gap-1.5 h-8 px-2.5 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  >
+                    {plaidSyncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Sync now
+                  </button>
+                )}
+                <button
+                  onClick={() => setBankFeedOpen((o) => !o)}
+                  title={bankFeedOpen ? "Hide bank feed" : "Manage bank feed"}
+                  className="text-muted hover:text-ink-2 transition-colors"
+                >
+                  <ChevronDown size={16} className={`transition-transform ${bankFeedOpen ? "rotate-180" : ""}`} />
+                </button>
+              </div>
+            </>
+          )}
         </div>
+        {(plaidItems.length === 0 || bankFeedOpen) && (
+          <>
         <p className="text-[11px] text-muted leading-relaxed">
           Plaid pulls clean transactions straight from the bank — no statement uploads. After connecting,
           transactions appear in the list below to review and allocate.
@@ -1161,6 +1187,8 @@ export default function FinancialsView() {
               </div>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
 
