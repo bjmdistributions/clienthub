@@ -1366,6 +1366,51 @@ export interface BankAllocation {
   invoice_number: string;
   client_name: string;
 }
+export interface DealAllocation {
+  id: string;
+  bank_txn_id: string;
+  amount: number;
+  role: string;
+  note: string;
+  posted_at: string;
+  direction: "in" | "out";
+  counterparty_name: string;
+  description: string;
+  wire_ref: string;
+  rail: string;
+  txn_amount: number;
+}
+export interface UnallocatedTxn {
+  id: string;
+  posted_at: string;
+  amount: number;
+  direction: "in" | "out";
+  description: string;
+  counterparty_name: string;
+  wire_ref: string;
+  rail: string;
+  category: string;
+  unallocated: number;
+}
+export interface UnallocatedBankTxns {
+  money_in: UnallocatedTxn[];
+  money_out: UnallocatedTxn[];
+}
+export interface DealReconciliation {
+  expected_profit: number;
+  gross_revenue: number;
+  total_cost: number;
+  actual_profit: number;
+  pieces: {
+    buyer_paired: number;
+    supplier_paired: number;
+    fee_paired: number;
+    refund_total: number;
+  };
+  payment_received_paired: boolean;
+  supplier_paid_paired: boolean;
+  fully_reconciled: boolean;
+}
 export interface MoneyConfig {
   bank_balance: number;
   credit_card_balance: number;
@@ -2037,6 +2082,12 @@ export const api = {
     invoke<{ deleted: number; allocations_removed: number }>("clear_bank_txns", { scope }),
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
+  dealAllocations: (dealFlowId: string) =>
+    invoke<DealAllocation[]>("deal_allocations", { dealFlowId }),
+  unallocatedBankTxns: (dealFlowId?: string) =>
+    invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
+  dealReconciliation: (dealFlowId: string) =>
+    invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
   setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
     invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),

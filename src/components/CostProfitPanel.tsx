@@ -1,4 +1,4 @@
-import { DealFlow, PayoutShare, allocateDealPayout, dealPayoutIncluded } from "../lib/api";
+import { DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 
 /**
@@ -21,7 +21,9 @@ export default function CostProfitPanel({
   const cost   = isComplete ? flow.total_cost    : flow.total_supplier_cost;
   const profit = gross - cost;
   const margin = gross > 0 ? (profit / gross) * 100 : 0;
-  const alloc  = allocateDealPayout(flow.net_profit, dealPayoutIncluded(flow), recipients);
+  // Completed deals show the breakdown captured at completion; older deals
+  // (no stored breakdown) fall back to re-deriving from the current config.
+  const alloc  = dealPayoutSplit(flow, recipients);
 
   return (
     <div className="space-y-3">

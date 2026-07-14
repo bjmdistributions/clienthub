@@ -9647,11 +9647,24 @@ pub async fn allocate_bank_txn(
             [&bank_txn_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ).map_err(|_| "Transaction not found".to_string())?
     };
+    // Exclusive links: a transaction already tied to a DIFFERENT deal can't be paired
+    // here (enforces "shouldn't show up for any other deal" even against a stale picker
+    // or a second window/device).
+    let linked_elsewhere: bool = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT 1 FROM bank_allocation WHERE bank_txn_id=?1 AND deal_flow_id != ?2 LIMIT 1",
+            rusqlite::params![bank_txn_id, deal_flow_id], |_| Ok(()),
+        ).is_ok()
+    };
+    if linked_elsewhere {
+        return Err("This transaction is already linked to another deal.".into());
+    }
     // A role has to match the transaction's direction, or role-based reconciliation
     // (supplier payables, refund liability) would book money against the wrong side.
     let role_ok = match direction.as_str() {
         "in" => matches!(role.as_str(), "buyer_payment" | "refund_in" | "adjustment"),
-        _    => matches!(role.as_str(), "supplier_payment" | "refund_out" | "adjustment"),
+        _    => matches!(role.as_str(), "supplier_payment" | "refund_out" | "fee" | "adjustment"),
     };
     if !role_ok {
         return Err(format!("\"{}\" can't be applied to a money-{} transaction", role, direction));
@@ -9715,6 +9728,153 @@ pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Va
         "client_name": r.get::<_, String>(7)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// All bank allocations tied to one deal, joined to the underlying transaction
+/// (date, direction, counterparty, wire ref) so the deal panel can show exactly
+/// what's paired per money-leg and derive an actual profit. `direction` per row
+/// lets the UI render money-in green / money-out red without re-deriving sign;
+/// `bank_txn.amount` is always positive.
+#[tauri::command]
+pub async fn deal_allocations(deal_flow_id: String) -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.bank_txn_id, a.amount, a.role, a.note,
+                bt.posted_at, bt.direction, bt.counterparty_name, bt.description,
+                bt.wire_ref, bt.rail, bt.amount AS txn_amount
+         FROM bank_allocation a
+         JOIN bank_txn bt ON bt.id = a.bank_txn_id
+         WHERE a.deal_flow_id = ?1
+         ORDER BY bt.posted_at DESC, a.created_at",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&deal_flow_id], |r| Ok(json!({
+        "id":                r.get::<_, String>(0)?,
+        "bank_txn_id":       r.get::<_, String>(1)?,
+        "amount":            r.get::<_, f64>(2)?,
+        "role":              r.get::<_, String>(3)?,
+        "note":              r.get::<_, String>(4)?,
+        "posted_at":         r.get::<_, String>(5)?,
+        "direction":         r.get::<_, String>(6)?,
+        "counterparty_name": r.get::<_, String>(7)?,
+        "description":       r.get::<_, String>(8)?,
+        "wire_ref":          r.get::<_, String>(9)?,
+        "rail":              r.get::<_, String>(10)?,
+        "txn_amount":        r.get::<_, f64>(11)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Bank transactions available to pair to a deal, split by direction. A txn is
+/// offered iff it has NO allocation to a deal other than this one (exclusive
+/// links — once linked anywhere it's gone from every other deal's picker) and it
+/// isn't an internal transfer. `money_in` feeds the buyer-payment picker;
+/// `money_out` feeds the supplier / fee / refund-out pickers. When `deal_flow_id`
+/// is omitted (browse mode) only txns with no allocation at all are returned.
+#[tauri::command]
+pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let this = deal_flow_id.unwrap_or_default();
+    let mut stmt = conn.prepare(
+        "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description,
+                bt.counterparty_name, bt.wire_ref, bt.rail, bt.category,
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a
+                          WHERE a.bank_txn_id = bt.id AND a.deal_flow_id = ?1), 0) AS mine
+         FROM bank_txn bt
+         WHERE bt.category != 'internal_transfer'
+           AND NOT EXISTS (SELECT 1 FROM bank_allocation a
+                           WHERE a.bank_txn_id = bt.id AND a.deal_flow_id != ?1)
+         ORDER BY bt.posted_at DESC, bt.created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<Value> = stmt.query_map([&this], |r| {
+        let amount: f64 = r.get(2)?;
+        let mine: f64 = r.get(9)?;
+        Ok(json!({
+            "id":                r.get::<_, String>(0)?,
+            "posted_at":         r.get::<_, String>(1)?,
+            "amount":            amount,
+            "direction":         r.get::<_, String>(3)?,
+            "description":       r.get::<_, String>(4)?,
+            "counterparty_name": r.get::<_, String>(5)?,
+            "wire_ref":          r.get::<_, String>(6)?,
+            "rail":              r.get::<_, String>(7)?,
+            "category":          r.get::<_, String>(8)?,
+            // remaining pairable on THIS deal (0 unless a prior same-deal leg exists)
+            "unallocated":       ((amount - mine) * 100.0).round() / 100.0,
+        }))
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let (money_in, money_out): (Vec<_>, Vec<_>) =
+        rows.into_iter().partition(|t| t["direction"] == "in");
+    Ok(json!({ "money_in": money_in, "money_out": money_out }))
+}
+
+/// Reconciliation rollup for one deal: expected profit (from the deal flow) vs.
+/// ACTUAL profit derived from paired bank transactions, plus the per-role pieces
+/// and paired/unpaired flags for the two required legs. Fully reconciled when
+/// both the buyer payment and the supplier payment have at least one paired txn;
+/// fees/refunds are optional and only adjust the number.
+#[tauri::command]
+pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+
+    let role_sum = |role: &str| -> f64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM bank_allocation
+             WHERE deal_flow_id = ?1 AND role = ?2",
+            rusqlite::params![deal_flow_id, role], |r| r.get(0),
+        ).unwrap_or(0.0)
+    };
+
+    let buyer_paired    = role_sum("buyer_payment");
+    let supplier_paired = role_sum("supplier_payment");
+    let fee_paired      = role_sum("fee");
+    let refund_out      = role_sum("refund_out");
+
+    // Cash refunds already recorded on the deal (independent of the bank feed).
+    let refunds: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount),0) FROM refunds WHERE deal_flow_id = ?1",
+        [&deal_flow_id], |r| r.get(0)).unwrap_or(0.0);
+
+    // Expected figures off the deal flow, plus the invoice total the buyer owes and
+    // the supplier cost — so "fully reconciled" is judged on AMOUNTS, not just the
+    // presence of one paired transaction (BJM deals routinely have a deposit + balance
+    // and multiple supplier wires).
+    let (expected_profit, gross_revenue, total_cost, total_supplier_cost, invoice_total): (f64, f64, f64, f64, f64) = conn.query_row(
+        "SELECT COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0), COALESCE(df.total_cost,0),
+                COALESCE(df.total_supplier_cost,0), COALESCE(i.total,0)
+         FROM deal_flows df LEFT JOIN invoices i ON i.id = df.invoice_id
+         WHERE df.id = ?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).map_err(|_| "Deal not found".to_string())?;
+
+    // A bank refund_out allocation and a recorded cash refund can describe the
+    // SAME money (financials_overview treats them as reducing one owed amount).
+    // Take the max so a deal isn't penalized twice for the same refund.
+    let refund_total = refund_out.max(refunds);
+    let actual_profit = buyer_paired - supplier_paired - fee_paired - refund_total;
+
+    // Reconciled = paired AMOUNTS cover what's owed (within 50¢), not just "a txn exists".
+    let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
+    let payment_received_paired = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
+    let supplier_paid_paired    = if total_supplier_cost > 0.01 { supplier_paired >= total_supplier_cost - 0.5 } else { supplier_paired > 0.01 };
+    let fully_reconciled = payment_received_paired && supplier_paid_paired;
+
+    Ok(json!({
+        "expected_profit":  r2(expected_profit),
+        "gross_revenue":    r2(gross_revenue),
+        "total_cost":       r2(total_cost),
+        "actual_profit":    r2(actual_profit),
+        "pieces": {
+            "buyer_paired":    r2(buyer_paired),
+            "supplier_paired": r2(supplier_paired),
+            "fee_paired":      r2(fee_paired),
+            "refund_total":    r2(refund_total),
+        },
+        "payment_received_paired": payment_received_paired,
+        "supplier_paid_paired":    supplier_paid_paired,
+        "fully_reconciled":        fully_reconciled,
+    }))
 }
 
 /// Bulk-remove bank transactions (and their allocations) by source, synced so the
