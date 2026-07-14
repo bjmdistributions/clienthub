@@ -857,6 +857,7 @@ function SendingCard() {
   const [saved,       setSaved]       = useState(false);
   const [error,       setError]       = useState<string | null>(null);
   const [smtpTest,    setSmtpTest]    = useState<TestState>({ status: "idle" });
+  const [pushState,   setPushState]   = useState<TestState>({ status: "idle" });
   const [gStatus,     setGStatus]     = useState<{ connected: boolean; email: string; scopes: string } | null>(null);
   const [showGuide,   setShowGuide]   = useState(false);
   // Org-shared vs personal override + transfer.
@@ -912,6 +913,19 @@ function SendingCard() {
     catch (e: any) { setSmtpTest({ status: "fail", message: String(e) }); }
   };
 
+  // Push this device's working keychain login up to the server so mobile invoice
+  // sends and the newsletter scheduler authenticate with the SAME password that
+  // works here — no new Gmail app password needed.
+  const pushLogin = async () => {
+    setPushState({ status: "testing" });
+    try {
+      await api.pushEmailLoginToServer();
+      setPushState({ status: "ok", message: "Server updated — mobile sends and newsletters now use this login." });
+    } catch (e: any) {
+      setPushState({ status: "fail", message: String(e) });
+    }
+  };
+
   const save = async () => {
     setError(null);
     try {
@@ -920,18 +934,25 @@ function SendingCard() {
       // matching scope. `saveEmailSettings(scope="org")` also shares the secrets to
       // the server so sibling admins inherit them.
       await api.setEmailUseOrgDefault(useOrg);
-      await api.saveEmailSettings(next, scope);
+      // Write the secrets to the OS keychain FIRST. saveEmailSettings(scope="org")
+      // shares them to the server by reading them back from the keychain, so the
+      // keychain must already hold the freshly-typed password — otherwise the
+      // server receives the PREVIOUS password (the cause of server-side 535 auth
+      // failures on mobile invoice sends and the newsletter scheduler).
       if (!useGoogle) {
         await api.saveCredential("smtp_user", settings.user);
         if (smtpPass) await api.saveCredential("smtp_pass", smtpPass);
         if (imapPass) await api.saveCredential("imap_pass", imapPass);
+      } else {
+        if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
+        if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
+      }
+      await api.saveEmailSettings(next, scope);
+      if (!useGoogle) {
         try {
           const company = await api.getCompanyInfo().catch(() => null);
           await api.pushDesktopSmtpToPi(company?.name || settings.user || "");
         } catch { /* ignore */ }
-      } else {
-        if (oauthClientId) await api.saveCredential("oauth_client_id", oauthClientId);
-        if (oauthClientSecret) await api.saveCredential("oauth_client_secret", oauthClientSecret);
       }
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (e: any) { setError(e.toString()); }
@@ -1028,8 +1049,16 @@ function SendingCard() {
           className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">
           {smtpTest.status === "testing" ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />} {smtpTest.status === "testing" ? "Testing…" : "Test"}
         </button>
+        {!useGoogle && (
+          <button onClick={pushLogin} disabled={pushState.status === "testing"}
+            title="Push this device's working email login up to the server so mobile invoice sends and newsletters authenticate — no new app password needed."
+            className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-2 hover:bg-surface-2 disabled:opacity-50 transition-colors">
+            {pushState.status === "testing" ? <RefreshCw size={13} className="animate-spin" /> : <Cloud size={13} />} {pushState.status === "testing" ? "Pushing…" : "Push login to server"}
+          </button>
+        )}
       </div>
       {smtpTest.status !== "idle" && smtpTest.status !== "testing" && <div className="mt-2.5"><TestResultLine state={smtpTest} /></div>}
+      {pushState.status !== "idle" && pushState.status !== "testing" && <div className="mt-2.5"><TestResultLine state={pushState} /></div>}
 
       {/* Transfer the shared inbox to a different email admin (admin-only, and only
           for the shared config). The new owner's device pulls the creds itself. */}

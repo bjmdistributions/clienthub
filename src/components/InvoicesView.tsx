@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate } from "../lib/api";
+import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
 import RecurringView from "./RecurringView";
 import InvoicePreview, { DEFAULT_INVOICE_TEMPLATE } from "./InvoicePreview";
+import ReconciliationPanel from "./ReconciliationPanel";
 import { toast } from "./Toast";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
@@ -894,6 +895,16 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
   const voided = isVoided(invoice);
   const items: LineItem[]  = JSON.parse(invoice.line_items_json || "[]");
 
+  // Load the deal flow behind this invoice (if any) so bank payments can be paired
+  // right here. Voided/draft invoices with no flow simply won't show the panel.
+  const [dealFlow, setDealFlow] = useState<DealFlow | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (voided) { setDealFlow(null); return; }
+    api.getDealFlowByInvoice(invoice.id).then((f) => { if (alive) setDealFlow(f); }).catch(() => {});
+    return () => { alive = false; };
+  }, [invoice.id, voided]);
+
   const statCol = (s: string) => {
     if (s === "void")    return "bg-surface-3 text-muted";
     if (s === "paid")    return invoice.is_complete ? "bg-success-bg text-success-ink" : "bg-warning-bg text-warning-ink";
@@ -980,6 +991,9 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
               {invoice.notes}
             </div>
           )}
+
+          {/* Pair the buyer payment (and any refund) to this invoice's deal. */}
+          {dealFlow && <ReconciliationPanel flow={dealFlow} />}
         </div>
 
         <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">

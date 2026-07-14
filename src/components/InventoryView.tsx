@@ -217,6 +217,14 @@ export default function InventoryView() {
     catch (e: any) { toast(String(e), "error"); }
   };
 
+  // Renew = refresh the listing's freshness only. update_lot always bumps
+  // updated_at server-side (which clears the stale flag) and sends no email —
+  // that's deliberately separate from the Blast action, which emails buyers.
+  const renewLot = async (lot: Lot) => {
+    try { await api.updateLot(lot.id, {}); toast("Renewed — freshness reset."); load(); }
+    catch (e: any) { toast(String(e), "error"); }
+  };
+
   // Toggle the "sent on WhatsApp / email" flags right from the card.
   // Optimistic update for snappy UX, then persist (and sync).
   const toggleSent = async (lot: Lot, channel: "whatsapp" | "email") => {
@@ -486,6 +494,7 @@ export default function InventoryView() {
             onStatus={(s) => setStatus(lot, s)}
             onDelete={() => deleteOne(lot)}
             onBlast={() => setBlastLot(lot)}
+            onRenew={() => renewLot(lot)}
             storeUrl={storeUrl}
             onCopyStoreLink={() => copyStoreLink(lot.id)}
             unitCost={unitCost(lot)}
@@ -606,12 +615,12 @@ export default function InventoryView() {
 // behind a hover bar + a MoreVertical menu so the grid reads quiet.
 function LotCard({
   lot, index, mediaBase, selectMode, selected,
-  onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, storeUrl, onCopyStoreLink,
+  onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, onRenew, storeUrl, onCopyStoreLink,
   unitCost, unitAsk, loadPrice, marginStr, profit,
 }: {
   lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean;
   onOpen: () => void; onToggleSent: (c: "whatsapp" | "email") => void;
-  onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void;
+  onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void; onRenew: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void;
   unitCost: number; unitAsk: number; loadPrice: number; marginStr: string; profit: number;
 }) {
@@ -739,8 +748,8 @@ function LotCard({
           </span>
           <div className="flex-1" />
           {stale && (
-            <button onClick={(e) => { stop(e); onBlast(); }}
-              title={`Last shared ${daysSince(lot.updated_at)} days ago — re-share to keep buyers warm.`}
+            <button onClick={(e) => { stop(e); onRenew(); }}
+              title={`Last shared ${daysSince(lot.updated_at)} days ago — renew to reset freshness (no email sent).`}
               className="flex items-center gap-1 text-[10px] text-warning-ink bg-warning-bg border border-warning px-2 py-0.5 rounded-full hover:opacity-90 transition-opacity">
               <RefreshCw size={11} /> Renew
             </button>

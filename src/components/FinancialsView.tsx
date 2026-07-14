@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
   Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil,
@@ -12,6 +12,24 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "./Toast";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
+
+// ── Transaction search ──────────────────────────────────────────────────────
+// Exact numeric token ("500", "$1,500.00", "1500") → number; anything else null.
+const numToken = (s: string): number | null =>
+  /^\$?\d[\d,]*(\.\d{1,2})?$/.test(s) ? parseFloat(s.replace(/[$,]/g, "")) : null;
+
+// Multi-term AND search: every space-separated token must match. A numeric token
+// matches the amount EXACTLY (to the cent) — so "500" no longer matches 1,500.00 —
+// while a word token matches the payee or memo. "walmart 500" ⇒ payee~walmart AND $500.00.
+const matchesQuery = (t: BankTxn, q: string): boolean => {
+  const toks = q.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return toks.every((tok) => {
+    const n = numToken(tok);
+    if (n !== null) return Math.abs(t.amount - n) < 0.005;
+    return (t.description || "").toLowerCase().includes(tok) ||
+           (t.counterparty_name || "").toLowerCase().includes(tok);
+  });
+};
 
 // Chart of accounts (QuickBooks-style). Legacy values (receipt/payment/fee/
 // owner_draw/shipping/software/internal_transfer/cash_in/cash_out) are kept so
@@ -195,6 +213,14 @@ export default function FinancialsView() {
 
   // Primary working mode: To-do (unbooked) hides rows once they're booked.
   const [queue, setQueue]             = useState<"todo" | "booked">("todo");
+
+  // Split view: money-in and money-out side by side, each with its own search —
+  // for reconciling a refund against the original payment. Plus a collapse that
+  // tucks away rows still missing a category so they don't clutter the list.
+  const [splitView, setSplitView]     = useState(false);
+  const [searchIn, setSearchIn]       = useState("");
+  const [searchOut, setSearchOut]     = useState("");
+  const [untaggedOpen, setUntaggedOpen] = useState(false);
 
   // Smart grouping suggestions — dismissed groups (payee|dir keys) + per-group
   // category overrides for the session.
@@ -759,35 +785,38 @@ export default function FinancialsView() {
     finally { setNewDealBusy(false); }
   };
 
+  // Shared filters — everything except direction + search. Reused by the combined
+  // list and both split panes so all three stay consistent.
+  const passesBase = useCallback((t: BankTxn) => {
+    if (queue === "todo" && t.reviewed) return false;
+    if (queue === "booked" && !t.reviewed) return false;
+    if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
+    if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
+    if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
+    if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
+    if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
+    const d = (t.posted_at || "").slice(0, 10);
+    if (fromDate && d < fromDate) return false;
+    if (toDate && d > toDate) return false;
+    return true;
+  }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate]);
+
   const filtered = useMemo(
-    () =>
-      txns.filter((t) => {
-        if (queue === "todo" && t.reviewed) return false;
-        if (queue === "booked" && !t.reviewed) return false;
-        if (dirFilter !== "all" && t.direction !== dirFilter) return false;
-        if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
-        if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
-        if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
-        if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
-        if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
-        const d = (t.posted_at || "").slice(0, 10);
-        if (fromDate && d < fromDate) return false;
-        if (toDate && d > toDate) return false;
-        if (search.trim()) {
-          const q = search.toLowerCase().trim();
-          const num = q.replace(/[^0-9.]/g, ""); // numeric part of the query, if any
-          const amtFixed = t.amount.toFixed(2);  // e.g. "500.00"
-          const textMatch =
-            (t.description || "").toLowerCase().includes(q) ||
-            (t.counterparty_name || "").toLowerCase().includes(q);
-          const amountMatch =
-            num.length > 0 &&
-            (amtFixed.includes(num) || String(t.amount).includes(num) || parseFloat(num) === t.amount);
-          if (!textMatch && !amountMatch) return false;
-        }
-        return true;
-      }),
-    [txns, queue, dirFilter, acctFilter, catFilter, statusFilter, fromDate, toDate, search],
+    () => txns.filter((t) =>
+      passesBase(t) &&
+      (dirFilter === "all" || t.direction === dirFilter) &&
+      matchesQuery(t, search)),
+    [txns, passesBase, dirFilter, search],
+  );
+
+  // Split-view panes: forced direction + independent search per side.
+  const filteredIn = useMemo(
+    () => txns.filter((t) => t.direction === "in" && passesBase(t) && matchesQuery(t, searchIn)),
+    [txns, passesBase, searchIn],
+  );
+  const filteredOut = useMemo(
+    () => txns.filter((t) => t.direction === "out" && passesBase(t) && matchesQuery(t, searchOut)),
+    [txns, passesBase, searchOut],
   );
 
   // Distinct account ids present in the loaded transactions (for the filter).
@@ -885,6 +914,197 @@ export default function FinancialsView() {
   };
 
   const openTxn = openId ? txns.find((t) => t.id === openId) ?? null : null;
+
+  // One transaction table for a given row set — reused by the combined list, each
+  // split pane, and the "needs a category" collapse. Selection and the inline
+  // allocation panel behave identically in every instance (openId is global, so
+  // only one row is ever expanded at a time).
+  const renderTxnTable = (rows: BankTxn[]) => (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px] min-w-[860px]">
+            <thead>
+              <tr className="text-left border-b border-line">
+                <th className="py-2 pr-2 w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all shown transactions"
+                    checked={rows.length > 0 && rows.every((t) => selected.has(t.id))}
+                    ref={(el) => {
+                      if (el) el.indeterminate =
+                        rows.some((t) => selected.has(t.id)) && !rows.every((t) => selected.has(t.id));
+                    }}
+                    onChange={(e) =>
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) rows.forEach((t) => next.add(t.id));
+                        else rows.forEach((t) => next.delete(t.id));
+                        return next;
+                      })
+                    }
+                    className="align-middle accent-accent"
+                  />
+                </th>
+                <th className="w-7" aria-label="Direction" />
+                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Date</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Account</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3 text-right whitespace-nowrap">Amount</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Deal</th>
+                <th className="text-[11px] font-medium text-muted py-2 text-center whitespace-nowrap w-12">Book</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t) => {
+                const payee = t.counterparty_name?.trim();
+                const mainLabel = payee || t.description || "—";
+                const memo = payee ? t.description : "";
+                const hasMatch =
+                  t.counterparty_type !== "loan" && t.allocated <= 0.0001 && deals.some((d) => dealMatchesTxn(d, t));
+                return (
+                <Fragment key={t.id}>
+                  <tr
+                    onClick={() => toggleRow(t)}
+                    className={`border-b border-line-2 cursor-pointer transition-colors ${
+                      selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
+                    }`}
+                  >
+                    <td className="py-3 pr-2 align-top" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select transaction"
+                        checked={selected.has(t.id)}
+                        onChange={() => toggleSelect(t.id)}
+                        className="align-middle accent-accent"
+                      />
+                    </td>
+                    <td className="py-3 align-top">
+                      {t.direction === "in"
+                        ? <ArrowDownLeft size={15} className="text-success-ink" strokeWidth={2} />
+                        : <ArrowUpRight size={15} className="text-danger-ink" strokeWidth={2} />}
+                    </td>
+                    <td className="py-3 pr-3 tabular-nums text-muted whitespace-nowrap align-top">
+                      {(t.posted_at || "").slice(0, 10)}
+                    </td>
+                    <td className="py-3 pr-3 align-top max-w-[300px]">
+                      <div className="flex items-center gap-1.5 min-w-0 group/pe">
+                        <span className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const next = window.prompt(
+                              "Rename this payee. Plaid sometimes mislabels transfers (e.g. a Zelle to a person shows as a store) — set the real name so it categorizes and groups correctly.",
+                              payee || t.description || "",
+                            );
+                            if (next !== null && next.trim() && next.trim() !== (payee || "")) {
+                              saveReview(t, { counterparty_name: next.trim() });
+                            }
+                          }}
+                          title="Rename payee"
+                          className="opacity-0 group-hover/pe:opacity-100 focus:opacity-100 text-faint hover:text-ink-2 flex-shrink-0 transition-opacity"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </div>
+                      {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
+                    </td>
+                    <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
+                      {t.counterparty_type === "loan" ? (
+                        <span className="text-[12px] text-ink-2">{loanTagLabel(t.direction)}</span>
+                      ) : (
+                        <span className="relative inline-flex items-center">
+                          <select
+                            value={t.category || ""}
+                            onChange={(e) => saveReview(t, { category: e.target.value })}
+                            className={`appearance-none bg-transparent pr-4 text-[12px] cursor-pointer rounded focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+                              t.category ? "text-ink-2" : "text-accent font-medium"
+                            }`}
+                          >
+                            <option value="">Set category</option>
+                            <CategoryOptions includeUncat={false} />
+                          </select>
+                          <ChevronDown
+                            size={12}
+                            className={`pointer-events-none absolute right-0 ${t.category ? "text-faint" : "text-accent"}`}
+                          />
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 pr-3 text-[12px] text-muted whitespace-nowrap align-top">{t.account_id || "—"}</td>
+                    <td className={`py-3 pr-3 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                      {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
+                    </td>
+                    <td className="py-3 pr-3 text-[12px] whitespace-nowrap align-top">{dealCell(t, hasMatch)}</td>
+                    <td className="py-3 text-center align-top" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => saveReview(t, { reviewed: !t.reviewed })}
+                        title={t.reviewed ? "Booked — click to reopen" : "Book it"}
+                        className={`w-5 h-5 rounded inline-flex items-center justify-center border transition-colors ${
+                          t.reviewed
+                            ? "bg-ink border-ink text-surface"
+                            : "border-line-3 text-transparent hover:border-ink-2"
+                        }`}
+                      >
+                        <Check size={12} strokeWidth={2.4} />
+                      </button>
+                    </td>
+                  </tr>
+
+                  {openId === t.id && (
+                    <tr className="bg-surface-2">
+                      <td colSpan={9} className="px-3 pb-4 pt-1">
+                        <AllocationPanel
+                          txn={t}
+                          allocs={allocs}
+                          loading={allocLoading}
+                          targetType={targetType}
+                          setTargetType={setTargetType}
+                          filteredDeals={filteredDeals}
+                          dealQuery={dealQuery}
+                          setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); setDealListOpen(true); }}
+                          dealListOpen={dealListOpen}
+                          setDealListOpen={setDealListOpen}
+                          selectedDeal={selectedDeal}
+                          onPickDeal={(d) => { setSelectedDeal(d); setDealQuery(dealLabel(d)); setDealListOpen(false); }}
+                          filteredLoans={filteredLoans}
+                          loanQuery={loanQuery}
+                          setLoanQuery={(v) => { setLoanQuery(v); setSelectedLoan(null); setLoanListOpen(true); }}
+                          loanListOpen={loanListOpen}
+                          setLoanListOpen={setLoanListOpen}
+                          selectedLoan={selectedLoan}
+                          onPickLoan={(l) => { setSelectedLoan(l); setLoanQuery(loanLabel(l)); setLoanListOpen(false); }}
+                          amountStr={amountStr}
+                          setAmountStr={setAmountStr}
+                          role={role}
+                          setRole={setRole}
+                          note={note}
+                          setNote={setNote}
+                          busy={allocBusy}
+                          onSubmit={submitAlloc}
+                          onRemove={removeAlloc}
+                          onUntagLoan={untagLoan}
+                          onCreateRule={createRule}
+                          newDealBusy={newDealBusy}
+                          onCreateDeal={createDealFromTxn}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          {rows.length === 0 && (
+            <div className="text-center py-10 text-[12px] text-muted">No transactions match these filters</div>
+          )}
+        </div>
+  );
+
+  // Combined view splits the list into tagged rows (shown) and still-uncategorized
+  // rows (tucked into a collapse) so the working list stays clean.
+  const ready    = filtered.filter((t) => (t.category || "").trim());
+  const untagged = filtered.filter((t) => !(t.category || "").trim());
 
   return (
     <div className="space-y-5">
@@ -1341,26 +1561,37 @@ export default function FinancialsView() {
         </div>
 
         <div className="ml-auto flex items-center gap-x-4 gap-y-2 flex-wrap">
-          <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-8">
-            <Search size={13} className="text-muted flex-shrink-0" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search payee, memo, or amount…"
-              className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
-            />
-          </div>
-          <div className="flex items-center gap-3">
-            {(["all", "in", "out"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setDirFilter(f)}
-                className={`text-[12px] transition-colors ${dirFilter === f ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
-              >
-                {f === "all" ? "All" : f === "in" ? "In" : "Out"}
-              </button>
-            ))}
-          </div>
+          {!splitView && (
+            <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-8">
+              <Search size={13} className="text-muted flex-shrink-0" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search payee, memo, exact amount…"
+                className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
+              />
+            </div>
+          )}
+          {!splitView && (
+            <div className="flex items-center gap-3">
+              {(["all", "in", "out"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setDirFilter(f)}
+                  className={`text-[12px] transition-colors ${dirFilter === f ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
+                >
+                  {f === "all" ? "All" : f === "in" ? "In" : "Out"}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => setSplitView((v) => !v)}
+            title="Show money in and money out side by side, each with its own search — for reconciling a refund."
+            className={`text-[12px] transition-colors ${splitView ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
+          >
+            {splitView ? "Combined" : "Split in/out"}
+          </button>
           {accounts.length > 0 && (
             <select
               value={acctFilter}
@@ -1530,186 +1761,54 @@ export default function FinancialsView() {
             Import statement
           </button>
         </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[860px]">
-            <thead>
-              <tr className="text-left border-b border-line">
-                <th className="py-2 pr-2 w-8">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all filtered transactions"
-                    checked={filtered.length > 0 && filtered.every((t) => selected.has(t.id))}
-                    ref={(el) => {
-                      if (el) el.indeterminate =
-                        filtered.some((t) => selected.has(t.id)) && !filtered.every((t) => selected.has(t.id));
-                    }}
-                    onChange={(e) =>
-                      setSelected((prev) => {
-                        const next = new Set(prev);
-                        if (e.target.checked) filtered.forEach((t) => next.add(t.id));
-                        else filtered.forEach((t) => next.delete(t.id));
-                        return next;
-                      })
-                    }
-                    className="align-middle accent-accent"
-                  />
-                </th>
-                <th className="w-7" aria-label="Direction" />
-                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Date</th>
-                <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
-                <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
-                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Account</th>
-                <th className="text-[11px] font-medium text-muted py-2 pr-3 text-right whitespace-nowrap">Amount</th>
-                <th className="text-[11px] font-medium text-muted py-2 pr-3">Deal</th>
-                <th className="text-[11px] font-medium text-muted py-2 text-center whitespace-nowrap w-12">Book</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((t) => {
-                const payee = t.counterparty_name?.trim();
-                const mainLabel = payee || t.description || "—";
-                const memo = payee ? t.description : "";
-                const hasMatch =
-                  t.counterparty_type !== "loan" && t.allocated <= 0.0001 && deals.some((d) => dealMatchesTxn(d, t));
-                return (
-                <Fragment key={t.id}>
-                  <tr
-                    onClick={() => toggleRow(t)}
-                    className={`border-b border-line-2 cursor-pointer transition-colors ${
-                      selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
-                    }`}
-                  >
-                    <td className="py-3 pr-2 align-top" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        aria-label="Select transaction"
-                        checked={selected.has(t.id)}
-                        onChange={() => toggleSelect(t.id)}
-                        className="align-middle accent-accent"
-                      />
-                    </td>
-                    <td className="py-3 align-top">
-                      {t.direction === "in"
-                        ? <ArrowDownLeft size={15} className="text-success-ink" strokeWidth={2} />
-                        : <ArrowUpRight size={15} className="text-danger-ink" strokeWidth={2} />}
-                    </td>
-                    <td className="py-3 pr-3 tabular-nums text-muted whitespace-nowrap align-top">
-                      {(t.posted_at || "").slice(0, 10)}
-                    </td>
-                    <td className="py-3 pr-3 align-top max-w-[300px]">
-                      <div className="flex items-center gap-1.5 min-w-0 group/pe">
-                        <span className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const next = window.prompt(
-                              "Rename this payee. Plaid sometimes mislabels transfers (e.g. a Zelle to a person shows as a store) — set the real name so it categorizes and groups correctly.",
-                              payee || t.description || "",
-                            );
-                            if (next !== null && next.trim() && next.trim() !== (payee || "")) {
-                              saveReview(t, { counterparty_name: next.trim() });
-                            }
-                          }}
-                          title="Rename payee"
-                          className="opacity-0 group-hover/pe:opacity-100 focus:opacity-100 text-faint hover:text-ink-2 flex-shrink-0 transition-opacity"
-                        >
-                          <Pencil size={12} />
-                        </button>
-                      </div>
-                      {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
-                    </td>
-                    <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
-                      {t.counterparty_type === "loan" ? (
-                        <span className="text-[12px] text-ink-2">{loanTagLabel(t.direction)}</span>
-                      ) : (
-                        <span className="relative inline-flex items-center">
-                          <select
-                            value={t.category || ""}
-                            onChange={(e) => saveReview(t, { category: e.target.value })}
-                            className={`appearance-none bg-transparent pr-4 text-[12px] cursor-pointer rounded focus:outline-none focus:ring-2 focus:ring-accent/40 ${
-                              t.category ? "text-ink-2" : "text-accent font-medium"
-                            }`}
-                          >
-                            <option value="">Set category</option>
-                            <CategoryOptions includeUncat={false} />
-                          </select>
-                          <ChevronDown
-                            size={12}
-                            className={`pointer-events-none absolute right-0 ${t.category ? "text-faint" : "text-accent"}`}
-                          />
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 pr-3 text-[12px] text-muted whitespace-nowrap align-top">{t.account_id || "—"}</td>
-                    <td className={`py-3 pr-3 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
-                      {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
-                    </td>
-                    <td className="py-3 pr-3 text-[12px] whitespace-nowrap align-top">{dealCell(t, hasMatch)}</td>
-                    <td className="py-3 text-center align-top" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => saveReview(t, { reviewed: !t.reviewed })}
-                        title={t.reviewed ? "Booked — click to reopen" : "Book it"}
-                        className={`w-5 h-5 rounded inline-flex items-center justify-center border transition-colors ${
-                          t.reviewed
-                            ? "bg-ink border-ink text-surface"
-                            : "border-line-3 text-transparent hover:border-ink-2"
-                        }`}
-                      >
-                        <Check size={12} strokeWidth={2.4} />
-                      </button>
-                    </td>
-                  </tr>
-
-                  {openId === t.id && (
-                    <tr className="bg-surface-2">
-                      <td colSpan={9} className="px-3 pb-4 pt-1">
-                        <AllocationPanel
-                          txn={t}
-                          allocs={allocs}
-                          loading={allocLoading}
-                          targetType={targetType}
-                          setTargetType={setTargetType}
-                          filteredDeals={filteredDeals}
-                          dealQuery={dealQuery}
-                          setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); setDealListOpen(true); }}
-                          dealListOpen={dealListOpen}
-                          setDealListOpen={setDealListOpen}
-                          selectedDeal={selectedDeal}
-                          onPickDeal={(d) => { setSelectedDeal(d); setDealQuery(dealLabel(d)); setDealListOpen(false); }}
-                          filteredLoans={filteredLoans}
-                          loanQuery={loanQuery}
-                          setLoanQuery={(v) => { setLoanQuery(v); setSelectedLoan(null); setLoanListOpen(true); }}
-                          loanListOpen={loanListOpen}
-                          setLoanListOpen={setLoanListOpen}
-                          selectedLoan={selectedLoan}
-                          onPickLoan={(l) => { setSelectedLoan(l); setLoanQuery(loanLabel(l)); setLoanListOpen(false); }}
-                          amountStr={amountStr}
-                          setAmountStr={setAmountStr}
-                          role={role}
-                          setRole={setRole}
-                          note={note}
-                          setNote={setNote}
-                          busy={allocBusy}
-                          onSubmit={submitAlloc}
-                          onRemove={removeAlloc}
-                          onUntagLoan={untagLoan}
-                          onCreateRule={createRule}
-                          newDealBusy={newDealBusy}
-                          onCreateDeal={createDealFromTxn}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-          {filtered.length === 0 && (
-            <div className="text-center py-10 text-[12px] text-muted">No transactions match these filters</div>
-          )}
+      ) : splitView ? (
+        // Money in and money out, side by side, each with its own search — pin the
+        // received side and the sent side at once to reconcile a refund.
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[12px] font-semibold text-success-ink whitespace-nowrap">
+                Money in <span className="text-muted font-normal tabular-nums">{filteredIn.length}</span>
+              </span>
+              <div className="flex items-center gap-1.5 flex-1 min-w-0 bg-surface-2 border border-line rounded-lg px-2.5 h-8">
+                <Search size={13} className="text-muted flex-shrink-0" />
+                <input value={searchIn} onChange={(e) => setSearchIn(e.target.value)} placeholder="Search received…"
+                  className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none" />
+              </div>
+            </div>
+            {renderTxnTable(filteredIn)}
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[12px] font-semibold text-danger-ink whitespace-nowrap">
+                Money out <span className="text-muted font-normal tabular-nums">{filteredOut.length}</span>
+              </span>
+              <div className="flex items-center gap-1.5 flex-1 min-w-0 bg-surface-2 border border-line rounded-lg px-2.5 h-8">
+                <Search size={13} className="text-muted flex-shrink-0" />
+                <input value={searchOut} onChange={(e) => setSearchOut(e.target.value)} placeholder="Search sent…"
+                  className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none" />
+              </div>
+            </div>
+            {renderTxnTable(filteredOut)}
+          </div>
         </div>
+      ) : (
+        <>
+          {renderTxnTable(ready)}
+          {untagged.length > 0 && (
+            <div className="mt-2.5 border border-line-2 rounded-lg overflow-hidden">
+              <button
+                onClick={() => setUntaggedOpen((o) => !o)}
+                className="w-full flex items-center gap-2 px-3 py-2.5 text-[12.5px] text-ink-2 hover:bg-surface-2 transition-colors"
+              >
+                <ChevronRight size={13} className={`text-muted transition-transform ${untaggedOpen ? "rotate-90" : ""}`} />
+                <span className="font-medium">Still need a category</span>
+                <span className="text-muted tabular-nums">· {untagged.length}</span>
+              </button>
+              {untaggedOpen && <div className="border-t border-line-2">{renderTxnTable(untagged)}</div>}
+            </div>
+          )}
+        </>
       )}
 
       {bulkAllocOpen && (

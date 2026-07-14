@@ -2194,6 +2194,8 @@ export const api = {
     invoke<void>("save_smtp_settings_for_pi", { settings }),
   pushDesktopSmtpToPi: (fromName: string) =>
     invoke<boolean>("push_desktop_smtp_to_pi", { fromName }),
+  pushEmailLoginToServer: () =>
+    invoke<boolean>("push_email_login_to_server"),
   getSmtpSettingsForPi: () =>
     invoke<Record<string, string>>("get_smtp_settings_for_pi"),
 

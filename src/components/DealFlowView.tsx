@@ -11,6 +11,7 @@ import { fmtAmount, primarySupplierLabel } from "../lib/format";
 import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
 import CompletedBreakdown from "./CompletedBreakdown";
+import ReconciliationPanel from "./ReconciliationPanel";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -610,6 +611,11 @@ function DealFlowCard({
             {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
             {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
             {panel === "complete"         && <PanelComplete     flow={flow} onReload={onReload} />}
+            {/* Pair real bank transactions to this deal once money is due. Self-loads
+                its own allocations; exclusivity is enforced server-side. */}
+            {si(flow.stage) >= si("payment_received") && (
+              <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
+            )}
           </div>
         </>
       )}

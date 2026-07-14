@@ -771,6 +771,7 @@ fn main() {
             delete_newsletter_schedule,
             save_smtp_settings_for_pi,
             push_desktop_smtp_to_pi,
+            push_email_login_to_server,
             get_smtp_settings_for_pi,
             // Categories
             list_categories,

@@ -11654,6 +11654,22 @@ pub async fn push_desktop_smtp_to_pi(from_name: String) -> Result<bool, String> 
     Ok(true)
 }
 
+/// One-click "make the server use my working email login". Reads the SMTP password
+/// already in THIS device's keychain (no re-typing, no new Gmail app password) and
+/// pushes it to the server's per-org settings via an authed round-trip, overwriting
+/// the stale password that makes mobile invoice sends + the newsletter scheduler
+/// fail Gmail auth with 535. Guarded so a device that never held the password can't
+/// silently no-op and look like success.
+#[tauri::command]
+pub async fn push_email_login_to_server() -> Result<bool, String> {
+    let has_pass = crate::email::cred_opt("smtp_pass").map(|p| !p.trim().is_empty()).unwrap_or(false);
+    if !has_pass {
+        return Err("No email password is saved on this device. Open Email settings, enter your working SMTP password, click Save, then try again.".to_string());
+    }
+    crate::netsync::push_email_secrets_to_server().await?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn get_smtp_settings_for_pi() -> Result<serde_json::Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
