@@ -624,14 +624,19 @@ export default function FinancialsView() {
     finally { setAllocBusy(false); }
   };
 
-  // Memorize a rule so future statement rows with the same counterparty auto-fill.
+  // Memorize a rule AND immediately tag every matching transaction — one click
+  // handles the whole backlog instead of tagging each row by hand.
   const createRule = async (
     matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string,
+    direction: string,
   ) => {
     try {
-      await api.createTxnRule(matchCounterparty, category, tType, targetId, "");
-      toast("Rule saved");
+      await api.createTxnRule(matchCounterparty, category, tType, targetId, "", direction);
+      const r = await api.applyTxnRules();
+      const dirWord = direction === "in" ? " money-in" : direction === "out" ? " money-out" : "";
+      toast(`Rule saved — tagged ${r.updated}${dirWord} transaction${r.updated === 1 ? "" : "s"}`);
       setRules(await api.listTxnRules());
+      await refreshAll(false);
     } catch (e: any) { toast(String(e), "error"); }
   };
 
@@ -1218,7 +1223,7 @@ export default function FinancialsView() {
         setOpen={setRulesOpen}
         onApply={applyRules}
         onDelete={deleteRule}
-        onCreate={(cp, cat) => createRule(cp, cat, "expense", "")}
+        onCreate={(cp, cat, dir) => createRule(cp, cat, "expense", "", dir)}
       />
 
       {/* Summary tiles */}
@@ -1730,7 +1735,7 @@ function AllocationPanel(props: {
   onSubmit: () => void;
   onRemove: (id: string) => void;
   onUntagLoan: (bankTxnId: string) => void;
-  onCreateRule: (matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string) => void;
+  onCreateRule: (matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string, direction: string) => void;
   newDealBusy: boolean;
   onCreateDeal: (t: BankTxn, name: string, buyer: string, sale: number, note: string) => Promise<boolean>;
 }) {
@@ -1772,30 +1777,40 @@ function AllocationPanel(props: {
   // Remember future rows with this counterparty: a loan tag memorizes the loan
   // (recurring lender repayments), otherwise it memorizes the category only — a
   // one-off deal id shouldn't auto-apply to unrelated future transactions.
+  const isLoanRule = isLoanTagged || (targetType === "loan" && !!selectedLoan);
   const alwaysTag = () => {
     if (!counterparty) return;
-    if (isLoanTagged && txn.counterparty_id) onCreateRule(counterparty, "", "loan", txn.counterparty_id);
-    else if (targetType === "loan" && selectedLoan) onCreateRule(counterparty, "", "loan", selectedLoan.id);
-    else onCreateRule(counterparty, txn.category || "", "expense", "");
+    const dir = txn.direction; // scope the rule to this txn's direction (in vs out)
+    if (isLoanTagged && txn.counterparty_id) onCreateRule(counterparty, "", "loan", txn.counterparty_id, dir);
+    else if (targetType === "loan" && selectedLoan) onCreateRule(counterparty, "", "loan", selectedLoan.id, dir);
+    else onCreateRule(counterparty, txn.category || "", "expense", "", dir);
   };
 
-  const renderRuleButton = () =>
-    counterparty ? (
+  const renderRuleButton = () => {
+    const dirWord = txn.direction === "in" ? "money-in" : "money-out";
+    const canTag = !!counterparty && (isLoanRule || !!txn.category);
+    const label = !counterparty
+      ? "Always tag like this"
+      : isLoanRule
+        ? `Tag all ${dirWord} from "${counterparty}" to this loan`
+        : `Tag all ${dirWord} from "${counterparty}" as ${catLabel(txn.category || "")}`;
+    return (
       <button
         onClick={alwaysTag}
-        className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+        disabled={!canTag}
+        title={
+          !counterparty ? "This transaction has no payer name to match on"
+          : !canTag ? "Pick a category for this transaction first"
+          : "Create a rule and tag every matching transaction now"
+        }
+        className={`flex items-center gap-1.5 h-9 px-3 border border-line rounded-lg text-[12px] font-medium transition-colors ${
+          canTag ? "text-ink-2 hover:bg-surface-2" : "text-faint opacity-60 cursor-not-allowed"
+        }`}
       >
-        <Wand2 size={13} /> Always tag "{counterparty}" like this
-      </button>
-    ) : (
-      <button
-        disabled
-        title="Set a counterparty first"
-        className="flex items-center gap-1.5 h-9 px-3 border border-line text-faint rounded-lg text-[12px] font-medium opacity-60 cursor-not-allowed"
-      >
-        <Wand2 size={13} /> Always tag like this
+        <Wand2 size={13} /> {label}
       </button>
     );
+  };
 
   return (
     <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
@@ -2065,15 +2080,16 @@ function RulesCard({
   setOpen: (v: boolean) => void;
   onApply: () => void;
   onDelete: (id: string) => void;
-  onCreate: (matchCounterparty: string, category: string) => void;
+  onCreate: (matchCounterparty: string, category: string, direction: string) => void;
 }) {
   const [cp, setCp]   = useState("");
   const [cat, setCat] = useState("");
+  const [dir, setDir] = useState("");
 
   const add = () => {
     if (!cp.trim()) { toast("Enter a counterparty to match", "error"); return; }
-    onCreate(cp.trim(), cat);
-    setCp(""); setCat("");
+    onCreate(cp.trim(), cat, dir);
+    setCp(""); setCat(""); setDir("");
   };
 
   return (
@@ -2099,8 +2115,9 @@ function RulesCard({
       {open && (
         <div className="px-4 pb-4 space-y-3 border-t border-line-2 pt-3">
           <p className="text-[11px] text-muted leading-relaxed">
-            When a rule's counterparty matches an imported transaction, its category is pre-filled automatically. Matched
-            rows stay in To-do until you book them.
+            Open a transaction, set its category, and choose "Tag all like this" — it creates a rule and instantly tags
+            every matching transaction. A rule can be limited to money in or money out, so the same payer (e.g. Whatnot)
+            can be a sale one way and an expense the other. Tagged rows stay in To-do until you book them.
           </p>
 
           {rules.length > 0 && (
@@ -2109,6 +2126,7 @@ function RulesCard({
                 <div key={r.id} className="flex items-center gap-3 px-3 py-2">
                   <div className="min-w-0 flex-1">
                     <div className="text-[12px] text-ink truncate">
+                      {r.direction && <span className="text-muted">{r.direction === "in" ? "Money in · " : "Money out · "}</span>}
                       <span className="font-medium">"{r.match_counterparty}"</span>
                       <span className="text-muted"> → </span>
                       {r.target_type === "loan"
@@ -2136,6 +2154,16 @@ function RulesCard({
               placeholder="Counterparty to match…"
               className={`${inp} flex-1 min-w-[160px]`}
             />
+            <select
+              value={dir}
+              onChange={(e) => setDir(e.target.value)}
+              title="Which direction this rule applies to"
+              className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+            >
+              <option value="">Any direction</option>
+              <option value="in">Money in</option>
+              <option value="out">Money out</option>
+            </select>
             <select
               value={cat}
               onChange={(e) => setCat(e.target.value)}

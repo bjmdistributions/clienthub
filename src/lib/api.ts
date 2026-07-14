@@ -1448,6 +1448,7 @@ export interface TxnRule {
   role: string;
   loan_name: string;
   created_at: string;
+  direction: string; // "" any, "in" money-in only, "out" money-out only
 }
 
 export interface SignupRule {
@@ -2052,8 +2053,8 @@ export const api = {
   applyLoanRepaymentsToSetAside: (loanId: string) =>
     invoke<number>("apply_loan_repayments_to_set_aside", { loanId }),
   listTxnRules: () => invoke<TxnRule[]>("list_txn_rules"),
-  createTxnRule: (matchCounterparty: string, category: string, targetType: "deal" | "loan" | "expense", targetId: string, role: string) =>
-    invoke<string>("create_txn_rule", { matchCounterparty, category, targetType, targetId, role }),
+  createTxnRule: (matchCounterparty: string, category: string, targetType: "deal" | "loan" | "expense", targetId: string, role: string, direction: string) =>
+    invoke<string>("create_txn_rule", { matchCounterparty, category, targetType, targetId, role, direction }),
   deleteTxnRule: (id: string) => invoke<void>("delete_txn_rule", { id }),
   applyTxnRules: () => invoke<{ updated: number }>("apply_txn_rules"),
 

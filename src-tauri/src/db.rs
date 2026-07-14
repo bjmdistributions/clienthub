@@ -1428,4 +1428,13 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        65,
+        // Direction-scope a rule ('' = any, 'in' = money in only, 'out' = money out
+        // only) so e.g. Whatnot payouts and Whatnot charges can carry different
+        // categories. Device-local; the duplicate-column error is benign.
+        r#"
+        ALTER TABLE txn_rule ADD COLUMN direction TEXT NOT NULL DEFAULT '';
+        "#,
+    ),
 ];

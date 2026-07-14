@@ -10362,17 +10362,26 @@ pub async fn apply_loan_repayments_to_set_aside(loan_id: String) -> Result<f64, 
 #[tauri::command]
 pub async fn create_txn_rule(
     match_counterparty: String, category: String, target_type: String, target_id: String, role: String,
+    direction: String,
 ) -> Result<String, String> {
     if match_counterparty.trim().is_empty() {
         return Err("A rule needs a counterparty to match on".into());
     }
+    // '' = any direction, 'in' = money in only, 'out' = money out only.
+    let dir = match direction.trim() { "in" => "in", "out" => "out", _ => "" };
     let id = format!("txnrule_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // One rule per (counterparty, direction): replace any existing so re-tagging
+    // the same payer just updates the rule instead of stacking duplicates.
     conn.execute(
-        "INSERT INTO txn_rule (id, match_counterparty, category, target_type, target_id, role, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        rusqlite::params![id, match_counterparty, category, target_type, target_id, role, now],
+        "DELETE FROM txn_rule WHERE lower(trim(match_counterparty))=lower(trim(?1)) AND direction=?2",
+        rusqlite::params![match_counterparty, dir],
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO txn_rule (id, match_counterparty, category, target_type, target_id, role, direction, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![id, match_counterparty, category, target_type, target_id, role, dir, now],
     ).map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -10383,7 +10392,7 @@ pub async fn list_txn_rules() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT r.id, r.match_counterparty, r.category, r.target_type, r.target_id, r.role, r.created_at,
-                COALESCE((SELECT name FROM loan WHERE id=r.target_id),'')
+                COALESCE((SELECT name FROM loan WHERE id=r.target_id),''), r.direction
          FROM txn_rule r ORDER BY r.created_at",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok(json!({
@@ -10395,6 +10404,7 @@ pub async fn list_txn_rules() -> Result<Vec<Value>, String> {
         "role": r.get::<_, String>(5)?,
         "created_at": r.get::<_, String>(6)?,
         "loan_name": r.get::<_, String>(7)?,
+        "direction": r.get::<_, String>(8)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -10413,14 +10423,15 @@ pub async fn delete_txn_rule(id: String) -> Result<(), String> {
 /// reviewed=0 so the row stays in the review queue. The resulting bank_txn edits
 /// are synced; the rules themselves are device-local. Returns the count updated.
 fn apply_txn_rules_impl() -> Result<i64, String> {
-    let rules: Vec<(String, String, String, String)> = {
-        // (match_counterparty, category, target_type, target_id)
+    let rules: Vec<(String, String, String, String, String)> = {
+        // (match_counterparty, category, target_type, target_id, direction)
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT match_counterparty, category, target_type, target_id FROM txn_rule ORDER BY created_at",
+            "SELECT match_counterparty, category, target_type, target_id, direction FROM txn_rule ORDER BY created_at",
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
         ))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -10441,11 +10452,13 @@ fn apply_txn_rules_impl() -> Result<i64, String> {
     for (id, cp, desc, direction) in candidates {
         let cp_l = cp.to_lowercase();
         let desc_l = desc.to_lowercase();
-        let rule = rules.iter().find(|(m, _, _, _)| {
+        let rule = rules.iter().find(|(m, _, _, _, dir)| {
             let m = m.trim().to_lowercase();
-            !m.is_empty() && (cp_l == m || desc_l.contains(&m))
+            // Direction-scoped: '' matches either way, 'in'/'out' must equal the txn's.
+            let dir_ok = dir.is_empty() || dir.as_str() == direction.as_str();
+            dir_ok && !m.is_empty() && (cp_l == m || desc_l.contains(&m))
         });
-        let (_, rule_cat, target_type, target_id) = match rule { Some(r) => r, None => continue };
+        let (_, rule_cat, target_type, target_id, _) = match rule { Some(r) => r, None => continue };
         let is_loan = target_type == "loan" && !target_id.is_empty();
         // Loan rules derive the category from direction so a mixed set books each
         // side correctly; other rules use the memorized category verbatim.
