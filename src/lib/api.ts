@@ -2022,6 +2022,7 @@ export const api = {
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
   plaidSync: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
+  plaidResyncAll: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>

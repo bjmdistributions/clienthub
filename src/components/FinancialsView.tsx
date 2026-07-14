@@ -298,10 +298,10 @@ export default function FinancialsView() {
     setPlaidConnecting(false);
   };
 
-  const syncPlaid = async () => {
+  const syncPlaid = async (full = false) => {
     setPlaidSyncing(true);
     try {
-      const r = await api.plaidSync();
+      const r = full ? await api.plaidResyncAll() : await api.plaidSync();
       const errored = r.results.filter((x) => x.status === "error");
       const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
       if (r.imported === 0 && r.removed === 0 && stillPreparing) {
@@ -896,13 +896,23 @@ export default function FinancialsView() {
                 {plaidConnecting ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Connect a bank
               </button>
               {plaidItems.length > 0 && (
-                <button
-                  onClick={syncPlaid}
-                  disabled={plaidSyncing}
-                  className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                >
-                  {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync now
-                </button>
+                <>
+                  <button
+                    onClick={() => syncPlaid(false)}
+                    disabled={plaidSyncing}
+                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  >
+                    {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync now
+                  </button>
+                  <button
+                    onClick={() => syncPlaid(true)}
+                    disabled={plaidSyncing}
+                    title="Reset each bank's sync position and re-pull all transactions from the start — use if transactions are missing."
+                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  >
+                    Re-pull all
+                  </button>
+                </>
               )}
             </div>
 

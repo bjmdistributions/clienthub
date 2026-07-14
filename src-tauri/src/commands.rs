@@ -9841,7 +9841,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
             let removed_empty = page.get("removed").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true);
             let next_cursor_now = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("");
             let has_more_now = page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
-            if cursor.is_empty() && next_cursor_now.is_empty() && added_empty && removed_empty && !has_more_now {
+            // First sync of a fresh item: an empty page means Plaid is still
+            // preparing the initial extraction — it can hand back a next_cursor
+            // BEFORE any history is ready. Wait+retry WITHOUT persisting that
+            // cursor; persisting it skips past the history and leaves the item
+            // permanently empty (the "connected but 0 transactions" bug).
+            if cursor.is_empty() && added_empty && removed_empty && !has_more_now {
                 if wait_budget == 0 { status = "preparing"; preparing = true; break; }
                 let delay = wait_budget.min(6);
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
@@ -9918,6 +9923,17 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl();
     Ok(json!({ "imported": imported, "removed": removed, "preparing": preparing, "results": results }))
+}
+
+/// Force a full re-pull: reset every bank's sync cursor to the start, then sync.
+/// Fixes items whose cursor was advanced past their history (leaving them empty).
+#[tauri::command]
+pub async fn plaid_resync_all() -> Result<Value, String> {
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE plaid_items SET cursor=''", []).map_err(|e| e.to_string())?;
+    }
+    plaid_sync().await
 }
 
 // ── Financial engine: money config, Free Cash, loans, AI categorize ─────────
