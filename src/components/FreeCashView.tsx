@@ -1,31 +1,29 @@
 import { useEffect, useState } from "react";
 import { api, FinancialsOverview, MoneyConfig } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw, SlidersHorizontal, X, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { RefreshCw, SlidersHorizontal, X, AlertTriangle } from "lucide-react";
 import { toast } from "./Toast";
 
 const inputCls =
   "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
-// Status → banner copy + semantic tint (never the orange accent).
-const BANNER: Record<
-  FinancialsOverview["status"],
-  { label: string; cls: string; Icon: typeof CheckCircle2 }
-> = {
-  green:  { label: "In the green",                       cls: "bg-success-bg text-success-ink", Icon: CheckCircle2 },
-  yellow: { label: "Watch it",                           cls: "bg-warning-bg text-warning-ink", Icon: AlertTriangle },
-  red:    { label: "Spending money that isn't yours",    cls: "bg-danger-bg text-danger-ink",   Icon: AlertTriangle },
+// Status → plain colored text (no dot, no pill, never the orange accent).
+const STATUS: Record<FinancialsOverview["status"], { label: string; cls: string }> = {
+  green:  { label: "Healthy",  cls: "text-success-ink" },
+  yellow: { label: "Tight",    cls: "text-warning-ink" },
+  red:    { label: "Critical", cls: "text-danger-ink" },
 };
 
 // One deduction row in the ledger. Money right-aligned, tabular, shown negative.
-function DeductionRow({ label, tag, value }: { label: string; tag: string; value: number }) {
+// `strong` lifts a figure that deserves attention (e.g. the tax set-aside).
+function DeductionRow({ label, tag, value, strong }: { label: string; tag: string; value: number; strong?: boolean }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 min-w-0">
+    <div className="flex items-center gap-3 py-2.5 min-w-0">
       <div className="min-w-0 flex-1">
-        <span className="text-[13px] text-ink-2">{label}</span>
+        <span className={`text-[13px] ${strong ? "font-medium text-ink" : "text-ink-2"}`}>{label}</span>
         <span className="text-[11px] text-faint ml-2">{tag}</span>
       </div>
-      <span className="text-[13px] tabular-nums text-muted w-28 text-right flex-shrink-0">
+      <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${strong ? "text-ink-2" : "text-muted"}`}>
         &minus; {fmtAmount(value)}
       </span>
     </div>
@@ -131,12 +129,12 @@ export default function FreeCashView() {
     }
   };
 
-  const deductions = ov
+  const deductions: { label: string; tag: string; value: number; strong?: boolean }[] = ov
     ? [
         { label: "Credit cards owed",                  tag: "not yours",    value: ov.credit_card_balance },
         { label: "Supplier payables",                  tag: "not yours",    value: ov.supplier_payables },
         { label: "Refund liability (we owe buyers)",   tag: "not yours",    value: ov.refund_liability },
-        { label: "Tax reserve",                        tag: "untouchable",  value: ov.tax_reserve },
+        { label: "Tax reserve",                        tag: "untouchable",  value: ov.tax_reserve, strong: true },
         { label: "Refund reserve",                     tag: "untouchable",  value: ov.refund_reserve },
         { label: "Cash floor",                         tag: "untouchable",  value: ov.cash_floor },
         { label: "Loans outstanding",                  tag: "not yours",    value: ov.loan_outstanding },
@@ -146,7 +144,7 @@ export default function FreeCashView() {
   const reconciled = ov
     ? ov.allocated_actuals.buyer_in + ov.allocated_actuals.supplier_paid + ov.allocated_actuals.refunds_out
     : 0;
-  const banner  = ov ? BANNER[ov.status] : null;
+  const status  = ov ? STATUS[ov.status] : null;
   const numCls  = ov && ov.status === "red" ? "text-danger-ink" : "text-ink";
   const hasAlerts = !!ov && (ov.alerts.refund_deals > 0 || ov.alerts.stale_unallocated_in > 0);
 
@@ -183,59 +181,55 @@ export default function FreeCashView() {
           <div className="h-[168px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
           <>
-            {/* ── The number ─────────────────────────────── */}
-            <div className="bg-surface border border-line rounded-2xl p-7">
+            {/* ── The number — quiet, no card, no pill ───── */}
+            <div>
               <div className="text-[12.5px] font-medium text-muted">Free cash</div>
-              <div className="flex items-end gap-4 mt-2 flex-wrap">
-                <span className={`text-[54px] font-bold tabular-nums leading-none tracking-tight ${numCls}`}>
+              <div className="flex items-baseline gap-3 mt-1.5 flex-wrap">
+                <span className={`text-[34px] font-semibold tabular-nums leading-none tracking-tight ${numCls}`}>
                   {fmtAmount(ov.free_cash)}
                 </span>
-                {banner && (
-                  <span className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-full text-[12px] font-semibold ${banner.cls}`}>
-                    <banner.Icon size={13} strokeWidth={2} /> {banner.label}
-                  </span>
-                )}
+                {status && <span className={`text-[13px] font-semibold ${status.cls}`}>{status.label}</span>}
               </div>
-              <div className="text-[11.5px] text-faint mt-3 tabular-nums">
+              <div className="text-[11.5px] text-faint mt-2 tabular-nums">
                 {ov.runway_months < 0 ? "—" : `${ov.runway_months.toFixed(1)} months of runway`}
               </div>
             </div>
 
-            {/* ── The breakdown ──────────────────────────── */}
-            <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-              <div className="px-4 pt-4 pb-2">
-                <h3 className="text-[13px] font-semibold text-ink tracking-tight">Where it comes from</h3>
-                <p className="text-[11px] text-muted mt-0.5">Bank balance, minus everything that isn't yours to spend</p>
-              </div>
-              <div className="divide-y divide-line-2 border-t border-line-2">
-                <div className="flex items-center gap-3 px-4 py-2.5 min-w-0">
+            {/* ── The breakdown — hairlines, not a card ──── */}
+            <div>
+              <h3 className="text-[13px] font-semibold text-ink tracking-tight">Where it comes from</h3>
+              <p className="text-[11px] text-muted mt-0.5">Bank balance, minus everything that isn't yours to spend</p>
+              <div className="mt-3 border-t border-line-2">
+                <div className="flex items-center gap-3 py-2.5 min-w-0 border-b border-line-2">
                   <span className="min-w-0 flex-1 text-[13px] text-ink">Bank balance</span>
                   <span className="text-[13px] tabular-nums text-ink w-28 text-right flex-shrink-0">
                     {fmtAmount(ov.bank_balance)}
                   </span>
                 </div>
-                {deductions.map((d) => (
-                  <DeductionRow key={d.label} label={d.label} tag={d.tag} value={d.value} />
-                ))}
-              </div>
-              <div className="border-t border-line px-4 py-3 flex items-center gap-3 min-w-0">
-                <span className="min-w-0 flex-1 text-[14px] font-semibold text-ink">Free cash</span>
-                <span className={`text-[15px] font-bold tabular-nums w-28 text-right flex-shrink-0 ${numCls}`}>
-                  {fmtAmount(ov.free_cash)}
-                </span>
-              </div>
-              {reconciled > 0 && (
-                <div className="border-t border-line-2 px-4 py-2.5 text-[11px] text-muted">
-                  {fmtAmount(reconciled)} reconciled from the bank feed
-                  {ov.allocated_actuals.supplier_paid > 0 && ` · ${fmtAmount(ov.allocated_actuals.supplier_paid)} to suppliers`}
-                  {ov.allocated_actuals.refunds_out > 0 && ` · ${fmtAmount(ov.allocated_actuals.refunds_out)} refunded`}
+                <div className="divide-y divide-line-2">
+                  {deductions.map((d) => (
+                    <DeductionRow key={d.label} label={d.label} tag={d.tag} value={d.value} strong={d.strong} />
+                  ))}
                 </div>
-              )}
+                <div className="border-t border-line py-3 flex items-center gap-3 min-w-0">
+                  <span className="min-w-0 flex-1 text-[14px] font-semibold text-ink">Free cash</span>
+                  <span className={`text-[15px] font-bold tabular-nums w-28 text-right flex-shrink-0 ${numCls}`}>
+                    {fmtAmount(ov.free_cash)}
+                  </span>
+                </div>
+                {reconciled > 0 && (
+                  <div className="border-t border-line-2 py-2.5 text-[11px] text-muted">
+                    {fmtAmount(reconciled)} reconciled from the bank feed
+                    {ov.allocated_actuals.supplier_paid > 0 && ` · ${fmtAmount(ov.allocated_actuals.supplier_paid)} to suppliers`}
+                    {ov.allocated_actuals.refunds_out > 0 && ` · ${fmtAmount(ov.allocated_actuals.refunds_out)} refunded`}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* ── War chest progress (informational target, not deducted) ── */}
             {ov.war_chest > 0 && (
-              <div className="bg-surface border border-line rounded-2xl p-4 min-w-0">
+              <div className="min-w-0">
                 <div className="flex items-center gap-3 min-w-0">
                   <span className="min-w-0 flex-1 text-[13px] text-ink-2">War chest target</span>
                   <span className="text-[13px] tabular-nums text-muted flex-shrink-0">
@@ -244,7 +238,7 @@ export default function FreeCashView() {
                 </div>
                 <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-accent transition-all"
+                    className="h-full rounded-full bg-ink-2 transition-all"
                     style={{ width: `${Math.min(100, Math.max(0, (ov.free_cash / ov.war_chest) * 100))}%` }}
                   />
                 </div>
@@ -253,9 +247,9 @@ export default function FreeCashView() {
 
             {/* ── Aging alerts (only when present) ───────── */}
             {hasAlerts && (
-              <div className="bg-surface border border-line rounded-2xl overflow-hidden divide-y divide-line-2">
+              <div className="border-t border-line-2">
                 {ov.alerts.refund_deals > 0 && (
-                  <div className="flex items-center gap-3 px-4 py-3 bg-danger-bg/40 min-w-0">
+                  <div className="flex items-center gap-2.5 py-2.5 min-w-0 border-b border-line-2">
                     <AlertTriangle size={15} className="text-danger-ink flex-shrink-0" />
                     <span className="text-[13px] text-danger-ink min-w-0">
                       {ov.alerts.refund_deals} deal{ov.alerts.refund_deals !== 1 ? "s" : ""} with a refund you owe
@@ -263,7 +257,7 @@ export default function FreeCashView() {
                   </div>
                 )}
                 {ov.alerts.stale_unallocated_in > 0 && (
-                  <div className="flex items-center gap-3 px-4 py-3 bg-danger-bg/40 min-w-0">
+                  <div className="flex items-center gap-2.5 py-2.5 min-w-0 border-b border-line-2">
                     <AlertTriangle size={15} className="text-danger-ink flex-shrink-0" />
                     <span className="text-[13px] text-danger-ink min-w-0">
                       {ov.alerts.stale_unallocated_in} incoming payment{ov.alerts.stale_unallocated_in !== 1 ? "s" : ""} unallocated over 7 days

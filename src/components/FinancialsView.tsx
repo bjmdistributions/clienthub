@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
-  Building2, RefreshCw, Plug, Wand2,
+  Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
+  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -130,10 +130,6 @@ const rolesFor = (direction: string) =>
     ? ROLES.filter((r) => ["supplier_payment", "refund_out", "adjustment"].includes(r.value))
     : ROLES.filter((r) => ["buyer_payment", "refund_in", "adjustment"].includes(r.value));
 
-// Infer whether an account id names a card vs a checking account (statement imports
-// carry a free-text account id — "amex", "chase-card" → card; everything else → bank).
-const isCardAccount = (accountId: string) => /card|amex|visa|mastercard|credit|discover/i.test(accountId);
-
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -198,6 +194,11 @@ export default function FinancialsView() {
 
   // Primary working mode: To-do (unbooked) hides rows once they're booked.
   const [queue, setQueue]             = useState<"todo" | "booked">("todo");
+
+  // Smart grouping suggestions — dismissed groups (payee|dir keys) + per-group
+  // category overrides for the session.
+  const [dismissedGroups, setDismissedGroups]   = useState<Set<string>>(new Set());
+  const [groupCatOverride, setGroupCatOverride] = useState<Record<string, string>>({});
 
   // Bulk selection + actions (clean a year fast — loop existing commands).
   const [selected, setSelected]         = useState<Set<string>>(new Set());
@@ -789,6 +790,36 @@ export default function FinancialsView() {
     [txns],
   );
 
+  // Smart grouping — cluster un-booked rows by (payer, direction) so a whole
+  // backlog of look-alikes can be tagged in one click. Payer + direction keeps the
+  // same payer's money-in and money-out apart (a Zelle to "Walmart Loads" never
+  // merges with a "Walmart" store purchase). Surface the top 3 groups of 4+.
+  const suggestedGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      { key: string; payee: string; direction: "in" | "out"; count: number; cats: Record<string, number>; defaultCat: string }
+    >();
+    for (const t of txns) {
+      if (t.reviewed) continue;
+      const payee = (t.counterparty_name || "").trim();
+      if (!payee) continue;
+      const key = `${payee.toLowerCase()}|${t.direction}`;
+      let g = map.get(key);
+      if (!g) { g = { key, payee, direction: t.direction, count: 0, cats: {}, defaultCat: "" }; map.set(key, g); }
+      g.count += 1;
+      if (t.category) g.cats[t.category] = (g.cats[t.category] || 0) + 1;
+    }
+    const groups = Array.from(map.values()).filter((g) => g.count >= 4 && !dismissedGroups.has(g.key));
+    for (const g of groups) {
+      let best = "", bestN = 0;
+      for (const [c, n] of Object.entries(g.cats)) if (n > bestN) { best = c; bestN = n; }
+      g.defaultCat = best; // most common existing category in the group (or blank)
+    }
+    return groups.sort((a, b) => b.count - a.count).slice(0, 3);
+  }, [txns, dismissedGroups]);
+
+  const dismissGroup = (key: string) => setDismissedGroups((prev) => new Set(prev).add(key));
+
   const filteredDeals = useMemo(() => {
     const q = dealQuery.trim().toLowerCase();
     const ot = openId ? txns.find((t) => t.id === openId) : null;
@@ -817,21 +848,16 @@ export default function FinancialsView() {
       .slice(0, 8);
   }, [loans, loanQuery]);
 
-  const allocIndicator = (t: BankTxn) => {
-    if (t.counterparty_type === "loan")
-      return (
-        <span className="inline-flex items-center gap-1 text-ink-2">
-          <Landmark size={11} className="text-accent" /> {loanTagLabel(t.direction)}
-        </span>
-      );
-    if (t.allocated <= 0.0001) return <span className="text-muted">—</span>;
-    if (t.unallocated <= 0.0001)
-      return <span className="inline-flex items-center gap-1 text-success-ink"><Link2 size={11} /> Linked</span>;
-    return (
-      <span className="text-warning-ink tabular-nums">
-        {fmtAmount(t.allocated)} of {fmtAmount(t.amount)}
-      </span>
-    );
+  // Deal column — quiet allocation state, or a "match" hint (accent) when an
+  // existing deal lines up with this un-tied transaction. Color stays neutral;
+  // only the actionable "match" earns the accent.
+  const dealCell = (t: BankTxn, hasMatch: boolean) => {
+    if (t.counterparty_type === "loan") return <span className="text-muted">—</span>;
+    if (t.allocated > 0.0001 && t.unallocated <= 0.0001) return <span className="text-muted">Linked</span>;
+    if (t.allocated > 0.0001)
+      return <span className="text-muted tabular-nums">{fmtAmount(t.allocated)} of {fmtAmount(t.amount)}</span>;
+    if (hasMatch) return <span className="text-accent font-medium">match</span>;
+    return <span className="text-muted">Link a deal</span>;
   };
 
   const openTxn = openId ? txns.find((t) => t.id === openId) ?? null : null;
@@ -839,16 +865,18 @@ export default function FinancialsView() {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="min-w-0 flex items-center gap-2.5">
-        <Landmark size={20} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+      <div className="min-w-0 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-[18px] font-semibold text-ink tracking-tight truncate">Financials</h2>
+          <h2 className="text-[19px] font-semibold text-ink tracking-tight truncate">Financials</h2>
           <p className="text-[12px] text-muted mt-0.5">Import statements, classify money, tie receipts to deals</p>
         </div>
+        {plaidItems.length > 0 && (
+          <span className="text-[11.5px] text-muted flex-shrink-0 whitespace-nowrap">Auto-syncing</span>
+        )}
       </div>
 
-      {/* Sub-tabs */}
-      <div className="flex gap-1">
+      {/* Sub-tabs — underline style */}
+      <div className="flex items-center gap-5 border-b border-line">
         {([
           ["overview", "Overview"],
           ["transactions", "Transactions"],
@@ -857,8 +885,8 @@ export default function FinancialsView() {
           <button
             key={v}
             onClick={() => setTab(v)}
-            className={`px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors ${
-              tab === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
+            className={`-mb-px pb-2 text-[13px] border-b-2 transition-colors ${
+              tab === v ? "text-ink font-semibold border-ink" : "text-muted border-transparent hover:text-ink-2"
             }`}
           >
             {label}
@@ -927,7 +955,7 @@ export default function FinancialsView() {
       {/* Bank feed (Plaid) — live transactions straight from the bank */}
       <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2 min-w-0">
-          <Building2 size={15} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+          <Building2 size={15} className="text-muted flex-shrink-0" strokeWidth={1.8} />
           <div className="text-[13px] font-semibold text-ink">Bank feed (Plaid)</div>
         </div>
         <p className="text-[11px] text-muted leading-relaxed">
@@ -1232,171 +1260,205 @@ export default function FinancialsView() {
         </div>
       )}
 
-      {/* Auto-tag rules */}
-      <RulesCard
-        rules={rules}
-        open={rulesOpen}
-        setOpen={setRulesOpen}
-        onApply={applyRules}
-        onDelete={deleteRule}
-        onCreate={(cp, cat, dir) => createRule(cp, cat, "expense", "", dir)}
-      />
-
-      {/* Summary tiles */}
+      {/* Summary — a quiet figures strip, not stat cards */}
       {summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
-          <Tile label="Transactions" value={String(summary.total)} />
-          <Tile label="Reviewed" value={`${summary.reviewed} / ${summary.total}`} />
-          <Tile label="Money in" value={fmtAmount(summary.sum_in)} tone="in" />
-          <Tile label="Money out" value={fmtAmount(summary.sum_out)} tone="out" />
-          <Tile label="Uncategorized" value={String(summary.unclassified)} tone={summary.unclassified > 0 ? "warn" : undefined} />
-          <Tile label="Needs a deal" value={String(summary.unallocated_in + summary.unallocated_out)} tone={summary.unallocated_in + summary.unallocated_out > 0 ? "warn" : undefined} />
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[12px] border-b border-line pb-3">
+          <span className="text-muted">Transactions <span className="text-ink font-medium tabular-nums">{summary.total}</span></span>
+          <span className="text-muted">Reviewed <span className="text-ink font-medium tabular-nums">{summary.reviewed}/{summary.total}</span></span>
+          <span className="text-muted">Money in <span className="text-success-ink font-medium tabular-nums">{fmtAmount(summary.sum_in)}</span></span>
+          <span className="text-muted">Money out <span className="text-danger-ink font-medium tabular-nums">{fmtAmount(summary.sum_out)}</span></span>
+          <span className="text-muted">Uncategorized <span className={`font-medium tabular-nums ${summary.unclassified > 0 ? "text-ink" : "text-muted"}`}>{summary.unclassified}</span></span>
+          <span className="text-muted">Needs a deal <span className={`font-medium tabular-nums ${summary.unallocated_in + summary.unallocated_out > 0 ? "text-ink" : "text-muted"}`}>{summary.unallocated_in + summary.unallocated_out}</span></span>
         </div>
       )}
 
-      {/* To-do vs Booked — primary working mode; booked rows drop out of To-do */}
-      <div className="space-y-1.5">
-        <div className="flex gap-1">
+      {/* Toolbar — To-do / Booked (left) + search & filters (right) */}
+      <div className="border-t border-b border-line flex items-center gap-x-5 gap-y-2 py-2.5 flex-wrap">
+        <div className="flex items-center gap-5">
           {([["todo", "To-do"], ["booked", "Booked"]] as const).map(([v, label]) => (
             <button
               key={v}
               onClick={() => setQueue(v)}
-              className={`px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors ${
-                queue === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
-              }`}
+              className={`text-[13px] transition-colors ${queue === v ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
             >
               {label}
               {summary && (
-                <span className="tabular-nums"> ({v === "todo" ? summary.total - summary.reviewed : summary.reviewed})</span>
+                <span className="ml-1.5 font-normal text-muted tabular-nums">
+                  {v === "todo" ? summary.total - summary.reviewed : summary.reviewed}
+                </span>
               )}
             </button>
           ))}
         </div>
-        {queue === "todo" && summary && summary.total - summary.reviewed > 0 && (
-          <p className="text-[11px] text-muted tabular-nums">{summary.total - summary.reviewed} left to review</p>
-        )}
-      </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search description or counterparty…"
-            className="w-full pl-8 pr-3 h-9 text-[13px] border border-line rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-        </div>
-        <div className="flex gap-1">
-          {(["all", "in", "out"] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setDirFilter(f)}
-              className={`px-3 h-9 rounded-lg text-[12px] font-medium capitalize transition-colors ${
-                dirFilter === f ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
-              }`}
-            >
-              {f === "all" ? "All" : f}
-            </button>
-          ))}
-        </div>
-        {accounts.length > 0 && (
-          <select
-            value={acctFilter}
-            onChange={(e) => setAcctFilter(e.target.value)}
-            className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            <option value="all">All accounts</option>
-            {accounts.map((a) => (
-              <option key={a} value={a}>{a}</option>
+        <div className="ml-auto flex items-center gap-x-4 gap-y-2 flex-wrap">
+          <div className="flex items-center gap-1.5 min-w-[160px]">
+            <Search size={13} className="text-muted flex-shrink-0" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search payee or memo…"
+              className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            {(["all", "in", "out"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setDirFilter(f)}
+                className={`text-[12px] transition-colors ${dirFilter === f ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
+              >
+                {f === "all" ? "All" : f === "in" ? "In" : "Out"}
+              </button>
             ))}
+          </div>
+          {accounts.length > 0 && (
+            <select
+              value={acctFilter}
+              onChange={(e) => setAcctFilter(e.target.value)}
+              className="bg-transparent text-[12px] text-muted hover:text-ink-2 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+            >
+              <option value="all">All accounts</option>
+              {accounts.map((a) => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+          )}
+          <select
+            value={catFilter}
+            onChange={(e) => setCatFilter(e.target.value)}
+            className="bg-transparent text-[12px] text-muted hover:text-ink-2 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <option value="all">All categories</option>
+            <CategoryOptions />
           </select>
-        )}
-        <select
-          value={catFilter}
-          onChange={(e) => setCatFilter(e.target.value)}
-          className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
-        >
-          <option value="all">All categories</option>
-          <CategoryOptions />
-        </select>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as any)}
-          className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
-        >
-          <option value="all">All statuses</option>
-          <option value="unclassified">Uncategorized</option>
-          <option value="unallocated_in">Needs a deal (in)</option>
-          <option value="unallocated_out">Needs a deal (out)</option>
-        </select>
-        <div className="flex items-center gap-1.5">
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="border border-line h-9 px-2 rounded-lg text-[12px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-          <span className="text-[11px] text-muted">to</span>
-          <input
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className="border border-line h-9 px-2 rounded-lg text-[12px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="bg-transparent text-[12px] text-muted hover:text-ink-2 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <option value="all">All statuses</option>
+            <option value="unclassified">Uncategorized</option>
+            <option value="unallocated_in">Needs a deal (in)</option>
+            <option value="unallocated_out">Needs a deal (out)</option>
+          </select>
+          <div className="flex items-center gap-1.5 text-[12px] text-muted">
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="bg-transparent text-[12px] text-muted rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
+            />
+            <span>to</span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="bg-transparent text-[12px] text-muted rounded focus:outline-none focus:ring-2 focus:ring-accent/40 [color-scheme:light] dark:[color-scheme:dark]"
+            />
+          </div>
         </div>
       </div>
 
-      {/* Bulk action bar — appears once rows are selected */}
+      {/* Smart grouping suggestions — clear look-alike backlogs in one click (To-do only) */}
+      {queue === "todo" && suggestedGroups.length > 0 && (
+        <div className="space-y-1.5">
+          {suggestedGroups.map((g) => {
+            const cat = groupCatOverride[g.key] ?? g.defaultCat;
+            return (
+              <div key={g.key} className="flex items-center gap-3 flex-wrap border border-line-2 rounded-lg px-3 py-2 text-[12.5px]">
+                <span className="text-ink-2 min-w-0">
+                  <span className="font-semibold text-ink tabular-nums">{g.count}</span> transactions from{" "}
+                  <span className="font-semibold text-ink">{g.payee}</span>{" "}
+                  <span className={g.direction === "in" ? "text-success-ink" : "text-danger-ink"}>
+                    ({g.direction === "in" ? "money in" : "money out"})
+                  </span>
+                </span>
+                <div className="ml-auto flex items-center gap-2.5">
+                  <select
+                    value={cat}
+                    onChange={(e) => setGroupCatOverride((prev) => ({ ...prev, [g.key]: e.target.value }))}
+                    className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  >
+                    <option value="">Set category…</option>
+                    <CategoryOptions includeUncat={false} />
+                  </select>
+                  <button
+                    onClick={async () => {
+                      const c = groupCatOverride[g.key] ?? g.defaultCat;
+                      if (!c) return;
+                      dismissGroup(g.key);
+                      await createRule(g.payee, c, "expense", "", g.direction);
+                    }}
+                    disabled={!cat}
+                    className="text-[12px] font-medium text-accent hover:text-accent-hover disabled:text-faint disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                  >
+                    Tag all <span className="tabular-nums">{g.count}</span>
+                  </button>
+                  <button
+                    onClick={() => dismissGroup(g.key)}
+                    title="Dismiss"
+                    className="text-muted hover:text-ink-2 transition-colors flex-shrink-0"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Bulk bar — a plain full-width row of text actions once rows are selected */}
       {selected.size > 0 && (
-        <div className="sticky top-2 z-30 flex items-center gap-2 flex-wrap bg-surface border border-line rounded-xl px-3 py-2 shadow-lg">
-          <span className="text-[12px] font-medium text-ink whitespace-nowrap">
-            {selected.size} selected
-          </span>
-          <div className="w-px h-5 bg-line-2 mx-0.5" />
-          <select
-            value={bulkCat}
-            onChange={(e) => setBulkCat(e.target.value)}
-            disabled={bulkActionBusy}
-            className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            <option value="">Set category…</option>
-            <CategoryOptions includeUncat={false} />
-          </select>
+        <div className="flex items-center gap-x-3 gap-y-2 flex-wrap border-b border-line py-2.5 text-[12.5px]">
+          <span className="font-semibold text-ink whitespace-nowrap tabular-nums">{selected.size} selected</span>
+          <span className="text-faint">·</span>
+          <div className="flex items-center gap-2">
+            <select
+              value={bulkCat}
+              onChange={(e) => setBulkCat(e.target.value)}
+              disabled={bulkActionBusy}
+              className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
+            >
+              <option value="">Set category…</option>
+              <CategoryOptions includeUncat={false} />
+            </select>
+            <button
+              onClick={() => bulkCat && bulkSetCategory(bulkCat)}
+              disabled={bulkActionBusy || !bulkCat}
+              className="text-ink-2 hover:text-ink disabled:text-faint disabled:cursor-not-allowed transition-colors"
+            >
+              Apply
+            </button>
+          </div>
+          <span className="text-faint">·</span>
           <button
-            onClick={() => bulkCat && bulkSetCategory(bulkCat)}
-            disabled={bulkActionBusy || !bulkCat}
-            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            onClick={() => setBulkAllocOpen(true)}
+            disabled={bulkActionBusy}
+            className="text-ink-2 hover:text-ink disabled:opacity-50 transition-colors"
           >
-            Apply
+            Tag all to a deal
           </button>
-          <div className="w-px h-5 bg-line-2 mx-0.5" />
+          <span className="text-faint">·</span>
           <button
             onClick={() => bulkSetReviewed(true)}
             disabled={bulkActionBusy}
-            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            className="font-medium text-accent hover:text-accent-hover disabled:opacity-50 transition-colors"
           >
             Book
           </button>
           <button
             onClick={() => bulkSetReviewed(false)}
             disabled={bulkActionBusy}
-            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            className="text-ink-2 hover:text-ink disabled:opacity-50 transition-colors"
           >
             Reopen
           </button>
           <button
-            onClick={() => setBulkAllocOpen(true)}
-            disabled={bulkActionBusy}
-            className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-          >
-            <Link2 size={13} /> Tag to deal or loan
-          </button>
-          <button
             onClick={clearSelection}
             disabled={bulkActionBusy}
-            className="ml-auto h-8 px-2.5 rounded-md text-[12px] text-muted hover:text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            className="ml-auto text-muted hover:text-ink-2 disabled:opacity-50 transition-colors"
           >
             Clear
           </button>
@@ -1420,11 +1482,11 @@ export default function FinancialsView() {
           </button>
         </div>
       ) : (
-        <div className="border border-line rounded-xl overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[820px]">
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px] min-w-[860px]">
             <thead>
-              <tr className="text-left text-muted border-b border-line bg-surface-2/40">
-                <th className="px-3 py-2.5 w-9">
+              <tr className="text-left border-b border-line">
+                <th className="py-2 pr-2 w-8">
                   <input
                     type="checkbox"
                     aria-label="Select all filtered transactions"
@@ -1444,25 +1506,32 @@ export default function FinancialsView() {
                     className="align-middle accent-accent"
                   />
                 </th>
-                <th className="font-medium px-3 py-2.5 whitespace-nowrap">Date</th>
-                <th className="font-medium px-3 py-2.5">Description</th>
-                <th className="font-medium px-3 py-2.5">Counterparty</th>
-                <th className="font-medium px-3 py-2.5">Category</th>
-                <th className="font-medium px-3 py-2.5 text-right whitespace-nowrap">Amount</th>
-                <th className="font-medium px-3 py-2.5 whitespace-nowrap">Allocation</th>
-                <th className="font-medium px-3 py-2.5 text-center whitespace-nowrap">Book</th>
+                <th className="w-7" aria-label="Direction" />
+                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Date</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Account</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3 text-right whitespace-nowrap">Amount</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Deal</th>
+                <th className="text-[11px] font-medium text-muted py-2 text-center whitespace-nowrap w-12">Book</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-line-2">
-              {filtered.map((t) => (
+            <tbody>
+              {filtered.map((t) => {
+                const payee = t.counterparty_name?.trim();
+                const mainLabel = payee || t.description || "—";
+                const memo = payee ? t.description : "";
+                const hasMatch =
+                  t.counterparty_type !== "loan" && t.allocated <= 0.0001 && deals.some((d) => dealMatchesTxn(d, t));
+                return (
                 <Fragment key={t.id}>
                   <tr
                     onClick={() => toggleRow(t)}
-                    className={`cursor-pointer transition-colors ${
-                      selected.has(t.id) ? "bg-accent/5" : openId === t.id ? "bg-surface-2" : "hover:bg-surface-2/50"
+                    className={`border-b border-line-2 cursor-pointer transition-colors ${
+                      selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
                     }`}
                   >
-                    <td className="px-3 py-2.5 align-top" onClick={(e) => e.stopPropagation()}>
+                    <td className="py-3 pr-2 align-top" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         aria-label="Select transaction"
@@ -1471,65 +1540,63 @@ export default function FinancialsView() {
                         className="align-middle accent-accent"
                       />
                     </td>
-                    <td className="px-3 py-2.5 tabular-nums text-muted whitespace-nowrap align-top">
-                      <span className="inline-flex items-center gap-1">
-                        <ChevronRight
-                          size={12}
-                          className={`text-faint transition-transform duration-150 ${openId === t.id ? "rotate-90" : ""}`}
-                        />
-                        {(t.posted_at || "").slice(0, 10)}
-                      </span>
+                    <td className="py-3 align-top">
+                      {t.direction === "in"
+                        ? <ArrowDownLeft size={15} className="text-success-ink" strokeWidth={2} />
+                        : <ArrowUpRight size={15} className="text-danger-ink" strokeWidth={2} />}
                     </td>
-                    <td className="px-3 py-2.5 text-ink-2 max-w-[280px] align-top">
-                      <span className="truncate block" title={t.description}>{t.description}</span>
-                      {t.account_id && (
-                        <span className="inline-flex items-center gap-1 mt-0.5 text-[10px] text-muted bg-surface-2 border border-line-2 rounded px-1.5 py-0.5">
-                          {t.account_id}
-                          <span className="text-faint">· {isCardAccount(t.account_id) ? "card" : "checking"}</span>
-                        </span>
-                      )}
+                    <td className="py-3 pr-3 tabular-nums text-muted whitespace-nowrap align-top">
+                      {(t.posted_at || "").slice(0, 10)}
                     </td>
-                    <td className="px-3 py-2.5 text-muted max-w-[160px] align-top">
-                      <span className="truncate block">{t.counterparty_name || "—"}</span>
+                    <td className="py-3 pr-3 align-top max-w-[300px]">
+                      <div className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</div>
+                      {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
                     </td>
-                    <td className="px-3 py-2.5 align-top" onClick={(e) => e.stopPropagation()}>
+                    <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
                       {t.counterparty_type === "loan" ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-ink-2 bg-surface-2 border border-line-2 rounded px-1.5 py-1">
-                          <Landmark size={11} className="text-accent" /> {loanTagLabel(t.direction)}
-                        </span>
+                        <span className="text-[12px] text-ink-2">{loanTagLabel(t.direction)}</span>
                       ) : (
-                        <select
-                          value={t.category || ""}
-                          onChange={(e) => saveReview(t, { category: e.target.value })}
-                          className="h-8 px-1.5 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 max-w-[150px]"
-                        >
-                          <CategoryOptions />
-                        </select>
+                        <span className="relative inline-flex items-center">
+                          <select
+                            value={t.category || ""}
+                            onChange={(e) => saveReview(t, { category: e.target.value })}
+                            className={`appearance-none bg-transparent pr-4 text-[12px] cursor-pointer rounded focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+                              t.category ? "text-ink-2" : "text-accent font-medium"
+                            }`}
+                          >
+                            <option value="">Set category</option>
+                            <CategoryOptions includeUncat={false} />
+                          </select>
+                          <ChevronDown
+                            size={12}
+                            className={`pointer-events-none absolute right-0 ${t.category ? "text-faint" : "text-accent"}`}
+                          />
+                        </span>
                       )}
                     </td>
-                    <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                    <td className="py-3 pr-3 text-[12px] text-muted whitespace-nowrap align-top">{t.account_id || "—"}</td>
+                    <td className={`py-3 pr-3 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
                       {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
-                      <div className={`text-[10px] font-normal ${t.direction === "in" ? "text-success-ink/70" : "text-danger-ink/70"}`}>{t.direction === "in" ? "in" : "out"}</div>
                     </td>
-                    <td className="px-3 py-2.5 text-[12px] whitespace-nowrap align-top">{allocIndicator(t)}</td>
-                    <td className="px-3 py-2.5 text-center align-top" onClick={(e) => e.stopPropagation()}>
+                    <td className="py-3 pr-3 text-[12px] whitespace-nowrap align-top">{dealCell(t, hasMatch)}</td>
+                    <td className="py-3 text-center align-top" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => saveReview(t, { reviewed: !t.reviewed })}
                         title={t.reviewed ? "Booked — click to reopen" : "Book it"}
-                        className={`w-6 h-6 rounded-md inline-flex items-center justify-center border transition-colors ${
+                        className={`w-5 h-5 rounded inline-flex items-center justify-center border transition-colors ${
                           t.reviewed
-                            ? "bg-success-bg border-success-ink/30 text-success-ink"
-                            : "border-line text-faint hover:text-muted hover:border-line-3"
+                            ? "bg-ink border-ink text-surface"
+                            : "border-line-3 text-transparent hover:border-ink-2"
                         }`}
                       >
-                        <Check size={13} strokeWidth={t.reviewed ? 2.4 : 1.8} />
+                        <Check size={12} strokeWidth={2.4} />
                       </button>
                     </td>
                   </tr>
 
                   {openId === t.id && (
                     <tr className="bg-surface-2">
-                      <td colSpan={8} className="px-3 pb-4 pt-1">
+                      <td colSpan={9} className="px-3 pb-4 pt-1">
                         <AllocationPanel
                           txn={t}
                           allocs={allocs}
@@ -1568,7 +1635,8 @@ export default function FinancialsView() {
                     </tr>
                   )}
                 </Fragment>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           {filtered.length === 0 && (
@@ -1588,6 +1656,16 @@ export default function FinancialsView() {
           onPickLoan={async (l) => { setBulkAllocOpen(false); await bulkTagLoan(l); }}
         />
       )}
+
+      {/* Auto-tag rules — a quiet section under the table */}
+      <RulesCard
+        rules={rules}
+        open={rulesOpen}
+        setOpen={setRulesOpen}
+        onApply={applyRules}
+        onDelete={deleteRule}
+        onCreate={(cp, cat, dir) => createRule(cp, cat, "expense", "", dir)}
+      />
       </div>
       )}
     </div>
@@ -1707,16 +1785,6 @@ function BulkAllocateModal({
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function Tile({ label, value, tone }: { label: string; value: string; tone?: "in" | "out" | "warn" }) {
-  const valueColor = tone === "in" ? "text-success-ink" : tone === "out" ? "text-danger-ink" : tone === "warn" ? "text-warning-ink" : "text-ink";
-  return (
-    <div className="bg-surface border border-line rounded-xl p-3.5 min-w-0">
-      <div className="text-[11px] text-muted">{label}</div>
-      <div className={`text-[18px] font-semibold mt-1 tabular-nums truncate ${valueColor}`}>{value}</div>
     </div>
   );
 }
@@ -1851,7 +1919,7 @@ function AllocationPanel(props: {
           {isLoanTagged && (
             <div className="border border-line-2 rounded-lg overflow-hidden">
               <div className="flex items-center gap-3 px-3 py-2">
-                <Landmark size={14} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+                <Landmark size={14} className="text-muted flex-shrink-0" strokeWidth={1.8} />
                 <div className="min-w-0 flex-1">
                   <div className="text-[12px] font-medium text-ink truncate">{txn.counterparty_name || "Loan"}</div>
                   <div className="text-[11px] text-muted">{loanTagLabel(txn.direction)}</div>
@@ -2109,27 +2177,26 @@ function RulesCard({
   };
 
   return (
-    <div className="bg-surface border border-line rounded-xl">
-      <div className="flex items-center gap-2 px-4 py-3">
+    <div className="border-t border-line pt-4">
+      <div className="flex items-center gap-2">
         <button
           onClick={() => setOpen(!open)}
           className="flex items-center gap-2 min-w-0 flex-1 text-left"
         >
           <ChevronRight size={14} className={`text-faint transition-transform duration-150 ${open ? "rotate-90" : ""}`} />
-          <Wand2 size={15} className="text-accent flex-shrink-0" strokeWidth={1.8} />
           <span className="text-[13px] font-semibold text-ink">Auto-tag rules</span>
-          <span className="text-[12px] text-muted tabular-nums">({rules.length})</span>
+          <span className="text-[12px] text-muted tabular-nums">· {rules.length}</span>
         </button>
         <button
           onClick={onApply}
-          className="flex items-center gap-1.5 h-8 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+          className="text-[12px] font-medium text-accent hover:text-accent-hover transition-colors"
         >
-          <Wand2 size={13} /> Apply rules now
+          Apply rules now
         </button>
       </div>
 
       {open && (
-        <div className="px-4 pb-4 space-y-3 border-t border-line-2 pt-3">
+        <div className="pt-3 space-y-3">
           <p className="text-[11px] text-muted leading-relaxed">
             Open a transaction, set its category, and choose "Tag all like this" — it creates a rule and instantly tags
             every matching transaction. A rule can be limited to money in or money out, so the same payer (e.g. Whatnot)
@@ -2137,23 +2204,23 @@ function RulesCard({
           </p>
 
           {rules.length > 0 && (
-            <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
+            <div className="border-t border-line-2">
               {rules.map((r) => (
-                <div key={r.id} className="flex items-center gap-3 px-3 py-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[12px] text-ink truncate">
-                      {r.direction && <span className="text-muted">{r.direction === "in" ? "Money in · " : "Money out · "}</span>}
-                      <span className="font-medium">"{r.match_counterparty}"</span>
-                      <span className="text-muted"> → </span>
-                      {r.target_type === "loan"
-                        ? <span className="inline-flex items-center gap-1 text-ink-2"><Landmark size={11} className="text-accent" /> {r.loan_name || "Loan"}</span>
-                        : <span className="text-ink-2">{catLabel(r.category)}</span>}
-                    </div>
+                <div key={r.id} className="flex items-center gap-3 py-2 border-b border-line-2">
+                  <div className="min-w-0 flex-1 text-[12.5px]">
+                    {r.direction && (
+                      <span className={r.direction === "in" ? "text-success-ink" : "text-danger-ink"}>
+                        {r.direction === "in" ? "Money in" : "Money out"} ·{" "}
+                      </span>
+                    )}
+                    <span className="font-semibold text-ink">{r.match_counterparty}</span>
+                    <span className="text-faint"> → </span>
+                    <span className="text-ink-2">{r.target_type === "loan" ? (r.loan_name || "Loan") : catLabel(r.category)}</span>
                   </div>
                   <button
                     onClick={() => onDelete(r.id)}
                     title="Delete rule"
-                    className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"
+                    className="flex-shrink-0 text-faint hover:text-danger-ink transition-colors"
                   >
                     <Trash2 size={13} />
                   </button>
