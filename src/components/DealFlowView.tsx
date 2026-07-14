@@ -388,6 +388,10 @@ function DealFlowCard({
   const currentSi = si(flow.stage);
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
+  // Refund mode swaps the deal-flow steps for the refund workspace. Defaults on for
+  // any deal with a refund; the header button flips it (and can start one on a normal deal).
+  const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
+  const refundView = refundOverride ?? !!refund;
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
   const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
@@ -495,14 +499,17 @@ function DealFlowCard({
               {NODE_LABELS[flow.stage as Stage]}
             </span>
           )}
-          {/* Refund mode reads loud alongside the stage — the stage still shows so
-              you never lose where the deal actually is. */}
-          {refund && (
-            <span className="text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-danger-bg text-danger-ink inline-flex items-center gap-1 flex-shrink-0">
-              <RotateCcw size={11} />
-              {refund.remaining > 0 ? `Refund mode · ${fmtAmount(refund.remaining)} left` : "Refunded"}
-            </span>
-          )}
+          {/* Refund-mode toggle — flips the whole card between deal-flow and refund.
+              Shows the balance when a refund is live; starts one on a normal deal. */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsOpen(true); setRefundOverride(!refundView); }}
+            className={refund
+              ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-danger-bg text-danger-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
+              : "text-[11.5px] font-medium px-2 py-0.5 rounded-full border border-line text-muted hover:text-danger-ink hover:border-danger inline-flex items-center gap-1 flex-shrink-0 transition-colors"}
+          >
+            <RotateCcw size={11} />
+            {refundView ? "Back to deal" : refund ? (refund.remaining > 0 ? `Refund mode · ${fmtAmount(refund.remaining)} left` : "Refunded") : "Refund"}
+          </button>
           <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
         </div>
       </button>
@@ -510,7 +517,17 @@ function DealFlowCard({
       {/* ── Expanded body ── */}
       {isOpen && (
         <>
-          {/* Node progress bar */}
+          {/* Fully refunded — stated loud, in any view. */}
+          {refund && refund.refund_owed > 0 && refund.remaining === 0 && (
+            <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-danger-bg border border-danger px-4 py-3">
+              <RotateCcw size={18} className="text-danger-ink flex-shrink-0" strokeWidth={2.2} />
+              <span className="text-[15px] font-bold text-danger-ink">Fully refunded</span>
+              <span className="ml-auto text-[12px] text-danger-ink tabular-nums">{fmtAmount(refund.refunded)} refunded</span>
+            </div>
+          )}
+
+          {/* Deal-flow steps — hidden in refund mode (irrelevant during a refund) */}
+          {!refundView && (
           <div className="px-5 pt-4 pb-3 border-t border-line">
             <div className="flex items-start">
               {STAGES.map((key, i) => {
@@ -561,6 +578,7 @@ function DealFlowCard({
               })}
             </div>
           </div>
+          )}
 
           {/* Invoice breakdown — what was bought, exactly as on the invoice */}
           {invItems.length > 0 && (
@@ -626,18 +644,22 @@ function DealFlowCard({
               </button>
             </div>
 
-            {panel === "invoiced"         && <PanelInvoiced     flow={flow} />}
-            {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
-            {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
-            {panel === "complete"         && <PanelComplete     flow={flow} onReload={onReload} />}
-            {/* Pair real bank transactions to this deal once money is due. Self-loads
-                its own allocations; exclusivity is enforced server-side. */}
-            {si(flow.stage) >= si("payment_received") && (
-              <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
+            {refundView ? (
+              /* Refund mode: the refund workspace IS the view; deal-flow panels hidden. */
+              <RefundWorkspace dealFlowId={flow.id} primary />
+            ) : (
+              <>
+                {panel === "invoiced"         && <PanelInvoiced     flow={flow} />}
+                {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
+                {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
+                {panel === "complete"         && <PanelComplete     flow={flow} onReload={onReload} />}
+                {/* Pair real bank transactions to this deal once money is due. */}
+                {si(flow.stage) >= si("payment_received") && (
+                  <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
+                )}
+                <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} /></div>
+              </>
             )}
-            {/* Refund is available regardless of status — a deal can be refunded
-                whether or not payment ever cleared. */}
-            <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} /></div>
           </div>
         </>
       )}

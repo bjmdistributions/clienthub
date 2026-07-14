@@ -410,8 +410,8 @@ export default function App() {
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
     { id: "quotes", label: "Quote", icon: FileSignature },
+    { id: "dealflow", label: "Deal Flow", icon: GitBranch },
     { id: "invoices", label: "Invoice", icon: FileText, children: [
-      { id: "dealflow",   label: "Deal Flow",  icon: GitBranch },
       { id: "deals",      label: "Completed",  icon: Briefcase },
       { id: "receivables", label: "Receivables", icon: Wallet },
       { id: "payables",   label: "Payables",   icon: Banknote },

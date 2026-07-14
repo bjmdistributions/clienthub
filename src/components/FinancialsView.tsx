@@ -9,6 +9,7 @@ import {
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
@@ -159,7 +160,9 @@ export default function FinancialsView() {
   const [rules, setRules]     = useState<TxnRule[]>([]);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab]         = useState<"overview" | "transactions" | "loans">("overview");
+  // Land on the bank/transactions view so connected banks + pending to-do actions
+  // are the first thing visible; the Free-cash overview stays a click away.
+  const [tab, setTab]         = useState<"overview" | "transactions" | "loans">("transactions");
   const [aiBusy, setAiBusy]   = useState(false);
   const [newDealBusy, setNewDealBusy] = useState(false);
 
@@ -269,6 +272,15 @@ export default function FinancialsView() {
       } catch { setPlaidReady(false); }
       try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
     })();
+  }, []);
+
+  // Live-refresh when a sync pull applies remote rows — e.g. a second admin (a
+  // brother's login on the same org) links a payment or records a refund on his
+  // device. Without this the Financials tab shows stale data until it's remounted.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    listen("netsync-applied", () => { refreshAll(true).catch(() => {}); }).then((u) => { un = u; }).catch(() => {});
+    return () => { un?.(); };
   }, []);
 
   // Stop any in-flight bank-connect polling when this view unmounts.
@@ -1671,11 +1683,13 @@ export default function FinancialsView() {
 
       {/* Smart grouping suggestions — clear look-alike backlogs in one click (To-do only) */}
       {queue === "todo" && suggestedGroups.length > 0 && (
-        <div className="space-y-1.5">
-          {suggestedGroups.map((g) => {
+        <div className="space-y-1">
+          {/* Show a rolling few so the suggestions never bury the transaction list;
+              clearing one surfaces the next. */}
+          {suggestedGroups.slice(0, 3).map((g) => {
             const cat = groupCatOverride[g.key] ?? g.defaultCat;
             return (
-              <div key={g.key} className="flex items-center gap-3 flex-wrap border border-line-2 rounded-lg px-3 py-2 text-[12.5px]">
+              <div key={g.key} className="flex items-center gap-3 flex-wrap border border-line-2 rounded-lg px-2.5 py-1.5 text-[12px]">
                 <span className="text-ink-2 min-w-0">
                   <span className="font-semibold text-ink tabular-nums">{g.count}</span> transactions from{" "}
                   <span className="font-semibold text-ink">{g.payee}</span>{" "}
@@ -1687,7 +1701,7 @@ export default function FinancialsView() {
                   <select
                     value={cat}
                     onChange={(e) => setGroupCatOverride((prev) => ({ ...prev, [g.key]: e.target.value }))}
-                    className="h-8 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+                    className="h-7 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
                   >
                     <option value="">Set category…</option>
                     <CategoryOptions includeUncat={false} />

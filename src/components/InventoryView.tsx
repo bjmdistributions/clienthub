@@ -558,7 +558,7 @@ export default function InventoryView() {
             setPrefill(prefillQueue[0]); setPrefillQueue(prefillQueue.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true);
           } else { setPrefill(null); }
         }}
-        deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} />}
+        deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} lots={lots} />}
 
       {pasting && <PasteLoadModal
         onClose={() => setPasting(false)}
@@ -1104,7 +1104,7 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
   );
 }
 
-function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string }) {
+function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[] }) {
   const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
   const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
   const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
@@ -1244,6 +1244,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
       if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
       } else {
+        // Duplicate guard: warn (don't block) if a still-listed lot already has this
+        // name — a legitimate re-buy of the same product can recur.
+        const dupe = lots.find((l) => (l.name || "").trim().toLowerCase() === name.trim().toLowerCase() && l.status !== "archived");
+        if (dupe && !confirm(`A lot named "${dupe.name}" already exists (${dupe.status}). Add another anyway?`)) { setSaving(false); return; }
         const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: effAsk, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType, detailsJson });
         // Photos were picked as raw paths; copy them into the lot's synced media folder now that it has an id.
         if (photos.length > 0) {
@@ -1253,6 +1257,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase }
         if (newManifestFile) await api.attachLotManifest(lot.id, newManifestFile);
         if (sentWa || sentEmail) await api.updateLot(lot.id, { sentWhatsapp: sentWa, sentEmail: sentEmail });
       }
+      // Persist a typed-in category so it's a reusable pick next time (idempotent —
+      // create_category dedupes case-insensitively).
+      if (category.trim()) api.createCategory({ label: category.trim() }).catch(() => {});
       onClose();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);

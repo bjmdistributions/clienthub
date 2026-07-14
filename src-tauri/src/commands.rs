@@ -4394,6 +4394,7 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO refunds (id,deal_flow_id,client_id,amount,method,source,source_supplier_ref,keep_rep_cut,reason,bank_txn_id,refunded_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
         rusqlite::params![id, deal_flow_id, client_id, amt, method, source, source_supplier_ref, keep, reason, txn, now]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(id)
 }
 
@@ -4452,6 +4453,7 @@ pub async fn delete_refund(id: String) -> Result<(), String> {
     sync::record_delete("refunds", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM refunds WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -4477,6 +4479,7 @@ pub async fn add_deal_receipt(deal_flow_id: String, amount: f64, label: Option<S
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO deal_receipts (id,deal_flow_id,amount,label,received_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?5,?5)",
         rusqlite::params![id, deal_flow_id, amt, lbl, now]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(id)
 }
 
@@ -4495,6 +4498,7 @@ pub async fn delete_deal_receipt(id: String) -> Result<(), String> {
     sync::record_delete("deal_receipts", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM deal_receipts WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -9769,6 +9773,7 @@ pub async fn allocate_bank_txn(
          VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
         rusqlite::params![id, bank_txn_id, deal_flow_id, amt, role, note, now],
     ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now(); // reach the other device promptly, not on the next poll
     Ok(id)
 }
 
@@ -9778,6 +9783,7 @@ pub async fn remove_bank_allocation(id: String) -> Result<(), String> {
     sync::record_delete("bank_allocation", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -10363,6 +10369,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl(false);
+    crate::netsync::push_now(); // freshly imported bank activity reaches other devices now
     Ok(json!({ "imported": imported, "removed": removed, "preparing": preparing, "results": results }))
 }
 

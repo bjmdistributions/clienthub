@@ -27,9 +27,13 @@ const fmtDate = (s?: string) => {
 // A searchable list of unallocated bank transactions to pick from. Numeric queries
 // match the remaining amount exactly (to the cent); words match payee or memo.
 function TxnPicker({ txns, onPick, onClose }: {
-  txns: UnallocatedTxn[]; onPick: (t: UnallocatedTxn) => void; onClose: () => void;
+  txns: UnallocatedTxn[]; onPick: (t: UnallocatedTxn, amount: number) => void; onClose: () => void;
 }) {
   const [q, setQ] = useState("");
+  // After a row is picked, ask how much to apply — so a single payment can be
+  // linked in part (the rest stays available to split onto another deal).
+  const [picked, setPicked] = useState<UnallocatedTxn | null>(null);
+  const [amt, setAmt] = useState("");
   const ql = q.trim().toLowerCase();
   const filtered = txns.filter((t) => {
     if (!ql) return true;
@@ -40,6 +44,33 @@ function TxnPicker({ txns, onPick, onClose }: {
     }
     return (t.counterparty_name || "").toLowerCase().includes(ql) || (t.description || "").toLowerCase().includes(ql);
   });
+
+  if (picked) {
+    const max = picked.unallocated;
+    const confirm = () => {
+      const n = amt.trim() ? parseFloat(amt.replace(/[$,\s]/g, "")) : max;
+      if (!isFinite(n) || n <= 0 || n > max + 0.005) return;
+      onPick(picked, Math.min(n, max));
+    };
+    return (
+      <div className="border border-line rounded-lg bg-surface-2 mt-2 p-3 space-y-2">
+        <div className="flex items-center gap-2 text-[12.5px]">
+          <span className="flex-1 min-w-0 truncate text-ink">{picked.counterparty_name || picked.description || "—"}</span>
+          <span className={`tabular-nums font-medium ${picked.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(max)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <input autoFocus value={amt} onChange={(e) => setAmt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") confirm(); }}
+            placeholder={max.toFixed(2)}
+            className="bg-surface border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums" />
+          <span className="text-[11px] text-muted">of {fmtAmount(max)} available</span>
+          <button onClick={confirm} className="ml-auto h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors">Link</button>
+          <button onClick={() => setPicked(null)} className="text-muted hover:text-ink-2"><X size={14} /></button>
+        </div>
+        <div className="text-[10.5px] text-muted">Enter a smaller amount to apply only part of this transaction; the rest stays available.</div>
+      </div>
+    );
+  }
+
   return (
     <div className="border border-line rounded-lg bg-surface-2 mt-2 overflow-hidden">
       <div className="flex items-center gap-1.5 px-2.5 h-8 border-b border-line-2">
@@ -60,7 +91,7 @@ function TxnPicker({ txns, onPick, onClose }: {
           </div>
         ) : filtered.map((t) => (
           <button
-            key={t.id} onClick={() => onPick(t)}
+            key={t.id} onClick={() => { setPicked(t); setAmt(""); }}
             className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-3 border-b border-line-2 last:border-0 transition-colors"
           >
             <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(t.posted_at)}</span>
@@ -75,7 +106,7 @@ function TxnPicker({ txns, onPick, onClose }: {
   );
 }
 
-export default function RefundWorkspace({ dealFlowId }: { dealFlowId: string }) {
+export default function RefundWorkspace({ dealFlowId, primary = false }: { dealFlowId: string; primary?: boolean }) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [receipts, setReceipts] = useState<DealReceipt[]>([]);
   const [refunds, setRefunds] = useState<RefundRow[]>([]);
@@ -130,11 +161,12 @@ export default function RefundWorkspace({ dealFlowId }: { dealFlowId: string }) 
   const remaining = Math.max(refundOwed - totalRefunded, 0);
 
   const hasActivity = refundOwed > 0 || refunds.length > 0;
-  const open = openOverride ?? hasActivity;
+  // As the primary view (refund mode) it's always open — no collapse.
+  const open = primary ? true : (openOverride ?? hasActivity);
 
   // Actions
-  const linkReceived = (t: UnallocatedTxn) => run(async () => {
-    await api.allocateBankTxn(t.id, dealFlowId, t.unallocated, "buyer_payment", "Payment received");
+  const linkReceived = (t: UnallocatedTxn, amount: number) => run(async () => {
+    await api.allocateBankTxn(t.id, dealFlowId, amount, "buyer_payment", "Payment received");
     setPickReceived(false);
   });
   const addCustomReceived = () => {
@@ -145,8 +177,8 @@ export default function RefundWorkspace({ dealFlowId }: { dealFlowId: string }) 
       setCustomRecvAmt(""); setCustomRecvLabel(""); setShowCustomRecv(false);
     });
   };
-  const linkRefund = (t: UnallocatedTxn) => run(async () => {
-    await api.createRefund(dealFlowId, t.unallocated, { source: "business", bankTxnId: t.id });
+  const linkRefund = (t: UnallocatedTxn, amount: number) => run(async () => {
+    await api.createRefund(dealFlowId, amount, { source: "business", bankTxnId: t.id });
     setPickRefund(false);
   });
   const addManualRefund = () => {
@@ -162,11 +194,11 @@ export default function RefundWorkspace({ dealFlowId }: { dealFlowId: string }) 
     <div className="bg-surface border border-line rounded-xl overflow-hidden">
       {/* Header — always visible, toggles the workspace + shows the balance */}
       <button
-        onClick={() => setOpenOverride(!open)}
-        className="w-full px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-surface-2 transition-colors"
+        onClick={() => { if (!primary) setOpenOverride(!open); }}
+        className={`w-full px-4 py-2.5 flex items-center justify-between gap-2 transition-colors ${primary ? "cursor-default" : "hover:bg-surface-2"}`}
       >
-        <span className="flex items-center gap-1.5 text-[13px] font-semibold text-ink-2">
-          <ChevronRight size={14} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />
+        <span className={`flex items-center gap-1.5 font-semibold text-ink-2 ${primary ? "text-[14px]" : "text-[13px]"}`}>
+          {!primary && <ChevronRight size={14} className={`text-muted transition-transform ${open ? "rotate-90" : ""}`} />}
           Refund
         </span>
         {remaining > 0 ? (
