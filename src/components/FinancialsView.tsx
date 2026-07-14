@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
-  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight,
+  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -809,13 +809,13 @@ export default function FinancialsView() {
       g.count += 1;
       if (t.category) g.cats[t.category] = (g.cats[t.category] || 0) + 1;
     }
-    const groups = Array.from(map.values()).filter((g) => g.count >= 4 && !dismissedGroups.has(g.key));
+    const groups = Array.from(map.values()).filter((g) => g.count >= 3 && !dismissedGroups.has(g.key));
     for (const g of groups) {
       let best = "", bestN = 0;
       for (const [c, n] of Object.entries(g.cats)) if (n > bestN) { best = c; bestN = n; }
       g.defaultCat = best; // most common existing category in the group (or blank)
     }
-    return groups.sort((a, b) => b.count - a.count).slice(0, 3);
+    return groups.sort((a, b) => b.count - a.count).slice(0, 10);
   }, [txns, dismissedGroups]);
 
   const dismissGroup = (key: string) => setDismissedGroups((prev) => new Set(prev).add(key));
@@ -1292,7 +1292,7 @@ export default function FinancialsView() {
         </div>
 
         <div className="ml-auto flex items-center gap-x-4 gap-y-2 flex-wrap">
-          <div className="flex items-center gap-1.5 min-w-[160px]">
+          <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-8">
             <Search size={13} className="text-muted flex-shrink-0" />
             <input
               value={search}
@@ -1316,7 +1316,7 @@ export default function FinancialsView() {
             <select
               value={acctFilter}
               onChange={(e) => setAcctFilter(e.target.value)}
-              className="bg-transparent text-[12px] text-muted hover:text-ink-2 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
             >
               <option value="all">All accounts</option>
               {accounts.map((a) => (
@@ -1327,7 +1327,7 @@ export default function FinancialsView() {
           <select
             value={catFilter}
             onChange={(e) => setCatFilter(e.target.value)}
-            className="bg-transparent text-[12px] text-muted hover:text-ink-2 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             <option value="all">All categories</option>
             <CategoryOptions />
@@ -1335,14 +1335,14 @@ export default function FinancialsView() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="bg-transparent text-[12px] text-muted hover:text-ink-2 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             <option value="all">All statuses</option>
             <option value="unclassified">Uncategorized</option>
             <option value="unallocated_in">Needs a deal (in)</option>
             <option value="unallocated_out">Needs a deal (out)</option>
           </select>
-          <div className="flex items-center gap-1.5 text-[12px] text-muted">
+          <div className="flex items-center gap-1.5 text-[12px] text-muted bg-surface-2 border border-line rounded-lg px-2.5 h-8">
             <input
               type="date"
               value={fromDate}
@@ -1549,7 +1549,25 @@ export default function FinancialsView() {
                       {(t.posted_at || "").slice(0, 10)}
                     </td>
                     <td className="py-3 pr-3 align-top max-w-[300px]">
-                      <div className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</div>
+                      <div className="flex items-center gap-1.5 min-w-0 group/pe">
+                        <span className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const next = window.prompt(
+                              "Rename this payee. Plaid sometimes mislabels transfers (e.g. a Zelle to a person shows as a store) — set the real name so it categorizes and groups correctly.",
+                              payee || t.description || "",
+                            );
+                            if (next !== null && next.trim() && next.trim() !== (payee || "")) {
+                              saveReview(t, { counterparty_name: next.trim() });
+                            }
+                          }}
+                          title="Rename payee"
+                          className="opacity-0 group-hover/pe:opacity-100 focus:opacity-100 text-faint hover:text-ink-2 flex-shrink-0 transition-opacity"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </div>
                       {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
                     </td>
                     <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
