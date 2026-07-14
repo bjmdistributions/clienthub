@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, AlertTriangle, Trash2, Plus, X } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
 import { api, DealFlow, DealAllocation, UnallocatedTxn } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
@@ -314,6 +314,24 @@ function Picker({ leg, cands, busy, flow, onPair }: {
   flow: DealFlow;
   onPair: (t: UnallocatedTxn, leg: Leg) => void;
 }) {
+  const [q, setQ] = useState("");
+  const query = q.trim().toLowerCase();
+  const num = query.replace(/[^0-9.]/g, "");
+
+  // Default view is SMART: only transactions right around the expected price (within
+  // 25%, min $50, of the leg target) plus payer matches — so a supplier leg doesn't
+  // list every expense. Typing searches ALL unallocated txns by payer or amount.
+  const near = (t: UnallocatedTxn) =>
+    leg.target <= 0
+      ? true
+      : Math.abs(t.unallocated - leg.target) <= Math.max(leg.target * 0.25, 50) || matches(t, leg, flow);
+
+  const shown = (cands ?? []).filter((t) => {
+    if (!query) return near(t);
+    const payer = `${t.counterparty_name || ""} ${t.description || ""}`.toLowerCase();
+    return payer.includes(query) || (num.length > 0 && (t.unallocated.toFixed(2).includes(num) || String(t.unallocated).includes(num)));
+  });
+
   return (
     <div className="mt-2 border border-line rounded-lg overflow-hidden">
       {cands === null ? (
@@ -323,32 +341,49 @@ function Picker({ leg, cands, busy, flow, onPair }: {
           No unallocated {leg.direction === "in" ? "incoming" : "outgoing"} transactions to pair.
         </div>
       ) : (
-        <div className="max-h-64 overflow-y-auto divide-y divide-line-2">
-          {cands.map((t) => {
-            const isMatch = matches(t, leg, flow);
-            const payer = t.counterparty_name?.trim() || t.description?.trim() || "Bank transaction";
-            const clr = t.direction === "out" ? "text-danger-ink" : "text-success-ink";
-            const sign = t.direction === "out" ? "−" : "";
-            return (
-              <button
-                key={t.id}
-                type="button"
-                disabled={busy}
-                onClick={() => onPair(t, leg)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 disabled:opacity-50 transition-colors"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
-                    <span className="truncate">{payer}</span>
-                    {isMatch && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
-                  </div>
-                  <div className="text-[11px] text-muted">{fmtShortDate(t.posted_at)}</div>
-                </div>
-                <span className={`text-[12px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(t.unallocated)}</span>
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-line-2 bg-surface-2/50">
+            <Search size={13} className="text-muted flex-shrink-0" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder={leg.target > 0 ? `Near ${fmtAmount(leg.target)} — or search payee / amount` : "Search payee or amount"}
+              className="w-full bg-transparent text-[12px] text-ink placeholder:text-muted focus:outline-none"
+            />
+          </div>
+          {shown.length === 0 ? (
+            <div className="px-3 py-3 text-[12px] text-muted">
+              {query ? "No transactions match your search." : `No transactions near ${fmtAmount(leg.target)} — type to search all.`}
+            </div>
+          ) : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-line-2">
+              {shown.map((t) => {
+                const isMatch = matches(t, leg, flow);
+                const payer = t.counterparty_name?.trim() || t.description?.trim() || "Bank transaction";
+                const clr = t.direction === "out" ? "text-danger-ink" : "text-success-ink";
+                const sign = t.direction === "out" ? "−" : "";
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onPair(t, leg)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
+                        <span className="truncate">{payer}</span>
+                        {isMatch && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
+                      </div>
+                      <div className="text-[11px] text-muted">{fmtShortDate(t.posted_at)}</div>
+                    </div>
+                    <span className={`text-[12px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(t.unallocated)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

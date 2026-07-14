@@ -57,11 +57,15 @@ export default function DealFlowView() {
   const [search,       setSearch]       = useState("");
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [expandedDone, setExpandedDone] = useState<string | null>(null);
+  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      let [f, inv] = await Promise.all([api.listDealFlows(), api.listInvoices()]);
+      let [f, inv, reconList] = await Promise.all([
+        api.listDealFlows(), api.listInvoices(), api.reconciliationStatusAll().catch(() => []),
+      ]);
+      setRecon(Object.fromEntries(reconList.map((r) => [r.deal_flow_id, r])));
 
       // Deduplicate: keep only one flow per invoice_id (the most-progressed one).
       // This handles stale duplicate records that may exist in the DB.
@@ -263,8 +267,22 @@ export default function DealFlowView() {
                           className={`text-faint flex-shrink-0 transition-transform ${isExp ? "rotate-90" : ""}`}
                         />
                         <div className="flex-1 min-w-0">
-                          <div className="text-[13px] font-medium text-ink">
-                            {flow.client_name || "—"}
+                          <div className="text-[13px] font-medium text-ink flex items-center gap-2 min-w-0">
+                            <span className="truncate">{flow.client_name || "—"}</span>
+                            {recon[flow.id]?.fully_reconciled ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-success-ink flex-shrink-0">
+                                <CheckCircle2 size={11} /> Reconciled
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-warning-ink flex-shrink-0">
+                                <AlertTriangle size={10} />
+                                {!recon[flow.id]?.payment_received_paired && !recon[flow.id]?.supplier_paid_paired
+                                  ? "Needs pairing"
+                                  : !recon[flow.id]?.payment_received_paired
+                                    ? "Needs payment"
+                                    : "Needs supplier"}
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-muted mt-0.5 truncate">
                             {flow.invoice_number}

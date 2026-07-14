@@ -9877,6 +9877,38 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     }))
 }
 
+/// Reconciliation status for every completed deal at once — powers at-a-glance
+/// badges in the deal-flow / completed lists ("what still needs paired").
+#[tauri::command]
+pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT df.id, COALESCE(i.total,0), COALESCE(df.total_supplier_cost,0), COALESCE(df.gross_revenue,0),
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='buyer_payment'),0),
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'),0)
+         FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let id: String = r.get(0)?;
+        let invoice_total: f64 = r.get(1)?;
+        let supplier_cost: f64 = r.get(2)?;
+        let gross_revenue: f64 = r.get(3)?;
+        let buyer_paired: f64 = r.get(4)?;
+        let supplier_paired: f64 = r.get(5)?;
+        let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
+        let pr = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
+        let sp = if supplier_cost > 0.01 { supplier_paired >= supplier_cost - 0.5 } else { supplier_paired > 0.01 };
+        Ok(json!({
+            "deal_flow_id": id,
+            "payment_received_paired": pr,
+            "supplier_paid_paired": sp,
+            "fully_reconciled": pr && sp,
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// Bulk-remove bank transactions (and their allocations) by source, synced so the
 /// delete propagates to other devices/the server (a raw DB delete would resurrect
 /// via sync). scope: "statements" (everything NOT from the Plaid feed — pdf/ofx/

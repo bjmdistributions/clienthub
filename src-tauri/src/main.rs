@@ -713,6 +713,7 @@ fn main() {
             deal_allocations,
             unallocated_bank_txns,
             deal_reconciliation,
+            reconciliation_status_all,
             clear_bank_txns,
             get_money_config,
             set_money_config,
