@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, Sparkles, Plus,
-  Building2, RefreshCw, Plug,
+  Building2, RefreshCw, Plug, Wand2,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
+  Loan, TxnRule,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -35,7 +36,12 @@ const ROLES: { value: string; label: string }[] = [
 ];
 
 const roleLabel = (v: string) => ROLES.find((r) => r.value === v)?.label ?? v;
+const catLabel = (v: string) => CATEGORIES.find((c) => c.value === v)?.label ?? (v || "Uncategorized");
 const dealLabel = (d: DealFlow) => (d.name?.trim() || d.invoice_number || "Deal");
+const loanLabel = (l: Loan) => (l.name?.trim() || l.lender?.trim() || "Loan");
+// Loan tags live on the txn (counterparty_type "loan"); the backend derives the
+// category by direction — money-in is a loan drawdown, money-out a repayment.
+const loanTagLabel = (direction: string) => (direction === "in" ? "Loan received" : "Loan repayment");
 
 // Roles valid for a transaction's direction (must match the backend guard in
 // allocate_bank_txn — money-in can't be a supplier payment, etc.).
@@ -55,6 +61,9 @@ export default function FinancialsView() {
   const [txns, setTxns]       = useState<BankTxn[]>([]);
   const [summary, setSummary] = useState<BankTxnSummary | null>(null);
   const [deals, setDeals]     = useState<DealFlow[]>([]);
+  const [loans, setLoans]     = useState<Loan[]>([]);
+  const [rules, setRules]     = useState<TxnRule[]>([]);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [tab, setTab]         = useState<"overview" | "transactions" | "loans">("overview");
   const [aiBusy, setAiBusy]   = useState(false);
@@ -101,10 +110,13 @@ export default function FinancialsView() {
   const [acctFilter, setAcctFilter]   = useState("all");
   const [catFilter, setCatFilter]     = useState("all");
   const [statusFilter, setStatusFilter] = useState<
-    "all" | "unreviewed" | "unclassified" | "unallocated_in" | "unallocated_out"
+    "all" | "unclassified" | "unallocated_in" | "unallocated_out"
   >("all");
   const [fromDate, setFromDate]       = useState("");
   const [toDate, setToDate]           = useState("");
+
+  // Primary working mode: To-do (unbooked) hides rows once they're booked.
+  const [queue, setQueue]             = useState<"todo" | "booked">("todo");
 
   // Bulk selection + actions (clean a year fast — loop existing commands).
   const [selected, setSelected]         = useState<Set<string>>(new Set());
@@ -117,9 +129,13 @@ export default function FinancialsView() {
   const [openId, setOpenId]           = useState<string | null>(null);
   const [allocs, setAllocs]           = useState<BankAllocation[]>([]);
   const [allocLoading, setAllocLoading] = useState(false);
+  const [targetType, setTargetType]   = useState<"deal" | "loan" | "expense">("deal");
   const [dealQuery, setDealQuery]     = useState("");
   const [selectedDeal, setSelectedDeal] = useState<DealFlow | null>(null);
   const [dealListOpen, setDealListOpen] = useState(false);
+  const [loanQuery, setLoanQuery]     = useState("");
+  const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
+  const [loanListOpen, setLoanListOpen] = useState(false);
   const [amountStr, setAmountStr]     = useState("");
   const [role, setRole]               = useState("buyer_payment");
   const [note, setNote]               = useState("");
@@ -128,10 +144,10 @@ export default function FinancialsView() {
   useEffect(() => {
     (async () => {
       try {
-        const [t, s, d] = await Promise.all([
-          api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(),
+        const [t, s, d, ln, r] = await Promise.all([
+          api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
         ]);
-        setTxns(t); setSummary(s); setDeals(d);
+        setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
       } catch (e: any) { toast(String(e), "error"); }
       finally { setLoading(false); }
     })();
@@ -155,8 +171,9 @@ export default function FinancialsView() {
 
   // Reload txns + summary, and (optionally) the open row's allocations.
   const refreshAll = async (keepOpen = true) => {
-    const [t, s] = await Promise.all([api.listBankTxns(), api.bankTxnSummary()]);
-    setTxns(t); setSummary(s);
+    // Loan tags change outstanding, so refresh loans alongside txns (cheap).
+    const [t, s, ln] = await Promise.all([api.listBankTxns(), api.bankTxnSummary(), api.listLoans()]);
+    setTxns(t); setSummary(s); setLoans(ln);
     if (keepOpen && openId) {
       const a = await api.listBankAllocationsForTxn(openId);
       setAllocs(a);
@@ -285,17 +302,20 @@ export default function FinancialsView() {
     setPlaidSyncing(true);
     try {
       const r = await api.plaidSync();
-      if (r.imported === 0 && r.removed === 0 && r.preparing) {
+      const errored = r.results.filter((x) => x.status === "error");
+      const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
+      if (r.imported === 0 && r.removed === 0 && stillPreparing) {
         setPlaidPreparing(true);
         schedulePrepRetries(6);
         toast("Plaid is still preparing your transactions — this can take a minute.");
       } else {
-        setPlaidPreparing(false);
+        setPlaidPreparing(stillPreparing);
         toast(`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
         await refreshAll(false);
       }
-      if (r.skipped_env > 0) {
-        toast(`${r.skipped_env} bank${r.skipped_env === 1 ? "" : "s"} linked under a different environment — switch environment to sync ${r.skipped_env === 1 ? "it" : "them"}.`, "error");
+      // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
+      for (const x of errored) {
+        toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
       }
     } catch (e: any) { toast(String(e), "error"); }
     finally { setPlaidSyncing(false); }
@@ -319,7 +339,9 @@ export default function FinancialsView() {
   const toggleRow = (t: BankTxn) => {
     if (openId === t.id) { setOpenId(null); return; }
     setOpenId(t.id);
+    setTargetType("deal");
     setDealQuery(""); setSelectedDeal(null); setDealListOpen(false); setNote("");
+    setLoanQuery(""); setSelectedLoan(null); setLoanListOpen(false);
     setRole(t.direction === "out" ? "supplier_payment" : "buyer_payment");
     setAmountStr(String(t.unallocated));
     setAllocLoading(true);
@@ -467,7 +489,19 @@ export default function FinancialsView() {
   };
 
   const submitAlloc = async () => {
-    if (!openId || !selectedDeal) { toast("Pick a deal first", "error"); return; }
+    if (!openId) return;
+    if (targetType === "loan") {
+      if (!selectedLoan) { toast("Pick a loan first", "error"); return; }
+      setAllocBusy(true);
+      try {
+        await api.tagBankTxnToLoan(openId, selectedLoan.id);
+        toast("Tagged to loan");
+        await refreshAll(true);
+      } catch (e: any) { toast(String(e), "error"); }
+      finally { setAllocBusy(false); }
+      return;
+    }
+    if (!selectedDeal) { toast("Pick a deal first", "error"); return; }
     const amt = parseFloat(amountStr);
     if (!(amt > 0)) { toast("Enter an amount", "error"); return; }
     setAllocBusy(true);
@@ -478,6 +512,43 @@ export default function FinancialsView() {
       await refreshAll(true);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setAllocBusy(false); }
+  };
+
+  const untagLoan = async (bankTxnId: string) => {
+    setAllocBusy(true);
+    try {
+      await api.untagBankTxnLoan(bankTxnId);
+      toast("Loan tag removed");
+      await refreshAll(true);
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setAllocBusy(false); }
+  };
+
+  // Memorize a rule so future statement rows with the same counterparty auto-fill.
+  const createRule = async (
+    matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string,
+  ) => {
+    try {
+      await api.createTxnRule(matchCounterparty, category, tType, targetId, "");
+      toast("Rule saved");
+      setRules(await api.listTxnRules());
+    } catch (e: any) { toast(String(e), "error"); }
+  };
+
+  const deleteRule = async (id: string) => {
+    try {
+      await api.deleteTxnRule(id);
+      setRules(await api.listTxnRules());
+    } catch (e: any) { toast(String(e), "error"); }
+  };
+
+  const applyRules = async () => {
+    try {
+      const r = await api.applyTxnRules();
+      toast(`Applied to ${r.updated} transaction${r.updated === 1 ? "" : "s"}`);
+      await refreshAll(true);
+      setRules(await api.listTxnRules());
+    } catch (e: any) { toast(String(e), "error"); }
   };
 
   const removeAlloc = async (id: string) => {
@@ -529,6 +600,10 @@ export default function FinancialsView() {
       const r = t.direction === "out" ? "supplier_payment" : "buyer_payment";
       return api.allocateBankTxn(t.id, deal.id, t.unallocated, r, "");
     });
+  // Tag each selected txn to one loan; the backend derives received/repayment per
+  // direction, so a mixed selection books each side correctly.
+  const bulkTagLoan = (loan: Loan) =>
+    runBulk((t) => api.tagBankTxnToLoan(t.id, loan.id));
 
   // Suggest categories with AI. Suggestions only — does NOT mark reviewed. Loops the
   // batched command until the backlog is clear (or the model stops making progress).
@@ -579,10 +654,11 @@ export default function FinancialsView() {
   const filtered = useMemo(
     () =>
       txns.filter((t) => {
+        if (queue === "todo" && t.reviewed) return false;
+        if (queue === "booked" && !t.reviewed) return false;
         if (dirFilter !== "all" && t.direction !== dirFilter) return false;
         if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
         if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
-        if (statusFilter === "unreviewed" && t.reviewed) return false;
         if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
         if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
         if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
@@ -598,7 +674,7 @@ export default function FinancialsView() {
         }
         return true;
       }),
-    [txns, dirFilter, acctFilter, catFilter, statusFilter, fromDate, toDate, search],
+    [txns, queue, dirFilter, acctFilter, catFilter, statusFilter, fromDate, toDate, search],
   );
 
   // Distinct account ids present in the loaded transactions (for the filter).
@@ -614,7 +690,20 @@ export default function FinancialsView() {
       .slice(0, 8);
   }, [deals, dealQuery]);
 
+  const filteredLoans = useMemo(() => {
+    const q = loanQuery.toLowerCase();
+    return loans
+      .filter((l) => `${l.name || ""} ${l.lender || ""}`.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [loans, loanQuery]);
+
   const allocIndicator = (t: BankTxn) => {
+    if (t.counterparty_type === "loan")
+      return (
+        <span className="inline-flex items-center gap-1 text-ink-2">
+          <Landmark size={11} className="text-accent" /> {loanTagLabel(t.direction)}
+        </span>
+      );
     if (t.allocated <= 0.0001) return <span className="text-muted">—</span>;
     if (t.unallocated <= 0.0001)
       return <span className="inline-flex items-center gap-1 text-success-ink"><Link2 size={11} /> Linked</span>;
@@ -990,6 +1079,16 @@ export default function FinancialsView() {
         </div>
       )}
 
+      {/* Auto-tag rules */}
+      <RulesCard
+        rules={rules}
+        open={rulesOpen}
+        setOpen={setRulesOpen}
+        onApply={applyRules}
+        onDelete={deleteRule}
+        onCreate={(cp, cat) => createRule(cp, cat, "expense", "")}
+      />
+
       {/* Summary tiles */}
       {summary && (
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
@@ -1001,6 +1100,29 @@ export default function FinancialsView() {
           <Tile label="Needs a deal" value={String(summary.unallocated_in + summary.unallocated_out)} tone={summary.unallocated_in + summary.unallocated_out > 0 ? "warn" : undefined} />
         </div>
       )}
+
+      {/* To-do vs Booked — primary working mode; booked rows drop out of To-do */}
+      <div className="space-y-1.5">
+        <div className="flex gap-1">
+          {([["todo", "To-do"], ["booked", "Booked"]] as const).map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setQueue(v)}
+              className={`px-3.5 h-9 rounded-lg text-[13px] font-medium transition-colors ${
+                queue === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
+              }`}
+            >
+              {label}
+              {summary && (
+                <span className="tabular-nums"> ({v === "todo" ? summary.total - summary.reviewed : summary.reviewed})</span>
+              )}
+            </button>
+          ))}
+        </div>
+        {queue === "todo" && summary && summary.total - summary.reviewed > 0 && (
+          <p className="text-[11px] text-muted tabular-nums">{summary.total - summary.reviewed} left to review</p>
+        )}
+      </div>
 
       {/* Filters */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -1054,7 +1176,6 @@ export default function FinancialsView() {
           className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
         >
           <option value="all">All statuses</option>
-          <option value="unreviewed">Unreviewed</option>
           <option value="unclassified">Uncategorized</option>
           <option value="unallocated_in">Needs a deal (in)</option>
           <option value="unallocated_out">Needs a deal (out)</option>
@@ -1107,21 +1228,21 @@ export default function FinancialsView() {
             disabled={bulkActionBusy}
             className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
           >
-            Mark reviewed
+            Book
           </button>
           <button
             onClick={() => bulkSetReviewed(false)}
             disabled={bulkActionBusy}
             className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
           >
-            Unmark
+            Reopen
           </button>
           <button
             onClick={() => setBulkAllocOpen(true)}
             disabled={bulkActionBusy}
             className="h-8 px-2.5 rounded-md text-[12px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
           >
-            <Link2 size={13} /> Allocate to deal
+            <Link2 size={13} /> Tag to deal or loan
           </button>
           <button
             onClick={clearSelection}
@@ -1180,7 +1301,7 @@ export default function FinancialsView() {
                 <th className="font-medium px-3 py-2.5">Category</th>
                 <th className="font-medium px-3 py-2.5 text-right whitespace-nowrap">Amount</th>
                 <th className="font-medium px-3 py-2.5 whitespace-nowrap">Allocation</th>
-                <th className="font-medium px-3 py-2.5 text-center whitespace-nowrap">Done</th>
+                <th className="font-medium px-3 py-2.5 text-center whitespace-nowrap">Book</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line-2">
@@ -1223,15 +1344,21 @@ export default function FinancialsView() {
                       <span className="truncate block">{t.counterparty_name || "—"}</span>
                     </td>
                     <td className="px-3 py-2.5 align-top" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        value={t.category || ""}
-                        onChange={(e) => saveReview(t, { category: e.target.value })}
-                        className="h-8 px-1.5 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 max-w-[150px]"
-                      >
-                        {CATEGORIES.map((c) => (
-                          <option key={c.value || "none"} value={c.value}>{c.label}</option>
-                        ))}
-                      </select>
+                      {t.counterparty_type === "loan" ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-ink-2 bg-surface-2 border border-line-2 rounded px-1.5 py-1">
+                          <Landmark size={11} className="text-accent" /> {loanTagLabel(t.direction)}
+                        </span>
+                      ) : (
+                        <select
+                          value={t.category || ""}
+                          onChange={(e) => saveReview(t, { category: e.target.value })}
+                          className="h-8 px-1.5 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 max-w-[150px]"
+                        >
+                          {CATEGORIES.map((c) => (
+                            <option key={c.value || "none"} value={c.value}>{c.label}</option>
+                          ))}
+                        </select>
+                      )}
                     </td>
                     <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap align-top ${t.direction === "in" ? "text-success-ink" : "text-ink"}`}>
                       {t.direction === "in" ? "+" : ""}{fmtAmount(t.amount)}
@@ -1241,7 +1368,7 @@ export default function FinancialsView() {
                     <td className="px-3 py-2.5 text-center align-top" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => saveReview(t, { reviewed: !t.reviewed })}
-                        title={t.reviewed ? "Reviewed" : "Mark reviewed"}
+                        title={t.reviewed ? "Booked — click to reopen" : "Book it"}
                         className={`w-6 h-6 rounded-md inline-flex items-center justify-center border transition-colors ${
                           t.reviewed
                             ? "bg-success-bg border-success-ink/30 text-success-ink"
@@ -1260,6 +1387,8 @@ export default function FinancialsView() {
                           txn={t}
                           allocs={allocs}
                           loading={allocLoading}
+                          targetType={targetType}
+                          setTargetType={setTargetType}
                           filteredDeals={filteredDeals}
                           dealQuery={dealQuery}
                           setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); setDealListOpen(true); }}
@@ -1267,6 +1396,13 @@ export default function FinancialsView() {
                           setDealListOpen={setDealListOpen}
                           selectedDeal={selectedDeal}
                           onPickDeal={(d) => { setSelectedDeal(d); setDealQuery(dealLabel(d)); setDealListOpen(false); }}
+                          filteredLoans={filteredLoans}
+                          loanQuery={loanQuery}
+                          setLoanQuery={(v) => { setLoanQuery(v); setSelectedLoan(null); setLoanListOpen(true); }}
+                          loanListOpen={loanListOpen}
+                          setLoanListOpen={setLoanListOpen}
+                          selectedLoan={selectedLoan}
+                          onPickLoan={(l) => { setSelectedLoan(l); setLoanQuery(loanLabel(l)); setLoanListOpen(false); }}
                           amountStr={amountStr}
                           setAmountStr={setAmountStr}
                           role={role}
@@ -1276,6 +1412,8 @@ export default function FinancialsView() {
                           busy={allocBusy}
                           onSubmit={submitAlloc}
                           onRemove={removeAlloc}
+                          onUntagLoan={untagLoan}
+                          onCreateRule={createRule}
                           newDealBusy={newDealBusy}
                           onCreateDeal={createDealFromTxn}
                         />
@@ -1295,10 +1433,12 @@ export default function FinancialsView() {
       {bulkAllocOpen && (
         <BulkAllocateModal
           deals={deals}
+          loans={loans}
           count={selected.size}
           busy={bulkActionBusy}
           onClose={() => setBulkAllocOpen(false)}
-          onPick={async (d) => { setBulkAllocOpen(false); await bulkAllocate(d); }}
+          onPickDeal={async (d) => { setBulkAllocOpen(false); await bulkAllocate(d); }}
+          onPickLoan={async (l) => { setBulkAllocOpen(false); await bulkTagLoan(l); }}
         />
       )}
       </div>
@@ -1307,24 +1447,32 @@ export default function FinancialsView() {
   );
 }
 
-// Pick one deal, then allocate every selected transaction's remaining amount to it.
-// Role is auto-picked per transaction by direction; fully-allocated rows are skipped.
+// Pick one deal or loan, then tag every selected transaction to it. For deals the
+// remaining amount is allocated (role auto-picked by direction); for loans the whole
+// txn is tagged (received/repayment derived by direction).
 function BulkAllocateModal({
-  deals, count, busy, onClose, onPick,
+  deals, loans, count, busy, onClose, onPickDeal, onPickLoan,
 }: {
   deals: DealFlow[];
+  loans: Loan[];
   count: number;
   busy: boolean;
   onClose: () => void;
-  onPick: (d: DealFlow) => void;
+  onPickDeal: (d: DealFlow) => void;
+  onPickLoan: (l: Loan) => void;
 }) {
+  const [mode, setMode] = useState<"deal" | "loan">("deal");
   const [q, setQ] = useState("");
-  const list = useMemo(() => {
+  const dealList = useMemo(() => {
     const s = q.toLowerCase();
     return deals
       .filter((d) => `${d.name || ""} ${d.invoice_number || ""} ${d.client_name || ""}`.toLowerCase().includes(s))
       .slice(0, 30);
   }, [deals, q]);
+  const loanList = useMemo(() => {
+    const s = q.toLowerCase();
+    return loans.filter((l) => `${l.name || ""} ${l.lender || ""}`.toLowerCase().includes(s)).slice(0, 30);
+  }, [loans, q]);
 
   return (
     <div
@@ -1337,9 +1485,13 @@ function BulkAllocateModal({
       >
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
           <div>
-            <h2 className="text-[16px] font-semibold text-ink">Allocate {count} to a deal</h2>
+            <h2 className="text-[16px] font-semibold text-ink">
+              {mode === "deal" ? `Tag ${count} to a deal` : `Tag ${count} to a loan`}
+            </h2>
             <p className="text-[12px] text-muted mt-0.5">
-              Each remaining amount is tied to the deal you pick — receipts as buyer payments, payments as supplier payments.
+              {mode === "deal"
+                ? "Each remaining amount is tied to the deal you pick — receipts as buyer payments, payments as supplier payments."
+                : "Each transaction is tagged to the loan you pick — money in as loan received, money out as repayment."}
             </p>
           </div>
           <button
@@ -1349,29 +1501,60 @@ function BulkAllocateModal({
             <X size={16} />
           </button>
         </div>
-        <div className="px-5 py-3 border-b border-line">
+        <div className="px-5 py-3 border-b border-line space-y-3">
+          <div className="flex gap-1">
+            {([["deal", "Deal"], ["loan", "Loan"]] as const).map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => { setMode(v); setQ(""); }}
+                className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
+                  mode === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <input
             autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search a deal…"
+            placeholder={mode === "deal" ? "Search a deal…" : "Search a loan…"}
             className={inp}
           />
         </div>
         <div className="overflow-y-auto divide-y divide-line-2">
-          {list.length === 0 ? (
-            <div className="text-center py-10 text-[12px] text-muted">No deals match</div>
+          {mode === "deal" ? (
+            dealList.length === 0 ? (
+              <div className="text-center py-10 text-[12px] text-muted">No deals match</div>
+            ) : (
+              dealList.map((d) => (
+                <button
+                  key={d.id}
+                  onClick={() => onPickDeal(d)}
+                  disabled={busy}
+                  className="w-full text-left px-5 py-2.5 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                >
+                  <div className="text-[13px] font-medium text-ink truncate">{dealLabel(d)}</div>
+                  <div className="text-[11px] text-muted truncate">
+                    {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
+                  </div>
+                </button>
+              ))
+            )
+          ) : loanList.length === 0 ? (
+            <div className="text-center py-10 text-[12px] text-muted">No loans match</div>
           ) : (
-            list.map((d) => (
+            loanList.map((l) => (
               <button
-                key={d.id}
-                onClick={() => onPick(d)}
+                key={l.id}
+                onClick={() => onPickLoan(l)}
                 disabled={busy}
                 className="w-full text-left px-5 py-2.5 hover:bg-surface-2 disabled:opacity-50 transition-colors"
               >
-                <div className="text-[13px] font-medium text-ink truncate">{dealLabel(d)}</div>
-                <div className="text-[11px] text-muted truncate">
-                  {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
+                <div className="text-[13px] font-medium text-ink truncate">{loanLabel(l)}</div>
+                <div className="text-[11px] text-muted truncate tabular-nums">
+                  {l.lender || "—"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
                 </div>
               </button>
             ))
@@ -1396,6 +1579,8 @@ function AllocationPanel(props: {
   txn: BankTxn;
   allocs: BankAllocation[];
   loading: boolean;
+  targetType: "deal" | "loan" | "expense";
+  setTargetType: (v: "deal" | "loan" | "expense") => void;
   filteredDeals: DealFlow[];
   dealQuery: string;
   setDealQuery: (v: string) => void;
@@ -1403,6 +1588,13 @@ function AllocationPanel(props: {
   setDealListOpen: (v: boolean) => void;
   selectedDeal: DealFlow | null;
   onPickDeal: (d: DealFlow) => void;
+  filteredLoans: Loan[];
+  loanQuery: string;
+  setLoanQuery: (v: string) => void;
+  loanListOpen: boolean;
+  setLoanListOpen: (v: boolean) => void;
+  selectedLoan: Loan | null;
+  onPickLoan: (l: Loan) => void;
   amountStr: string;
   setAmountStr: (v: string) => void;
   role: string;
@@ -1412,12 +1604,15 @@ function AllocationPanel(props: {
   busy: boolean;
   onSubmit: () => void;
   onRemove: (id: string) => void;
+  onUntagLoan: (bankTxnId: string) => void;
+  onCreateRule: (matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string) => void;
   newDealBusy: boolean;
   onCreateDeal: (t: BankTxn, name: string, buyer: string, sale: number, note: string) => Promise<boolean>;
 }) {
   const {
-    txn, allocs, loading, filteredDeals, dealQuery, setDealQuery, dealListOpen, setDealListOpen,
-    selectedDeal, onPickDeal, amountStr, setAmountStr, role, setRole, note, setNote, busy, onSubmit, onRemove,
+    txn, allocs, loading, targetType, setTargetType, filteredDeals, dealQuery, setDealQuery, dealListOpen, setDealListOpen,
+    selectedDeal, onPickDeal, filteredLoans, loanQuery, setLoanQuery, loanListOpen, setLoanListOpen, selectedLoan, onPickLoan,
+    amountStr, setAmountStr, role, setRole, note, setNote, busy, onSubmit, onRemove, onUntagLoan, onCreateRule,
     newDealBusy, onCreateDeal,
   } = props;
 
@@ -1447,6 +1642,36 @@ function AllocationPanel(props: {
     if (await onCreateDeal(txn, name, buyer, sale, ndNote.trim())) setShowNewDeal(false);
   };
 
+  const isLoanTagged = txn.counterparty_type === "loan";
+  const counterparty = txn.counterparty_name?.trim() || "";
+  // Remember future rows with this counterparty: a loan tag memorizes the loan
+  // (recurring lender repayments), otherwise it memorizes the category only — a
+  // one-off deal id shouldn't auto-apply to unrelated future transactions.
+  const alwaysTag = () => {
+    if (!counterparty) return;
+    if (isLoanTagged && txn.counterparty_id) onCreateRule(counterparty, "", "loan", txn.counterparty_id);
+    else if (targetType === "loan" && selectedLoan) onCreateRule(counterparty, "", "loan", selectedLoan.id);
+    else onCreateRule(counterparty, txn.category || "", "expense", "");
+  };
+
+  const renderRuleButton = () =>
+    counterparty ? (
+      <button
+        onClick={alwaysTag}
+        className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+      >
+        <Wand2 size={13} /> Always tag "{counterparty}" like this
+      </button>
+    ) : (
+      <button
+        disabled
+        title="Set a counterparty first"
+        className="flex items-center gap-1.5 h-9 px-3 border border-line text-faint rounded-lg text-[12px] font-medium opacity-60 cursor-not-allowed"
+      >
+        <Wand2 size={13} /> Always tag like this
+      </button>
+    );
+
   return (
     <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1462,103 +1687,201 @@ function AllocationPanel(props: {
         </div>
       </div>
 
-      {/* Existing allocations */}
+      {/* Existing allocations / loan tag */}
       {loading ? (
         <div className="flex items-center gap-2 text-[12px] text-muted"><Loader2 size={13} className="animate-spin" /> Loading…</div>
-      ) : allocs.length > 0 ? (
-        <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
-          {allocs.map((a) => (
-            <div key={a.id} className="flex items-center gap-3 px-3 py-2">
-              <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-medium text-ink truncate">
-                  {a.deal_name?.trim() || a.invoice_number || "Deal"}
-                  {a.client_name && <span className="text-muted font-normal"> · {a.client_name}</span>}
-                </div>
-                <div className="text-[11px] text-muted">
-                  {roleLabel(a.role)}{a.invoice_number ? ` · ${a.invoice_number}` : ""}{a.note ? ` · ${a.note}` : ""}
-                </div>
-              </div>
-              <div className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">{fmtAmount(a.amount)}</div>
-              <button
-                onClick={() => onRemove(a.id)}
-                title="Remove allocation"
-                className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
       ) : (
-        <div className="text-[12px] text-muted">Not tied to any deal yet.</div>
-      )}
-
-      {/* Add allocation form */}
-      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start">
-        <div className="sm:col-span-5 relative min-w-0">
-          <input
-            value={dealQuery}
-            onChange={(e) => setDealQuery(e.target.value)}
-            onFocus={() => setDealListOpen(true)}
-            placeholder="Search a deal…"
-            className={inp}
-          />
-          {dealListOpen && filteredDeals.length > 0 && (
-            <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto bg-surface border border-line rounded-lg shadow-lg">
-              {filteredDeals.map((d) => (
+        <>
+          {isLoanTagged && (
+            <div className="border border-line-2 rounded-lg overflow-hidden">
+              <div className="flex items-center gap-3 px-3 py-2">
+                <Landmark size={14} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] font-medium text-ink truncate">{txn.counterparty_name || "Loan"}</div>
+                  <div className="text-[11px] text-muted">{loanTagLabel(txn.direction)}</div>
+                </div>
                 <button
-                  key={d.id}
-                  onClick={() => onPickDeal(d)}
-                  className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors"
+                  onClick={() => onUntagLoan(txn.id)}
+                  disabled={busy}
+                  title="Remove loan tag"
+                  className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg disabled:opacity-50 transition-colors"
                 >
-                  <div className="text-[12px] font-medium text-ink truncate">{dealLabel(d)}</div>
-                  <div className="text-[11px] text-muted truncate">
-                    {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
-                  </div>
+                  <Trash2 size={13} />
                 </button>
+              </div>
+            </div>
+          )}
+          {allocs.length > 0 && (
+            <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
+              {allocs.map((a) => (
+                <div key={a.id} className="flex items-center gap-3 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12px] font-medium text-ink truncate">
+                      {a.deal_name?.trim() || a.invoice_number || "Deal"}
+                      {a.client_name && <span className="text-muted font-normal"> · {a.client_name}</span>}
+                    </div>
+                    <div className="text-[11px] text-muted">
+                      {roleLabel(a.role)}{a.invoice_number ? ` · ${a.invoice_number}` : ""}{a.note ? ` · ${a.note}` : ""}
+                    </div>
+                  </div>
+                  <div className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">{fmtAmount(a.amount)}</div>
+                  <button
+                    onClick={() => onRemove(a.id)}
+                    title="Remove allocation"
+                    className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               ))}
             </div>
           )}
+          {!isLoanTagged && allocs.length === 0 && (
+            <div className="text-[12px] text-muted">Not tied to any deal or loan yet.</div>
+          )}
+        </>
+      )}
+
+      {/* Where this transaction belongs */}
+      <div className="flex gap-1 flex-wrap">
+        {([["deal", "Deal"], ["loan", "Loan"], ["expense", "Expense / income"]] as const).map(([v, label]) => (
+          <button
+            key={v}
+            onClick={() => setTargetType(v)}
+            className={`px-3 h-9 rounded-lg text-[12px] font-medium transition-colors ${
+              targetType === v ? "bg-accent text-on-accent" : "bg-surface border border-line text-muted hover:border-line-3"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Deal target */}
+      {targetType === "deal" && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start">
+            <div className="sm:col-span-5 relative min-w-0">
+              <input
+                value={dealQuery}
+                onChange={(e) => setDealQuery(e.target.value)}
+                onFocus={() => setDealListOpen(true)}
+                placeholder="Search a deal…"
+                className={inp}
+              />
+              {dealListOpen && filteredDeals.length > 0 && (
+                <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto bg-surface border border-line rounded-lg shadow-lg">
+                  {filteredDeals.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => onPickDeal(d)}
+                      className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors"
+                    >
+                      <div className="text-[12px] font-medium text-ink truncate">{dealLabel(d)}</div>
+                      <div className="text-[11px] text-muted truncate">
+                        {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <input
+              type="number"
+              step="0.01"
+              value={amountStr}
+              onChange={(e) => setAmountStr(e.target.value)}
+              placeholder="Amount"
+              className={`${inp} sm:col-span-2 tabular-nums`}
+            />
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="sm:col-span-3 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+            >
+              {rolesFor(txn.direction).map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={onSubmit}
+              disabled={busy || !selectedDeal}
+              className="sm:col-span-2 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Allocate
+            </button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Note (optional)"
+              className={`${inp} flex-1 min-w-[180px]`}
+            />
+            <button
+              onClick={() => (showNewDeal ? setShowNewDeal(false) : openNewDeal())}
+              className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+            >
+              <Plus size={13} /> New deal from this transaction
+            </button>
+            {renderRuleButton()}
+          </div>
+        </>
+      )}
+
+      {/* Loan target — tags the whole transaction (received / repayment by direction) */}
+      {targetType === "loan" && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start">
+            <div className="sm:col-span-7 relative min-w-0">
+              <input
+                value={loanQuery}
+                onChange={(e) => setLoanQuery(e.target.value)}
+                onFocus={() => setLoanListOpen(true)}
+                placeholder="Search a loan…"
+                className={inp}
+              />
+              {loanListOpen && filteredLoans.length > 0 && (
+                <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto bg-surface border border-line rounded-lg shadow-lg">
+                  {filteredLoans.map((l) => (
+                    <button
+                      key={l.id}
+                      onClick={() => onPickLoan(l)}
+                      className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors"
+                    >
+                      <div className="text-[12px] font-medium text-ink truncate">{loanLabel(l)}</div>
+                      <div className="text-[11px] text-muted truncate tabular-nums">
+                        {l.lender || "—"}{l.outstanding ? ` · ${fmtAmount(l.outstanding)} outstanding` : ""}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="sm:col-span-3 h-9 flex items-center px-3 border border-line-2 rounded-lg text-[12px] text-muted bg-surface-2/40 truncate">
+              Records as {loanTagLabel(txn.direction).toLowerCase()}
+            </div>
+            <button
+              onClick={onSubmit}
+              disabled={busy || !selectedLoan}
+              className="sm:col-span-2 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Landmark size={14} />} Tag to loan
+            </button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">{renderRuleButton()}</div>
+        </>
+      )}
+
+      {/* Expense / income — no target, just the row's category */}
+      {targetType === "expense" && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-[12px] text-muted flex-1 min-w-[180px]">
+            Tracked by category only — set the category on the row above; it isn't tied to a deal or loan.
+          </p>
+          {renderRuleButton()}
         </div>
-        <input
-          type="number"
-          step="0.01"
-          value={amountStr}
-          onChange={(e) => setAmountStr(e.target.value)}
-          placeholder="Amount"
-          className={`${inp} sm:col-span-2 tabular-nums`}
-        />
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          className="sm:col-span-3 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
-        >
-          {rolesFor(txn.direction).map((r) => (
-            <option key={r.value} value={r.value}>{r.label}</option>
-          ))}
-        </select>
-        <button
-          onClick={onSubmit}
-          disabled={busy || !selectedDeal}
-          className="sm:col-span-2 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
-        >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Allocate
-        </button>
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        <input
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Note (optional)"
-          className={`${inp} flex-1 min-w-[180px]`}
-        />
-        <button
-          onClick={() => (showNewDeal ? setShowNewDeal(false) : openNewDeal())}
-          className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
-        >
-          <Plus size={13} /> New deal from this transaction
-        </button>
-      </div>
+      )}
 
       {/* Create a deal retroactively from this transaction */}
       {showNewDeal && (
@@ -1599,6 +1922,108 @@ function AllocationPanel(props: {
               className="flex items-center gap-1.5 h-9 px-4 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
             >
               {newDealBusy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create deal
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Memorized auto-tag rules — collapsible management home next to the queue they act on.
+function RulesCard({
+  rules, open, setOpen, onApply, onDelete, onCreate,
+}: {
+  rules: TxnRule[];
+  open: boolean;
+  setOpen: (v: boolean) => void;
+  onApply: () => void;
+  onDelete: (id: string) => void;
+  onCreate: (matchCounterparty: string, category: string) => void;
+}) {
+  const [cp, setCp]   = useState("");
+  const [cat, setCat] = useState("");
+
+  const add = () => {
+    if (!cp.trim()) { toast("Enter a counterparty to match", "error"); return; }
+    onCreate(cp.trim(), cat);
+    setCp(""); setCat("");
+  };
+
+  return (
+    <div className="bg-surface border border-line rounded-xl">
+      <div className="flex items-center gap-2 px-4 py-3">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-2 min-w-0 flex-1 text-left"
+        >
+          <ChevronRight size={14} className={`text-faint transition-transform duration-150 ${open ? "rotate-90" : ""}`} />
+          <Wand2 size={15} className="text-accent flex-shrink-0" strokeWidth={1.8} />
+          <span className="text-[13px] font-semibold text-ink">Auto-tag rules</span>
+          <span className="text-[12px] text-muted tabular-nums">({rules.length})</span>
+        </button>
+        <button
+          onClick={onApply}
+          className="flex items-center gap-1.5 h-8 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+        >
+          <Wand2 size={13} /> Apply rules now
+        </button>
+      </div>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-3 border-t border-line-2 pt-3">
+          <p className="text-[11px] text-muted leading-relaxed">
+            When a rule's counterparty matches an imported transaction, its category is pre-filled automatically. Matched
+            rows stay in To-do until you book them.
+          </p>
+
+          {rules.length > 0 && (
+            <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
+              {rules.map((r) => (
+                <div key={r.id} className="flex items-center gap-3 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12px] text-ink truncate">
+                      <span className="font-medium">"{r.match_counterparty}"</span>
+                      <span className="text-muted"> → </span>
+                      {r.target_type === "loan"
+                        ? <span className="inline-flex items-center gap-1 text-ink-2"><Landmark size={11} className="text-accent" /> {r.loan_name || "Loan"}</span>
+                        : <span className="text-ink-2">{catLabel(r.category)}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => onDelete(r.id)}
+                    title="Delete rule"
+                    className="flex-shrink-0 w-6 h-6 rounded-md inline-flex items-center justify-center text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add rule (edit = delete then re-add) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              value={cp}
+              onChange={(e) => setCp(e.target.value)}
+              placeholder="Counterparty to match…"
+              className={`${inp} flex-1 min-w-[160px]`}
+            />
+            <select
+              value={cat}
+              onChange={(e) => setCat(e.target.value)}
+              className="h-9 px-2.5 rounded-lg text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+            >
+              {CATEGORIES.map((c) => (
+                <option key={c.value || "none"} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={add}
+              className="flex items-center gap-1.5 h-9 px-3 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[12px] font-medium transition-colors"
+            >
+              <Plus size={13} /> Add rule
             </button>
           </div>
         </div>

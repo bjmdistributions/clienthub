@@ -1392,6 +1392,13 @@ export interface PlaidItem {
   account_count: number;
   created_at: string;
 }
+export interface PlaidSyncResult {
+  institution: string;
+  env: string;
+  imported: number;
+  status: string; // "ok" | "preparing" | "error"
+  error: string;
+}
 export interface FinancialsOverview {
   bank_balance: number;
   credit_card_balance: number;
@@ -1420,6 +1427,27 @@ export interface Loan {
   paid_at: string;
   note: string;
   outstanding: number;
+}
+export interface LoanLedgerEntry {
+  posted_at: string;
+  description: string;
+  amount: number;
+  kind: "received" | "repayment";
+}
+export interface LoanLedger {
+  entries: LoanLedgerEntry[];
+  received_total: number;
+  repaid_total: number;
+}
+export interface TxnRule {
+  id: string;
+  match_counterparty: string;
+  category: string;
+  target_type: "deal" | "loan" | "expense";
+  target_id: string;
+  role: string;
+  loan_name: string;
+  created_at: string;
 }
 
 export interface SignupRule {
@@ -1993,7 +2021,7 @@ export const api = {
     invoke<void>("plaid_exchange", { publicToken, institution }),
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
-  plaidSync: () => invoke<{ imported: number; removed: number; skipped_env: number; preparing: boolean }>("plaid_sync"),
+  plaidSync: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
@@ -2016,6 +2044,17 @@ export const api = {
   updateLoan: (id: string, name: string, lender: string, principal: number, setAside: number, status: string, note: string) =>
     invoke<void>("update_loan", { id, name, lender, principal, setAside, status, note }),
   deleteLoan: (id: string) => invoke<void>("delete_loan", { id }),
+  tagBankTxnToLoan: (bankTxnId: string, loanId: string) =>
+    invoke<void>("tag_bank_txn_to_loan", { bankTxnId, loanId }),
+  untagBankTxnLoan: (bankTxnId: string) => invoke<void>("untag_bank_txn_loan", { bankTxnId }),
+  loanLedger: (loanId: string) => invoke<LoanLedger>("loan_ledger", { loanId }),
+  applyLoanRepaymentsToSetAside: (loanId: string) =>
+    invoke<number>("apply_loan_repayments_to_set_aside", { loanId }),
+  listTxnRules: () => invoke<TxnRule[]>("list_txn_rules"),
+  createTxnRule: (matchCounterparty: string, category: string, targetType: "deal" | "loan" | "expense", targetId: string, role: string) =>
+    invoke<string>("create_txn_rule", { matchCounterparty, category, targetType, targetId, role }),
+  deleteTxnRule: (id: string) => invoke<void>("delete_txn_rule", { id }),
+  applyTxnRules: () => invoke<{ updated: number }>("apply_txn_rules"),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),

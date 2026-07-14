@@ -20,8 +20,12 @@ pub fn get_env() -> String {
         .unwrap_or_else(|| "production".into())
 }
 
-fn base_url() -> String {
-    match get_env().as_str() {
+fn base_url() -> String { base_url_for(&get_env()) }
+
+/// Base URL for a specific environment — used so each linked item syncs against
+/// the environment it was created under, regardless of the current UI setting.
+fn base_url_for(env: &str) -> String {
+    match env {
         "sandbox" => "https://sandbox.plaid.com".into(),
         _ => "https://production.plaid.com".into(),
     }
@@ -60,13 +64,19 @@ fn http() -> Result<reqwest::Client> {
 /// POST to a Plaid endpoint with client_id + secret injected. Returns
 /// (is_success, body) so callers that need to inspect Plaid's structured
 /// `error_code` (e.g. PRODUCT_NOT_READY) can, instead of only a message string.
-async fn post_raw(path: &str, mut body: Value) -> Result<(bool, Value)> {
+async fn post_raw(path: &str, body: Value) -> Result<(bool, Value)> {
+    post_raw_env(path, body, &get_env()).await
+}
+
+/// Like post_raw, but hits a specific environment's base URL (the current env's
+/// secret is still used — callers sync each item under its own env).
+async fn post_raw_env(path: &str, mut body: Value, env: &str) -> Result<(bool, Value)> {
     let (cid, sec) = get_keys().ok_or_else(|| anyhow!(
         "Plaid isn't set up. Add your Plaid client_id and secret in Settings first."
     ))?;
     body["client_id"] = json!(cid);
     body["secret"] = json!(sec);
-    let resp = http()?.post(format!("{}{}", base_url(), path)).json(&body).send().await?;
+    let resp = http()?.post(format!("{}{}", base_url_for(env), path)).json(&body).send().await?;
     let status = resp.status();
     let v: Value = resp.json().await.context("Plaid returned invalid JSON")?;
     Ok((status.is_success(), v))
@@ -152,10 +162,10 @@ pub enum SyncOutcome {
 /// One page of the transactions sync. On a freshly-linked item Plaid returns
 /// HTTP 400 PRODUCT_NOT_READY while it extracts history (a 2-year pull can take
 /// up to ~90s); that maps to SyncOutcome::NotReady so the caller can wait+retry.
-pub async fn transactions_sync(access_token: &str, cursor: &str) -> Result<SyncOutcome> {
+pub async fn transactions_sync(access_token: &str, cursor: &str, env: &str) -> Result<SyncOutcome> {
     let mut body = json!({ "access_token": access_token, "count": 500 });
     if !cursor.is_empty() { body["cursor"] = json!(cursor); }
-    let (ok, v) = post_raw("/transactions/sync", body).await?;
+    let (ok, v) = post_raw_env("/transactions/sync", body, env).await?;
     if ok { return Ok(SyncOutcome::Page(v)); }
     let code = v.get("error_code").and_then(|c| c.as_str()).unwrap_or("");
     if code == "PRODUCT_NOT_READY" { return Ok(SyncOutcome::NotReady); }

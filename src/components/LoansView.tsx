@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark } from "lucide-react";
-import { api, Loan } from "../lib/api";
+import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2 } from "lucide-react";
+import { api, Loan, LoanLedger } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -32,8 +32,38 @@ export default function LoansView() {
   const [asideId,  setAsideId]  = useState<string | null>(null);
   const [asideBuf, setAsideBuf] = useState("");
 
-  const load = async () => setLoans(await api.listLoans());
+  // Feed activity (transactions tagged to each loan): ledger cache + expansion.
+  const [ledgers,  setLedgers]  = useState<Record<string, LoanLedger>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+
+  const load = async () => {
+    const ls = await api.listLoans();
+    setLoans(ls);
+    // Preload ledgers so each card's feed summary is accurate before expanding.
+    const pairs = await Promise.all(
+      ls.map(async (l) => [l.id, await api.loanLedger(l.id).catch(() => null)] as const),
+    );
+    setLedgers(Object.fromEntries(pairs.filter(([, v]) => v) as [string, LoanLedger][]));
+  };
   useEffect(() => { load().catch(console.error); }, []);
+
+  const toggleExpand = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
+  const applyToSetAside = async (l: Loan) => {
+    setApplyingId(l.id);
+    try {
+      await api.applyLoanRepaymentsToSetAside(l.id);
+      await load();
+    } finally {
+      setApplyingId(null);
+    }
+  };
 
   const totalOutstanding = useMemo(
     () => loans.filter((l) => l.status === "open").reduce((s, l) => s + l.outstanding, 0),
@@ -236,6 +266,9 @@ export default function LoansView() {
         <div className="space-y-3">
           {loans.map((l) => {
             const paid = l.status === "paid";
+            const led = ledgers[l.id];
+            const feedOpen = expanded.has(l.id);
+            const canApply = !paid && led && led.repaid_total > l.set_aside + 0.0001;
             return (
               <div
                 key={l.id}
@@ -273,6 +306,47 @@ export default function LoansView() {
                 </div>
 
                 {l.note && <div className="text-[11.5px] text-muted mb-3 whitespace-pre-wrap">{l.note}</div>}
+
+                {/* Feed activity — transactions tagged to this loan */}
+                {led && led.entries.length > 0 && (
+                  <div className="border-t border-line-2 pt-3 mb-3">
+                    <button
+                      onClick={() => toggleExpand(l.id)}
+                      className="flex items-center gap-1.5 text-[11.5px] text-muted hover:text-ink-2 transition-colors"
+                    >
+                      <ChevronRight
+                        size={12}
+                        className={`text-faint transition-transform duration-150 ${feedOpen ? "rotate-90" : ""}`}
+                      />
+                      <span className="tabular-nums">{led.entries.length}</span> tagged ·{" "}
+                      <span className="tabular-nums">{fmtAmount(led.repaid_total)}</span> repaid via feed
+                    </button>
+                    {feedOpen && (
+                      <div className="mt-2 border border-line-2 rounded-lg overflow-x-auto">
+                        <table className="w-full text-[12px]">
+                          <thead>
+                            <tr className="text-left text-muted border-b border-line-2">
+                              <th className="font-medium px-3 py-2 whitespace-nowrap">Date</th>
+                              <th className="font-medium px-3 py-2">Description</th>
+                              <th className="font-medium px-3 py-2 text-right whitespace-nowrap">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-line-2">
+                            {led.entries.map((e, i) => (
+                              <tr key={i}>
+                                <td className="px-3 py-2 tabular-nums text-muted whitespace-nowrap">{(e.posted_at || "").slice(0, 10)}</td>
+                                <td className="px-3 py-2 text-ink-2 max-w-0 truncate"><span className="truncate block">{e.description}</span></td>
+                                <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${e.kind === "received" ? "text-success-ink" : "text-ink"}`}>
+                                  {e.kind === "received" ? "+" : "-"}{fmtAmount(e.amount)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Set-aside inline editor */}
                 {asideId === l.id ? (
@@ -315,6 +389,16 @@ export default function LoansView() {
                         >
                           Set aside
                         </button>
+                        {canApply && (
+                          <button
+                            onClick={() => applyToSetAside(l)}
+                            disabled={applyingId === l.id}
+                            className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 hover:bg-surface-2 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors"
+                          >
+                            {applyingId === l.id ? <Loader2 size={13} className="animate-spin" /> : null}
+                            Apply {fmtAmount(led!.repaid_total)} repaid to set aside
+                          </button>
+                        )}
                         <button
                           onClick={() => markPaid(l)}
                           className="flex items-center gap-1.5 h-9 px-3 border border-line text-success-ink hover:bg-success-bg rounded-lg text-[12px] font-medium transition-colors"

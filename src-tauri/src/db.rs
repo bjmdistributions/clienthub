@@ -1409,4 +1409,23 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE plaid_items ADD COLUMN env TEXT NOT NULL DEFAULT 'production';
         "#,
     ),
+    (
+        64,
+        // Memorized auto-tag rules for the bank feed — DEVICE-LOCAL ONLY (never
+        // synced): a rule matches an incoming transaction by counterparty (exact) or
+        // description (contains) and pre-fills its category / loan target. Only the
+        // resulting bank_txn edits sync; the rules themselves are per-device, so this
+        // is deliberately NOT added to sync ALLOWED_TABLES.
+        r#"
+        CREATE TABLE IF NOT EXISTS txn_rule (
+            id TEXT PRIMARY KEY,
+            match_counterparty TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            target_type TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        "#,
+    ),
 ];

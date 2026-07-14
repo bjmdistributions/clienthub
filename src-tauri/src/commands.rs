@@ -9328,7 +9328,9 @@ pub async fn bank_preview(path: String) -> Result<crate::bank_import::BankPrevie
 /// Import a Chase statement into the immutable bank_txn ledger (deduped, synced).
 #[tauri::command]
 pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank_import::BankImportSummary, String> {
-    crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())
+    let summary = crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())?;
+    let _ = apply_txn_rules_impl(); // best-effort pre-tag of newly imported rows
+    Ok(summary)
 }
 
 /// Replace an implausible year (e.g. an AI-hallucinated 2051) with the statement's
@@ -9404,6 +9406,7 @@ pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, S
     let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let rows = ai_txns_to_rows(&txns, year);
     let summary = crate::bank_import::persist_rows(&rows, &account_id, "ai").map_err(|e| e.to_string())?;
+    let _ = apply_txn_rules_impl(); // best-effort pre-tag of newly imported rows
     Ok(json!({
         "imported": summary.imported,
         "skipped": summary.skipped,
@@ -9775,13 +9778,13 @@ pub async fn plaid_remove_item(id: String) -> Result<(), String> {
 /// ledger (dedup on Plaid's transaction_id; cursor-based incremental sync).
 #[tauri::command]
 pub async fn plaid_sync() -> Result<Value, String> {
-    let items: Vec<(String, String, String, String, String)> = {
+    let items: Vec<(String, String, String, String, String, String)> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT id, access_token, cursor, accounts_json, env FROM plaid_items")
+        let mut stmt = conn.prepare("SELECT id, access_token, cursor, accounts_json, env, institution FROM plaid_items")
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
+            r.get::<_, String>(4)?, r.get::<_, String>(5)?,
         ))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -9789,20 +9792,21 @@ pub async fn plaid_sync() -> Result<Value, String> {
         return Err("No banks connected yet — click Connect a bank first.".into());
     }
     let now = Utc::now().to_rfc3339();
-    let current_env = crate::plaid::get_env();
     let mut imported = 0i64;
     let mut removed = 0i64;
-    let mut skipped_env = 0i64; // banks linked under a different environment (wrong secret)
     let mut preparing = false;  // at least one item still extracting after we waited
+    let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
     // Shared budget (seconds) for waiting on freshly-linked items whose initial
     // extraction is still running — bounds total command time regardless of count.
-    let mut wait_budget = 90u64;
+    let mut wait_budget = 150u64;
 
-    for (item_pk, access, mut cursor, accounts_json, item_env) in items {
-        // An access_token is only valid against the env (and secret) it was linked
-        // under. We only hold the current env's secret, so skip mismatched items
-        // rather than erroring the whole sync with an invalid-credentials failure.
-        if item_env != current_env { skipped_env += 1; continue; }
+    for (item_pk, access, mut cursor, accounts_json, item_env, institution) in items {
+        // Sync each item under the environment it was LINKED in (not the current UI
+        // setting) so a bank still pulls even if the app is left on the other env.
+        // A per-item error is recorded and reported, never failing the whole sync.
+        let mut item_imported = 0i64;
+        let mut status = "ok";
+        let mut error_msg = String::new();
         let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
         let label_of = |aid: &str| -> String {
             for a in &accts {
@@ -9816,12 +9820,16 @@ pub async fn plaid_sync() -> Result<Value, String> {
         };
         let mut pages = 0;
         loop {
-            let page = match crate::plaid::transactions_sync(&access, &cursor).await.map_err(|e| e.to_string())? {
+            let outcome = match crate::plaid::transactions_sync(&access, &cursor, &item_env).await {
+                Ok(o) => o,
+                Err(e) => { status = "error"; error_msg = e.to_string(); break; }
+            };
+            let page = match outcome {
                 crate::plaid::SyncOutcome::Page(p) => p,
                 crate::plaid::SyncOutcome::NotReady => {
                     // Extraction still running — back off and retry within the budget.
-                    if wait_budget == 0 { preparing = true; break; }
-                    let delay = wait_budget.min(if wait_budget > 74 { 4 } else { 6 });
+                    if wait_budget == 0 { status = "preparing"; preparing = true; break; }
+                    let delay = wait_budget.min(6);
                     tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                     wait_budget -= delay;
                     continue;
@@ -9834,8 +9842,8 @@ pub async fn plaid_sync() -> Result<Value, String> {
             let next_cursor_now = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("");
             let has_more_now = page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
             if cursor.is_empty() && next_cursor_now.is_empty() && added_empty && removed_empty && !has_more_now {
-                if wait_budget == 0 { preparing = true; break; }
-                let delay = wait_budget.min(if wait_budget > 74 { 4 } else { 6 });
+                if wait_budget == 0 { status = "preparing"; preparing = true; break; }
+                let delay = wait_budget.min(6);
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                 wait_budget -= delay;
                 continue;
@@ -9881,7 +9889,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
                         rusqlite::params![id, label, date, amount, direction, desc, desc, cat, cp, now],
                     );
-                    imported += 1;
+                    item_imported += 1;
                 }
             }
             if let Some(rem) = page.get("removed").and_then(|v| v.as_array()) {
@@ -9897,8 +9905,19 @@ pub async fn plaid_sync() -> Result<Value, String> {
             let _ = conn.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
             if !has_more_now { break; }
         }
+        imported += item_imported;
+        results.push(json!({
+            "institution": institution,
+            "env": item_env,
+            "imported": item_imported,
+            "status": status,
+            "error": error_msg,
+        }));
     }
-    Ok(json!({ "imported": imported, "removed": removed, "skipped_env": skipped_env, "preparing": preparing }))
+    // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
+    // failure must not fail the sync.
+    let _ = apply_txn_rules_impl();
+    Ok(json!({ "imported": imported, "removed": removed, "preparing": preparing, "results": results }))
 }
 
 // ── Financial engine: money config, Free Cash, loans, AI categorize ─────────
@@ -9906,6 +9925,34 @@ pub async fn plaid_sync() -> Result<Value, String> {
 fn read_setting_f64(conn: &rusqlite::Connection, key: &str, default: f64) -> f64 {
     conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
         .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(default)
+}
+
+/// Live balances from connected Plaid banks, captured in each item's accounts_json
+/// at link time: depository accounts (checking/savings) sum to the bank balance,
+/// credit accounts to the card owed. Returns (bank, card, any_bank_connected).
+fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
+    let mut bank = 0.0;
+    let mut card = 0.0;
+    let mut any = false;
+    let mut stmt = match conn.prepare("SELECT accounts_json FROM plaid_items") {
+        Ok(s) => s, Err(_) => return (0.0, 0.0, false),
+    };
+    let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+        Ok(r) => r, Err(_) => return (0.0, 0.0, false),
+    };
+    for aj in rows.filter_map(|r| r.ok()) {
+        any = true;
+        let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
+        for a in &accts {
+            let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            match a.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                "credit" => card += cur.abs(),
+                "depository" => bank += cur,
+                _ => {}
+            }
+        }
+    }
+    (bank, card, any)
 }
 
 #[tauri::command]
@@ -9937,8 +9984,11 @@ pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_
 pub async fn financials_overview() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let round2 = |x: f64| (x * 100.0).round() / 100.0;
-    let bank_balance = read_setting_f64(&conn, "money_bank_balance", 0.0);
-    let credit_card_balance = read_setting_f64(&conn, "money_credit_card_balance", 0.0).max(0.0);
+    // Prefer live balances from connected banks (Plaid); fall back to the manual
+    // figures only when no bank is linked. Makes Free Cash real automatically.
+    let (plaid_bank, plaid_card, has_plaid) = plaid_balances(&conn);
+    let bank_balance = if has_plaid { plaid_bank } else { read_setting_f64(&conn, "money_bank_balance", 0.0) };
+    let credit_card_balance = if has_plaid { plaid_card.max(0.0) } else { read_setting_f64(&conn, "money_credit_card_balance", 0.0).max(0.0) };
     let cash_floor = read_setting_f64(&conn, "money_cash_floor", 0.0);
 
     // Supplier payables: unpaid supplier cost on deals where the buyer HAS paid but
@@ -10167,6 +10217,246 @@ pub async fn ai_categorize_bank_txns() -> Result<Value, String> {
             [], |r| r.get(0)).unwrap_or(0)
     };
     Ok(json!({ "updated": updated, "remaining": remaining }))
+}
+
+// ── Loan tagging + memorized auto-tag rules ─────────────────────────────────
+
+/// Tag a whole bank transaction to a loan: sets counterparty_type='loan' + the
+/// loan id/name on the txn itself (no synced-schema change) and derives the
+/// category from the txn's direction — money-in books as loan_received, money-out
+/// as loan_repayment. Mirrors set_bank_txn_review's sync (record_upsert + local
+/// execute). Leaves `reviewed` alone, like allocate_bank_txn.
+#[tauri::command]
+pub async fn tag_bank_txn_to_loan(bank_txn_id: String, loan_id: String) -> Result<(), String> {
+    let (direction, loan_name): (String, String) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let dir: String = conn.query_row("SELECT direction FROM bank_txn WHERE id=?1", [&bank_txn_id], |r| r.get(0))
+            .map_err(|_| "Transaction not found".to_string())?;
+        let name: String = conn.query_row("SELECT name FROM loan WHERE id=?1", [&loan_id], |r| r.get(0))
+            .map_err(|_| "Loan not found".to_string())?;
+        (dir, name)
+    };
+    let category = if direction == "in" { "loan_received" } else { "loan_repayment" };
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("category".into(), json!(category));
+    cols.insert("counterparty_type".into(), json!("loan"));
+    cols.insert("counterparty_id".into(), json!(loan_id));
+    cols.insert("counterparty_name".into(), json!(loan_name));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("bank_txn", &bank_txn_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, counterparty_name=?3, updated_at=?4 WHERE id=?5",
+        rusqlite::params![category, loan_id, loan_name, now, bank_txn_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Remove a loan tag from a transaction — clears the loan counterparty and resets
+/// its category so it returns to the review queue unclassified.
+#[tauri::command]
+pub async fn untag_bank_txn_loan(bank_txn_id: String) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("category".into(), json!(""));
+    cols.insert("counterparty_type".into(), json!(""));
+    cols.insert("counterparty_id".into(), json!(""));
+    cols.insert("counterparty_name".into(), json!(""));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("bank_txn", &bank_txn_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bank_txn SET category='', counterparty_type='', counterparty_id='', counterparty_name='', updated_at=?1 WHERE id=?2",
+        rusqlite::params![now, bank_txn_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The transactions tagged to one loan, plus received / repaid totals (kind is
+/// derived from each txn's direction — money-in received, money-out repaid).
+#[tauri::command]
+pub async fn loan_ledger(loan_id: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT posted_at, description, amount, direction FROM bank_txn
+         WHERE counterparty_type='loan' AND counterparty_id=?1
+         ORDER BY posted_at DESC, created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, f64, String)> = stmt.query_map([&loan_id], |r| Ok((
+        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?,
+    ))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let mut received = 0.0;
+    let mut repaid = 0.0;
+    let entries: Vec<Value> = rows.iter().map(|(posted, desc, amt, dir)| {
+        let kind = if dir == "in" { received += amt; "received" } else { repaid += amt; "repayment" };
+        json!({ "posted_at": posted, "description": desc, "amount": amt, "kind": kind })
+    }).collect();
+    Ok(json!({
+        "entries": entries,
+        "received_total": (received * 100.0).round() / 100.0,
+        "repaid_total": (repaid * 100.0).round() / 100.0,
+    }))
+}
+
+/// Bridge the loan's feed-tagged repayments into its `set_aside` field (which
+/// drives outstanding = principal − set_aside). SETS set_aside to the total repaid
+/// via the feed (not additive) so the manual editor and the feed stay consistent.
+/// Returns the new set_aside.
+#[tauri::command]
+pub async fn apply_loan_repayments_to_set_aside(loan_id: String) -> Result<f64, String> {
+    let repaid: f64 = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE counterparty_type='loan' AND counterparty_id=?1 AND direction='out'",
+            [&loan_id], |r| r.get(0)).unwrap_or(0.0)
+    };
+    let set_aside = (repaid * 100.0).round() / 100.0;
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("set_aside".into(), json!(set_aside));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("loan", &loan_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE loan SET set_aside=?1, updated_at=?2 WHERE id=?3",
+        rusqlite::params![set_aside, now, loan_id]).map_err(|e| e.to_string())?;
+    Ok(set_aside)
+}
+
+/// Create a memorized auto-tag rule (device-local, not synced). `match_counterparty`
+/// is matched at apply time against a txn's counterparty (exact) or description
+/// (contains), case-insensitive. target_type is "deal" | "loan" | "expense"; for a
+/// loan rule target_id is the loan id (deal rules memorize category + counterparty
+/// only, so target_id is empty — a one-off deal id shouldn't auto-apply forward).
+#[tauri::command]
+pub async fn create_txn_rule(
+    match_counterparty: String, category: String, target_type: String, target_id: String, role: String,
+) -> Result<String, String> {
+    if match_counterparty.trim().is_empty() {
+        return Err("A rule needs a counterparty to match on".into());
+    }
+    let id = format!("txnrule_{}", uuid::Uuid::new_v4().simple());
+    let now = Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO txn_rule (id, match_counterparty, category, target_type, target_id, role, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![id, match_counterparty, category, target_type, target_id, role, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// List memorized auto-tag rules, resolving the loan name for loan-target rules.
+#[tauri::command]
+pub async fn list_txn_rules() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.match_counterparty, r.category, r.target_type, r.target_id, r.role, r.created_at,
+                COALESCE((SELECT name FROM loan WHERE id=r.target_id),'')
+         FROM txn_rule r ORDER BY r.created_at",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?,
+        "match_counterparty": r.get::<_, String>(1)?,
+        "category": r.get::<_, String>(2)?,
+        "target_type": r.get::<_, String>(3)?,
+        "target_id": r.get::<_, String>(4)?,
+        "role": r.get::<_, String>(5)?,
+        "created_at": r.get::<_, String>(6)?,
+        "loan_name": r.get::<_, String>(7)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Delete a memorized auto-tag rule (device-local).
+#[tauri::command]
+pub async fn delete_txn_rule(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM txn_rule WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Apply memorized rules to un-reviewed, un-categorized transactions — first
+/// matching rule wins. Pre-fills category (and, for loan-target rules, the loan
+/// tag with a direction-derived loan_received/loan_repayment category) but LEAVES
+/// reviewed=0 so the row stays in the review queue. The resulting bank_txn edits
+/// are synced; the rules themselves are device-local. Returns the count updated.
+fn apply_txn_rules_impl() -> Result<i64, String> {
+    let rules: Vec<(String, String, String, String)> = {
+        // (match_counterparty, category, target_type, target_id)
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT match_counterparty, category, target_type, target_id FROM txn_rule ORDER BY created_at",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    if rules.is_empty() { return Ok(0); }
+    let candidates: Vec<(String, String, String, String)> = {
+        // (id, counterparty_name, description, direction)
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, counterparty_name, description, direction FROM bank_txn WHERE reviewed=0 AND COALESCE(category,'')=''",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+        ))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let now = Utc::now().to_rfc3339();
+    let mut updated = 0i64;
+    for (id, cp, desc, direction) in candidates {
+        let cp_l = cp.to_lowercase();
+        let desc_l = desc.to_lowercase();
+        let rule = rules.iter().find(|(m, _, _, _)| {
+            let m = m.trim().to_lowercase();
+            !m.is_empty() && (cp_l == m || desc_l.contains(&m))
+        });
+        let (_, rule_cat, target_type, target_id) = match rule { Some(r) => r, None => continue };
+        let is_loan = target_type == "loan" && !target_id.is_empty();
+        // Loan rules derive the category from direction so a mixed set books each
+        // side correctly; other rules use the memorized category verbatim.
+        let (category, loan_name) = if is_loan {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let name: String = conn.query_row("SELECT name FROM loan WHERE id=?1", [target_id], |r| r.get(0)).unwrap_or_default();
+            let cat = if direction == "in" { "loan_received" } else { "loan_repayment" };
+            (cat.to_string(), name)
+        } else {
+            (rule_cat.clone(), String::new())
+        };
+        let mut cols = Map::new();
+        cols.insert("category".into(), json!(category));
+        if is_loan {
+            cols.insert("counterparty_type".into(), json!("loan"));
+            cols.insert("counterparty_id".into(), json!(target_id));
+            cols.insert("counterparty_name".into(), json!(loan_name));
+        }
+        cols.insert("updated_at".into(), json!(now));
+        if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let res = if is_loan {
+            conn.execute(
+                "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, counterparty_name=?3, updated_at=?4 WHERE id=?5",
+                rusqlite::params![category, target_id, loan_name, now, id],
+            )
+        } else {
+            conn.execute(
+                "UPDATE bank_txn SET category=?1, updated_at=?2 WHERE id=?3",
+                rusqlite::params![category, now, id],
+            )
+        };
+        if res.unwrap_or(0) > 0 { updated += 1; }
+    }
+    Ok(updated)
+}
+
+/// Manually apply memorized auto-tag rules now. Returns { updated }.
+#[tauri::command]
+pub async fn apply_txn_rules() -> Result<Value, String> {
+    let n = apply_txn_rules_impl()?;
+    Ok(json!({ "updated": n }))
 }
 
 // ============================================================
