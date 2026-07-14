@@ -37,7 +37,51 @@ const ROLES: { value: string; label: string }[] = [
 
 const roleLabel = (v: string) => ROLES.find((r) => r.value === v)?.label ?? v;
 const catLabel = (v: string) => CATEGORIES.find((c) => c.value === v)?.label ?? (v || "Uncategorized");
-const dealLabel = (d: DealFlow) => (d.name?.trim() || d.invoice_number || "Deal");
+// Identify a deal by its BUYER first — an invoice number alone is meaningless when
+// scanning for the right deal to tie a payment to.
+const dealLabel = (d: DealFlow) =>
+  d.client_name?.trim() || d.name?.trim() || (d.invoice_number ? `Invoice #${d.invoice_number}` : "Untitled deal");
+
+const fmtShortDate = (s?: string | null) => {
+  if (!s) return "";
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+};
+
+// Does this deal plausibly match a bank transaction — same buyer name, or same
+// amount as the invoice? Drives the "match" badge + surfacing the right deal.
+const dealMatchesTxn = (d: DealFlow, txn: { counterparty_name?: string | null; amount: number }) => {
+  const cp = (txn.counterparty_name || "").trim().toLowerCase();
+  const byName = cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp);
+  const byAmount = !!txn.amount && !!d.invoice_total && Math.abs(d.invoice_total - txn.amount) < 0.5;
+  return byName || byAmount;
+};
+
+// A rich, scannable deal row: buyer · date · amount · completed/open — used by both
+// the allocate picker and the bulk-tag modal so they stay identical.
+function DealRowContent({ d, match }: { d: DealFlow; match?: boolean }) {
+  const invLabel = d.invoice_number ? `Invoice #${d.invoice_number}` : "";
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-[12px] font-medium text-ink truncate flex items-center gap-1.5">
+          <span className="truncate">{dealLabel(d)}</span>
+          {match && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
+        </div>
+        <div className="text-[11px] text-muted truncate">
+          {d.completed_at ? fmtShortDate(d.completed_at) : "In progress"}
+          {invLabel && dealLabel(d) !== invLabel ? ` · #${d.invoice_number}` : ""}
+        </div>
+      </div>
+      <div className="text-right flex-shrink-0">
+        <div className="text-[12px] tabular-nums text-ink-2">{d.invoice_total ? fmtAmount(d.invoice_total) : "—"}</div>
+        <div className={`text-[10px] ${d.stage === "complete" ? "text-success-ink" : "text-muted"}`}>
+          {d.stage === "complete" ? "Completed" : "Open"}
+        </div>
+      </div>
+    </div>
+  );
+}
 const loanLabel = (l: Loan) => (l.name?.trim() || l.lender?.trim() || "Loan");
 // Loan tags live on the txn (counterparty_type "loan"); the backend derives the
 // category by direction — money-in is a loan drawdown, money-out a repayment.
@@ -317,6 +361,26 @@ export default function FinancialsView() {
       for (const x of errored) {
         toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
       }
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setPlaidSyncing(false); }
+  };
+
+  const clearAndRepull = async () => {
+    if (!confirm(
+      "Clear ALL bank transactions (including any tags and deal/loan allocations) and re-pull fresh from your currently connected banks?\n\nUse this after removing a wrong account. This can't be undone."
+    )) return;
+    setPlaidSyncing(true);
+    try {
+      const c = await api.clearBankTxns("all");
+      const r = await api.plaidResyncAll();
+      const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
+      setPlaidPreparing(stillPreparing);
+      if (stillPreparing) schedulePrepRetries(6);
+      toast(`Cleared ${c.deleted} old, pulled ${r.imported} fresh transaction${r.imported === 1 ? "" : "s"}`);
+      for (const x of r.results.filter((x) => x.status === "error")) {
+        toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
+      }
+      await refreshAll(false);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setPlaidSyncing(false); }
   };
@@ -684,11 +748,25 @@ export default function FinancialsView() {
   );
 
   const filteredDeals = useMemo(() => {
-    const q = dealQuery.toLowerCase();
+    const q = dealQuery.trim().toLowerCase();
+    const ot = openId ? txns.find((t) => t.id === openId) : null;
+    const cp = (ot?.counterparty_name || "").trim().toLowerCase();
+    const amt = ot?.amount || 0;
     return deals
-      .filter((d) => `${d.name || ""} ${d.invoice_number || ""} ${d.client_name || ""}`.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [deals, dealQuery]);
+      .filter((d) => !q || `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(q))
+      .map((d) => {
+        // Rank deals that match the open transaction (same buyer / same amount) to
+        // the top so the right deal is one glance away.
+        let score = 0;
+        if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
+        if (amt && d.invoice_total && Math.abs(d.invoice_total - amt) < 0.5) score += 60;
+        const when = Date.parse(d.completed_at || d.created_at || "") || 0;
+        return { d, score, when };
+      })
+      .sort((a, b) => b.score - a.score || b.when - a.when)
+      .slice(0, 20)
+      .map((x) => x.d);
+  }, [deals, dealQuery, openId, txns]);
 
   const filteredLoans = useMemo(() => {
     const q = loanQuery.toLowerCase();
@@ -911,6 +989,14 @@ export default function FinancialsView() {
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
                     Re-pull all
+                  </button>
+                  <button
+                    onClick={clearAndRepull}
+                    disabled={plaidSyncing}
+                    title="Delete every bank transaction (and its tags/allocations) and re-pull fresh — use after removing a wrong account."
+                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
+                  >
+                    <Trash2 size={14} /> Clear all & re-pull
                   </button>
                 </>
               )}
@@ -1476,8 +1562,10 @@ function BulkAllocateModal({
   const dealList = useMemo(() => {
     const s = q.toLowerCase();
     return deals
-      .filter((d) => `${d.name || ""} ${d.invoice_number || ""} ${d.client_name || ""}`.toLowerCase().includes(s))
-      .slice(0, 30);
+      .filter((d) => `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(s))
+      .sort((a, b) =>
+        (Date.parse(b.completed_at || b.created_at || "") || 0) - (Date.parse(a.completed_at || a.created_at || "") || 0))
+      .slice(0, 40);
   }, [deals, q]);
   const loanList = useMemo(() => {
     const s = q.toLowerCase();
@@ -1545,10 +1633,7 @@ function BulkAllocateModal({
                   disabled={busy}
                   className="w-full text-left px-5 py-2.5 hover:bg-surface-2 disabled:opacity-50 transition-colors"
                 >
-                  <div className="text-[13px] font-medium text-ink truncate">{dealLabel(d)}</div>
-                  <div className="text-[11px] text-muted truncate">
-                    {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
-                  </div>
+                  <DealRowContent d={d} />
                 </button>
               ))
             )
@@ -1779,20 +1864,21 @@ function AllocationPanel(props: {
                 placeholder="Search a deal…"
                 className={inp}
               />
-              {dealListOpen && filteredDeals.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto bg-surface border border-line rounded-lg shadow-lg">
-                  {filteredDeals.map((d) => (
-                    <button
-                      key={d.id}
-                      onClick={() => onPickDeal(d)}
-                      className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors"
-                    >
-                      <div className="text-[12px] font-medium text-ink truncate">{dealLabel(d)}</div>
-                      <div className="text-[11px] text-muted truncate">
-                        {d.client_name || "—"}{d.invoice_total ? ` · ${fmtAmount(d.invoice_total)}` : ""}
-                      </div>
-                    </button>
-                  ))}
+              {dealListOpen && (
+                <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto bg-surface border border-line rounded-lg shadow-lg">
+                  {filteredDeals.length > 0 ? (
+                    filteredDeals.map((d) => (
+                      <button
+                        key={d.id}
+                        onClick={() => onPickDeal(d)}
+                        className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors border-b border-line/40 last:border-0"
+                      >
+                        <DealRowContent d={d} match={dealMatchesTxn(d, txn)} />
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-3 py-3 text-[11px] text-muted">No deals match{dealQuery ? ` "${dealQuery}"` : " yet"}.</div>
+                  )}
                 </div>
               )}
             </div>
