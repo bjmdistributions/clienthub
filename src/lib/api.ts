@@ -2095,6 +2095,7 @@ export const api = {
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
   plaidSync: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
   plaidResyncAll: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
+  plaidRefreshSync: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_refresh_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
@@ -2114,6 +2115,8 @@ export const api = {
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>
     invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean }[]>("reconciliation_status_all"),
+  refundStatusAll: () =>
+    invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
   setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
     invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),

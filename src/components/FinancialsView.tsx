@@ -407,10 +407,15 @@ export default function FinancialsView() {
     setPlaidConnecting(false);
   };
 
-  const syncPlaid = async (full = false) => {
+  // "sync" reads Plaid's cached copy; "full" resets the cursor and re-pulls;
+  // "refresh" first FORCES the bank to hand Plaid its very latest activity (today's
+  // wires/spend) before syncing — the only path that surfaces same-day money.
+  const syncPlaid = async (mode: "sync" | "full" | "refresh" = "sync") => {
     setPlaidSyncing(true);
     try {
-      const r = full ? await api.plaidResyncAll() : await api.plaidSync();
+      const r = mode === "full" ? await api.plaidResyncAll()
+              : mode === "refresh" ? await api.plaidRefreshSync()
+              : await api.plaidSync();
       const errored = r.results.filter((x) => x.status === "error");
       const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
       if (r.imported === 0 && r.removed === 0 && stillPreparing) {
@@ -419,7 +424,12 @@ export default function FinancialsView() {
         toast("Plaid is still preparing your transactions — this can take a minute.");
       } else {
         setPlaidPreparing(stillPreparing);
-        toast(`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
+        if (mode === "refresh" && r.imported === 0 && r.removed === 0) {
+          toast("Refreshed from bank — nothing new yet. Same-day wires can take a few hours to post; try again shortly.");
+        } else {
+          const lead = mode === "refresh" ? "Refreshed — " : "";
+          toast(`${lead}Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
+        }
         await refreshAll(false);
       }
       // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
@@ -787,23 +797,32 @@ export default function FinancialsView() {
 
   // Shared filters — everything except direction + search. Reused by the combined
   // list and both split panes so all three stay consistent.
-  const passesBase = useCallback((t: BankTxn) => {
-    if (queue === "todo" && t.reviewed) return false;
-    if (queue === "booked" && !t.reviewed) return false;
+  // `bypass` = a search term is active: an exact-amount / payee lookup should span
+  // the WHOLE ledger, not just the To-do queue and the current-year window —
+  // otherwise a booked or prior-year transfer is silently hidden even when the
+  // amount matches exactly. Account / category / status stay applied (those are
+  // deliberate user choices, not defaults).
+  const passesBase = useCallback((t: BankTxn, bypass = false) => {
+    if (!bypass) {
+      if (queue === "todo" && t.reviewed) return false;
+      if (queue === "booked" && !t.reviewed) return false;
+    }
     if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
     if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
     if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
     if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
     if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
-    const d = (t.posted_at || "").slice(0, 10);
-    if (fromDate && d < fromDate) return false;
-    if (toDate && d > toDate) return false;
+    if (!bypass) {
+      const d = (t.posted_at || "").slice(0, 10);
+      if (fromDate && d < fromDate) return false;
+      if (toDate && d > toDate) return false;
+    }
     return true;
   }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate]);
 
   const filtered = useMemo(
     () => txns.filter((t) =>
-      passesBase(t) &&
+      passesBase(t, !!search.trim()) &&
       (dirFilter === "all" || t.direction === dirFilter) &&
       matchesQuery(t, search)),
     [txns, passesBase, dirFilter, search],
@@ -811,11 +830,11 @@ export default function FinancialsView() {
 
   // Split-view panes: forced direction + independent search per side.
   const filteredIn = useMemo(
-    () => txns.filter((t) => t.direction === "in" && passesBase(t) && matchesQuery(t, searchIn)),
+    () => txns.filter((t) => t.direction === "in" && passesBase(t, !!searchIn.trim()) && matchesQuery(t, searchIn)),
     [txns, passesBase, searchIn],
   );
   const filteredOut = useMemo(
-    () => txns.filter((t) => t.direction === "out" && passesBase(t) && matchesQuery(t, searchOut)),
+    () => txns.filter((t) => t.direction === "out" && passesBase(t, !!searchOut.trim()) && matchesQuery(t, searchOut)),
     [txns, passesBase, searchOut],
   );
 
@@ -1207,11 +1226,12 @@ export default function FinancialsView() {
               <div className="ml-auto flex items-center gap-2">
                 {!bankFeedOpen && (
                   <button
-                    onClick={() => syncPlaid(false)}
+                    onClick={() => syncPlaid("refresh")}
                     disabled={plaidSyncing}
+                    title="Ask your bank for today's latest activity, then sync."
                     className="flex items-center gap-1.5 h-8 px-2.5 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
-                    {plaidSyncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Sync now
+                    {plaidSyncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Refresh
                   </button>
                 )}
                 <button
@@ -1330,14 +1350,23 @@ export default function FinancialsView() {
               {plaidItems.length > 0 && (
                 <>
                   <button
-                    onClick={() => syncPlaid(false)}
+                    onClick={() => syncPlaid("refresh")}
                     disabled={plaidSyncing}
+                    title="Ask your bank for the very latest activity — today's wires and spending — then sync. Use this when something you just did isn't showing yet."
+                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  >
+                    {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />} Refresh from bank
+                  </button>
+                  <button
+                    onClick={() => syncPlaid()}
+                    disabled={plaidSyncing}
+                    title="Pull the latest transactions Plaid has already fetched."
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
                     {plaidSyncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync now
                   </button>
                   <button
-                    onClick={() => syncPlaid(true)}
+                    onClick={() => syncPlaid("full")}
                     disabled={plaidSyncing}
                     title="Reset each bank's sync position and re-pull all transactions from the start — use if transactions are missing."
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"

@@ -69,6 +69,7 @@ const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:ou
 
 export default function InvoicesView() {
   const [invoices, setInvoices]         = useState<Invoice[]>([]);
+  const [refundMap, setRefundMap]       = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
   const [clients, setClients]           = useState<Client[]>([]);
   const [showForm, setShowForm]         = useState(false);
   const [editing, setEditing]           = useState<Invoice | null>(null);
@@ -95,12 +96,13 @@ export default function InvoicesView() {
   const [flowMap, setFlowMap] = useState<Record<string, { stage: string; cost: number }>>({});
 
   const load = async () => {
-    const [inv, cli, flows] = await Promise.all([api.listInvoices(), api.listClients(), api.listDealFlows().catch(() => [])]);
+    const [inv, cli, flows, refundList] = await Promise.all([api.listInvoices(), api.listClients(), api.listDealFlows().catch(() => []), api.refundStatusAll().catch(() => [])]);
     setInvoices(inv);
     setClients(cli);
     const fm: Record<string, { stage: string; cost: number }> = {};
     for (const f of flows) fm[f.invoice_id] = { stage: f.stage, cost: f.total_supplier_cost ?? 0 };
     setFlowMap(fm);
+    setRefundMap(Object.fromEntries(refundList.map((r) => [r.deal_flow_id, r])));
   };
   useEffect(() => { load(); }, []);
 
@@ -372,6 +374,12 @@ export default function InvoicesView() {
                       </span>
                       {/* Deal flow progress dots — a completed invoice always shows all stages filled. */}
                       <FlowDots stage={inv.is_complete ? "complete" : inv.deal_flow_stage} />
+                      {inv.deal_flow_id && refundMap[inv.deal_flow_id] && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-danger-ink ml-1.5">
+                          <RotateCcw size={10} />
+                          {refundMap[inv.deal_flow_id].remaining > 0 ? `Refund · ${fmtAmount(refundMap[inv.deal_flow_id].remaining)}` : "Refunded"}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>

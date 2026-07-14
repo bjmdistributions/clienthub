@@ -60,14 +60,18 @@ export default function DealFlowView() {
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [expandedDone, setExpandedDone] = useState<string | null>(null);
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean }>>({});
+  // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
+  const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      let [f, inv, reconList] = await Promise.all([
+      let [f, inv, reconList, refundList] = await Promise.all([
         api.listDealFlows(), api.listInvoices(), api.reconciliationStatusAll().catch(() => []),
+        api.refundStatusAll().catch(() => []),
       ]);
       setRecon(Object.fromEntries(reconList.map((r) => [r.deal_flow_id, r])));
+      setRefundMap(Object.fromEntries(refundList.map((r) => [r.deal_flow_id, r])));
 
       // Deduplicate: keep only one flow per invoice_id (the most-progressed one).
       // This handles stale duplicate records that may exist in the DB.
@@ -285,6 +289,12 @@ export default function DealFlowView() {
                                     : "Needs supplier"}
                               </span>
                             )}
+                            {refundMap[flow.id] && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-danger-ink flex-shrink-0">
+                                <RotateCcw size={10} />
+                                {refundMap[flow.id].remaining > 0 ? `Refund · ${fmtAmount(refundMap[flow.id].remaining)}` : "Refunded"}
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-muted mt-0.5 truncate">
                             {flow.invoice_number}
@@ -341,7 +351,7 @@ export default function DealFlowView() {
               key={flow.id}
               flow={flow}
               onReload={load}
-
+              refund={refundMap[flow.id]}
               zebra={i % 2 === 1}
             />
           ))}
@@ -373,8 +383,8 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 }
 
 function DealFlowCard({
-  flow, onReload, zebra,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean }) {
+  flow, onReload, zebra, refund,
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number } }) {
   const currentSi = si(flow.stage);
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
@@ -483,6 +493,14 @@ function DealFlowCard({
           {flow.stage !== "invoiced" && (
             <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
               {NODE_LABELS[flow.stage as Stage]}
+            </span>
+          )}
+          {/* Refund mode reads loud alongside the stage — the stage still shows so
+              you never lose where the deal actually is. */}
+          {refund && (
+            <span className="text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-danger-bg text-danger-ink inline-flex items-center gap-1 flex-shrink-0">
+              <RotateCcw size={11} />
+              {refund.remaining > 0 ? `Refund mode · ${fmtAmount(refund.remaining)} left` : "Refunded"}
             </span>
           )}
           <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
@@ -617,9 +635,9 @@ function DealFlowCard({
             {si(flow.stage) >= si("payment_received") && (
               <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
             )}
-            {si(flow.stage) >= si("payment_received") && (
-              <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} /></div>
-            )}
+            {/* Refund is available regardless of status — a deal can be refunded
+                whether or not payment ever cleared. */}
+            <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} /></div>
           </div>
         </>
       )}

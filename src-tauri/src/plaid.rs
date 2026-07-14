@@ -176,6 +176,16 @@ pub async fn transactions_sync(access_token: &str, cursor: &str, env: &str) -> R
     Err(anyhow!("Plaid: {}", msg))
 }
 
+/// Force Plaid to pull the freshest data from the bank NOW. `/transactions/sync`
+/// only returns what Plaid has already fetched on its own cadence (~1–4x/day), so
+/// same-day wires / spend aren't visible until this forces a re-pull. Best-effort:
+/// a non-2xx (rate-limit, product not enabled) is swallowed so one bank can't fail
+/// the batch — the follow-up sync backfills either way.
+pub async fn transactions_refresh(access_token: &str, env: &str) -> Result<()> {
+    let _ = post_raw_env("/transactions/refresh", json!({ "access_token": access_token }), env).await;
+    Ok(())
+}
+
 /// Best-effort: tell Plaid to forget an item when the user disconnects a bank.
 pub async fn remove_item(access_token: &str) -> Result<()> {
     let _ = post("/item/remove", json!({ "access_token": access_token })).await;

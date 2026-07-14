@@ -53,8 +53,10 @@ function TxnPicker({ txns, onPick, onClose }: {
       </div>
       <div className="max-h-56 overflow-y-auto">
         {filtered.length === 0 ? (
-          <div className="px-3 py-4 text-[12px] text-muted text-center">
-            {txns.length === 0 ? "No unlinked transactions in the bank feed." : "No matching transactions."}
+          <div className="px-3 py-4 text-[12px] text-muted text-center leading-relaxed">
+            {txns.length === 0
+              ? "No unlinked transactions in the bank feed."
+              : "No match. Transfers between your own accounts aren't listed here — find those in Financials, or add a custom line."}
           </div>
         ) : filtered.map((t) => (
           <button

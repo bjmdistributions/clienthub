@@ -9986,6 +9986,34 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Refund status for every deal with refund activity — powers the "refund mode"
+/// pill + numbers on deal-flow / invoice rows, at ANY stage. A deal is in refund
+/// mode when refund_owed > 0 OR it has one or more refund payments recorded.
+#[tauri::command]
+pub async fn refund_status_all() -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT df.id, COALESCE(df.refund_owed,0),
+                COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)
+         FROM deal_flows df
+         WHERE COALESCE(df.archived,0)=0
+           AND (COALESCE(df.refund_owed,0) > 0.01
+                OR EXISTS (SELECT 1 FROM refunds r WHERE r.deal_flow_id=df.id))",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let id: String = r.get(0)?;
+        let owed: f64 = r.get(1)?;
+        let refunded: f64 = r.get(2)?;
+        Ok(json!({
+            "deal_flow_id": id,
+            "refund_owed": r2(owed),
+            "refunded": r2(refunded),
+            "remaining": r2((owed - refunded).max(0.0)),
+        }))
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// Bulk-remove bank transactions (and their allocations) by source, synced so the
 /// delete propagates to other devices/the server (a raw DB delete would resurrect
 /// via sync). scope: "statements" (everything NOT from the Plaid feed — pdf/ofx/
@@ -10346,6 +10374,28 @@ pub async fn plaid_resync_all() -> Result<Value, String> {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute("UPDATE plaid_items SET cursor=''", []).map_err(|e| e.to_string())?;
     }
+    plaid_sync().await
+}
+
+/// Ask each connected bank for its very latest activity (today's wires / spend),
+/// then sync. `/transactions/sync` alone only returns Plaid's cached copy, so
+/// same-day items need a forced `/transactions/refresh` first. The refresh is
+/// asynchronous at Plaid, so we wait a few seconds, then sync (the 20-min auto-sync
+/// backfills anything that lands later).
+#[tauri::command]
+pub async fn plaid_refresh_sync() -> Result<Value, String> {
+    let items: Vec<(String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT access_token, env FROM plaid_items").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    if items.is_empty() { return Err("No banks connected yet — connect a bank first.".into()); }
+    for (access, env) in &items {
+        let _ = crate::plaid::transactions_refresh(access, env).await;
+    }
+    // Give Plaid a few seconds to land the fresh pull before we read it.
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
     plaid_sync().await
 }
 
