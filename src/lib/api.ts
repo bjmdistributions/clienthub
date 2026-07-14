@@ -1729,6 +1729,8 @@ export const api = {
   listArchive: () => invoke<ArchiveItem[]>("list_archive"),
   restoreArchived: (kind: ArchiveItem["kind"], id: string) =>
     invoke<void>("restore_archived", { kind, id }),
+  recoverDeletedFromBackups: () =>
+    invoke<{ deal_flows: number; invoices: number }>("recover_deleted_from_backups"),
 
   // Profit Split
   getProfitSplit: () => invoke<ProfitSplit>("get_profit_split"),

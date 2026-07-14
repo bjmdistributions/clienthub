@@ -774,11 +774,16 @@ export default function FinancialsView() {
         if (fromDate && d < fromDate) return false;
         if (toDate && d > toDate) return false;
         if (search.trim()) {
-          const q = search.toLowerCase();
-          if (
-            !(t.description || "").toLowerCase().includes(q) &&
-            !(t.counterparty_name || "").toLowerCase().includes(q)
-          ) return false;
+          const q = search.toLowerCase().trim();
+          const num = q.replace(/[^0-9.]/g, ""); // numeric part of the query, if any
+          const amtFixed = t.amount.toFixed(2);  // e.g. "500.00"
+          const textMatch =
+            (t.description || "").toLowerCase().includes(q) ||
+            (t.counterparty_name || "").toLowerCase().includes(q);
+          const amountMatch =
+            num.length > 0 &&
+            (amtFixed.includes(num) || String(t.amount).includes(num) || parseFloat(num) === t.amount);
+          if (!textMatch && !amountMatch) return false;
         }
         return true;
       }),
@@ -1341,7 +1346,7 @@ export default function FinancialsView() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search payee or memo…"
+              placeholder="Search payee, memo, or amount…"
               className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
             />
           </div>

@@ -36,6 +36,7 @@ export default function ArchiveView() {
   const [kind, setKind] = useState<KindFilter>("all");
   const [reason, setReason] = useState<ReasonFilter>("all");
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -54,6 +55,22 @@ export default function ArchiveView() {
     try { await api.restoreArchived(it.kind, it.id); toast("Restored"); load(); }
     catch (e: any) { toast(String(e), "error"); }
     finally { setRestoring(null); }
+  };
+
+  const recover = async () => {
+    if (!confirm(
+      "Search your daily backups for deals and invoices that were deleted before the archive existed, and restore any found into this Archive?\n\nThis only ADDS archived records — it never changes or deletes anything you currently have."
+    )) return;
+    setRecovering(true);
+    try {
+      const r = await api.recoverDeletedFromBackups();
+      const n = r.deal_flows + r.invoices;
+      toast(n === 0
+        ? "No additional deleted records found in your backups."
+        : `Recovered ${r.deal_flows} deal${r.deal_flows === 1 ? "" : "s"} and ${r.invoices} invoice${r.invoices === 1 ? "" : "s"} into the Archive`);
+      load();
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setRecovering(false); }
   };
 
   if (loading && items === null) {
@@ -77,9 +94,14 @@ export default function ArchiveView() {
             Deleted and fallen-through records — restore anything, nothing is destroyed.
           </p>
         </div>
-        <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink transition-colors">
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Refresh
-        </button>
+        <div className="flex items-center gap-4">
+          <button onClick={recover} disabled={recovering} className="flex items-center gap-1.5 text-[12px] text-accent hover:text-accent-hover disabled:opacity-50 transition-colors">
+            {recovering ? <RefreshCw size={13} className="animate-spin" /> : <RotateCcw size={13} />} Recover deleted from backups
+          </button>
+          <button onClick={load} className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink transition-colors">
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Filters — by kind + by reason */}

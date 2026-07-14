@@ -5121,6 +5121,131 @@ pub async fn list_archive() -> Result<Vec<ArchiveItem>, String> {
 
 /// Restore an archived/fell-through item to active. For a soft-deleted item, clear
 /// `archived`; for a fell-through invoice, clear `voided`. Synced.
+/// Columns of a live table as a set — to intersect with an older backup's schema.
+fn live_table_columns(conn: &rusqlite::Connection, table: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    if let Ok(mut s) = conn.prepare(&format!("PRAGMA table_info({})", table)) {
+        if let Ok(rows) = s.query_map([], |r| r.get::<_, String>(1)) {
+            for c in rows.filter_map(|r| r.ok()) { out.insert(c); }
+        }
+    }
+    out
+}
+
+fn rq_value_to_json(v: &rusqlite::types::Value) -> Value {
+    use rusqlite::types::Value as V;
+    match v {
+        V::Null => Value::Null,
+        V::Integer(i) => json!(i),
+        V::Real(f) => json!(f),
+        V::Text(t) => json!(t),
+        V::Blob(_) => Value::Null,
+    }
+}
+
+/// Recover deals + invoices that exist in the local daily backups but were deleted
+/// from the live database, restoring them ARCHIVED so they land in the Archive.
+/// SAFETY: purely additive — only IDs NOT already present are inserted (INSERT OR
+/// IGNORE never overwrites an existing row), and each is re-registered through
+/// record_upsert with a fresh HLC so the original delete can't win it back on the
+/// next sync. Existing data is never modified. Returns the count restored per table.
+#[tauri::command]
+pub async fn recover_deleted_from_backups() -> Result<Value, String> {
+    let dir = backup_dir_setting()?;
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.file_name().and_then(|n| n.to_str())
+            .map(|n| n.starts_with("clienthub-backup-") && n.ends_with(".db")).unwrap_or(false))
+        .collect();
+    files.sort();
+    files.reverse(); // newest first (filename sorts by date), so we keep the latest version
+    if files.is_empty() { return Err("No backup files were found in your backups folder.".into()); }
+
+    let now = Utc::now().to_rfc3339();
+    let mut out = Map::new();
+
+    for table in ["deal_flows", "invoices"] {
+        let live_cols = { let conn = pool().get().map_err(|e| e.to_string())?; live_table_columns(&conn, table) };
+        let current: std::collections::HashSet<String> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut s = conn.prepare(&format!("SELECT id FROM {}", table)).map_err(|e| e.to_string())?;
+            let rows = s.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let mut restored: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut count = 0i64;
+
+        for f in &files {
+            let bconn = match rusqlite::Connection::open_with_flags(
+                f, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ) { Ok(c) => c, Err(_) => continue };
+            // Columns in BOTH the backup and the live table, and safe as identifiers.
+            let cols: Vec<String> = {
+                let mut v = Vec::new();
+                if let Ok(mut s) = bconn.prepare(&format!("PRAGMA table_info({})", table)) {
+                    if let Ok(rows) = s.query_map([], |r| r.get::<_, String>(1)) {
+                        for c in rows.filter_map(|r| r.ok()) {
+                            let safe = !c.is_empty() && !c.as_bytes()[0].is_ascii_digit()
+                                && c.bytes().all(|b| b == b'_' || b.is_ascii_alphanumeric());
+                            if safe && live_cols.contains(&c) { v.push(c); }
+                        }
+                    }
+                }
+                v
+            };
+            let id_idx = match cols.iter().position(|c| c == "id") { Some(i) => i, None => continue };
+            let sel = cols.join(",");
+            let mut s = match bconn.prepare(&format!("SELECT {} FROM {}", sel, table)) { Ok(s) => s, Err(_) => continue };
+            let mut rows = match s.query([]) { Ok(r) => r, Err(_) => continue };
+            while let Ok(Some(row)) = rows.next() {
+                let id: String = match row.get(id_idx) { Ok(v) => v, Err(_) => continue };
+                if id.is_empty() || current.contains(&id) || restored.contains(&id) { continue; }
+                let mut vals: Vec<rusqlite::types::Value> = Vec::with_capacity(cols.len());
+                let mut colmap = Map::new();
+                let mut ok = true;
+                for (i, c) in cols.iter().enumerate() {
+                    match row.get::<_, rusqlite::types::Value>(i) {
+                        Ok(v) => { if c != "id" { colmap.insert(c.clone(), rq_value_to_json(&v)); } vals.push(v); }
+                        Err(_) => { ok = false; break; }
+                    }
+                }
+                if !ok { continue; }
+                // Force archived=1 (+ archived_at) directly into the INSERT column set
+                // so a restored row always lands in the Archive — never in the active
+                // lists — even if a separate follow-up update were to be skipped.
+                let mut ins_cols = cols.clone();
+                if let Some(i) = ins_cols.iter().position(|c| c == "archived") {
+                    vals[i] = rusqlite::types::Value::Integer(1);
+                } else if live_cols.contains("archived") {
+                    ins_cols.push("archived".to_string());
+                    vals.push(rusqlite::types::Value::Integer(1));
+                }
+                if live_cols.contains("archived_at") {
+                    if let Some(i) = ins_cols.iter().position(|c| c == "archived_at") {
+                        vals[i] = rusqlite::types::Value::Text(now.clone());
+                    } else {
+                        ins_cols.push("archived_at".to_string());
+                        vals.push(rusqlite::types::Value::Text(now.clone()));
+                    }
+                }
+                let insert_sel = ins_cols.join(",");
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let ph: Vec<String> = (1..=vals.len()).map(|i| format!("?{}", i)).collect();
+                let ins = format!("INSERT OR IGNORE INTO {} ({}) VALUES ({})", table, insert_sel, ph.join(","));
+                if conn.execute(&ins, rusqlite::params_from_iter(vals.iter())).unwrap_or(0) > 0 {
+                    colmap.insert("archived".into(), json!(1));
+                    if live_cols.contains("archived_at") { colmap.insert("archived_at".into(), json!(now)); }
+                    let _ = sync::record_upsert(table, &id, colmap);
+                    restored.insert(id.clone());
+                    count += 1;
+                }
+            }
+        }
+        out.insert(table.to_string(), json!(count));
+    }
+    Ok(Value::Object(out))
+}
+
 #[tauri::command]
 pub async fn restore_archived(kind: String, id: String) -> Result<(), String> {
     let table = match kind.as_str() {

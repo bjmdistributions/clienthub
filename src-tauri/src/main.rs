@@ -499,6 +499,7 @@ fn main() {
             // Archive (soft-delete + fell-through) + restore
             list_archive,
             restore_archived,
+            recover_deleted_from_backups,
             // Profit Split
             get_profit_split,
             save_profit_split,
