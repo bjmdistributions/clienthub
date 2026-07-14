@@ -5,6 +5,7 @@ import { fmtAmount, primarySupplierLabel } from "../lib/format";
 import { toast } from "./Toast";
 import RefundPanel from "./RefundPanel";
 import ReconciliationPanel from "./ReconciliationPanel";
+import RefundWorkspace from "./RefundWorkspace";
 
 // Shared field styling (matches DealFlowView's `inp` focus pattern).
 const fieldCls =
@@ -285,6 +286,9 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
 
       {/* Pair real bank transactions to the deal's money legs → actual profit */}
       <ReconciliationPanel flow={flow} />
+
+      {/* Full refund workflow: received money, owed, refund payments, remaining */}
+      <RefundWorkspace dealFlowId={flow.id} />
 
       {/* Actions */}
       <div className="flex items-center gap-3 pt-1">

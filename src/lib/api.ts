@@ -1380,6 +1380,23 @@ export interface DealAllocation {
   rail: string;
   txn_amount: number;
 }
+export interface RefundRow {
+  id: string;
+  amount: number;
+  method: string;
+  source: string;
+  source_supplier_ref: string;
+  keep_rep_cut: boolean;
+  reason: string;
+  refunded_at: string;
+  bank_txn_id: string; // "" when this refund is a custom amount (not from the bank feed)
+}
+export interface DealReceipt {
+  id: string;
+  amount: number;
+  label: string;
+  received_at: string;
+}
 export interface UnallocatedTxn {
   id: string;
   posted_at: string;
@@ -1809,11 +1826,18 @@ export const api = {
     invoke<void>("update_staff", { id, ...fields }),
 
   // Refunds, customer credits, rep payouts
-  createRefund: (dealFlowId: string, amount: number, opts?: { method?: string; source?: string; sourceSupplierRef?: string; keepRepCut?: boolean; reason?: string }) =>
+  createRefund: (dealFlowId: string, amount: number, opts?: { method?: string; source?: string; sourceSupplierRef?: string; keepRepCut?: boolean; reason?: string; bankTxnId?: string }) =>
     invoke<string>("create_refund", { dealFlowId, amount, ...(opts || {}) }),
-  listRefunds: (dealFlowId: string) => invoke<any[]>("list_refunds", { dealFlowId }),
+  listRefunds: (dealFlowId: string) => invoke<RefundRow[]>("list_refunds", { dealFlowId }),
   setRefundOwed: (dealFlowId: string, amount: number) => invoke<void>("set_refund_owed", { dealFlowId, amount }),
   deleteRefund: (id: string) => invoke<void>("delete_refund", { id }),
+  // Money received on a deal that isn't in the bank feed (custom lines). Bank-linked
+  // receipts use allocateBankTxn(role="buyer_payment"); these are the manual side.
+  addDealReceipt: (dealFlowId: string, amount: number, label?: string) =>
+    invoke<string>("add_deal_receipt", { dealFlowId, amount, label }),
+  listDealReceipts: (dealFlowId: string) =>
+    invoke<DealReceipt[]>("list_deal_receipts", { dealFlowId }),
+  deleteDealReceipt: (id: string) => invoke<void>("delete_deal_receipt", { id }),
   dealFlowPayout: (dealFlowId: string) => invoke<any>("deal_flow_payout", { dealFlowId }),
   listDealReps: () => invoke<{ id: string; display_name: string }[]>("list_deal_reps"),
   setDealLeadRep: (dealFlowId: string, leadRepId: string | null) => invoke<void>("set_deal_lead_rep", { dealFlowId, leadRepId }),

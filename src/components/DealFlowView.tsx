@@ -12,6 +12,7 @@ import { toast } from "./Toast";
 import CostProfitPanel from "./CostProfitPanel";
 import CompletedBreakdown from "./CompletedBreakdown";
 import ReconciliationPanel from "./ReconciliationPanel";
+import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -615,6 +616,9 @@ function DealFlowCard({
                 its own allocations; exclusivity is enforced server-side. */}
             {si(flow.stage) >= si("payment_received") && (
               <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
+            )}
+            {si(flow.stage) >= si("payment_received") && (
+              <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} /></div>
             )}
           </div>
         </>

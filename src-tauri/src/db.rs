@@ -1437,4 +1437,27 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE txn_rule ADD COLUMN direction TEXT NOT NULL DEFAULT '';
         "#,
     ),
+    (
+        66,
+        // Refund workspace. (1) Link a refund payment to the bank transaction it was
+        // paid from — nullable, so an unlinked refund is a custom/manual amount.
+        // (2) deal_receipts: money RECEIVED on a deal that isn't in the bank feed
+        // (custom lines). Bank-linked received money already lives in
+        // bank_allocation(buyer_payment); this table is only the manual side. Both
+        // sync (the apply path tolerates the added column on older peers).
+        r#"
+        ALTER TABLE refunds ADD COLUMN bank_txn_id TEXT;
+        CREATE TABLE IF NOT EXISTS deal_receipts (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            deal_flow_id TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL DEFAULT 0,
+            label TEXT NOT NULL DEFAULT '',
+            received_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_deal_receipts_deal ON deal_receipts(deal_flow_id);
+        "#,
+    ),
 ];

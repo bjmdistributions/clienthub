@@ -4359,12 +4359,20 @@ fn setting_bool(key: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<String>, source: Option<String>, source_supplier_ref: Option<String>, keep_rep_cut: Option<bool>, reason: Option<String>) -> Result<String, String> {
+pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<String>, source: Option<String>, source_supplier_ref: Option<String>, keep_rep_cut: Option<bool>, reason: Option<String>, bank_txn_id: Option<String>) -> Result<String, String> {
     if !(amount > 0.0) { return Err("Refund amount must be positive".into()); }
+    let amt = r2(amount);
+    let keep: i64 = if keep_rep_cut.unwrap_or(false) { 1 } else { 0 };
+    let txn = bank_txn_id.clone().filter(|s| !s.trim().is_empty());
+    // If this refund was paid from a real bank transaction, link it first — this
+    // validates direction (money out) + exclusivity and books it into Financials.
+    // It fails cleanly, before any refund row is written, if the txn can't take it.
+    if let Some(ref t) = txn {
+        allocate_bank_txn(t.clone(), deal_flow_id.clone(), amt, "refund_out".to_string(),
+            reason.clone().unwrap_or_else(|| "Refund".into())).await?;
+    }
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let keep: i64 = if keep_rep_cut.unwrap_or(false) { 1 } else { 0 };
-    let amt = r2(amount);
     let client_id: Option<String> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row("SELECT i.client_id FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id WHERE df.id=?1", [&deal_flow_id], |r| r.get::<_, Option<String>>(0)).map_err(|_| "Deal not found".to_string())?
@@ -4378,24 +4386,26 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     cols.insert("source_supplier_ref".into(), to_value(source_supplier_ref.clone()));
     cols.insert("keep_rep_cut".into(), json!(keep));
     cols.insert("reason".into(), to_value(reason.clone()));
+    cols.insert("bank_txn_id".into(), to_value(txn.clone()));
     cols.insert("refunded_at".into(), Value::String(now.clone()));
     cols.insert("created_at".into(), Value::String(now.clone()));
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("refunds", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("INSERT INTO refunds (id,deal_flow_id,client_id,amount,method,source,source_supplier_ref,keep_rep_cut,reason,refunded_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?10)",
-        rusqlite::params![id, deal_flow_id, client_id, amt, method, source, source_supplier_ref, keep, reason, now]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO refunds (id,deal_flow_id,client_id,amount,method,source,source_supplier_ref,keep_rep_cut,reason,bank_txn_id,refunded_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
+        rusqlite::params![id, deal_flow_id, client_id, amt, method, source, source_supplier_ref, keep, reason, txn, now]).map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
 pub async fn list_refunds(deal_flow_id: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, amount, COALESCE(method,''), COALESCE(source,''), COALESCE(source_supplier_ref,''), keep_rep_cut, COALESCE(reason,''), COALESCE(refunded_at,'') FROM refunds WHERE deal_flow_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, amount, COALESCE(method,''), COALESCE(source,''), COALESCE(source_supplier_ref,''), keep_rep_cut, COALESCE(reason,''), COALESCE(refunded_at,''), COALESCE(bank_txn_id,'') FROM refunds WHERE deal_flow_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&deal_flow_id], |r| Ok(json!({
         "id": r.get::<_, String>(0)?, "amount": r.get::<_, f64>(1)?, "method": r.get::<_, String>(2)?,
         "source": r.get::<_, String>(3)?, "source_supplier_ref": r.get::<_, String>(4)?,
         "keep_rep_cut": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, String>(6)?, "refunded_at": r.get::<_, String>(7)?,
+        "bank_txn_id": r.get::<_, String>(8)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -4415,9 +4425,76 @@ pub async fn set_refund_owed(deal_flow_id: String, amount: f64) -> Result<(), St
 
 #[tauri::command]
 pub async fn delete_refund(id: String) -> Result<(), String> {
+    // If this refund was paid from a linked bank transaction, unlink that allocation
+    // too so the money frees back up in Financials (and can be re-paired elsewhere).
+    let linked: Option<(String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT deal_flow_id, COALESCE(bank_txn_id,'') FROM refunds WHERE id=?1", [&id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()
+    };
+    if let Some((deal_flow_id, txn)) = linked {
+        if !txn.is_empty() {
+            let alloc_ids: Vec<String> = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let mut stmt = conn.prepare("SELECT id FROM bank_allocation WHERE bank_txn_id=?1 AND deal_flow_id=?2 AND role='refund_out'").map_err(|e| e.to_string())?;
+                let ids = stmt.query_map(rusqlite::params![txn, deal_flow_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+                ids.filter_map(|x| x.ok()).collect()
+            };
+            for aid in &alloc_ids {
+                sync::record_delete("bank_allocation", aid).map_err(|e| e.to_string())?;
+            }
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            for aid in &alloc_ids {
+                conn.execute("DELETE FROM bank_allocation WHERE id=?1", [aid]).map_err(|e| e.to_string())?;
+            }
+        }
+    }
     sync::record_delete("refunds", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM refunds WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Money RECEIVED on a deal that isn't in the bank feed — a custom/manual line.
+/// Bank-linked receipts are booked as bank_allocation(buyer_payment) via
+/// allocate_bank_txn; this table is only the manual side, so the refund workspace
+/// can total everything the customer paid.
+#[tauri::command]
+pub async fn add_deal_receipt(deal_flow_id: String, amount: f64, label: Option<String>) -> Result<String, String> {
+    if !(amount > 0.0) { return Err("Amount must be positive".into()); }
+    let id = format!("rcpt_{}", uuid::Uuid::new_v4().simple());
+    let now = Utc::now().to_rfc3339();
+    let amt = r2(amount);
+    let lbl = label.unwrap_or_default();
+    let mut cols = Map::new();
+    cols.insert("deal_flow_id".into(), json!(deal_flow_id));
+    cols.insert("amount".into(), json!(amt));
+    cols.insert("label".into(), json!(lbl));
+    cols.insert("received_at".into(), json!(now));
+    cols.insert("created_at".into(), json!(now));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("deal_receipts", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO deal_receipts (id,deal_flow_id,amount,label,received_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?5,?5)",
+        rusqlite::params![id, deal_flow_id, amt, lbl, now]).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn list_deal_receipts(deal_flow_id: String) -> Result<Vec<Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, amount, COALESCE(label,''), COALESCE(received_at,'') FROM deal_receipts WHERE deal_flow_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&deal_flow_id], |r| Ok(json!({
+        "id": r.get::<_, String>(0)?, "amount": r.get::<_, f64>(1)?, "label": r.get::<_, String>(2)?, "received_at": r.get::<_, String>(3)?,
+    }))).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|x| x.ok()).collect())
+}
+
+#[tauri::command]
+pub async fn delete_deal_receipt(id: String) -> Result<(), String> {
+    sync::record_delete("deal_receipts", &id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM deal_receipts WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 

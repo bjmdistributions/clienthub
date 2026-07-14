@@ -6,6 +6,7 @@ import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, 
 import RecurringView from "./RecurringView";
 import InvoicePreview, { DEFAULT_INVOICE_TEMPLATE } from "./InvoicePreview";
 import ReconciliationPanel from "./ReconciliationPanel";
+import RefundWorkspace from "./RefundWorkspace";
 import { toast } from "./Toast";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
@@ -992,8 +993,9 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             </div>
           )}
 
-          {/* Pair the buyer payment (and any refund) to this invoice's deal. */}
+          {/* Pair the buyer payment to this invoice's deal, then run any refund. */}
           {dealFlow && <ReconciliationPanel flow={dealFlow} />}
+          {dealFlow && <RefundWorkspace dealFlowId={dealFlow.id} />}
         </div>
 
         <div className="sticky bottom-0 bg-surface/95 backdrop-blur-sm border-t border-line px-6 py-4 space-y-2.5">
