@@ -9889,11 +9889,17 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     cols.insert("created_at".into(), s(&now));
                     cols.insert("updated_at".into(), s(&now));
                     if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, imported_at, created_at, updated_at)
                          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
-                        rusqlite::params![id, label, date, amount, direction, desc, desc, cat, cp, now],
-                    );
+                        rusqlite::params![id, label, date, amount, direction, desc, desc, cat, cp, "plaid", now],
+                    ) {
+                        // Surface an insert failure instead of counting a row that
+                        // never landed (previously swallowed → "synced N" but empty).
+                        status = "error";
+                        error_msg = format!("save failed: {e}");
+                        break;
+                    }
                     item_imported += 1;
                 }
             }
