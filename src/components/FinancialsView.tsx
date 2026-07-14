@@ -820,6 +820,24 @@ export default function FinancialsView() {
 
   const dismissGroup = (key: string) => setDismissedGroups((prev) => new Set(prev).add(key));
 
+  // Summary scoped to the active date range so the To-do/Booked counts (and the
+  // figures strip) reflect only what's in view — pre-January rows you've excluded
+  // via the date filter don't inflate the "left to review" count.
+  const rangeSummary = useMemo(() => {
+    let total = 0, reviewed = 0, sumIn = 0, sumOut = 0, unclassified = 0, needsDeal = 0;
+    for (const t of txns) {
+      const d = (t.posted_at || "").slice(0, 10);
+      if (fromDate && d < fromDate) continue;
+      if (toDate && d > toDate) continue;
+      total++;
+      if (t.reviewed) reviewed++;
+      if (t.direction === "in") sumIn += t.amount; else sumOut += t.amount;
+      if (!(t.category || "").trim()) unclassified++;
+      if (t.counterparty_type !== "loan" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001) needsDeal++;
+    }
+    return { total, reviewed, sumIn, sumOut, unclassified, needsDeal };
+  }, [txns, fromDate, toDate]);
+
   const filteredDeals = useMemo(() => {
     const q = dealQuery.trim().toLowerCase();
     const ot = openId ? txns.find((t) => t.id === openId) : null;
@@ -1261,14 +1279,14 @@ export default function FinancialsView() {
       )}
 
       {/* Summary — a quiet figures strip, not stat cards */}
-      {summary && (
+      {txns.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[12px] border-b border-line pb-3">
-          <span className="text-muted">Transactions <span className="text-ink font-medium tabular-nums">{summary.total}</span></span>
-          <span className="text-muted">Reviewed <span className="text-ink font-medium tabular-nums">{summary.reviewed}/{summary.total}</span></span>
-          <span className="text-muted">Money in <span className="text-success-ink font-medium tabular-nums">{fmtAmount(summary.sum_in)}</span></span>
-          <span className="text-muted">Money out <span className="text-danger-ink font-medium tabular-nums">{fmtAmount(summary.sum_out)}</span></span>
-          <span className="text-muted">Uncategorized <span className={`font-medium tabular-nums ${summary.unclassified > 0 ? "text-ink" : "text-muted"}`}>{summary.unclassified}</span></span>
-          <span className="text-muted">Needs a deal <span className={`font-medium tabular-nums ${summary.unallocated_in + summary.unallocated_out > 0 ? "text-ink" : "text-muted"}`}>{summary.unallocated_in + summary.unallocated_out}</span></span>
+          <span className="text-muted">Transactions <span className="text-ink font-medium tabular-nums">{rangeSummary.total}</span></span>
+          <span className="text-muted">Reviewed <span className="text-ink font-medium tabular-nums">{rangeSummary.reviewed}/{rangeSummary.total}</span></span>
+          <span className="text-muted">Money in <span className="text-success-ink font-medium tabular-nums">{fmtAmount(rangeSummary.sumIn)}</span></span>
+          <span className="text-muted">Money out <span className="text-danger-ink font-medium tabular-nums">{fmtAmount(rangeSummary.sumOut)}</span></span>
+          <span className="text-muted">Uncategorized <span className={`font-medium tabular-nums ${rangeSummary.unclassified > 0 ? "text-ink" : "text-muted"}`}>{rangeSummary.unclassified}</span></span>
+          <span className="text-muted">Needs a deal <span className={`font-medium tabular-nums ${rangeSummary.needsDeal > 0 ? "text-ink" : "text-muted"}`}>{rangeSummary.needsDeal}</span></span>
         </div>
       )}
 
@@ -1282,11 +1300,9 @@ export default function FinancialsView() {
               className={`text-[13px] transition-colors ${queue === v ? "text-ink font-semibold" : "text-muted hover:text-ink-2"}`}
             >
               {label}
-              {summary && (
-                <span className="ml-1.5 font-normal text-muted tabular-nums">
-                  {v === "todo" ? summary.total - summary.reviewed : summary.reviewed}
-                </span>
-              )}
+              <span className="ml-1.5 font-normal text-muted tabular-nums">
+                {v === "todo" ? rangeSummary.total - rangeSummary.reviewed : rangeSummary.reviewed}
+              </span>
             </button>
           ))}
         </div>
