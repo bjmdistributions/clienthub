@@ -202,7 +202,22 @@ Original per-item detail (kept for reference):
 3.5 Polish: bring-to-front on touch (lastTouched zIndex), cap resize at board width, styled
     confirm instead of native confirm(), optional cleanup of abandoned empty notes.
 
-### Phase 4 — Analytics leftovers
+### Phase 2/4 minors batch — DONE v0.15.77
+Shipped: new-deal-from-txn gated to money-in (+ backend guard) — no more orphan client/invoice/
+deal on money-out; bulk-allocate uses the shared survivorDeals() dedup (extracted, used by both
+pickers) so a bulk tag can't land on a ghost; LoansView error toasts everywhere + Reopen button
+on paid loans + confirm on Mark-paid; loan tag/untag no longer destroys the bank payee
+(counterparty_name preserved — link lives in counterparty_type/id); money-in/out figures strip
+excludes internal_transfer + card_payment (no double count); Brief best/worst-margin cards
+re-sourced from completed deal_flows (refund-aware, rep-scoped, windowed) — the deals-table
+won_at was never set so they never rendered (verified: 0 old candidates → real candidates now);
+biggest-invoice highlight excludes voided + bounds the window.
+Remaining Phase 2 minors: free-cash Adjust manual-vs-live badge, dead `summary` fetch, needs-a-
+deal counter counts expenses, Plaid env-switch/prepare-banner/poll-tolerance, suggested-group
+dismiss-before-fail, bulk failure reasons, loan received_at editable (needs update_loan param),
+statement-preview busy state.
+
+### Phase 4 — Analytics leftovers (brief highlights DONE in v0.15.77)
 4.1 Excel export: voided filter on Top Clients sheet, group revenue by paid_at, replace dead
     deals-table Pipeline sheet with deal_flows stage counts (commands.rs ~1281,1258,1303).
 4.2 Brief highlights (best/worst margin) still read dead deals.won_at (~9068,9080) — re-source

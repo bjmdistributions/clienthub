@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2 } from "lucide-react";
+import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2, RotateCcw } from "lucide-react";
 import { api, Loan, LoanLedger } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { toast } from "./Toast";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -46,7 +47,7 @@ export default function LoansView() {
     );
     setLedgers(Object.fromEntries(pairs.filter(([, v]) => v) as [string, LoanLedger][]));
   };
-  useEffect(() => { load().catch(console.error); }, []);
+  useEffect(() => { load().catch((e) => toast(String(e), "error")); }, []);
 
   const toggleExpand = (id: string) =>
     setExpanded((prev) => {
@@ -60,7 +61,8 @@ export default function LoansView() {
     try {
       await api.applyLoanRepaymentsToSetAside(l.id);
       await load();
-    } finally {
+    } catch (e: any) { toast(String(e), "error"); }
+    finally {
       setApplyingId(null);
     }
   };
@@ -106,7 +108,8 @@ export default function LoansView() {
       }
       await load();
       closeForm();
-    } finally {
+    } catch (e: any) { toast(String(e), "error"); }
+    finally {
       setSaving(false);
     }
   };
@@ -119,20 +122,30 @@ export default function LoansView() {
 
   const saveAside = async (l: Loan) => {
     const setAside = parseFloat(asideBuf) || 0;
-    await api.updateLoan(l.id, l.name, l.lender, l.principal, setAside, l.status, l.note);
-    setAsideId(null);
-    await load();
+    try {
+      await api.updateLoan(l.id, l.name, l.lender, l.principal, setAside, l.status, l.note);
+      setAsideId(null);
+      await load();
+    } catch (e: any) { toast(String(e), "error"); }
   };
 
   const markPaid = async (l: Loan) => {
-    await api.updateLoan(l.id, l.name, l.lender, l.principal, l.set_aside, "paid", l.note);
-    await load();
+    if (!confirm(`Mark "${l.name}" as paid off? It drops out of your outstanding loans and Free Cash.`)) return;
+    try { await api.updateLoan(l.id, l.name, l.lender, l.principal, l.set_aside, "paid", l.note); await load(); }
+    catch (e: any) { toast(String(e), "error"); }
+  };
+
+  // Reopen a loan mis-marked as paid — the backend clears paid_at on any non-'paid'
+  // status, so it returns to outstanding.
+  const reopenLoan = async (l: Loan) => {
+    try { await api.updateLoan(l.id, l.name, l.lender, l.principal, l.set_aside, "open", l.note); await load(); }
+    catch (e: any) { toast(String(e), "error"); }
   };
 
   const removeLoan = async (l: Loan) => {
     if (!confirm(`Delete loan "${l.name}"? This can't be undone.`)) return;
-    await api.deleteLoan(l.id);
-    await load();
+    try { await api.deleteLoan(l.id); await load(); }
+    catch (e: any) { toast(String(e), "error"); }
   };
 
   return (
@@ -406,6 +419,14 @@ export default function LoansView() {
                           <CheckCircle2 size={13} /> Mark paid off
                         </button>
                       </>
+                    )}
+                    {paid && (
+                      <button
+                        onClick={() => reopenLoan(l)}
+                        className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 hover:bg-surface-2 rounded-lg text-[12px] font-medium transition-colors"
+                      >
+                        <RotateCcw size={13} /> Reopen
+                      </button>
                     )}
                     <button
                       onClick={() => openEdit(l)}

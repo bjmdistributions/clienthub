@@ -152,6 +152,20 @@ const rolesFor = (direction: string) =>
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
+// Collapse duplicate deal_flow rows for one invoice to the single highest-stage
+// survivor — the same row Deal Flow shows — so an allocation (single OR bulk) can
+// never land on a ghost duplicate the deal view hides.
+const DEAL_STAGE_RANK: Record<string, number> = { invoiced: 0, payment_received: 1, supplier_paid: 2, complete: 3 };
+const survivorDeals = (deals: DealFlow[]): DealFlow[] => {
+  const byInv: Record<string, DealFlow> = {};
+  for (const d of deals) {
+    const key = d.invoice_id || d.id;
+    const prev = byInv[key];
+    if (!prev || (DEAL_STAGE_RANK[d.stage || ""] ?? -1) > (DEAL_STAGE_RANK[prev.stage || ""] ?? -1)) byInv[key] = d;
+  }
+  return Object.values(byInv);
+};
+
 export default function FinancialsView() {
   const [txns, setTxns]       = useState<BankTxn[]>([]);
   const [summary, setSummary] = useState<BankTxnSummary | null>(null);
@@ -795,6 +809,10 @@ export default function FinancialsView() {
   const createDealFromTxn = async (
     t: BankTxn, dealName: string, buyerName: string, expectedSale: number, noteVal: string,
   ): Promise<boolean> => {
+    // Guard: this backfills a deal from a RECEIVED payment (allocated as
+    // buyer_payment). A money-out txn would create an orphan client/invoice/deal
+    // and then fail the allocation on the direction guard.
+    if (t.direction !== "in") { toast("New-deal backfill is for money-in receipts only", "error"); return false; }
     setNewDealBusy(true);
     try {
       const client = await api.createClient({ name: buyerName });
@@ -907,7 +925,13 @@ export default function FinancialsView() {
       if (toDate && d > toDate) continue;
       total++;
       if (t.reviewed) reviewed++;
-      if (t.direction === "in") sumIn += t.amount; else sumOut += t.amount;
+      // Money-in/out excludes internal transfers (they hit both sides) and card
+      // payments (the same spend already counted as the card purchase) so the
+      // totals reflect real external cash movement, not double counts.
+      const cat = t.category || "";
+      if (cat !== "internal_transfer" && cat !== "card_payment") {
+        if (t.direction === "in") sumIn += t.amount; else sumOut += t.amount;
+      }
       if (!(t.category || "").trim()) unclassified++;
       if (t.counterparty_type !== "loan" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001) needsDeal++;
     }
@@ -919,18 +943,7 @@ export default function FinancialsView() {
     const ot = openId ? txns.find((t) => t.id === openId) : null;
     const cp = (ot?.counterparty_name || "").trim().toLowerCase();
     const amt = ot?.amount || 0;
-    // Collapse duplicate deal_flow rows for one invoice to the single highest-stage
-    // survivor — the same row Deal Flow shows — so an allocation can never land on a
-    // ghost duplicate the deal view hides (which would look like "no linked payment").
-    const rankOf = (s?: string) =>
-      ({ invoiced: 0, payment_received: 1, supplier_paid: 2, complete: 3 } as Record<string, number>)[s || ""] ?? -1;
-    const survivorByInv: Record<string, DealFlow> = {};
-    for (const d of deals) {
-      const key = d.invoice_id || d.id;
-      const prev = survivorByInv[key];
-      if (!prev || rankOf(d.stage) > rankOf(prev.stage)) survivorByInv[key] = d;
-    }
-    return Object.values(survivorByInv)
+    return survivorDeals(deals)
       .filter((d) => !q || `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(q))
       .map((d) => {
         // Rank deals that match the open transaction (same buyer / same amount) to
@@ -1922,7 +1935,9 @@ function BulkAllocateModal({
   const [q, setQ] = useState("");
   const dealList = useMemo(() => {
     const s = q.toLowerCase();
-    return deals
+    // Same survivor dedup as the single-row picker — a bulk tag must never land on
+    // a ghost duplicate the deal view hides.
+    return survivorDeals(deals)
       .filter((d) => `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(s))
       .sort((a, b) =>
         (Date.parse(b.completed_at || b.created_at || "") || 0) - (Date.parse(a.completed_at || a.created_at || "") || 0))
@@ -2295,12 +2310,16 @@ function AllocationPanel(props: {
               placeholder="Note (optional)"
               className={`${inp} flex-1 min-w-[180px]`}
             />
-            <button
-              onClick={() => (showNewDeal ? setShowNewDeal(false) : openNewDeal())}
-              className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
-            >
-              <Plus size={13} /> New deal from this transaction
-            </button>
+            {/* Backfills a deal from a RECEIVED payment — only valid for money-in.
+                On money-out it created an orphan client/invoice/deal then errored. */}
+            {txn.direction === "in" && (
+              <button
+                onClick={() => (showNewDeal ? setShowNewDeal(false) : openNewDeal())}
+                className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[12px] font-medium hover:bg-surface-2 transition-colors"
+              >
+                <Plus size={13} /> New deal from this transaction
+              </button>
+            )}
             {renderRuleButton()}
           </div>
         </>

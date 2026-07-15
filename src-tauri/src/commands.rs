@@ -9191,36 +9191,34 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let follow_ups: Vec<Client> = due_followups().await?;
     let follow_ups_due = follow_ups.len() as u32;
 
-    let best_margin_deal: Option<DealHighlight> = {
-        let mut stmt = conn.prepare(
-            "SELECT d.id, c.name, d.title, d.asking_price, CASE WHEN d.asking_price>0 THEN (d.asking_price - d.shipping_cost - d.other_costs - (SELECT COALESCE(SUM(json_extract(value,'$.amount')),0) FROM json_each(d.supplier_costs_json)))/d.asking_price*100 ELSE 0 END as margin
-             FROM deals d JOIN clients c ON c.id=d.client_id
-             WHERE d.won_at >= ?1 ORDER BY margin DESC LIMIT 1"
-        ).map_err(|e| e.to_string())?;
-        stmt.query_row([&week_start], |r| Ok(DealHighlight {
+    // Best/worst margin come from the REAL pipeline (completed deal_flows in the
+    // window, refund-aware, rep-scoped), not the dead deals CRM table's won_at —
+    // which is never written, so these cards used to never render.
+    let margin_deal = |order: &str| -> Option<DealHighlight> {
+        let sql = format!(
+            "SELECT df.id, c.name, COALESCE(NULLIF(i.number,''), c.name), df.gross_revenue, \
+                    CASE WHEN df.gross_revenue>0 THEN \
+                      (df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0))/df.gross_revenue*100 \
+                    ELSE 0 END as margin \
+             FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id \
+             WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter} \
+             ORDER BY margin {order} LIMIT 1");
+        let mut stmt = conn.prepare(&sql).ok()?;
+        stmt.query_row([&week_start, &end_excl], |r| Ok(DealHighlight {
             deal_id: r.get(0)?, client_name: r.get(1)?, title: r.get(2)?,
             asking_price: r.get(3)?, margin_pct: r.get(4)?,
         })).ok()
     };
-
-    let worst_margin_deal: Option<DealHighlight> = {
-        let mut stmt = conn.prepare(
-            "SELECT d.id, c.name, d.title, d.asking_price, CASE WHEN d.asking_price>0 THEN (d.asking_price - d.shipping_cost - d.other_costs - (SELECT COALESCE(SUM(json_extract(value,'$.amount')),0) FROM json_each(d.supplier_costs_json)))/d.asking_price*100 ELSE 0 END as margin
-             FROM deals d JOIN clients c ON c.id=d.client_id
-             WHERE d.won_at >= ?1 AND d.stage='won' ORDER BY margin ASC LIMIT 1"
-        ).map_err(|e| e.to_string())?;
-        stmt.query_row([&week_start], |r| Ok(DealHighlight {
-            deal_id: r.get(0)?, client_name: r.get(1)?, title: r.get(2)?,
-            asking_price: r.get(3)?, margin_pct: r.get(4)?,
-        })).ok()
-    };
+    let best_margin_deal = margin_deal("DESC");
+    let worst_margin_deal = margin_deal("ASC");
 
     let biggest_invoice: Option<InvoiceHighlight> = {
         let mut stmt = conn.prepare(
             "SELECT i.id, c.name, i.number, i.total FROM invoices i JOIN clients c ON c.id=i.client_id
-             WHERE i.status='paid' AND i.issue_date >= ?1 ORDER BY i.total DESC LIMIT 1"
+             WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
+               AND i.issue_date >= ?1 AND i.issue_date < ?2 ORDER BY i.total DESC LIMIT 1"
         ).map_err(|e| e.to_string())?;
-        stmt.query_row([&week_start], |r| Ok(InvoiceHighlight {
+        stmt.query_row([&week_start, &end_excl], |r| Ok(InvoiceHighlight {
             invoice_id: r.get(0)?, client_name: r.get(1)?, number: r.get(2)?, total: r.get(3)?,
         })).ok()
     };
@@ -11062,27 +11060,30 @@ pub async fn ai_categorize_bank_txns() -> Result<Value, String> {
 /// execute). Leaves `reviewed` alone, like allocate_bank_txn.
 #[tauri::command]
 pub async fn tag_bank_txn_to_loan(bank_txn_id: String, loan_id: String) -> Result<(), String> {
-    let (direction, loan_name): (String, String) = {
+    let direction: String = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let dir: String = conn.query_row("SELECT direction FROM bank_txn WHERE id=?1", [&bank_txn_id], |r| r.get(0))
-            .map_err(|_| "Transaction not found".to_string())?;
-        let name: String = conn.query_row("SELECT name FROM loan WHERE id=?1", [&loan_id], |r| r.get(0))
+        // Validate the loan exists so we never create a dangling tag.
+        conn.query_row("SELECT 1 FROM loan WHERE id=?1", [&loan_id], |_| Ok(()))
             .map_err(|_| "Loan not found".to_string())?;
-        (dir, name)
+        conn.query_row("SELECT direction FROM bank_txn WHERE id=?1", [&bank_txn_id], |r| r.get(0))
+            .map_err(|_| "Transaction not found".to_string())?
     };
     let category = if direction == "in" { "loan_received" } else { "loan_repayment" };
     let now = Utc::now().to_rfc3339();
+    // Keep the original payee (counterparty_name) — the loan link lives in
+    // counterparty_type/id and the UI derives the loan label from those. Overwriting
+    // the name destroyed the bank memo (breaking payee display + rule matching) and
+    // untag then couldn't restore it.
     let mut cols = Map::new();
     cols.insert("category".into(), json!(category));
     cols.insert("counterparty_type".into(), json!("loan"));
     cols.insert("counterparty_id".into(), json!(loan_id));
-    cols.insert("counterparty_name".into(), json!(loan_name));
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("bank_txn", &bank_txn_id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, counterparty_name=?3, updated_at=?4 WHERE id=?5",
-        rusqlite::params![category, loan_id, loan_name, now, bank_txn_id],
+        "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, updated_at=?3 WHERE id=?4",
+        rusqlite::params![category, loan_id, now, bank_txn_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -11092,16 +11093,17 @@ pub async fn tag_bank_txn_to_loan(bank_txn_id: String, loan_id: String) -> Resul
 #[tauri::command]
 pub async fn untag_bank_txn_loan(bank_txn_id: String) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
+    // Leave counterparty_name intact — tag no longer overwrites it, so the original
+    // bank payee is still there and untag just clears the loan link + category.
     let mut cols = Map::new();
     cols.insert("category".into(), json!(""));
     cols.insert("counterparty_type".into(), json!(""));
     cols.insert("counterparty_id".into(), json!(""));
-    cols.insert("counterparty_name".into(), json!(""));
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("bank_txn", &bank_txn_id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE bank_txn SET category='', counterparty_type='', counterparty_id='', counterparty_name='', updated_at=?1 WHERE id=?2",
+        "UPDATE bank_txn SET category='', counterparty_type='', counterparty_id='', updated_at=?1 WHERE id=?2",
         rusqlite::params![now, bank_txn_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
