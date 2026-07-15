@@ -12949,6 +12949,8 @@ pub struct Note {
     pub updated_at: String,
     pub x: f64,
     pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
@@ -12962,10 +12964,12 @@ fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
         updated_at: r.get(6)?,
         x: r.get(7)?,
         y: r.get(8)?,
+        w: r.get(9)?,
+        h: r.get(10)?,
     })
 }
 
-const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0)";
+const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0), COALESCE(w,226), COALESCE(h,190)";
 
 #[tauri::command]
 pub async fn list_notes() -> Result<Vec<Note>, String> {
@@ -12985,11 +12989,13 @@ pub async fn create_note(body: String, color: Option<String>, x: Option<f64>, y:
     let author = crate::employees::current_display_name();
     let x = x.unwrap_or(0.0);
     let y = y.unwrap_or(0.0);
+    let w = 226.0;
+    let h = 190.0;
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO notes (id, body, color, pinned, author, x, y, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?5,?6,?7,?7)",
-            rusqlite::params![id, body, color, author, x, y, now],
+            "INSERT INTO notes (id, body, color, pinned, author, x, y, w, h, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?5,?6,?7,?8,?9,?9)",
+            rusqlite::params![id, body, color, author, x, y, w, h, now],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -13000,14 +13006,17 @@ pub async fn create_note(body: String, color: Option<String>, x: Option<f64>, y:
     cols.insert("author".into(), json!(author));
     cols.insert("x".into(), json!(x));
     cols.insert("y".into(), json!(y));
+    cols.insert("w".into(), json!(w));
+    cols.insert("h".into(), json!(h));
     cols.insert("created_at".into(), json!(now));
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
-    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now, x, y })
+    crate::netsync::push_now(); // reach the other device promptly, not on the next poll
+    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now, x, y, w, h })
 }
 
 #[tauri::command]
-pub async fn update_note(id: String, body: Option<String>, color: Option<String>, pinned: Option<bool>, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+pub async fn update_note(id: String, body: Option<String>, color: Option<String>, pinned: Option<bool>, x: Option<f64>, y: Option<f64>, w: Option<f64>, h: Option<f64>) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     let mut cols = Map::new();
     cols.insert("updated_at".into(), json!(now));
@@ -13033,9 +13042,18 @@ pub async fn update_note(id: String, body: Option<String>, color: Option<String>
             cols.insert("y".into(), json!(yv));
             conn.execute("UPDATE notes SET y=?1 WHERE id=?2", rusqlite::params![yv, id]).map_err(|e| e.to_string())?;
         }
+        if let Some(wv) = w {
+            cols.insert("w".into(), json!(wv));
+            conn.execute("UPDATE notes SET w=?1 WHERE id=?2", rusqlite::params![wv, id]).map_err(|e| e.to_string())?;
+        }
+        if let Some(hv) = h {
+            cols.insert("h".into(), json!(hv));
+            conn.execute("UPDATE notes SET h=?1 WHERE id=?2", rusqlite::params![hv, id]).map_err(|e| e.to_string())?;
+        }
         conn.execute("UPDATE notes SET updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     }
     sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
+    crate::netsync::push_now(); // live-share the change to the other device now
     Ok(())
 }
 
@@ -13046,6 +13064,7 @@ pub async fn delete_note(id: String) -> Result<(), String> {
         conn.execute("DELETE FROM notes WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
     }
     sync::record_delete("notes", &id).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 

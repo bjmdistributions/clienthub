@@ -1460,4 +1460,13 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_deal_receipts_deal ON deal_receipts(deal_flow_id);
         "#,
     ),
+    (
+        67,
+        // Resizable sticky notes — per-note width/height on the board so a note can
+        // be stretched bigger/more important. Defaults match the old fixed size.
+        r#"
+        ALTER TABLE notes ADD COLUMN w REAL NOT NULL DEFAULT 226;
+        ALTER TABLE notes ADD COLUMN h REAL NOT NULL DEFAULT 190;
+        "#,
+    ),
 ];

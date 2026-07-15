@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, Note } from "../lib/api";
 import { Plus, Pin, Trash2, StickyNote, GripVertical } from "lucide-react";
 
@@ -11,7 +12,10 @@ const COLORS: { key: string; fill: string; accent: string }[] = [
   { key: "orange", fill: "rgba(251,146,60,0.18)",  accent: "#FB923C" },
 ];
 const colorOf = (k: string) => COLORS.find((c) => c.key === k) || COLORS[0];
-const NOTE_W = 226, NOTE_H = 190;
+const NOTE_W = 226, NOTE_H = 190;      // defaults for a fresh note
+const MIN_W = 180, MIN_H = 175;        // smallest a note can be stretched to
+const wOf = (n: Note) => n.w || NOTE_W;
+const hOf = (n: Note) => n.h || NOTE_H;
 
 // Stable tiny rotation per note so the board feels hand-pinned, not gridded.
 function stableRot(id: string): number {
@@ -38,6 +42,7 @@ export default function NotesView() {
   const notesRef = useRef<Note[]>([]);
   notesRef.current = notes;
   const drag = useRef<{ id: string; dx: number; dy: number; moved: boolean } | null>(null);
+  const resize = useRef<{ id: string; startX: number; startY: number; startW: number; startH: number; moved: boolean } | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const load = useCallback(() => {
@@ -55,19 +60,64 @@ export default function NotesView() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 60000); return () => clearInterval(t); }, []);
 
-  // Drag — global listeners read the latest via refs (no stale closures).
+  // Live-share: when a sync pull applies (the other admin posted/edited/resized a
+  // note on his device), fold the incoming notes in immediately — without yanking a
+  // note out from under an active drag/resize/edit, and without dropping a note this
+  // device just created that the server hasn't echoed back yet.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    listen("netsync-applied", () => {
+      api.listNotes().then((incoming) => {
+        setNotes((prev) => {
+          const activeId = drag.current?.id || resize.current?.id;
+          const ae = document.activeElement as HTMLElement | null;
+          const focusedId = ae?.id?.startsWith("note-ta-") ? ae.id.slice(8) : null;
+          const incIds = new Set(incoming.map((n) => n.id));
+          const merged = incoming.map((inc) => {
+            const local = prev.find((p) => p.id === inc.id);
+            if (!local) return inc;
+            const keepLocal = inc.id === activeId || inc.id === focusedId || local.updated_at > inc.updated_at;
+            return keepLocal ? local : inc;
+          });
+          for (const p of prev) if (!incIds.has(p.id)) merged.push(p); // pending local create
+          return merged;
+        });
+      }).catch(() => {});
+    }).then((u) => { un = u; }).catch(() => {});
+    return () => { un?.(); };
+  }, []);
+
+  // Drag + resize — global listeners read the latest via refs (no stale closures).
   useEffect(() => {
     const move = (e: PointerEvent) => {
+      const rz = resize.current;
+      if (rz) {
+        rz.moved = true;
+        const w = Math.max(MIN_W, rz.startW + (e.clientX - rz.startX));
+        const h = Math.max(MIN_H, rz.startH + (e.clientY - rz.startY));
+        setNotes((prev) => prev.map((n) => (n.id === rz.id ? { ...n, w, h } : n)));
+        return;
+      }
       const d = drag.current, board = boardRef.current; if (!d || !board) return;
       const rect = board.getBoundingClientRect();
+      const cur = notesRef.current.find((n) => n.id === d.id);
+      const w = cur ? wOf(cur) : NOTE_W;
       let x = e.clientX - rect.left - d.dx;
       let y = e.clientY - rect.top - d.dy;
-      x = Math.max(0, Math.min(board.clientWidth - NOTE_W, x));
+      x = Math.max(0, Math.min(board.clientWidth - w, x));
       y = Math.max(0, y);
       d.moved = true;
       setNotes((prev) => prev.map((n) => (n.id === d.id ? { ...n, x, y } : n)));
     };
     const up = () => {
+      const rz = resize.current;
+      if (rz) {
+        resize.current = null;
+        document.body.style.userSelect = "";
+        const n = notesRef.current.find((x) => x.id === rz.id);
+        if (n && rz.moved) api.updateNote(n.id, { w: Math.round(wOf(n)), h: Math.round(hOf(n)) }).catch(() => {});
+        return;
+      }
       const d = drag.current; if (!d) return; drag.current = null;
       document.body.style.userSelect = "";
       const n = notesRef.current.find((x) => x.id === d.id);
@@ -83,6 +133,14 @@ export default function NotesView() {
     if (!n || !board) return;
     const rect = board.getBoundingClientRect();
     drag.current = { id, dx: e.clientX - rect.left - n.x, dy: e.clientY - rect.top - n.y, moved: false };
+    document.body.style.userSelect = "none";
+  };
+
+  const startResize = (e: React.PointerEvent, id: string) => {
+    e.stopPropagation();
+    const n = notesRef.current.find((x) => x.id === id);
+    if (!n) return;
+    resize.current = { id, startX: e.clientX, startY: e.clientY, startW: wOf(n), startH: hOf(n), moved: false };
     document.body.style.userSelect = "none";
   };
 
@@ -116,7 +174,7 @@ export default function NotesView() {
     api.deleteNote(id).catch(() => {});
   };
 
-  const boardH = Math.max(520, ...notes.map((n) => n.y + NOTE_H + 24), 0);
+  const boardH = Math.max(520, ...notes.map((n) => n.y + hOf(n) + 24), 0);
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
@@ -158,7 +216,7 @@ export default function NotesView() {
               const c = colorOf(n.color);
               return (
                 <div key={n.id} className="sticky-note"
-                  style={{ left: n.x, top: n.y, width: NOTE_W, zIndex: n.pinned ? 5 : 1,
+                  style={{ left: n.x, top: n.y, width: wOf(n), height: hOf(n), minHeight: 0, zIndex: n.pinned ? 5 : 1,
                     transform: `rotate(${stableRot(n.id)}deg)`,
                     background: `linear-gradient(162deg, ${c.fill}, transparent 78%), var(--t-s1)`,
                     borderColor: `${c.accent}55` }}>
@@ -184,6 +242,16 @@ export default function NotesView() {
                   <div className="sn-time" title={exactTime(n.updated_at)}>
                     {relTime(n.updated_at)}{n.author ? ` · ${n.author}` : ""}
                   </div>
+                  <div
+                    onPointerDown={(e) => startResize(e, n.id)}
+                    title="Drag to resize"
+                    style={{
+                      position: "absolute", right: 3, bottom: 3, width: 14, height: 14,
+                      cursor: "nwse-resize", touchAction: "none",
+                      borderRight: `2px solid ${c.accent}`, borderBottom: `2px solid ${c.accent}`,
+                      borderBottomRightRadius: 9, opacity: 0.5,
+                    }}
+                  />
                 </div>
               );
             })}

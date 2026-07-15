@@ -110,6 +110,71 @@ fn expect_startup<T, E: std::fmt::Display>(step: &str, result: Result<T, E>) -> 
     }
 }
 
+/// macOS only: when the app is launched from a read-only / translocated location
+/// (Gatekeeper App Translocation, or straight from the DMG / Downloads), the
+/// auto-updater can't replace the bundle in place — the user sees "Ecliptr is
+/// running from a read-only location and can't update itself". Detect that at
+/// startup and offer to move the app into /Applications and relaunch from there,
+/// which stops translocation and lets updates work. Best-effort and fully guarded:
+/// acts only when clearly needed, never touches user data (which lives in
+/// Application Support, not the bundle), and falls back to manual instructions if
+/// the move fails. Uses osascript via a subprocess (same approach as
+/// show_startup_error_dialog) to stay off the objc2 runtime.
+#[cfg(target_os = "macos")]
+fn ensure_app_in_applications() {
+    // exe = <App>.app/Contents/MacOS/<bin>; the bundle is three parents up.
+    let exe = match std::env::current_exe() { Ok(p) => p, Err(_) => return };
+    let bundle = match exe.ancestors().nth(3) {
+        Some(p) if p.extension().and_then(|e| e.to_str()) == Some("app") => p.to_path_buf(),
+        _ => return, // not a .app layout (e.g. `cargo run`) — nothing to do
+    };
+    let bundle_str = bundle.to_string_lossy().to_string();
+    let translocated = bundle_str.contains("/AppTranslocation/");
+    let in_applications = bundle_str.starts_with("/Applications/");
+    if in_applications && !translocated { return; } // already in the right place
+
+    let name = bundle.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if !name.ends_with(".app") { return; } // safety: never build a bare /Applications/ target
+    let target = format!("/Applications/{name}");
+
+    let prompt = "Ecliptr is running from a location where it can't update itself.\n\n\
+                  Move it to your Applications folder now? Ecliptr will reopen from there, \
+                  and updates will work from then on.";
+    let choice = std::process::Command::new("osascript")
+        .env("ECLIPTR_MOVE_MSG", prompt)
+        .args(["-e",
+            "button returned of (display dialog (system attribute \"ECLIPTR_MOVE_MSG\") \
+             with title \"Move Ecliptr to Applications\" \
+             buttons {\"Not now\", \"Move to Applications\"} default button \"Move to Applications\")"])
+        .output();
+    let approved = matches!(&choice, Ok(o) if String::from_utf8_lossy(&o.stdout).contains("Move to Applications"));
+    if !approved { return; }
+
+    // Replace any stale copy, then ditto in (preserves signature + xattrs).
+    let _ = std::process::Command::new("rm").args(["-rf", target.as_str()]).status();
+    let moved = matches!(
+        std::process::Command::new("ditto").arg(&bundle_str).arg(&target).status(),
+        Ok(s) if s.success()
+    );
+
+    if moved {
+        let _ = std::process::Command::new("open").args(["-n", target.as_str()]).spawn();
+        std::process::exit(0);
+    }
+    // Move failed (usually /Applications permissions) — guide the user to do it by hand.
+    let _ = std::process::Command::new("osascript")
+        .env("ECLIPTR_MOVE_ERR",
+            "Couldn't move Ecliptr automatically.\n\nPlease quit Ecliptr, drag it into your \
+             Applications folder, then reopen it from there so it can update itself.")
+        .args(["-e",
+            "display dialog (system attribute \"ECLIPTR_MOVE_ERR\") \
+             with title \"Move Ecliptr to Applications\" buttons {\"OK\"} default button \"OK\""])
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_app_in_applications() {}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -125,6 +190,11 @@ fn main() {
         write_startup_log(&format!("PANIC: {}", info));
         default_hook(info);
     }));
+
+    // Before anything else: if we're running from a read-only / translocated spot
+    // (macOS), offer to move into /Applications so the updater can work. No-op on
+    // Windows and when already correctly installed.
+    ensure_app_in_applications();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
