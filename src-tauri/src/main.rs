@@ -561,6 +561,7 @@ fn main() {
             unmark_supplier_payment_paid,
             complete_deal_flow,
             recalc_deal_from_bank,
+            cleanup_orphan_allocations,
             uncomplete_deal_flow,
             set_deal_payout_included,
             update_deal_completed_at,

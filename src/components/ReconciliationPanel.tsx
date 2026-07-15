@@ -23,7 +23,7 @@ type Leg = {
   target: number; // expected amount, drives the "match" hint
 };
 
-export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
+export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow; onChange?: () => void }) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
   const [busy, setBusy] = useState(false);
@@ -88,6 +88,7 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
       setPicker(null);
       setCands(null);
       await load();
+      onChange?.();
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -100,6 +101,7 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
     try {
       await api.removeBankAllocation(id);
       await load();
+      onChange?.();
     } catch (e: any) {
       toast(String(e), "error");
     }

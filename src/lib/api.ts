@@ -1770,6 +1770,7 @@ export const api = {
     invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
   recalcDealFromBank: (id: string) => invoke<any>("recalc_deal_from_bank", { id }),
+  cleanupOrphanAllocations: () => invoke<number>("cleanup_orphan_allocations"),
   setDealPayoutIncluded: (id: string, included: boolean) => invoke<void>("set_deal_payout_included", { id, included }),
   updateDealCompletedAt: (id: string, date: string) =>
     invoke<void>("update_deal_completed_at", { id, date }),

@@ -4105,9 +4105,14 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         Some(d) if !d.is_empty() => format!("{}T00:00:00Z", d),
         _ => Utc::now().to_rfc3339(),
     };
-    let gross = df.payment_received_amount;
-    let total_cost = df.total_supplier_cost;
-    let net = gross - total_cost;
+    // Bank actuals win: if the deal has linked bank transactions, its recorded
+    // revenue / cost / profit come from those real transactions (per money leg),
+    // falling back to the entered figures only where nothing is linked.
+    let (gross, total_cost, net) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let (g, c, n, _) = deal_bank_actuals(&conn, &id, df.payment_received_amount, df.total_supplier_cost);
+        (g, c, n)
+    };
     let is_loss = net < 0.0;
     let (jack, ben, business) = if include_payout {
         ( (net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
@@ -4123,7 +4128,13 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     // This is the authoritative per-deal split going forward; the jack/ben
     // columns above remain only so already-shipped readers keep working.
     let breakdown = build_payout_breakdown(&read_profit_split_shares_raw(), net, include_payout);
-    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout, "payout_recipients": breakdown})).map_err(|e| e.to_string())?;
+    // Snapshot the linked bank transactions onto the deal so the record (and the
+    // profit) survives even if the bank statements are later deleted / re-imported.
+    let bank_snapshot = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        bank_snapshot_value(&conn, &id)
+    };
+    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout, "payout_recipients": breakdown, "bank_snapshot": bank_snapshot})).map_err(|e| e.to_string())?;
 
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("complete".into()));
@@ -4188,123 +4199,152 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
 }
 
-/// Recalculate a deal flow by syncing bank_allocation reconciliation data
-/// back into supplier_payments_json and total_supplier_cost.
-/// Fixes deals where supplier costs were only paired via reconciliation
-/// but never written into the deal flow's own cost tracking.
+/// Bank-precedence actuals for a deal. When a money leg has ANY linked bank
+/// transaction, that leg's real bank total is the truth and wins over the
+/// manually-entered figure; a leg with no bank link falls back to what was
+/// entered. This is the single definition of a deal's recorded revenue / cost /
+/// profit — used at completion, whenever an allocation changes, and behind the
+/// reconciliation section — so Deal Flow and analytics always agree. Refunds are
+/// accounted for separately (the refunds table + the analytics refund
+/// subtraction), so `net` here is deliberately PRE-refund (revenue − cost),
+/// matching the stored net_profit contract every report already relies on.
+/// Returns (revenue, cost, net, has_any_bank_link).
+fn deal_bank_actuals(
+    conn: &rusqlite::Connection, deal_flow_id: &str, manual_gross: f64, manual_cost: f64,
+) -> (f64, f64, f64, bool) {
+    // Only ever count an allocation whose bank transaction still exists. A deleted /
+    // re-imported statement can leave allocation rows pointing at a gone txn; those
+    // dead rows must never inflate a deal's numbers (they were doubling actuals).
+    let role_sum = |role: &str| -> f64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+             WHERE a.deal_flow_id=?1 AND a.role=?2
+               AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
+            rusqlite::params![deal_flow_id, role], |r| r.get(0),
+        ).unwrap_or(0.0)
+    };
+    let exists = |sql: &str| -> bool { conn.query_row(sql, [deal_flow_id], |_| Ok(())).is_ok() };
+
+    let buyer     = role_sum("buyer_payment");
+    let supplier  = role_sum("supplier_payment");
+    let fee       = role_sum("fee");
+    let refund_in = role_sum("refund_in"); // supplier reversal → lowers our real cost
+    let has_rev_link  = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role='buyer_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
+    let has_cost_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role IN ('supplier_payment','fee') AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
+    let any_link      = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
+
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    let rev  = if has_rev_link  { buyer } else { manual_gross };
+    let cost = if has_cost_link { (supplier + fee - refund_in).max(0.0) } else { manual_cost };
+    (r2(rev), r2(cost), r2(rev - cost), any_link)
+}
+
+/// Snapshot of the bank transactions currently linked to a deal — a plain copy
+/// of role / amount / direction / counterparty / date captured onto the deal.
+/// Recorded at completion (and refreshed as links change) so the deal's record
+/// survives even if the underlying bank statements are later deleted or
+/// re-imported. The stored net_profit remains the authoritative number; this
+/// preserves the "which transactions built it" detail so profits never vanish.
+fn bank_snapshot_value(conn: &rusqlite::Connection, deal_flow_id: &str) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT a.role, a.amount, a.note, bt.direction, bt.counterparty_name, bt.posted_at, bt.id
+         FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
+         WHERE a.deal_flow_id=?1 ORDER BY a.role, bt.posted_at",
+    ) {
+        if let Ok(rows) = stmt.query_map([deal_flow_id], |r| Ok(json!({
+            "role":         r.get::<_, String>(0)?,
+            "amount":       r.get::<_, f64>(1)?,
+            "note":         r.get::<_, Option<String>>(2)?,
+            "direction":    r.get::<_, String>(3)?,
+            "counterparty": r.get::<_, Option<String>>(4)?,
+            "posted_at":    r.get::<_, Option<String>>(5)?,
+            "txn_id":       r.get::<_, String>(6)?,
+        }))) {
+            out = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+    Value::Array(out)
+}
+
+/// Re-derive a COMPLETED deal's recorded revenue / cost / profit from bank
+/// actuals (bank-precedence) and persist to deal_flows + invoices, preserving
+/// the deal's existing payout-split choice. No-op unless the deal is complete.
+///
+/// FAIL-PROOF: the fallback for a money leg with no live bank link is the deal's
+/// LAST RECORDED figure (not the originally-entered one), so losing a bank
+/// statement can only ever leave a completed deal's profit untouched — never
+/// erase or reset it. A live link refines the number; a missing one preserves it.
+/// The linked transactions are also snapshotted into metadata for the record.
+fn resync_completed_deal(id: &str) -> Result<(), String> {
+    let df = read_df(id)?;
+    if df.stage != "complete" { return Ok(()); }
+
+    let (gross, total_cost, net, _has_bank, snapshot) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        // Fallback = already-recorded gross/cost (the completion snapshot), so a
+        // vanished bank link keeps what's on the books instead of zeroing it.
+        let (g, c, n, hb) = deal_bank_actuals(&conn, id, df.gross_revenue, df.total_cost);
+        (g, c, n, hb, bank_snapshot_value(&conn, id))
+    };
+
+    let split = read_profit_split()?;
+    let mut meta_map = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}"))
+        .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let include_payout = meta_map.get("payout_included").and_then(|v| v.as_bool()).unwrap_or(false);
+    meta_map.insert("bank_snapshot".into(), snapshot);
+    let meta_json = serde_json::to_string(&Value::Object(meta_map)).unwrap_or_else(|_| "{}".into());
+
+    let (jack, ben, business) = if include_payout {
+        ((net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
+         (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0,
+         (net * (split.business_pct / 100.0) * 100.0).round() / 100.0)
+    } else { (0.0, 0.0, net) };
+    let margin_pct = if gross > 0.0 { (net / gross * 100.0 * 100.0).round() / 100.0 } else { 0.0 };
+    let now = Utc::now().to_rfc3339();
+
+    let mut cols = Map::new();
+    cols.insert("gross_revenue".into(), json!(gross));
+    cols.insert("total_cost".into(), json!(total_cost));
+    cols.insert("net_profit".into(), json!(net));
+    cols.insert("profit_jack".into(), json!(jack));
+    cols.insert("profit_ben".into(), json!(ben));
+    cols.insert("profit_business".into(), json!(business));
+    cols.insert("metadata".into(), json!(meta_json));
+    cols.insert("updated_at".into(), json!(now.clone()));
+    sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
+
+    let mut inv_cols = Map::new();
+    inv_cols.insert("profit".into(), json!(net));
+    inv_cols.insert("total_cost".into(), json!(total_cost));
+    inv_cols.insert("margin".into(), json!(margin_pct));
+    sync::record_upsert("invoices", &df.invoice_id, inv_cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE deal_flows SET gross_revenue=?1, total_cost=?2, net_profit=?3, profit_jack=?4, profit_ben=?5, profit_business=?6, metadata=?7, updated_at=?8 WHERE id=?9",
+        rusqlite::params![gross, total_cost, net, jack, ben, business, meta_json, now, id],
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE invoices SET profit=?1, total_cost=?2, margin=?3 WHERE id=?4",
+        rusqlite::params![net, total_cost, margin_pct, df.invoice_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Recalculate a completed deal's recorded numbers from its linked bank
+/// transactions (bank-precedence). Exposed as the "Recalculate from bank" action
+/// and called automatically whenever an allocation is added or removed.
 #[tauri::command]
 pub async fn recalc_deal_from_bank(id: String) -> Result<Value, String> {
+    resync_completed_deal(&id)?;
     let df = read_df(&id)?;
-    let conn = pool().get().map_err(|e| e.to_string())?;
-
-    // Get bank-allocated amounts
-    let supplier_paired: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(ba.amount),0) FROM bank_allocation ba
-         JOIN bank_txn bt ON bt.id = ba.bank_txn_id
-         WHERE ba.deal_flow_id=?1 AND ba.role='supplier_payment' AND bt.direction='money_out'",
-        [&id], |r| r.get(0)
-    ).unwrap_or(0.0);
-
-    let fee_paired: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(ba.amount),0) FROM bank_allocation ba
-         JOIN bank_txn bt ON bt.id = ba.bank_txn_id
-         WHERE ba.deal_flow_id=?1 AND ba.role='wire_fee' AND bt.direction='money_out'",
-        [&id], |r| r.get(0)
-    ).unwrap_or(0.0);
-
-    let mut payments: Vec<SupplierPayment> = df.supplier_payments.clone();
-    // Remove old auto-generated bank-sync entries so we don't duplicate
-    payments.retain(|p| p.supplier_name != "(Bank sync)");
-
-    // Get detailed bank txn info for supplier payments
-    if supplier_paired > 0.01 {
-        let mut stmt = conn.prepare(
-            "SELECT bt.id, bt.counterparty_name, ba.amount FROM bank_allocation ba
-             JOIN bank_txn bt ON bt.id = ba.bank_txn_id
-             WHERE ba.deal_flow_id=?1 AND ba.role='supplier_payment' AND bt.direction='money_out'"
-        ).map_err(|e| e.to_string())?;
-        let txns: Vec<(String, String, f64)> = stmt.query_map([&id], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,f64>(2)?)))
-            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-        for (txn_id, name, amt) in txns {
-            payments.push(SupplierPayment {
-                id: Uuid::new_v4().to_string(),
-                supplier_name: name,
-                supplier_id: None,
-                amount: amt,
-                original_amount: Some(amt),
-                price_changed: false,
-                quantity: None,
-                unit_price: None,
-                method: Some("(Bank sync)".into()),
-                notes: Some(format!("txn:{}", txn_id)),
-                paid: true,
-                paid_at: Some(Utc::now().to_rfc3339()),
-                category: Some("supplier".into()),
-            });
-        }
-    }
-
-    // Add wire fees from bank
-    if fee_paired > 0.01 {
-        let mut stmt = conn.prepare(
-            "SELECT bt.counterparty_name, ba.amount FROM bank_allocation ba
-             JOIN bank_txn bt ON bt.id = ba.bank_txn_id
-             WHERE ba.deal_flow_id=?1 AND ba.role='wire_fee' AND bt.direction='money_out'"
-        ).map_err(|e| e.to_string())?;
-        let fees: Vec<(String, f64)> = stmt.query_map([&id], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?)))
-            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-        for (name, amt) in fees {
-            payments.push(SupplierPayment {
-                id: Uuid::new_v4().to_string(),
-                supplier_name: name,
-                supplier_id: None,
-                amount: amt,
-                original_amount: Some(amt),
-                price_changed: false,
-                quantity: None,
-                unit_price: None,
-                method: Some("(Bank sync)".into()),
-                notes: None,
-                paid: true,
-                paid_at: Some(Utc::now().to_rfc3339()),
-                category: Some("wire_fee".into()),
-            });
-        }
-    }
-
-    write_sp(&id, &payments, &df.invoice_id)?;
-
-    // If deal is complete, also recalculate profit splits
-    if df.stage == "complete" {
-        let split = read_profit_split()?;
-        let gross = df.payment_received_amount;
-        let total_cost: f64 = payments.iter().map(|p| p.amount).sum();
-        let net = gross - total_cost;
-
-        let meta: Option<Value> = serde_json::from_str(df.metadata.as_deref().unwrap_or("{}")).ok();
-        let include_payout = meta.as_ref().and_then(|m| m.get("payout_included")).and_then(|v| v.as_bool()).unwrap_or(false);
-
-        let (jack, ben, business) = if include_payout {
-            ((net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
-             (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0,
-             (net * (split.business_pct / 100.0) * 100.0).round() / 100.0)
-        } else { (0.0, 0.0, net) };
-
-        let margin_pct = if gross > 0.0 { (net / gross * 100.0 * 100.0).round() / 100.0 } else { 0.0 };
-        let now = Utc::now().to_rfc3339();
-
+    let (gross, cost, net, has_bank) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE deal_flows SET total_cost=?1, net_profit=?2, profit_jack=?3, profit_ben=?4, profit_business=?5, updated_at=?6 WHERE id=?7",
-            rusqlite::params![total_cost, net, jack, ben, business, now, id],
-        ).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE invoices SET profit=?1, total_cost=?2, margin=?3 WHERE id=?4",
-            rusqlite::params![net, total_cost, margin_pct, df.invoice_id],
-        ).map_err(|e| e.to_string())?;
-    }
-
-    Ok(json!({ "supplier_cost": payments.iter().map(|p| p.amount).sum::<f64>(), "payment_count": payments.len() }))
+        deal_bank_actuals(&conn, &id, df.payment_received_amount, df.total_supplier_cost)
+    };
+    crate::netsync::push_now();
+    Ok(json!({ "gross_revenue": gross, "supplier_cost": cost, "net_profit": net, "from_bank": has_bank }))
 }
 
 #[tauri::command]
@@ -9893,9 +9933,10 @@ pub async fn allocate_bank_txn(
     ).map_err(|e| e.to_string())?;
     drop(conn); // release before recalc acquires its own connection
 
-    if role == "supplier_payment" {
-        let _ = recalc_deal_from_bank(deal_flow_id.clone()).await;
-    }
+    // Any bank link (buyer payment, supplier payment, fee, refund) feeds the deal's
+    // recorded numbers. For a completed deal, re-derive + persist now so Deal Flow
+    // and every report that reads those numbers reflect the link immediately.
+    let _ = resync_completed_deal(&deal_flow_id);
 
     crate::netsync::push_now(); // reach the other device promptly, not on the next poll
     Ok(id)
@@ -9904,11 +9945,50 @@ pub async fn allocate_bank_txn(
 /// Remove an allocation.
 #[tauri::command]
 pub async fn remove_bank_allocation(id: String) -> Result<(), String> {
+    // Capture the deal before deleting so we can re-derive its numbers after.
+    let deal_flow_id: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT deal_flow_id FROM bank_allocation WHERE id=?1", [&id], |r| r.get(0)).ok()
+    };
     sync::record_delete("bank_allocation", &id).map_err(|e| e.to_string())?;
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    }
+    // Unlinking a transaction from a completed deal must move its numbers back too.
+    if let Some(dfid) = deal_flow_id { let _ = resync_completed_deal(&dfid); }
     crate::netsync::push_now();
     Ok(())
+}
+
+/// Delete allocation rows whose bank transaction no longer exists — e.g. a bank
+/// statement was re-imported and the old txn ids were replaced, leaving the
+/// allocation pointing at a gone transaction. These dead links were double-counting
+/// deals' actuals. They reference nothing real, so removing them corrupts no money
+/// data; it just stops the bleed. Idempotent, synced, and re-derives any completed
+/// deal that was affected. Returns how many were removed.
+#[tauri::command]
+pub async fn cleanup_orphan_allocations() -> Result<i64, String> {
+    let rows: Vec<(String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.deal_flow_id FROM bank_allocation a
+             WHERE NOT EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
+        ).map_err(|e| e.to_string())?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect()
+    };
+    if rows.is_empty() { return Ok(0); }
+    let mut deals: Vec<String> = rows.iter().map(|(_, d)| d.clone()).collect();
+    deals.sort(); deals.dedup();
+    for (id, _) in &rows {
+        sync::record_delete("bank_allocation", id).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM bank_allocation WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    }
+    for d in &deals { let _ = resync_completed_deal(d); }
+    crate::netsync::push_now();
+    Ok(rows.len() as i64)
 }
 
 /// Allocations on one transaction, with the deal name / invoice number.
@@ -10187,10 +10267,13 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     let conn = pool().get().map_err(|e| e.to_string())?;
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
 
+    // Guard against orphaned allocations (bank_txn deleted / re-imported) so a dead
+    // link can't double a leg. Matches deal_bank_actuals.
     let role_sum = |role: &str| -> f64 {
         conn.query_row(
-            "SELECT COALESCE(SUM(amount),0) FROM bank_allocation
-             WHERE deal_flow_id = ?1 AND role = ?2",
+            "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+             WHERE a.deal_flow_id = ?1 AND a.role = ?2
+               AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
             rusqlite::params![deal_flow_id, role], |r| r.get(0),
         ).unwrap_or(0.0)
     };
@@ -10215,13 +10298,18 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     // the supplier cost — so "fully reconciled" is judged on AMOUNTS, not just the
     // presence of one paired transaction (BJM deals routinely have a deposit + balance
     // and multiple supplier wires).
-    let (expected_profit, gross_revenue, total_cost, total_supplier_cost, invoice_total): (f64, f64, f64, f64, f64) = conn.query_row(
-        "SELECT COALESCE(df.net_profit,0), COALESCE(df.gross_revenue,0), COALESCE(df.total_cost,0),
+    let (gross_revenue, total_cost, total_supplier_cost, invoice_total): (f64, f64, f64, f64) = conn.query_row(
+        "SELECT COALESCE(df.gross_revenue,0), COALESCE(df.total_cost,0),
                 COALESCE(df.total_supplier_cost,0), COALESCE(i.total,0)
          FROM deal_flows df LEFT JOIN invoices i ON i.id = df.invoice_id
          WHERE df.id = ?1",
-        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     ).map_err(|_| "Deal not found".to_string())?;
+
+    // Expected profit is the PLAN — what you'd make at the entered cost (revenue −
+    // supplier cost). The stored net_profit can be stale before completion (it may
+    // still equal gross if cost was added later), so derive it fresh here.
+    let expected_profit = (if invoice_total > 0.01 { invoice_total } else { gross_revenue }) - total_supplier_cost;
 
     // refund_out = bank-paired refunds; refunds = cash refunds with no bank link.
     // They describe DIFFERENT money, so sum them (the old max() undercounted a deal
@@ -10262,8 +10350,8 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT df.id, COALESCE(i.total,0), COALESCE(df.total_supplier_cost,0), COALESCE(df.gross_revenue,0),
-                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='buyer_payment'),0),
-                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'),0)
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='buyer_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0),
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='supplier_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0",
     ).map_err(|e| e.to_string())?;

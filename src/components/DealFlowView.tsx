@@ -5,11 +5,10 @@ import {
   DollarSign, CheckCircle2, Truck, Package, FileDown, XCircle,
 } from "lucide-react";
 import {
-  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare,
+  api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel } from "../lib/format";
 import { toast } from "./Toast";
-import CostProfitPanel from "./CostProfitPanel";
 import CompletedBreakdown from "./CompletedBreakdown";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
@@ -28,19 +27,6 @@ const NODE_LABELS: Record<Stage, string> = {
   supplier_paid:    "Supplier paid",
   complete:         "Review & complete",
 };
-
-const NODE_DESC: Record<Stage, string> = {
-  invoiced:         "Invoice sent",
-  payment_received: "Add supplier costs then mark payment",
-  supplier_paid:    "Confirm all suppliers paid",
-  complete:         "Finalize deal & lock",
-};
-
-// Auto-open the panel for the NEXT step needed
-function defaultPanel(stage: Stage): Stage {
-  const idx = si(stage);
-  return STAGES[Math.min(idx + 1, STAGES.length - 1)];
-}
 
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface " +
@@ -128,6 +114,8 @@ export default function DealFlowView() {
   // the duplicate/orphan rows themselves so no aggregate counts them. Idempotent.
   useEffect(() => {
     api.cleanupGhostDealFlows().then((n) => { if (n > 0) load(); }).catch(() => {});
+    // Remove dead bank links (txn deleted/re-imported) that were doubling actuals.
+    api.cleanupOrphanAllocations().then((n) => { if (n > 0) { toast(`Cleaned ${n} stale bank link${n !== 1 ? "s" : ""}`); load(); } }).catch(() => {});
   }, [load]);
 
   // Cross-tab navigation restore
@@ -205,6 +193,13 @@ export default function DealFlowView() {
 
   return (
     <div className="space-y-5">
+      <style>{`
+        @keyframes dfIn  { 0% { opacity: 0; transform: translateY(6px); } 100% { opacity: 1; transform: translateY(0); } }
+        @keyframes dfPop { 0% { transform: scale(.55); } 55% { transform: scale(1.2); } 100% { transform: scale(1); } }
+        .df-anim { animation: dfIn .18s ease-out; }
+        .df-pop  { animation: dfPop .5s cubic-bezier(.2,.7,.3,1.4); }
+        @media (prefers-reduced-motion: reduce) { .df-anim, .df-pop { animation: none !important; } }
+      `}</style>
 
       {/* Header */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -473,23 +468,72 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
   return { label: status ?? "—", cls: "bg-surface-3 text-muted" };
 }
 
+// ─── Section model ────────────────────────────────────────────────────────
+// Five focused steps. The DB keeps its four stages; these sections just present
+// them (plus the bank-linking + profit review) one screen at a time.
+const SECTIONS = [
+  { key: "supplier", label: "Supplier & cost" },
+  { key: "money",    label: "Money movement" },
+  { key: "link",     label: "Link financials" },
+  { key: "profit",   label: "Profit" },
+  { key: "complete", label: "Review & complete" },
+] as const;
+type SectionKey = typeof SECTIONS[number]["key"];
+const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
+
 function DealFlowCard({
   flow, onReload, zebra, refund,
 }: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number } }) {
-  const currentSi = si(flow.stage);
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
-  const [panel,     setPanel]     = useState<Stage>(() => defaultPanel(flow.stage as Stage));
-  // Refund mode swaps the deal-flow steps for the refund workspace. Defaults on for
-  // any deal with a refund; the header button flips it (and can start one on a normal deal).
   const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
   const refundView = refundOverride ?? !!refund;
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
   const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
+  const [showInvoice, setShowInvoice] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [reconLinked, setReconLinked] = useState(false);
 
-  useEffect(() => { setPanel(defaultPanel(flow.stage as Stage)); }, [flow.stage]);
+  // Derived section-completion from the deal's real state.
+  const payments      = flow.supplier_payments || [];
+  const hasSuppliers  = payments.length > 0;
+  const received      = si(flow.stage) >= si("payment_received");
+  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid) : true; // nothing to send → satisfied
+  const moneyDone     = received && suppliersPaid;
+  const isComplete    = flow.stage === "complete";
+  const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced") || received;
 
-  // Fetch invoice status + line items for the header
+  const done: Record<SectionKey, boolean> = {
+    supplier: supplierDone,
+    money:    moneyDone,
+    link:     reconLinked,
+    profit:   reconLinked || isComplete,
+    complete: isComplete,
+  };
+
+  const firstOpen = (): SectionKey => {
+    if (isComplete) return "complete";
+    if (!supplierDone) return "supplier";
+    if (!moneyDone) return "money";
+    return "link";
+  };
+  const [section, setSection] = useState<SectionKey>(firstOpen);
+  const [animKey, setAnimKey] = useState(0);
+  const [flash,   setFlash]   = useState<SectionKey | null>(null);
+
+  const go = (k: SectionKey) => { setSection(k); setAnimKey((a) => a + 1); };
+  // Advance to the next section with a little "step complete" flourish.
+  const advance = (from: SectionKey) => {
+    const next = SECTIONS[Math.min(sIdx(from) + 1, SECTIONS.length - 1)].key;
+    setFlash(from);
+    setTimeout(() => setFlash(null), 550);
+    go(next);
+  };
+
+  // When the deal's stage changes underneath us, keep the view on a sensible step.
+  useEffect(() => { setSection(firstOpen()); /* eslint-disable-next-line */ }, [flow.stage]);
+
+  // Fetch invoice status + line items for the header / breakdown.
   useEffect(() => {
     api.getInvoice(flow.invoice_id)
       .then((inv) => {
@@ -503,52 +547,52 @@ function DealFlowCard({
       .catch(() => {});
   }, [flow.invoice_id]);
 
-  const clickNode = (key: Stage) => {
-    if (si(key) > currentSi + 1) return;
-    setPanel((prev) => (prev === key ? defaultPanel(flow.stage as Stage) : key));
-  };
+  // Know whether any bank transaction is linked, so the Link/Profit steps show as done.
+  useEffect(() => {
+    if (!isOpen) return;
+    api.dealReconciliation(flow.id)
+      .then((r) => {
+        const p = r?.pieces;
+        setReconLinked(!!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005));
+      })
+      .catch(() => {});
+  }, [flow.id, isOpen, flow.stage]);
 
-  // Deal flow stage pill color
   const stagePill: Record<Stage, string> = {
     invoiced:         "bg-info-bg text-info-ink",
     payment_received: "bg-warning-bg text-warning-ink",
     supplier_paid:    "bg-accent/10 text-accent",
     complete:         "bg-success-bg text-success-ink",
   };
-
   const invPill = invoiceStatusPill(invStatus);
+  const locked  = isComplete && !editMode; // completed deals are read-only until "Edit" is pressed
 
   return (
     <div
       className={`border border-line rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.05)] overflow-hidden ${zebra ? "bg-surface-2/40" : "bg-surface"}`}
     >
-      {/* ── Collapsed header — always visible, click to expand ── */}
+      {/* ── Collapsed header ── */}
       <button
         className="w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-surface-2/40 transition-colors"
         onClick={() => setIsOpen((v) => !v)}
       >
-        {/* Mini node dots (always visible at-a-glance progress) */}
+        {/* Section progress dots */}
         <div className="flex items-center gap-1 flex-shrink-0">
-          {STAGES.map((_, i) => (
+          {SECTIONS.map((s) => (
             <div
-              key={i}
+              key={s.key}
               className={`rounded-full transition-all ${
-                i < currentSi
-                  ? "w-2.5 h-2.5 bg-accent"
-                  : i === currentSi
-                  ? "w-2.5 h-2.5 bg-accent ring-2 ring-accent/20 ring-offset-1"
-                  : "w-2 h-2 bg-surface-3"
+                done[s.key] ? "w-2.5 h-2.5 bg-accent"
+                : s.key === section && isOpen ? "w-2.5 h-2.5 bg-accent ring-2 ring-accent/20 ring-offset-1"
+                : "w-2 h-2 bg-surface-3"
               }`}
             />
           ))}
         </div>
 
-        {/* Invoice # + client → supplier + item preview */}
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 min-w-0">
-            <span className="text-[12px] font-mono text-muted flex-shrink-0">
-              {flow.invoice_number}
-            </span>
+            <span className="text-[12px] font-mono text-muted flex-shrink-0">{flow.invoice_number}</span>
             <span className="text-[14px] text-ink truncate min-w-0">
               <span className="font-semibold">{flow.client_name || "Unknown"}</span>
               {(() => {
@@ -564,13 +608,10 @@ function DealFlowCard({
           )}
         </div>
 
-        {/* Total + projected profit + invoice status + deal flow stage + chevron */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <div className="flex flex-col items-end leading-tight">
-            <span className="text-[13px] font-semibold text-ink-2 tabular-nums">
-              {fmtAmount(flow.invoice_total)}
-            </span>
-            {flow.stage !== "complete" && (() => {
+            <span className="text-[13px] font-semibold text-ink-2 tabular-nums">{fmtAmount(flow.invoice_total)}</span>
+            {!isComplete && (() => {
               const proj = flow.invoice_total - flow.total_supplier_cost;
               return (
                 <span className={`text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
@@ -580,18 +621,12 @@ function DealFlowCard({
               );
             })()}
           </div>
-          {/* Invoice status — tells you where the invoice actually is */}
-          <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>
-            {invPill.label}
-          </span>
-          {/* Deal flow stage — only show if it goes beyond step 1 */}
+          <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>{invPill.label}</span>
           {flow.stage !== "invoiced" && (
             <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
               {NODE_LABELS[flow.stage as Stage]}
             </span>
           )}
-          {/* Refund-mode toggle — flips the whole card between deal-flow and refund.
-              Shows the balance when a refund is live; starts one on a normal deal. */}
           <button
             onClick={(e) => { e.stopPropagation(); setIsOpen(true); setRefundOverride(!refundView); }}
             className={refund
@@ -608,7 +643,6 @@ function DealFlowCard({
       {/* ── Expanded body ── */}
       {isOpen && (
         <>
-          {/* Fully refunded — stated loud, in any view. */}
           {refund && refund.refund_owed > 0 && refund.remaining === 0 && (
             <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-danger-bg border border-danger px-4 py-3">
               <RotateCcw size={18} className="text-danger-ink flex-shrink-0" strokeWidth={2.2} />
@@ -617,271 +651,207 @@ function DealFlowCard({
             </div>
           )}
 
-          {/* ── New 4-step progress bar ── */}
-          {!refundView && (
-          <div className="px-5 pt-5 pb-2 border-t border-line">
-            <div className="flex items-center">
-              {(["cost","payment","link","finalize"] as const).map((key, i) => {
-                const done = i < currentSi;
-                const cur  = i === currentSi;
-                const future = i > currentSi;
-                const labels = ["Cost & supplier","Payment received","Link financials","Finalize"];
-                return (
-                  <div key={key} className="flex items-center flex-1 last:flex-none last:w-auto">
-                    <button onClick={() => { if (!future) clickNode(STAGES[i]); }} disabled={future}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${cur ? "bg-accent/10 ring-1 ring-accent/20" : done ? "text-muted" : "text-faint cursor-default"}`}>
-                      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold transition-all ${
-                        done ? "bg-accent text-on-accent" : cur ? "bg-accent text-on-accent ring-4 ring-accent/20" : "bg-surface-3 text-faint"}`}>
-                        {done ? <Check size={14} strokeWidth={2.5} /> : i+1}
-                      </span>
-                      <span className="text-[11px] font-semibold text-left leading-tight hidden sm:block">{labels[i]}</span>
-                    </button>
-                    {i < 3 && <div className={`flex-1 h-[2px] mx-1 rounded-full ${i < currentSi ? "bg-accent" : "bg-surface-3"}`} />}
-                  </div>
-                );
-              })}
+          {refundView ? (
+            <div className="border-t border-line bg-surface-2 px-5 py-4">
+              <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
             </div>
-          </div>
-          )}
-
-          {/* Invoice breakdown quick view */}
-          {invItems.length > 0 && (
-            <div className="px-5 pb-4 border-t border-line">
-              <div className="text-[12.5px] font-medium text-muted mt-3 mb-2">
-                Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
+          ) : (
+            <>
+              {/* Section switcher — always visible, click any step */}
+              <div className="border-t border-line">
+                <SectionNav current={section} done={done} flash={flash} onGo={go} />
               </div>
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="text-muted">
-                    <th className="text-left font-semibold py-1">Description</th>
-                    <th className="text-right font-semibold py-1 w-12">Qty</th>
-                    <th className="text-right font-semibold py-1 w-20">Rate</th>
-                    <th className="text-right font-semibold py-1 w-24">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invItems.map((it, i) => (
-                    <tr key={i} className="border-t border-line-2">
-                      <td className="py-1.5 text-ink-2">{it.description}</td>
-                      <td className="py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
-                      <td className="py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
-                      <td className="py-1.5 text-right tabular-nums font-medium text-ink">{fmtAmount(it.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {invMeta && (
-                <div className="mt-2 pt-2 border-t border-line space-y-0.5 text-[12px]">
-                  <div className="flex justify-between text-muted"><span>Subtotal</span><span className="tabular-nums">{fmtAmount(invMeta.subtotal)}</span></div>
-                  <div className="flex justify-between text-muted"><span>Tax</span><span className="tabular-nums">{fmtAmount(invMeta.tax)}</span></div>
-                  <div className="flex justify-between font-semibold text-ink"><span>Total</span><span className="tabular-nums">{fmtAmount(invMeta.total)}</span></div>
+
+              {/* Completed banner + edit toggle */}
+              {isComplete && (
+                <div className="mx-5 mt-1 mb-1 flex items-center justify-between gap-2 rounded-lg bg-success-bg/60 border border-success/30 px-3 py-2">
+                  <div className="flex items-center gap-2 text-[12px] text-success-ink font-medium">
+                    <CheckCircle2 size={13} />
+                    Completed{flow.completed_at ? ` ${new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""} — every section stays editable
+                  </div>
+                  <button
+                    onClick={() => setEditMode((v) => !v)}
+                    className={`text-[11.5px] font-medium px-2.5 py-1 rounded-lg border transition-colors ${editMode ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}
+                  >
+                    {editMode ? "Done editing" : "Edit"}
+                  </button>
                 </div>
               )}
-            </div>
+
+              {/* Invoice breakdown — reference, collapsed by default */}
+              {invItems.length > 0 && (
+                <div className="px-5 pt-2">
+                  <button onClick={() => setShowInvoice((v) => !v)}
+                    className="flex items-center gap-1.5 text-[11.5px] text-muted hover:text-ink-2 transition-colors">
+                    <ChevronRight size={12} className={`transition-transform ${showInvoice ? "rotate-90" : ""}`} />
+                    Invoice breakdown{invMeta?.number ? ` · ${invMeta.number}` : ""}
+                  </button>
+                  {showInvoice && (
+                    <table className="w-full text-[12px] mt-2">
+                      <thead>
+                        <tr className="text-muted">
+                          <th className="text-left font-semibold py-1">Description</th>
+                          <th className="text-right font-semibold py-1 w-12">Qty</th>
+                          <th className="text-right font-semibold py-1 w-20">Rate</th>
+                          <th className="text-right font-semibold py-1 w-24">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invItems.map((it, i) => (
+                          <tr key={i} className="border-t border-line-2">
+                            <td className="py-1.5 text-ink-2">{it.description}</td>
+                            <td className="py-1.5 text-right tabular-nums text-muted">{it.qty}</td>
+                            <td className="py-1.5 text-right tabular-nums text-muted">{fmtAmount(it.rate)}</td>
+                            <td className="py-1.5 text-right tabular-nums font-medium text-ink">{fmtAmount(it.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* Active section body */}
+              <div className="border-t border-line bg-surface-2 px-5 py-4">
+                <div key={animKey} className="df-anim">
+                  {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
+                  {section === "money"    && <SectionMoney    flow={flow} onReload={onReload} onAdvance={() => advance("money")} locked={locked} />}
+                  {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
+                  {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
+                  {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
+                </div>
+
+                {/* Row actions */}
+                <div className="flex justify-end gap-1.5 mt-4 pt-3 border-t border-line-2">
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!confirm("Mark this deal as fallen through? It drops from the pipeline and its invoice is voided. You can restore it from the Archive.")) return;
+                      try { await api.setDealFlowFellThrough(flow.id, true); toast("Deal marked as fell through"); onReload(); }
+                      catch (err: any) { toast(String(err), "error"); }
+                    }}
+                    className="flex items-center gap-1 text-[11px] text-faint hover:text-warning-ink hover:bg-warning-bg px-2 py-1 rounded-lg transition-colors"
+                  >
+                    <XCircle size={11} /> Mark deal fell through
+                  </button>
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!confirm("Move to Archive? You can restore it anytime.")) return;
+                      try { await api.deleteDealFlow(flow.id); toast("Moved to Archive"); onReload(); }
+                      catch (err: any) { toast(String(err), "error"); }
+                    }}
+                    className="flex items-center gap-1 text-[11px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 py-1 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={11} /> Archive
+                  </button>
+                </div>
+              </div>
+            </>
           )}
-
-          {/* Action panel */}
-          <div className="border-t border-line bg-surface-2 px-5 py-4">
-            {/* Row actions — mark fell through (voids the invoice) + archive */}
-            <div className="flex justify-end gap-1.5 mb-3">
-              <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!confirm("Mark this deal as fallen through? It drops from the pipeline and its invoice is voided. You can restore it from the Archive.")) return;
-                  try { await api.setDealFlowFellThrough(flow.id, true); toast("Deal marked as fell through"); onReload(); }
-                  catch (err: any) { toast(String(err), "error"); }
-                }}
-                className="flex items-center gap-1 text-[11px] text-faint hover:text-warning-ink hover:bg-warning-bg px-2 py-1 rounded-lg transition-colors"
-              >
-                <XCircle size={11} /> Mark deal fell through
-              </button>
-              <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!confirm("Move to Archive? You can restore it anytime.")) return;
-                  try { await api.deleteDealFlow(flow.id); toast("Moved to Archive"); onReload(); }
-                  catch (err: any) { toast(String(err), "error"); }
-                }}
-                className="flex items-center gap-1 text-[11px] text-faint hover:text-danger-ink hover:bg-danger-bg px-2 py-1 rounded-lg transition-colors"
-              >
-                <Trash2 size={11} /> Archive
-              </button>
-            </div>
-
-            {refundView ? (
-              <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
-            ) : (
-              <>
-                {panel === "invoiced"         && <PanelInvoiced     flow={flow} />}
-                {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
-                {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
-                {panel === "complete" && (
-                  <>
-                    <ReconciliationPanel flow={flow} />
-                    <PanelComplete flow={flow} onReload={onReload} />
-                  </>
-                )}
-                {panel !== "complete" && si(flow.stage) >= si("payment_received") && (
-                  <ReconciliationPanel flow={flow} />
-                )}
-                <RefundWorkspace dealFlowId={flow.id} onChange={onReload} />
-              </>
-            )}
-          </div>
         </>
       )}
     </div>
   );
 }
 
-// ─── Panel 1: Invoice Sent (informational) ────────────────────────────────
-function PanelInvoiced({ flow }: { flow: DealFlow }) {
-  const [invoice, setInvoice] = useState<Invoice | null>(null);
-
-  useEffect(() => {
-    api.getInvoice(flow.invoice_id).then(setInvoice).catch(() => {});
-  }, [flow.invoice_id]);
-
-  const items: { description: string; qty: number; rate: number; amount: number }[] = invoice
-    ? (() => { try { return JSON.parse(invoice.line_items_json || "[]"); } catch { return []; } })()
-    : [];
-
+// ── Section switcher ──
+function SectionNav({ current, done, flash, onGo }: {
+  current: SectionKey; done: Record<SectionKey, boolean>; flash: SectionKey | null; onGo: (k: SectionKey) => void;
+}) {
   return (
-    <div className="space-y-3">
-      <SectionLabel>Invoice Details</SectionLabel>
-      {items.length > 0 ? (
-        <div className="rounded-lg border border-line overflow-hidden">
-          <div className="grid grid-cols-[1fr_48px_90px_90px] gap-x-3 px-3 py-1.5 bg-surface-2
-                          text-[12.5px] font-medium text-muted">
-            <span>Item</span><span className="text-center">Qty</span>
-            <span className="text-right">Rate</span><span className="text-right">Total</span>
+    <div className="flex items-center px-4 py-3 overflow-x-auto">
+      {SECTIONS.map((s, i) => {
+        const isCur  = s.key === current;
+        const isDone = done[s.key];
+        return (
+          <div key={s.key} className="flex items-center flex-shrink-0">
+            <button
+              onClick={() => onGo(s.key)}
+              className={`flex items-center gap-2 h-9 px-3 rounded-lg text-[12px] font-semibold transition-all ${
+                isCur ? "bg-accent/10 text-accent ring-1 ring-accent/25" : isDone ? "text-ink-2 hover:bg-surface-3" : "text-muted hover:bg-surface-3"
+              }`}
+            >
+              <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold ${flash === s.key ? "df-pop " : ""}${
+                isDone ? "bg-accent text-on-accent" : isCur ? "bg-accent/15 text-accent ring-1 ring-accent/40" : "bg-surface-3 text-faint"
+              }`}>
+                {isDone ? <Check size={13} strokeWidth={2.6} /> : i + 1}
+              </span>
+              <span className="hidden sm:block whitespace-nowrap">{s.label}</span>
+            </button>
+            {i < SECTIONS.length - 1 && (
+              <div className={`w-4 h-[2px] mx-0.5 rounded-full flex-shrink-0 ${isDone ? "bg-accent/50" : "bg-surface-3"}`} />
+            )}
           </div>
-          {items.map((item, i) => (
-            <div key={i}
-              className="grid grid-cols-[1fr_48px_90px_90px] gap-x-3 px-3 py-2 border-t border-line-2 text-[13px]">
-              <span className="text-ink-2 truncate">{item.description}</span>
-              <span className="text-muted text-center tabular-nums">{item.qty}</span>
-              <span className="text-muted text-right tabular-nums">{fmtAmount(item.rate)}</span>
-              <span className="text-ink font-medium text-right tabular-nums">{fmtAmount(item.amount)}</span>
-            </div>
-          ))}
-          <div className="flex justify-between px-3 py-2 border-t border-line bg-surface-2/60">
-            <span className="text-[12px] text-muted font-medium">Invoice Total</span>
-            <span className="text-[13px] font-bold text-ink tabular-nums">
-              {fmtAmount(flow.invoice_total)}
-            </span>
-          </div>
-        </div>
-      ) : (
-        <p className="text-[12px] text-faint">No line items on this invoice</p>
-      )}
-      <div className="flex items-center gap-2 text-[12px] text-success-ink">
-        <Check size={13} strokeWidth={2.5} /> Invoice sent to client
-      </div>
+        );
+      })}
     </div>
   );
 }
 
-// ─── Panel 2: Add Supplier + Mark Payment Received ────────────────────────
-function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
-  const [invoice,     setInvoice]     = useState<Invoice | null>(null);
+// ─── Section 1: Supplier & cost ───────────────────────────────────────────
+function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow; onReload: () => void; onAdvance: () => void; locked: boolean }) {
   const [suppName,    setSuppName]    = useState("");
   const [suppResults, setSuppResults] = useState<Supplier[]>([]);
   const [selSupplier, setSelSupplier] = useState<Supplier | null>(null);
-  const [items, setItems] = useState<
-    { description: string; qty: number; clientRate: number; myRate: string }[]
-  >([]);
+  const [items, setItems] = useState<{ description: string; qty: number; clientRate: number; myRate: string }[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [saving,   setSaving]   = useState(false);
-  // Actual dollars received — defaults to the invoice total but the user can
-  // enter a different amount (e.g. a slight underpayment they'll eat).
-  const [receivedAmount, setReceivedAmount] = useState<string>((flow.invoice_total ? flow.invoice_total.toFixed(2) : ""));
-  useEffect(() => { setReceivedAmount((flow.invoice_total ? flow.invoice_total.toFixed(2) : "")); }, [flow.invoice_total]);
-  // A partial up-front deposit — SEPARATE from the full amount received. The
-  // balance owed (invoice total − deposit) stays outstanding until the full
-  // payment is marked; recording a deposit does not advance the stage.
-  const [depositAmount, setDepositAmount] = useState<string>((flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""));
-  useEffect(() => { setDepositAmount(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""); }, [flow.deposit_amount]);
-  const [savingDeposit, setSavingDeposit] = useState(false);
   const [showCost, setShowCost] = useState(false);
   const [costType, setCostType] = useState("freight");
   const [costAmt,  setCostAmt]  = useState("");
   const [costNote, setCostNote] = useState("");
 
-  const isDone = si(flow.stage) > si("invoiced");
-
   useEffect(() => {
     api.getInvoice(flow.invoice_id).then((inv) => {
-      setInvoice(inv);
       try {
         const li: any[] = JSON.parse(inv.line_items_json || "[]");
-        setItems(li.map((it) => ({
-          description: it.description,
-          qty:         it.qty,
-          clientRate:  it.rate,
-          myRate:      "",
-        })));
+        setItems(li.map((it) => ({ description: it.description, qty: it.qty, clientRate: it.rate, myRate: "" })));
       } catch {}
     }).catch(() => {});
   }, [flow.invoice_id]);
 
-  // Supplier search
   useEffect(() => {
     if (!suppName || selSupplier?.name === suppName) { setSuppResults([]); return; }
-    const t = setTimeout(() =>
-      api.searchSuppliers(suppName).then(setSuppResults).catch(() => setSuppResults([])),
-    250);
+    const t = setTimeout(() => api.searchSuppliers(suppName).then(setSuppResults).catch(() => setSuppResults([])), 250);
     return () => clearTimeout(t);
   }, [suppName, selSupplier?.name]);
 
   const existingPayments = flow.supplier_payments || [];
-  const hasSuppliers     = existingPayments.length > 0;
   const anyRateEntered   = items.some((it) => parseAmt(it.myRate) > 0);
   const suppTotal        = items.reduce((s, it) => s + it.qty * parseAmt(it.myRate), 0);
+  const totalCost        = existingPayments.reduce((s, p) => s + p.amount, 0);
 
-  const pickSupplier = (s: Supplier) => {
-    setSelSupplier(s);
-    setSuppName(s.name);
-    setSuppResults([]);
-  };
+  const pickSupplier = (s: Supplier) => { setSelSupplier(s); setSuppName(s.name); setSuppResults([]); };
 
   const handleAddSupplier = async () => {
     if (!suppName.trim()) return;
     const filledItems = items.filter((it) => parseAmt(it.myRate) > 0);
-    // Allow a ZERO-cost deal (free goods / consignment): instead of blocking, confirm
-    // once so a forgotten rate doesn't silently book $0, then record a single $0
-    // supplier payment. Any positive rate → normal per-item flow (unchanged).
     const zeroCost = filledItems.length === 0;
-    if (zeroCost && !confirm("Submit $0 as the supplier cost for this deal? Your profit will equal the full revenue. Are you sure?")) {
-      return;
-    }
+    if (zeroCost && !confirm("Submit $0 as the supplier cost for this deal? Your profit will equal the full revenue. Are you sure?")) return;
     setSaving(true);
     try {
       if (zeroCost) {
         await api.addSupplierPayment(flow.id, {
-          supplier_name: suppName.trim(),
-          supplier_id:   selSupplier?.id || null,
-          amount:        0,
-          quantity:      items.reduce((s, it) => s + it.qty, 0) || 1,
-          unit_price:    0,
-          method:        selSupplier?.payment_method || null,
+          supplier_name: suppName.trim(), supplier_id: selSupplier?.id || null,
+          amount: 0, quantity: items.reduce((s, it) => s + it.qty, 0) || 1, unit_price: 0,
+          method: selSupplier?.payment_method || null,
         });
       } else {
         for (const it of filledItems) {
           const rate = parseAmt(it.myRate);
           await api.addSupplierPayment(flow.id, {
-            supplier_name: suppName.trim(),
-            supplier_id:   selSupplier?.id || null,
-            amount:        it.qty * rate,
-            quantity:      it.qty,
-            unit_price:    rate,
-            method:        selSupplier?.payment_method || null,
+            supplier_name: suppName.trim(), supplier_id: selSupplier?.id || null,
+            amount: it.qty * rate, quantity: it.qty, unit_price: rate,
+            method: selSupplier?.payment_method || null,
           });
         }
       }
       setSuppName(""); setSelSupplier(null); setSuppResults([]);
       setItems((prev) => prev.map((it) => ({ ...it, myRate: "" })));
       setShowForm(false);
+      // Keep completed-deal numbers correct after a manual cost edit.
+      if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
@@ -893,55 +863,30 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
     setSaving(true);
     try {
       const label = COST_CATS.find((c) => c.value === costType)?.label || "Cost";
-      await api.addSupplierPayment(flow.id, {
-        supplier_name: costNote.trim() || label,
-        supplier_id:   null,
-        amount:        amt,
-        category:      costType,
-      });
+      await api.addSupplierPayment(flow.id, { supplier_name: costNote.trim() || label, supplier_id: null, amount: amt, category: costType });
       setCostAmt(""); setCostNote(""); setShowCost(false);
+      if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
 
-  const handleMarkReceived = async () => {
-    const amt = parseFloat(receivedAmount);
-    if (isNaN(amt) || amt < 0) { toast("Enter a valid amount received", "error"); return; }
-    // No supplier on this deal → it books as 100% profit (no cost). Confirm so it's
-    // intentional, then proceed. You can complete the deal directly from here.
-    if (!hasSuppliers && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
-    setSaving(true);
+  const removePayment = async (pid: string) => {
     try {
-      await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null });
+      await api.removeSupplierPayment(flow.id, pid);
+      if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-
-  const handleUndo = async () => {
-    setSaving(true);
-    try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-
-  const handleSaveDeposit = async () => {
-    const amt = parseFloat(depositAmount) || 0;
-    if (amt < 0) { toast("Enter a valid deposit amount", "error"); return; }
-    setSavingDeposit(true);
-    try {
-      await api.setDeposit(flow.id, amt);
-      toast(amt > 0 ? "Deposit saved" : "Deposit cleared", "success");
-      onReload();
-    } catch (e: any) { toast(String(e), "error"); }
-    setSavingDeposit(false);
   };
 
   return (
     <div className="space-y-4">
-      <SectionLabel>{isDone ? "Payment received" : "Supplier cost & payment"}</SectionLabel>
+      <div>
+        <div className="text-[14px] font-semibold text-ink">Supplier &amp; cost</div>
+        <div className="text-[12px] text-muted mt-0.5">What you're paying for the goods. Add each supplier and cost, then continue.</div>
+      </div>
 
-      {/* Existing supplier payments */}
+      {/* Existing cost lines */}
       {existingPayments.length > 0 && (
         <div className="space-y-1.5">
           {existingPayments.map((p) => (
@@ -954,498 +899,429 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
                   )}
                 </div>
                 {p.quantity != null && p.unit_price != null && (
-                  <div className="text-[11px] text-muted tabular-nums">
-                    {p.quantity} × {fmtAmount(p.unit_price)}
-                  </div>
+                  <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
                 )}
               </div>
               <div className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(p.amount)}</div>
-              {!isDone && (
-                <button
-                  onClick={async () => { await api.removeSupplierPayment(flow.id, p.id); onReload(); }}
-                  className="text-faint hover:text-danger-ink transition-colors"
-                >
-                  <X size={13} />
-                </button>
+              {!locked && (
+                <button onClick={() => removePayment(p.id)} className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>
               )}
             </div>
           ))}
-          {!isDone && (() => {
-            const byCat = existingPayments.reduce((m: Record<string, number>, p) => {
-              const k = p.category && p.category !== "supplier" ? p.category : "supplier";
-              m[k] = (m[k] || 0) + p.amount; return m;
-            }, {});
-            const totalCost = existingPayments.reduce((s, p) => s + p.amount, 0);
-            const keys = ["supplier", "freight", "wire_in", "wire_out", "other"].filter((k) => byCat[k]);
-            return (
-              <div className="text-[11px] text-muted pr-1 space-y-0.5">
-                {keys.length > 1 && keys.map((k) => (
-                  <div key={k} className="flex justify-end gap-2">
-                    <span>{catLabel(k)}</span>
-                    <span className="font-medium text-ink-2 tabular-nums w-24 text-right">{fmtAmount(byCat[k])}</span>
-                  </div>
-                ))}
-                <div className="flex justify-end gap-2 border-t border-line pt-0.5 mt-0.5">
-                  <span>Total cost</span>
-                  <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* Chooser — pick which kind of cost to add (supplier primary + first) */}
-      {!isDone && !showForm && !showCost && (
-        <div className="space-y-2">
-          <div className="text-[13px] font-semibold text-ink-2">Add a cost to this deal</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <button onClick={() => { setShowForm(true); setShowCost(false); }}
-              className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
-              <Package size={16} className="text-accent shrink-0 mt-0.5" />
-              <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Supplier cost</div><div className="text-[11.5px] text-muted">What you pay for the goods, itemized</div></div>
-            </button>
-            <button onClick={() => { setShowCost(true); setShowForm(false); }}
-              className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
-              <Truck size={16} className="text-accent shrink-0 mt-0.5" />
-              <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Freight or fee</div><div className="text-[11.5px] text-muted">Shipping, wire fees, other costs</div></div>
-            </button>
+          <div className="flex justify-end gap-2 text-[11px] text-muted pr-1">
+            <span>Total cost</span>
+            <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
           </div>
         </div>
       )}
 
-      {/* Add freight / wire fee / other cost form (categorized → counted in net profit) */}
-      {!isDone && showCost && (
+      {locked ? null : (
+      <>
+      {/* Chooser */}
+      {!showForm && !showCost && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button onClick={() => { setShowForm(true); setShowCost(false); }}
+            className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
+            <Package size={16} className="text-accent shrink-0 mt-0.5" />
+            <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Supplier cost</div><div className="text-[11.5px] text-muted">What you pay for the goods, itemized</div></div>
+          </button>
+          <button onClick={() => { setShowCost(true); setShowForm(false); }}
+            className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
+            <Truck size={16} className="text-accent shrink-0 mt-0.5" />
+            <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Freight or fee</div><div className="text-[11.5px] text-muted">Shipping, wire fees, other costs</div></div>
+          </button>
+        </div>
+      )}
+
+      {/* Freight / fee form */}
+      {showCost && (
         <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <Truck size={15} className="text-accent" />
-            <div className="text-[13px] font-medium text-ink">Freight or fee</div>
-          </div>
+          <div className="flex items-center gap-2"><Truck size={15} className="text-accent" /><div className="text-[13px] font-medium text-ink">Freight or fee</div></div>
           <select value={costType} onChange={(e) => setCostType(e.target.value)} className={inp}>
             {COST_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
-          <input type="text" placeholder="Note (optional — e.g. DHL, bank ref)" value={costNote}
-            onChange={(e) => setCostNote(e.target.value)} className={inp} />
-          <input type="number" inputMode="decimal" placeholder="Amount" value={costAmt}
-            onChange={(e) => setCostAmt(e.target.value)} className={inp} />
+          <input type="text" placeholder="Note (optional — e.g. DHL, bank ref)" value={costNote} onChange={(e) => setCostNote(e.target.value)} className={inp} />
+          <input type="number" inputMode="decimal" placeholder="Amount" value={costAmt} onChange={(e) => setCostAmt(e.target.value)} className={inp} />
           <div className="flex gap-2">
-            <button onClick={handleAddCost} disabled={saving}
-              className="flex-1 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold disabled:opacity-50">Add cost</button>
-            <button onClick={() => { setShowCost(false); setCostAmt(""); setCostNote(""); }}
-              className="px-4 h-9 rounded-lg border border-line text-[13px] text-muted">Cancel</button>
+            <button onClick={handleAddCost} disabled={saving} className="flex-1 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold disabled:opacity-50">Add cost</button>
+            <button onClick={() => { setShowCost(false); setCostAmt(""); setCostNote(""); }} className="px-4 h-9 rounded-lg border border-line text-[13px] text-muted">Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Supplier form + deposit + mark payment received */}
-      {!isDone && (
-        <>
-          {showForm && (
-            <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Package size={15} className="text-accent" />
-                  <div className="text-[13px] font-medium text-ink">Supplier cost</div>
-                </div>
-                <div className="text-[11.5px] text-muted mt-0.5">Itemized — your cost vs the client quote per line</div>
+      {/* Supplier form */}
+      {showForm && (
+        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
+          <div>
+            <div className="flex items-center gap-2"><Package size={15} className="text-accent" /><div className="text-[13px] font-medium text-ink">Supplier cost</div></div>
+            <div className="text-[11.5px] text-muted mt-0.5">Itemized — your cost vs the client quote per line</div>
+          </div>
+          <div className="relative">
+            <input type="text" placeholder="Search supplier name…" value={suppName}
+              onChange={(e) => { setSuppName(e.target.value); setSelSupplier(null); }} className={inp} />
+            {suppResults.length > 0 && (
+              <div className="absolute z-20 mt-1 w-full bg-surface border border-line rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.08)] max-h-40 overflow-y-auto">
+                {suppResults.map((s) => (
+                  <button key={s.id} onClick={() => pickSupplier(s)} className="w-full text-left px-4 py-2.5 hover:bg-surface-2 transition-colors first:rounded-t-xl last:rounded-b-xl">
+                    <div className="text-[13px] font-medium text-ink">{s.name}</div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {s.contact_name && <span className="text-[11px] text-muted">{s.contact_name}</span>}
+                      {s.payment_method && <span className="text-[11px] text-muted">· {s.payment_method}</span>}
+                    </div>
+                  </button>
+                ))}
               </div>
-
-              {/* Supplier search */}
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="Search supplier name…"
-                  value={suppName}
-                  onChange={(e) => { setSuppName(e.target.value); setSelSupplier(null); }}
-                  className={inp}
-                />
-                {suppResults.length > 0 && (
-                  <div className="absolute z-20 mt-1 w-full bg-surface border border-line rounded-xl
-                                  shadow-[0_8px_24px_rgba(0,0,0,0.08)] max-h-40 overflow-y-auto">
-                    {suppResults.map((s) => (
-                      <button
-                        key={s.id}
-                        onClick={() => pickSupplier(s)}
-                        className="w-full text-left px-4 py-2.5 hover:bg-surface-2 transition-colors first:rounded-t-xl last:rounded-b-xl"
-                      >
-                        <div className="text-[13px] font-medium text-ink">{s.name}</div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {s.contact_name && (
-                            <span className="text-[11px] text-muted">{s.contact_name}</span>
-                          )}
-                          {s.payment_method && (
-                            <span className="text-[11px] text-muted">· {s.payment_method}</span>
-                          )}
-                        </div>
-                      </button>
-                    ))}
+            )}
+          </div>
+          {selSupplier && (
+            <div className="text-[11px] text-accent bg-accent/10 border border-accent/10 rounded-lg px-3 py-2 space-y-0.5">
+              {selSupplier.contact_name && <div className="font-medium text-accent-hover">{selSupplier.contact_name}</div>}
+              {(selSupplier.payment_method || selSupplier.payment_details) && (
+                <div>{selSupplier.payment_method}{selSupplier.payment_details ? ` · ${selSupplier.payment_details}` : ""}</div>
+              )}
+            </div>
+          )}
+          {items.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-[12.5px] font-medium text-muted">Item costs</div>
+              <div className="rounded-lg border border-line overflow-hidden">
+                <div className="grid grid-cols-[1fr_44px_80px_80px_80px] gap-x-2 px-3 py-1.5 bg-surface-2 text-[12.5px] font-medium text-muted">
+                  <span>Item</span><span className="text-center">Qty</span><span className="text-right">Our quote</span><span className="text-right">My rate</span><span className="text-right">My total</span>
+                </div>
+                {items.map((item, i) => {
+                  const myRate = parseAmt(item.myRate);
+                  const myTotal = item.qty * myRate;
+                  const clientTotal = item.qty * item.clientRate;
+                  const saving_pct = clientTotal > 0 && myTotal > 0 ? ((clientTotal - myTotal) / clientTotal) * 100 : null;
+                  return (
+                    <div key={i} className="grid grid-cols-[1fr_44px_80px_80px_80px] gap-x-2 px-3 py-2 border-t border-line-2 items-center">
+                      <span className="text-[12px] text-ink-2 truncate" title={item.description}>{item.description}</span>
+                      <span className="text-[12px] text-muted text-center tabular-nums">{item.qty}</span>
+                      <span className="text-[12px] text-muted text-right tabular-nums">{fmtAmount(item.clientRate)}</span>
+                      <div className="relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px] pointer-events-none">$</span>
+                        <input type="number" inputMode="decimal" step="0.01" placeholder="0.00" value={item.myRate}
+                          onChange={(e) => { const copy = [...items]; copy[i] = { ...copy[i], myRate: e.target.value }; setItems(copy); }}
+                          className="w-full border border-line pl-5 pr-1 h-8 rounded-md text-[12px] text-right focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent transition-colors tabular-nums" />
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[12px] font-medium text-ink tabular-nums">{myRate > 0 ? fmtAmount(myTotal) : "—"}</div>
+                        {saving_pct !== null && myRate > 0 && (
+                          <div className={`text-[10px] tabular-nums ${saving_pct >= 20 ? "text-success-ink" : saving_pct >= 0 ? "text-warning-ink" : "text-danger-ink"}`}>{saving_pct.toFixed(0)}% margin</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {anyRateEntered && (
+                  <div className="flex justify-between items-center px-3 py-2 border-t border-line bg-surface-2/60">
+                    <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
+                    <span className="text-[12px] font-bold text-ink tabular-nums">{fmtAmount(suppTotal)}</span>
                   </div>
                 )}
               </div>
-
-              {selSupplier && (
-                <div className="text-[11px] text-accent bg-accent/10 border border-accent/10 rounded-lg px-3 py-2 space-y-0.5">
-                  {selSupplier.contact_name && (
-                    <div className="font-medium text-accent-hover">{selSupplier.contact_name}</div>
-                  )}
-                  {(selSupplier.payment_method || selSupplier.payment_details) && (
-                    <div>{selSupplier.payment_method}{selSupplier.payment_details ? ` · ${selSupplier.payment_details}` : ""}</div>
-                  )}
-                </div>
-              )}
-
-              {/* Invoice items with per-item cost inputs */}
-              {items.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="text-[12.5px] font-medium text-muted">Item Costs</div>
-                  <div className="rounded-lg border border-line overflow-hidden">
-                    {/* Column header */}
-                    <div className="grid grid-cols-[1fr_44px_80px_80px_80px] gap-x-2 px-3 py-1.5
-                                    bg-surface-2 text-[12.5px] font-medium text-muted">
-                      <span>Item</span>
-                      <span className="text-center">Qty</span>
-                      <span className="text-right">Our Quote</span>
-                      <span className="text-right">My Rate</span>
-                      <span className="text-right">My Total</span>
-                    </div>
-
-                    {items.map((item, i) => {
-                      const myRate      = parseAmt(item.myRate);
-                      const myTotal     = item.qty * myRate;
-                      const clientTotal = item.qty * item.clientRate;
-                      const saving_pct  = clientTotal > 0 && myTotal > 0
-                        ? ((clientTotal - myTotal) / clientTotal) * 100
-                        : null;
-                      return (
-                        <div
-                          key={i}
-                          className="grid grid-cols-[1fr_44px_80px_80px_80px] gap-x-2 px-3 py-2
-                                     border-t border-line-2 items-center"
-                        >
-                          <span className="text-[12px] text-ink-2 truncate" title={item.description}>
-                            {item.description}
-                          </span>
-                          <span className="text-[12px] text-muted text-center tabular-nums">
-                            {item.qty}
-                          </span>
-                          <span className="text-[12px] text-muted text-right tabular-nums">
-                            {fmtAmount(item.clientRate)}
-                          </span>
-                          {/* My rate input */}
-                          <div className="relative">
-                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px] pointer-events-none">
-                              $
-                            </span>
-                            <input
-                              type="number"
-                              inputMode="decimal"
-                              step="0.01"
-                              placeholder="0.00"
-                              value={item.myRate}
-                              onChange={(e) => {
-                                const copy = [...items];
-                                copy[i] = { ...copy[i], myRate: e.target.value };
-                                setItems(copy);
-                              }}
-                              className="w-full border border-line pl-5 pr-1 h-8 rounded-md text-[12px]
-                                         text-right focus:outline-none focus:ring-1 focus:ring-accent
-                                         focus:border-accent transition-colors tabular-nums"
-                            />
-                          </div>
-                          {/* My total + margin */}
-                          <div className="text-right">
-                            <div className="text-[12px] font-medium text-ink tabular-nums">
-                              {myRate > 0 ? fmtAmount(myTotal) : "—"}
-                            </div>
-                            {saving_pct !== null && myRate > 0 && (
-                              <div className={`text-[10px] tabular-nums ${
-                                saving_pct >= 20 ? "text-success-ink"
-                                : saving_pct >= 0 ? "text-warning-ink"
-                                : "text-danger-ink"
-                              }`}>
-                                {saving_pct.toFixed(0)}% margin
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {/* Totals row */}
-                    {anyRateEntered && (
-                      <div className="flex justify-between items-center px-3 py-2 border-t border-line bg-surface-2/60">
-                        <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
-                        <span className="text-[12px] font-bold text-ink tabular-nums">
-                          {fmtAmount(suppTotal)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                /* Fallback if invoice has no line items */
-                <div className="space-y-2">
-                  <div className="text-[12.5px] font-medium text-muted">Amount</div>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={items[0]?.myRate ?? ""}
-                      onChange={(e) =>
-                        setItems([{
-                          description: "Supplier cost", qty: 1,
-                          clientRate: flow.invoice_total, myRate: e.target.value,
-                        }])
-                      }
-                      className="w-full border border-line pl-8 pr-3 h-9 rounded-lg text-[13px]
-                                 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  onClick={handleAddSupplier}
-                  disabled={saving || !suppName.trim()}
-                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px]
-                             font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5"
-                >
-                  <Plus size={13} /> Add Supplier
-                </button>
-                <button
-                  onClick={() => {
-                    setShowForm(false);
-                    setSuppName(""); setSelSupplier(null); setSuppResults([]);
-                    setItems((prev) => prev.map((it) => ({ ...it, myRate: "" })));
-                  }}
-                  className="text-[13px] text-muted hover:text-ink-2 px-3 h-9
-                             hover:bg-surface-3 rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="text-[12.5px] font-medium text-muted">Amount</div>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                <input type="number" inputMode="decimal" step="0.01" placeholder="0.00" value={items[0]?.myRate ?? ""}
+                  onChange={(e) => setItems([{ description: "Supplier cost", qty: 1, clientRate: flow.invoice_total, myRate: e.target.value }])}
+                  className="w-full border border-line pl-8 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
               </div>
             </div>
           )}
-
-          {/* Deposit — a partial up-front payment, separate from the full amount */}
-          <div className="rounded-lg border border-line bg-surface p-3">
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Deposit received (optional)</label>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                <input
-                  type="number" step="0.01" min="0"
-                  value={depositAmount}
-                  onChange={(e) => setDepositAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                />
-              </div>
-              {(() => {
-                const dep = parseFloat(depositAmount) || 0;
-                const total = flow.invoice_total || 0;
-                if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
-                if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
-                return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
-              })()}
-              <button
-                onClick={handleSaveDeposit}
-                disabled={savingDeposit}
-                className="flex items-center gap-1.5 border border-line hover:bg-surface-3 text-ink-2 px-3 h-9 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors"
-              >
-                {flow.deposit_amount ? "Update deposit" : "Save deposit"}
-              </button>
-            </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button onClick={handleAddSupplier} disabled={saving || !suppName.trim()}
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5">
+              <Plus size={13} /> Add supplier
+            </button>
+            <button onClick={() => { setShowForm(false); setSuppName(""); setSelSupplier(null); setSuppResults([]); setItems((prev) => prev.map((it) => ({ ...it, myRate: "" }))); }}
+              className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
           </div>
+        </div>
+      )}
+      </>
+      )}
 
-          {/* Mark payment received */}
-          <div className="space-y-2">
-            {!hasSuppliers && (
-              <div className="flex items-center gap-1.5 text-[12px] text-muted">
-                <AlertTriangle size={12} />
-                No supplier added — this deal will be recorded as 100% profit (no cost). Add one above if you had a cost.
+      {/* Advance */}
+      <div className="flex items-center justify-between pt-1">
+        <span className="text-[11.5px] text-muted">
+          {existingPayments.length > 0 ? "Cost recorded" : "No supplier cost yet — you can continue and record this as 100% profit"}
+        </span>
+        <button onClick={onAdvance}
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+          Continue to money <Check size={14} strokeWidth={2.5} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Section 2: Money movement (received + sent) ──────────────────────────
+function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; onReload: () => void; onAdvance: () => void; locked: boolean }) {
+  const payments      = flow.supplier_payments || [];
+  const hasSuppliers  = payments.length > 0;
+  const received      = si(flow.stage) >= si("payment_received");
+  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid) : true;
+  const [saving, setSaving] = useState(false);
+  const [receivedAmount, setReceivedAmount] = useState<string>(flow.invoice_total ? flow.invoice_total.toFixed(2) : "");
+  useEffect(() => { setReceivedAmount(flow.invoice_total ? flow.invoice_total.toFixed(2) : ""); }, [flow.invoice_total]);
+  const [depositAmount, setDepositAmount] = useState<string>(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : "");
+  useEffect(() => { setDepositAmount(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""); }, [flow.deposit_amount]);
+  const [savingDeposit, setSavingDeposit] = useState(false);
+
+  const handleMarkReceived = async () => {
+    const amt = parseFloat(receivedAmount);
+    if (isNaN(amt) || amt < 0) { toast("Enter a valid amount received", "error"); return; }
+    if (!hasSuppliers && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
+    setSaving(true);
+    try { await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null }); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const undoReceived = async () => { setSaving(true); try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); } setSaving(false); };
+  const handleSaveDeposit = async () => {
+    const amt = parseFloat(depositAmount) || 0;
+    if (amt < 0) { toast("Enter a valid deposit amount", "error"); return; }
+    setSavingDeposit(true);
+    try { await api.setDeposit(flow.id, amt); toast(amt > 0 ? "Deposit saved" : "Deposit cleared", "success"); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSavingDeposit(false);
+  };
+  const markAllPaid = async () => {
+    setSaving(true);
+    try { await Promise.all(payments.filter((p) => !p.paid).map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const unmarkAllPaid = async () => {
+    setSaving(true);
+    try { await Promise.all(payments.filter((p) => p.paid).map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+
+  const canReceive = !received; // show the mark-received form only when it isn't yet received
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-[14px] font-semibold text-ink">Money movement</div>
+        <div className="text-[12px] text-muted mt-0.5">Both legs must be done to continue: money in from the buyer, money out to the supplier.</div>
+      </div>
+
+      {/* Money received */}
+      <div className={`rounded-xl border p-4 ${received ? "border-success/40 bg-success-bg/30" : "border-line bg-surface"}`}>
+        <div className="flex items-center gap-2 mb-2">
+          {received ? <CheckCircle2 size={15} className="text-success-ink" /> : <AlertTriangle size={15} className="text-warning-ink" />}
+          <span className="text-[13px] font-semibold text-ink">Money received</span>
+          {received && <span className="ml-auto text-[12px] text-success-ink font-medium tabular-nums">{fmtAmount(flow.payment_received_amount)} received</span>}
+        </div>
+        {received && !locked ? (
+          <button onClick={undoReceived} disabled={saving}
+            className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
+            <RotateCcw size={11} /> Undo payment
+          </button>
+        ) : canReceive ? (
+          <div className="space-y-2.5">
+            <div className="rounded-lg border border-line bg-surface p-3">
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Deposit received (optional)</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
+                  <input type="number" step="0.01" min="0" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00"
+                    className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+                </div>
+                {(() => {
+                  const dep = parseFloat(depositAmount) || 0; const total = flow.invoice_total || 0;
+                  if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
+                  if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
+                  return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
+                })()}
+                <button onClick={handleSaveDeposit} disabled={savingDeposit}
+                  className="flex items-center gap-1.5 border border-line hover:bg-surface-3 text-ink-2 px-3 h-9 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors">
+                  {flow.deposit_amount ? "Update deposit" : "Save deposit"}
+                </button>
               </div>
-            )}
+            </div>
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Amount received</label>
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                  <input
-                    type="number" step="0.01" min="0"
-                    value={receivedAmount}
-                    onChange={(e) => setReceivedAmount(e.target.value)}
-                    className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent disabled:opacity-50"
-                  />
+                  <input type="number" step="0.01" min="0" value={receivedAmount} onChange={(e) => setReceivedAmount(e.target.value)}
+                    className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
                 </div>
                 {(() => {
-                  const amt = parseFloat(receivedAmount);
-                  const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
+                  const amt = parseFloat(receivedAmount); const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
                   if (!isFinite(diff) || Math.abs(diff) < 0.005) return <span className="text-[11px] text-muted">matches invoice {fmtAmount(flow.invoice_total)}</span>;
                   return <span className={`text-[11px] font-medium ${diff < 0 ? "text-danger-ink" : "text-success-ink"}`}>{diff < 0 ? "−" : "+"}{fmtAmount(Math.abs(diff))} vs invoice {fmtAmount(flow.invoice_total)}</span>;
                 })()}
               </div>
             </div>
-            <button
-              onClick={handleMarkReceived}
-              disabled={saving}
-              className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent
-                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"
-            >
+            <button onClick={handleMarkReceived} disabled={saving}
+              className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all">
               <DollarSign size={14} /> Mark payment received
             </button>
           </div>
-        </>
-      )}
+        ) : null}
+      </div>
 
-      {/* Completed state */}
-      {isDone && (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-[13px] text-success-ink font-medium">
-            <CheckCircle2 size={14} />
-            {fmtAmount(flow.payment_received_amount)} received
-          </div>
-          <button
-            onClick={handleUndo}
-            disabled={saving}
-            className="flex items-center gap-1.5 text-[12px] text-warning-ink hover:text-warning-ink
-                       px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors"
-          >
-            <RotateCcw size={11} /> Undo payment
-          </button>
+      {/* Money sent to supplier */}
+      <div className={`rounded-xl border p-4 ${suppliersPaid && hasSuppliers ? "border-success/40 bg-success-bg/30" : "border-line bg-surface"}`}>
+        <div className="flex items-center gap-2 mb-2">
+          {suppliersPaid ? <CheckCircle2 size={15} className="text-success-ink" /> : <AlertTriangle size={15} className="text-warning-ink" />}
+          <span className="text-[13px] font-semibold text-ink">Money sent to supplier</span>
+          {hasSuppliers && <span className="ml-auto text-[12px] text-muted tabular-nums">{fmtAmount(flow.total_supplier_cost)}</span>}
         </div>
-      )}
+        {!hasSuppliers ? (
+          <p className="text-[12px] text-muted">No supplier cost on this deal — nothing to send.</p>
+        ) : (
+          <>
+            <div className="rounded-lg border border-line overflow-hidden bg-surface mb-2">
+              {payments.map((p) => (
+                <div key={p.id} className="flex items-center gap-3 px-3 py-2 border-b border-line-2 last:border-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
+                      {p.supplier_name}
+                      {p.category && p.category !== "supplier" && (
+                        <span className="text-[9px] font-bold uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded flex-shrink-0">{catLabel(p.category)}</span>
+                      )}
+                    </div>
+                    {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
+                  </div>
+                  <div className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(p.amount)}</div>
+                </div>
+              ))}
+            </div>
+            {suppliersPaid ? (
+              !locked && (
+                <button onClick={unmarkAllPaid} disabled={saving}
+                  className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
+                  <RotateCcw size={11} /> Undo suppliers paid
+                </button>
+              )
+            ) : (
+              !locked && (
+                <button onClick={markAllPaid} disabled={saving}
+                  className="flex items-center gap-2 bg-accent hover:bg-accent text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center">
+                  <Check size={14} strokeWidth={2.5} /> Mark supplier paid — {fmtAmount(flow.total_supplier_cost)}
+                </button>
+              )
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Advance — gated on both legs */}
+      <div className="flex items-center justify-between pt-1">
+        <span className="text-[11.5px] text-muted">
+          {received && suppliersPaid ? "Both legs done" : !received ? "Mark the buyer payment received" : "Mark the supplier paid"}
+        </span>
+        <button onClick={onAdvance} disabled={!(received && suppliersPaid)}
+          title={received && suppliersPaid ? undefined : "Complete both money legs first"}
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          Continue to financials <Check size={14} strokeWidth={2.5} />
+        </button>
+      </div>
     </div>
   );
 }
 
-// ─── Panel 3: Mark Supplier Paid ─────────────────────────────────────────
-function PanelSupplierPaid({ flow, onReload, onGoToComplete }: { flow: DealFlow; onReload: () => void; onGoToComplete: () => void }) {
-  const [saving, setSaving] = useState(false);
-  const payments  = flow.supplier_payments || [];
-  const isDone    = si(flow.stage) > si("payment_received");
-  const allPaid   = payments.length > 0 && payments.every((p) => p.paid);
+// ─── Section 3: Link financials ───────────────────────────────────────────
+function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: () => void; onAdvance: () => void }) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-[14px] font-semibold text-ink">Link financials</div>
+        <div className="text-[12px] text-muted mt-0.5">
+          Pair the real bank transactions to this deal — buyer payment, supplier payment, wire fees, refunds.
+          Anything you link here (or from Bank statements) is what the recorded profit is built from.
+        </div>
+      </div>
+      <ReconciliationPanel flow={flow} onChange={onReload} />
+      <div className="flex items-center justify-end pt-1">
+        <button onClick={onAdvance}
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+          Continue to profit <Check size={14} strokeWidth={2.5} />
+        </button>
+      </div>
+    </div>
+  );
+}
 
-  // Mark ALL unpaid supplier payments in one shot — one button, one reload
-  const markAllPaid = async () => {
-    setSaving(true);
-    try {
-      const unpaid = payments.filter((p) => !p.paid);
-      await Promise.all(unpaid.map((p) => api.markSupplierPaymentPaid(flow.id, p.id)));
-      onReload();
-    } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
+// ─── Section 4: Profit from financials ────────────────────────────────────
+function SectionProfit({ flow, onAdvance }: { flow: DealFlow; onAdvance: () => void }) {
+  const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
+  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id]);
 
-  // Undo: unmark all paid
-  const unmarkAll = async () => {
-    setSaving(true);
-    try {
-      const paid = payments.filter((p) => p.paid);
-      await Promise.all(paid.map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id)));
-      onReload();
-    } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
+  const p = recon?.pieces;
+  const anyLinked = !!p && ((p.buyer_paired || 0) + (p.supplier_paired || 0) + (p.fee_paired || 0) + (p.refund_total || 0) + (p.refund_in || 0) > 0.005);
+  const actual   = recon?.actual_profit ?? 0;
+  const expected = recon?.expected_profit ?? (flow.invoice_total - flow.total_supplier_cost);
+  const variance = actual - expected;
 
   return (
-    <div className="space-y-3">
-      <SectionLabel>Supplier Payments</SectionLabel>
-
-      {payments.length === 0 ? (
-        <div className="space-y-2.5">
-          <p className="text-[12px] text-muted">
-            No supplier cost on this deal — nothing to pay. Continue to record it as 100% profit.
-          </p>
-          <button
-            onClick={onGoToComplete}
-            className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent
-                       px-5 h-9 rounded-lg text-[13px] font-medium transition-colors w-full justify-center"
-          >
-            <Check size={14} strokeWidth={2.5} /> Continue to Complete
-          </button>
+    <div className="space-y-4">
+      <div>
+        <div className="text-[14px] font-semibold text-ink">Profit from financials</div>
+        <div className="text-[12px] text-muted mt-0.5">
+          {anyLinked
+            ? "Derived from the bank transactions you linked. This is what gets recorded and shown in analytics."
+            : "No bank transactions linked yet — until you link some, the recorded profit uses the figures you entered."}
         </div>
-      ) : (
-        <div className="space-y-2">
-          {/* Cost breakdown — read-only, shows what was entered per item */}
-          <div className="rounded-lg border border-line overflow-hidden bg-surface">
-            {payments.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 px-3 py-2.5 border-b border-line-2 last:border-0">
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
-                  {p.supplier_name}
-                  {p.category && p.category !== "supplier" && (
-                    <span className="text-[9px] font-bold uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded flex-shrink-0">{catLabel(p.category)}</span>
-                  )}
-                </div>
-                  {p.quantity != null && p.unit_price != null && (
-                    <div className="text-[11px] text-muted tabular-nums">
-                      {p.quantity} × {fmtAmount(p.unit_price)}
-                    </div>
-                  )}
-                  {p.method && <div className="text-[11px] text-muted">{p.method}</div>}
-                  {p.price_changed && p.original_amount != null && (
-                    <div className="flex items-center gap-1 text-[11px] text-warning-ink mt-0.5">
-                      <AlertTriangle size={10} />
-                      Price changed: {fmtAmount(p.original_amount)} → {fmtAmount(p.amount)}
-                    </div>
-                  )}
-                </div>
-                <div className="text-[13px] font-semibold text-ink tabular-nums">
-                  {fmtAmount(p.amount)}
-                </div>
-              </div>
-            ))}
-            <div className="flex justify-between items-center px-3 py-2 bg-surface-2/60 border-t border-line">
-              <span className="text-[11px] text-muted font-medium">Total supplier cost</span>
-              <span className="text-[13px] font-bold text-ink tabular-nums">
-                {fmtAmount(flow.total_supplier_cost)}
-              </span>
-            </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-xl border border-line bg-surface px-4 py-3">
+          <div className="text-[11px] text-muted">Actual profit {anyLinked ? "(from bank)" : "(entered)"}</div>
+          <div className={`text-[22px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+            {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
           </div>
-
-          {/* Single action: mark everything paid at once */}
-          {!isDone && (
-            allPaid ? (
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-[13px] text-success-ink font-medium">
-                  <CheckCircle2 size={14} />
-                  All supplier payments marked paid
-                </div>
-                <button
-                  onClick={unmarkAll}
-                  disabled={saving}
-                  className="flex items-center gap-1.5 text-[12px] text-warning-ink hover:text-warning-ink
-                             px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors"
-                >
-                  <RotateCcw size={11} /> Undo suppliers paid
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={markAllPaid}
-                disabled={saving || payments.length === 0}
-                className="flex items-center gap-2 bg-accent hover:bg-accent text-on-accent
-                           px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center"
-              >
-                <Check size={14} strokeWidth={2.5} />
-                Mark Supplier Paid — {fmtAmount(flow.total_supplier_cost)}
-              </button>
-            )
-          )}
-
-          {isDone && (
-            <div className="flex items-center gap-2 text-[13px] text-success-ink font-medium">
-              <CheckCircle2 size={14} />
-              Supplier paid — {fmtAmount(flow.total_supplier_cost)}
+        </div>
+        <div className="rounded-xl border border-line bg-surface px-4 py-3">
+          <div className="text-[11px] text-muted">Expected (entered)</div>
+          <div className="text-[22px] font-bold tabular-nums mt-0.5 text-ink-2">{fmtAmount(expected)}</div>
+          {Math.abs(variance) >= 0.5 && (
+            <div className={`text-[11px] tabular-nums mt-0.5 ${variance >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+              {variance >= 0 ? "+" : "−"}{fmtAmount(Math.abs(variance))} vs expected
             </div>
           )}
+        </div>
+      </div>
+
+      {anyLinked && p && (
+        <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
+          <div className="text-[12px] font-medium text-muted mb-1">From linked transactions</div>
+          <Row label="Payments received" value={`+${fmtAmount(p.buyer_paired)}`} clr="text-success-ink" />
+          <Row label="Supplier paid" value={`−${fmtAmount(p.supplier_paired)}`} clr="text-danger-ink" />
+          {p.fee_paired > 0.005 && <Row label="Wire fees" value={`−${fmtAmount(p.fee_paired)}`} clr="text-danger-ink" />}
+          {p.refund_total > 0.005 && <Row label="Refunds paid" value={`−${fmtAmount(p.refund_total)}`} clr="text-danger-ink" />}
+          {p.refund_in > 0.005 && <Row label="Supplier refund received" value={`+${fmtAmount(p.refund_in)}`} clr="text-success-ink" />}
+          <div className="flex items-center justify-between pt-1.5 border-t border-line-2">
+            <span className="font-semibold text-ink">Actual profit</span>
+            <span className={`font-bold tabular-nums ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}</span>
+          </div>
         </div>
       )}
+
+      <div className="flex items-center justify-between pt-1">
+        <span className="text-[11.5px] text-muted">{recon?.fully_reconciled ? "Fully reconciled with the bank" : "You can complete now and finish linking later"}</span>
+        <button onClick={onAdvance}
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
+          Review &amp; complete <Check size={14} strokeWidth={2.5} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, clr }: { label: string; value: string; clr: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-ink-2">{label}</span>
+      <span className={`tabular-nums ${clr}`}>{value}</span>
     </div>
   );
 }
@@ -1454,33 +1330,43 @@ function PanelSupplierPaid({ flow, onReload, onGoToComplete }: { flow: DealFlow;
 type ShippingHold = "idle" | "asking" | "shipping";
 
 function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
-  const [recipients,   setRecipients]   = useState<PayoutShare[]>([]);
-  const [saving,       setSaving]       = useState(false);
-  const [shipHold,     setShipHold]     = useState<ShippingHold>("idle");
-  // Shipping form fields
+  const [recipients, setRecipients] = useState<PayoutShare[]>([]);
+  const [recon,      setRecon]      = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
+  const [saving,     setSaving]     = useState(false);
+  const [shipHold,   setShipHold]   = useState<ShippingHold>("idle");
   const [carrier,      setCarrier]      = useState("");
   const [tracking,     setTracking]     = useState("");
   const [pickupDate,   setPickupDate]   = useState("");
   const [deliveryDate, setDeliveryDate] = useState("");
-  // Backlog date: defaults to today but user can pick any past date
   const todayStr = new Date().toISOString().slice(0, 10);
   const [completedDate, setCompletedDate] = useState(todayStr);
-  // Default = apply the configured split. The old default (false) silently routed
-  // 100% of every completed deal to the business share, burying the user's split.
   const [payoutIncluded, setPayoutIncluded] = useState(true);
-  // Pairing gate — the deal can't close until the user affirms every dollar that
-  // will ever be linked (bank-paired above, or a custom cash/Zelle line) is linked.
-  // Deliberately a manual confirmation, not an automatic bank check: money that
-  // never hits the feed still counts, so the user is the one who says "that's all".
   const [moneyLinked, setMoneyLinked] = useState(false);
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
+  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.stage]);
 
   const canComplete = flow.stage === "payment_received" || flow.stage === "supplier_paid";
   const isComplete  = flow.stage === "complete";
-  const gross  = isComplete ? flow.gross_revenue       : flow.payment_received_amount;
-  const cost   = isComplete ? flow.total_cost          : flow.total_supplier_cost;
-  const profit = gross - cost;
+
+  // What gets recorded — the BANK numbers. A completed deal shows its permanent
+  // recorded figures (captured at completion, survive even if statements are lost).
+  // An open deal previews from live links, falling back to the entered figure only
+  // for a leg with nothing linked yet.
+  const pc = recon?.pieces;
+  const buyerBank = pc?.buyer_paired ?? 0;
+  const costBank  = (pc?.supplier_paired ?? 0) + (pc?.fee_paired ?? 0);
+  const revFromBank  = buyerBank > 0.005;
+  const costFromBank = costBank > 0.005;
+  const recRev  = isComplete ? flow.gross_revenue : (revFromBank ? buyerBank : flow.payment_received_amount);
+  const recCost = isComplete ? flow.total_cost    : (costFromBank ? costBank : flow.total_supplier_cost);
+  const recNet  = isComplete ? flow.net_profit    : recRev - recCost;
+  const bankBacked = isComplete ? true : (revFromBank || costFromBank);
+  const refundTotal = pc?.refund_total ?? 0;
+
+  // Fail-proof record: transactions snapshotted onto the deal at completion.
+  let snapshot: any[] = [];
+  try { const m = JSON.parse((flow as any).metadata || "{}"); if (Array.isArray(m.bank_snapshot)) snapshot = m.bank_snapshot; } catch {}
 
   const runComplete = async () => {
     setSaving(true);
@@ -1493,10 +1379,8 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   };
 
   const handleCompleteClick = () => {
-    if (profit < 0) {
-      const ok = confirm(
-        `Warning: This deal is at a loss.\n\nRevenue: ${fmtAmount(gross)}\nCosts: ${fmtAmount(cost)}\nLoss: ${fmtAmount(profit)}\n\nMark complete anyway?`
-      );
+    if (recNet < 0) {
+      const ok = confirm(`Warning: This deal is at a loss.\n\nRevenue: ${fmtAmount(recRev)}\nCosts: ${fmtAmount(recCost)}\nLoss: ${fmtAmount(recNet)}\n\nMark complete anyway?`);
       if (!ok) return;
     }
     setShipHold("asking");
@@ -1507,13 +1391,9 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const handleShippingComplete = async () => {
     setSaving(true);
     try {
-      // Save shipping info first
       await api.saveInvoiceShipping(flow.invoice_id, {
-        carrier:          carrier   || undefined,
-        tracking_number:  tracking  || undefined,
-        pickup_date:      pickupDate   || undefined,
-        delivery_date:    deliveryDate || undefined,
-        is_complete:      true,
+        carrier: carrier || undefined, tracking_number: tracking || undefined,
+        pickup_date: pickupDate || undefined, delivery_date: deliveryDate || undefined, is_complete: true,
       });
       await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
       onReload();
@@ -1527,66 +1407,102 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
     setSaving(false);
   };
 
+  const split = isComplete && recNet > 0 ? dealPayoutSplit(flow, recipients) : [];
+
   return (
     <div className="space-y-4">
-      <SectionLabel>Deal Summary</SectionLabel>
+      <div>
+        <div className="text-[14px] font-semibold text-ink">Review &amp; complete</div>
+        <div className="text-[12px] text-muted mt-0.5">
+          {isComplete
+            ? "Recorded from the linked bank transactions — saved with the deal so it never disappears."
+            : bankBacked
+              ? "These are the real bank numbers that get recorded and shown everywhere."
+              : "No bank transactions linked yet — these use your entered figures. Link them in step 3 for bank-accurate profit."}
+        </div>
+      </div>
 
-      {/* P&L grid + profit split (shared with Invoice detail) */}
-      <CostProfitPanel flow={flow} recipients={recipients} />
+      {/* What gets recorded */}
+      <div className={`rounded-xl border p-4 ${recNet >= 0 ? "border-line" : "border-danger/40"} bg-surface`}>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-[12.5px] font-semibold text-ink-2">{isComplete ? "Recorded profit" : "What gets recorded"}</span>
+          {bankBacked
+            ? <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-success-ink"><CheckCircle2 size={12} /> From bank{recon?.fully_reconciled ? " · fully reconciled" : ""}</span>
+            : <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning-ink"><AlertTriangle size={12} /> Entered figures</span>}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <RecCell label="Revenue" value={fmtAmount(recRev)}  sub={isComplete ? undefined : (revFromBank ? "from bank" : "entered")} />
+          <RecCell label="Cost"    value={fmtAmount(recCost)} sub={isComplete ? undefined : (costFromBank ? "from bank" : "entered")} />
+          <RecCell label={recNet >= 0 ? "Profit" : "Loss"} value={fmtAmount(recNet)} clr={recNet >= 0 ? "text-success-ink" : "text-danger-ink"} big />
+        </div>
+        {refundTotal > 0.005 && (
+          <div className="mt-2.5 text-[11px] text-muted">Refunds of {fmtAmount(refundTotal)} are tracked separately and reduce profit in reports.</div>
+        )}
+      </div>
+
+      {/* Snapshot of linked transactions — the fail-proof record */}
+      {snapshot.length > 0 && (
+        <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
+          <div className="text-[12px] font-medium text-muted mb-1.5">Linked transactions saved with this deal</div>
+          <div className="space-y-1">
+            {snapshot.map((s: any, i: number) => (
+              <div key={i} className="flex items-center gap-2 text-[12px]">
+                <span className="text-ink-2 flex-1 truncate">
+                  {roleLabel(s.role)} · {s.counterparty || "—"}
+                  {s.posted_at ? ` · ${new Date(s.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+                </span>
+                <span className={`tabular-nums font-medium ${s.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
+                  {s.direction === "out" ? "−" : ""}{fmtAmount(s.amount)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Profit split (completed + profitable) */}
+      {split.length > 0 && (
+        <div className="rounded-lg border border-line bg-surface px-4 py-3">
+          <div className="text-[12px] font-medium text-muted mb-2">Profit split</div>
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {split.map((it, i) => (
+              <div key={i}>
+                <div className="text-[11px] text-muted">{it.name}</div>
+                <div className="text-[13px] font-semibold text-success-ink tabular-nums">{fmtAmount(it.amount)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Complete action area ── */}
       {canComplete && shipHold === "idle" && (
-        <div className="space-y-2">
-          {/* Completion date — defaults to today, can be backdated for backlog */}
+        <div className="space-y-2 pt-1">
           <div className="flex items-center gap-2">
             <label className="text-[11px] text-muted whitespace-nowrap">Completed date</label>
-            <input
-              type="date"
-              value={completedDate}
-              max={todayStr}
-              onChange={(e) => setCompletedDate(e.target.value)}
-              className="flex-1 border border-line px-2.5 h-8 rounded-lg text-[12px] bg-surface
-                         focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
-            />
+            <input type="date" value={completedDate} max={todayStr} onChange={(e) => setCompletedDate(e.target.value)}
+              className="flex-1 border border-line px-2.5 h-8 rounded-lg text-[12px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
           </div>
-          {/* Explicit payout decision — the old tiny checkbox defaulted everything to
-              business-keeps-all without the user noticing. */}
           <div className="py-1 space-y-1">
             <div className="text-[11px] text-muted">Where does this deal's profit go?</div>
             <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
               <button type="button" onClick={() => setPayoutIncluded(true)}
-                className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                Apply profit split
-              </button>
+                className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>Apply profit split</button>
               <button type="button" onClick={() => setPayoutIncluded(false)}
-                className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                Business keeps 100%
-              </button>
+                className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>Business keeps 100%</button>
             </div>
           </div>
-          {/* Pairing gate — confirm all money is linked before the deal can close. */}
-          <button
-            type="button"
-            onClick={() => setMoneyLinked((v) => !v)}
-            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${
-              moneyLinked ? "border-success bg-success-bg" : "border-line bg-surface hover:border-accent/40"
-            }`}
-          >
-            {moneyLinked
-              ? <CheckCircle2 size={16} className="text-success-ink flex-shrink-0" />
-              : <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />}
+          <button type="button" onClick={() => setMoneyLinked((v) => !v)}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${moneyLinked ? "border-success bg-success-bg" : "border-line bg-surface hover:border-accent/40"}`}>
+            {moneyLinked ? <CheckCircle2 size={16} className="text-success-ink flex-shrink-0" /> : <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />}
             <span className={`text-[12.5px] leading-snug ${moneyLinked ? "text-success-ink font-medium" : "text-ink-2"}`}>
               This is all the money that will ever be linked to this deal
             </span>
           </button>
-          <button
-            onClick={handleCompleteClick}
-            disabled={saving || !moneyLinked}
+          <button onClick={handleCompleteClick} disabled={saving || !moneyLinked}
             title={!moneyLinked ? "Confirm all money is linked first" : undefined}
-            className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg
-                       text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {moneyLinked ? "Complete deal" : "Complete deal — confirm money linked above"}
+            className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            {moneyLinked ? `Complete deal — record ${fmtAmount(recNet)} profit` : "Complete deal — confirm money linked above"}
           </button>
         </div>
       )}
@@ -1594,135 +1510,48 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
       {/* Step A: shipping question */}
       {canComplete && shipHold === "asking" && (
         <div className="bg-warning-bg border border-warning rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-2 text-[13px] font-semibold text-warning-ink">
-            <Truck size={15} className="text-warning-ink" />
-            Does this deal require shipping?
-          </div>
-          <p className="text-[12px] text-warning-ink">
-            If items are being shipped, hold here and track the shipment before closing out.
-          </p>
+          <div className="flex items-center gap-2 text-[13px] font-semibold text-warning-ink"><Truck size={15} className="text-warning-ink" /> Does this deal require shipping?</div>
+          <p className="text-[12px] text-warning-ink">If items are being shipped, hold here and track the shipment before closing out.</p>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShipHold("shipping")}
-              className="flex items-center gap-1.5 bg-warning hover:opacity-90 text-on-accent
-                         px-4 h-9 rounded-lg text-[13px] font-medium transition-all"
-            >
-              <Truck size={13} /> Yes, track shipping
-            </button>
-            <button
-              onClick={handleCompleteNow}
-              disabled={saving}
-              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent
-                         px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"
-            >
-              <Check size={13} /> No, complete now
-            </button>
-            <button
-              onClick={() => setShipHold("idle")}
-              className="text-[13px] text-muted hover:text-ink-2 px-3 h-9
-                         hover:bg-surface-3 rounded-lg transition-colors"
-            >
-              Cancel
-            </button>
+            <button onClick={() => setShipHold("shipping")} className="flex items-center gap-1.5 bg-warning hover:opacity-90 text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-all"><Truck size={13} /> Yes, track shipping</button>
+            <button onClick={handleCompleteNow} disabled={saving} className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors"><Check size={13} /> No, complete now</button>
+            <button onClick={() => setShipHold("idle")} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Step B: shipping form — hold until confirmed */}
+      {/* Step B: shipping form */}
       {canComplete && shipHold === "shipping" && (
         <div className="bg-surface border border-warning rounded-xl p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Truck size={14} className="text-warning-ink" />
             <span className="text-[13px] font-semibold text-ink">Shipping hold</span>
-            <span className="ml-auto text-[11px] text-warning-ink bg-warning-bg border border-warning
-                             px-2 py-0.5 rounded-full font-medium">
-              Awaiting delivery
-            </span>
+            <span className="ml-auto text-[11px] text-warning-ink bg-warning-bg border border-warning px-2 py-0.5 rounded-full font-medium">Awaiting delivery</span>
           </div>
-
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[11px] text-muted font-medium mb-1">Carrier</label>
-              <input
-                className={inp}
-                placeholder="FedEx, UPS…"
-                value={carrier}
-                onChange={(e) => setCarrier(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-muted font-medium mb-1">Tracking #</label>
-              <input
-                className={inp}
-                placeholder="Tracking number"
-                value={tracking}
-                onChange={(e) => setTracking(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-muted font-medium mb-1">Pickup date</label>
-              <input
-                type="date"
-                className={inp}
-                value={pickupDate}
-                onChange={(e) => setPickupDate(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-muted font-medium mb-1">Delivery date</label>
-              <input
-                type="date"
-                className={inp}
-                value={deliveryDate}
-                onChange={(e) => setDeliveryDate(e.target.value)}
-              />
-            </div>
+            <div><label className="block text-[11px] text-muted font-medium mb-1">Carrier</label><input className={inp} placeholder="FedEx, UPS…" value={carrier} onChange={(e) => setCarrier(e.target.value)} /></div>
+            <div><label className="block text-[11px] text-muted font-medium mb-1">Tracking #</label><input className={inp} placeholder="Tracking number" value={tracking} onChange={(e) => setTracking(e.target.value)} /></div>
+            <div><label className="block text-[11px] text-muted font-medium mb-1">Pickup date</label><input type="date" className={inp} value={pickupDate} onChange={(e) => setPickupDate(e.target.value)} /></div>
+            <div><label className="block text-[11px] text-muted font-medium mb-1">Delivery date</label><input type="date" className={inp} value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} /></div>
           </div>
-
           <div className="flex items-center gap-2 pt-1">
-            <button
-              onClick={handleShippingComplete}
-              disabled={saving}
-              className="flex items-center gap-1.5 bg-success hover:opacity-90 text-on-accent
-                         px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"
-            >
-              <Check size={13} /> Confirm delivery & complete
-            </button>
-            <button
-              onClick={() => setShipHold("idle")}
-              className="text-[13px] text-muted hover:text-ink-2 px-3 h-9
-                         hover:bg-surface-3 rounded-lg transition-colors"
-            >
-              Cancel
-            </button>
+            <button onClick={handleShippingComplete} disabled={saving} className="flex items-center gap-1.5 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"><Check size={13} /> Confirm delivery &amp; complete</button>
+            <button onClick={() => setShipHold("idle")} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Completed state */}
+      {/* Completed controls */}
       {isComplete && (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-[12px] text-success-ink font-medium">
-            <CheckCircle2 size={13} />
-            Completed{flow.completed_at
-              ? ` ${new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
-              : ""}
-          </div>
-          <button
-            onClick={handleUndo}
-            disabled={saving}
-            className="flex items-center gap-1.5 text-[12px] text-warning-ink hover:text-warning-ink
-                       px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors"
-          >
-            <RotateCcw size={11} /> Undo Complete
+        <div className="flex items-center gap-2 flex-wrap pt-1">
+          <button onClick={handleUndo} disabled={saving}
+            className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
+            <RotateCcw size={11} /> Reopen deal
           </button>
-          <button
-            onClick={async () => { setSaving(true); try { const r = await api.recalcDealFromBank(flow.id); toast(`Recalculated: ${r?.supplier_cost} supplier cost from ${r?.payment_count} bank entries`, "success"); onReload(); } catch(e:any) { toast(String(e), "error"); } setSaving(false); }}
+          <button onClick={async () => { setSaving(true); try { const r = await api.recalcDealFromBank(flow.id); toast(r?.from_bank ? `Recalculated from bank — profit ${fmtAmount(r?.net_profit ?? 0)}` : "No bank transactions linked — kept recorded figures", "success"); onReload(); } catch (e: any) { toast(String(e), "error"); } setSaving(false); }}
             disabled={saving}
-            className="flex items-center gap-1.5 text-[12px] text-accent hover:text-accent
-                       px-2.5 py-1 rounded-lg hover:bg-accent/10 border border-accent/30 transition-colors"
-          >
-            <RefreshCw size={11} /> Recalculate from Bank
+            className="flex items-center gap-1.5 text-[12px] text-accent px-2.5 py-1 rounded-lg hover:bg-accent/10 border border-accent/30 transition-colors">
+            <RefreshCw size={11} /> Recalculate from bank
           </button>
         </div>
       )}
@@ -1730,11 +1559,17 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   );
 }
 
-// ─── Shared helpers ───────────────────────────────────────────────────────
-function SectionLabel({ children }: { children: React.ReactNode }) {
+const roleLabel = (r: string) =>
+  r === "buyer_payment" ? "Payment in" : r === "supplier_payment" ? "Supplier paid" :
+  r === "fee" ? "Wire fee" : r === "refund_out" ? "Refund out" : r === "refund_in" ? "Supplier refund" : r;
+
+function RecCell({ label, value, sub, clr = "text-ink", big }: { label: string; value: string; sub?: string; clr?: string; big?: boolean }) {
   return (
-    <div className="text-[13px] font-semibold text-ink-2 mb-0.5">
-      {children}
+    <div className="rounded-lg bg-surface-2/60 border border-line-2 px-3 py-2.5">
+      <div className="text-[11px] text-muted">{label}</div>
+      <div className={`${big ? "text-[18px]" : "text-[15px]"} font-bold tabular-nums mt-0.5 ${clr}`}>{value}</div>
+      {sub && <div className="text-[10px] text-faint mt-0.5">{sub}</div>}
     </div>
   );
 }
+
