@@ -788,6 +788,7 @@ fn main() {
             deal_allocations,
             reattach_orphaned_deal_allocations,
             cleanup_ghost_deal_flows,
+            pull_now,
             unallocated_bank_txns,
             deal_reconciliation,
             reconciliation_status_all,

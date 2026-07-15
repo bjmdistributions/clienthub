@@ -2059,6 +2059,8 @@ export const api = {
     invoke<{ email: string; org_id: string; display_name: string | null; is_superadmin: boolean }>("netsync_whoami"),
 
   // Sticky notes
+  // Pull remote sync events now (near-live) — used by the shared notes board.
+  pullNow: () => invoke<number>("pull_now"),
   listNotes: () => invoke<Note[]>("list_notes"),
   createNote: (body: string, color?: string, x?: number, y?: number) => invoke<Note>("create_note", { body, color, x, y }),
   updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean; x?: number; y?: number; w?: number; h?: number }) =>

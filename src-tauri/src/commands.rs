@@ -13241,6 +13241,20 @@ fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
 
 const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0), COALESCE(w,226), COALESCE(h,190)";
 
+/// Pull remote sync events on demand (in addition to the background 20s loop) so a
+/// live board — e.g. the shared notes board — reflects the other user's changes in
+/// ~seconds. Emits `netsync-applied` when anything landed so every open view
+/// refreshes. Cheap no-op when nothing is queued or no server is configured.
+#[tauri::command]
+pub async fn pull_now(app: tauri::AppHandle) -> Result<usize, String> {
+    let n = crate::netsync::pull_apply().await.map_err(|e| e.to_string())?;
+    if n > 0 {
+        use tauri::Emitter;
+        let _ = app.emit("netsync-applied", n);
+    }
+    Ok(n)
+}
+
 #[tauri::command]
 pub async fn list_notes() -> Result<Vec<Note>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

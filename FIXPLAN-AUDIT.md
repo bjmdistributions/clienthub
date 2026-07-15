@@ -146,7 +146,17 @@ Original per-item detail (kept for reference):
     free-cash aging alerts → deep-link to the filtered Transactions view; rules are
     device-local — say so in UI or move txn_rule into the synced schema.
 
-### Phase 3 — Notes section upgrades (owner asks 1-4)
+### Phase 3 — Notes section upgrades (owner asks 1-4) — 3a DONE v0.15.75; edit-lock (3.3) REMAINS
+Shipped 3a: 3.1 font scales with note size (√area, clamped); 3.2 near-live via new pull_now
+command (NotesView polls every 5s + on focus); 3.4 bug fixes — deleted notes no longer
+resurrect (pendingCreates set gates the merge re-add), debounced body edit flushed on unmount +
+cancelled on delete, updated_at bumped on color/pin/move/resize so a concurrent pull can't
+revert them, LWW compares epoch ms not raw strings. STILL TODO: 3.3 edit-lock (needs migration
+69 editing_by/editing_at + droplet backfill + clienthub-api repo commit of w/h AND the lock
+columns + server routes + lock UI) and 3.4e commit the server w/h schema to the clienthub-api
+repo (droplet is hand-patched only). 3.5 polish (bring-to-front, cap resize at board width,
+styled confirm) optional.
+Original per-item detail (kept for reference):
 3.1 **Font scales with size (ask 1)** — frontend-only: per-note
     `scale = min(1.8, sqrt((w*h)/(226*190)))`, apply `fontSize: 13.5*scale` (+ line-height) to
     the textarea (NotesView.tsx ~228). Live during resize for free; peers derive the same size

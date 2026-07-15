@@ -16,6 +16,10 @@ const NOTE_W = 226, NOTE_H = 190;      // defaults for a fresh note
 const MIN_W = 180, MIN_H = 175;        // smallest a note can be stretched to
 const wOf = (n: Note) => n.w || NOTE_W;
 const hOf = (n: Note) => n.h || NOTE_H;
+// Body text scales with the note's area so a bigger note reads bigger/more important.
+// √(area ratio) keeps it proportional; clamped so it stays legible either way.
+const BASE_AREA = NOTE_W * NOTE_H;
+const fontScale = (n: Note) => Math.max(0.9, Math.min(1.9, Math.sqrt((wOf(n) * hOf(n)) / BASE_AREA)));
 
 // Stable tiny rotation per note so the board feels hand-pinned, not gridded.
 function stableRot(id: string): number {
@@ -44,6 +48,8 @@ export default function NotesView() {
   const drag = useRef<{ id: string; dx: number; dy: number; moved: boolean } | null>(null);
   const resize = useRef<{ id: string; startX: number; startY: number; startW: number; startH: number; moved: boolean } | null>(null);
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const pendingBodies = useRef<Record<string, string>>({}); // last unsaved body per note
+  const pendingCreates = useRef<Set<string>>(new Set());     // ids created locally, not yet echoed by the server
 
   const load = useCallback(() => {
     api.listNotes().then((ns) => {
@@ -73,18 +79,43 @@ export default function NotesView() {
           const ae = document.activeElement as HTMLElement | null;
           const focusedId = ae?.id?.startsWith("note-ta-") ? ae.id.slice(8) : null;
           const incIds = new Set(incoming.map((n) => n.id));
+          // The server now knows these ids — they're no longer pending creates.
+          for (const id of incIds) pendingCreates.current.delete(id);
+          const ts = (s: string) => new Date(s).getTime() || 0; // epoch, so 'Z' vs '+00:00' formats compare correctly
           const merged = incoming.map((inc) => {
             const local = prev.find((p) => p.id === inc.id);
             if (!local) return inc;
-            const keepLocal = inc.id === activeId || inc.id === focusedId || local.updated_at > inc.updated_at;
+            const keepLocal = inc.id === activeId || inc.id === focusedId || ts(local.updated_at) > ts(inc.updated_at);
             return keepLocal ? local : inc;
           });
-          for (const p of prev) if (!incIds.has(p.id)) merged.push(p); // pending local create
+          // Re-add ONLY notes this device created that the server hasn't echoed yet.
+          // A note missing from `incoming` because it was deleted elsewhere must NOT
+          // be resurrected (the old code re-added every missing note).
+          for (const p of prev) if (!incIds.has(p.id) && pendingCreates.current.has(p.id)) merged.push(p);
           return merged;
         });
       }).catch(() => {});
     }).then((u) => { un = u; }).catch(() => {});
     return () => { un?.(); };
+  }, []);
+
+  // Near-live: while the board is open, pull remote changes every ~5s (and on
+  // window focus) so a teammate's note appears in seconds, not on the 20s loop.
+  useEffect(() => {
+    const kick = () => { api.pullNow().catch(() => {}); };
+    const iv = setInterval(kick, 5000);
+    window.addEventListener("focus", kick);
+    return () => { clearInterval(iv); window.removeEventListener("focus", kick); };
+  }, []);
+
+  // On unmount (e.g. switching tabs), flush any debounced body edit that hasn't
+  // saved yet — otherwise the last keystrokes are lost when the view tears down.
+  useEffect(() => () => {
+    for (const id of Object.keys(saveTimers.current)) {
+      clearTimeout(saveTimers.current[id]);
+      const body = pendingBodies.current[id];
+      if (body !== undefined) api.updateNote(id, { body }).catch(() => {});
+    }
   }, []);
 
   // Drag + resize — global listeners read the latest via refs (no stale closures).
@@ -115,13 +146,19 @@ export default function NotesView() {
         resize.current = null;
         document.body.style.userSelect = "";
         const n = notesRef.current.find((x) => x.id === rz.id);
-        if (n && rz.moved) api.updateNote(n.id, { w: Math.round(wOf(n)), h: Math.round(hOf(n)) }).catch(() => {});
+        if (n && rz.moved) {
+          setNotes((prev) => prev.map((m) => (m.id === rz.id ? { ...m, updated_at: new Date().toISOString() } : m)));
+          api.updateNote(n.id, { w: Math.round(wOf(n)), h: Math.round(hOf(n)) }).catch(() => {});
+        }
         return;
       }
       const d = drag.current; if (!d) return; drag.current = null;
       document.body.style.userSelect = "";
       const n = notesRef.current.find((x) => x.id === d.id);
-      if (n && d.moved) api.updateNote(n.id, { x: Math.round(n.x), y: Math.round(n.y) }).catch(() => {});
+      if (n && d.moved) {
+        setNotes((prev) => prev.map((m) => (m.id === d.id ? { ...m, updated_at: new Date().toISOString() } : m)));
+        api.updateNote(n.id, { x: Math.round(n.x), y: Math.round(n.y) }).catch(() => {});
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -151,25 +188,36 @@ export default function NotesView() {
     const y = 24 + k * 28;
     try {
       const note = await api.createNote("", "yellow", x, y);
+      pendingCreates.current.add(note.id); // protect it in the merge until the server echoes it
       setNotes((p) => [...p, note]);
       requestAnimationFrame(() => document.getElementById(`note-ta-${note.id}`)?.focus());
     } catch {/* ignore */}
   };
+  // Bump updated_at on every optimistic change so the sync merge's newer-wins guard
+  // protects it — otherwise a concurrent pull could snap the note back to its old value.
+  const now = () => new Date().toISOString();
   const editBody = (id: string, body: string) => {
-    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, body, updated_at: new Date().toISOString() } : n)));
+    pendingBodies.current[id] = body;
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, body, updated_at: now() } : n)));
     clearTimeout(saveTimers.current[id]);
-    saveTimers.current[id] = setTimeout(() => api.updateNote(id, { body }).catch(() => {}), 600);
+    saveTimers.current[id] = setTimeout(() => {
+      api.updateNote(id, { body }).catch(() => {});
+      delete pendingBodies.current[id]; delete saveTimers.current[id];
+    }, 600);
   };
   const setColor = (id: string, color: string) => {
-    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, color } : n)));
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, color, updated_at: now() } : n)));
     api.updateNote(id, { color }).catch(() => {});
   };
   const togglePin = (id: string, pinned: boolean) => {
-    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, pinned } : n)));
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, pinned, updated_at: now() } : n)));
     api.updateNote(id, { pinned }).catch(() => {});
   };
   const remove = (id: string) => {
     if (!confirm("Delete this note?")) return;
+    clearTimeout(saveTimers.current[id]); // cancel a pending body save so it can't fire post-delete
+    delete saveTimers.current[id]; delete pendingBodies.current[id];
+    pendingCreates.current.delete(id);
     setNotes((prev) => prev.filter((n) => n.id !== id));
     api.deleteNote(id).catch(() => {});
   };
@@ -226,7 +274,8 @@ export default function NotesView() {
                     {n.pinned && <Pin size={12} style={{ color: c.accent, fill: c.accent }} />}
                   </div>
                   <textarea id={`note-ta-${n.id}`} value={n.body} onChange={(e) => editBody(n.id, e.target.value)}
-                    placeholder="Write a note…" spellCheck={false} className="sn-body" style={{ color: "var(--t-tx1)" }} />
+                    placeholder="Write a note…" spellCheck={false} className="sn-body"
+                    style={{ color: "var(--t-tx1)", fontSize: `${(13.5 * fontScale(n)).toFixed(1)}px`, lineHeight: 1.5 }} />
                   <div className="sn-foot">
                     <div className="sn-dots">
                       {COLORS.map((o) => (
