@@ -62,6 +62,7 @@ export default function DealFlowView() {
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
+  const [refundsOpen, setRefundsOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -143,6 +144,11 @@ export default function DealFlowView() {
   const completed = flows.filter((f) => f.stage === "complete");
   const completedFiltered = completed.filter(matchFl);
   const totalCompleted    = completed.length;
+
+  // Every deal with refund activity, most-owed first.
+  const refundFlows = flows
+    .filter((f) => refundMap[f.id])
+    .sort((a, b) => refundMap[b.id].remaining - refundMap[a.id].remaining);
 
   // Skeleton mirrors the real layout (header, search, deal cards) — and only on
   // first load, so refreshes after an action don't blank the whole view.
@@ -327,6 +333,63 @@ export default function DealFlowView() {
                   );
                 })
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Refunds drawer ──────────────────────────────────────────────── */}
+      {refundFlows.length > 0 && (
+        <div className="bg-surface border border-line rounded-xl overflow-hidden">
+          {/* Drawer toggle */}
+          <button
+            onClick={() => setRefundsOpen(!refundsOpen)}
+            className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-surface-2/50 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <RotateCcw size={14} className="text-danger-ink" />
+              <span className="text-[13px] font-semibold text-ink">Refunds</span>
+              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">
+                {refundFlows.length}
+              </span>
+            </div>
+            <ChevronDown
+              size={14}
+              className={`text-muted transition-transform duration-200 ${refundsOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+
+          {/* Drawer body */}
+          {refundsOpen && (
+            <div className="border-t border-line divide-y divide-line-2">
+              {refundFlows.map((flow) => {
+                const r = refundMap[flow.id];
+                const isCompleted = flow.stage === "complete";
+                return (
+                  <button
+                    key={flow.id}
+                    onClick={() => { if (isCompleted) { setDrawerOpen(true); setExpandedDone(flow.id); } }}
+                    className={`w-full flex items-center gap-3 px-5 py-4 text-left transition-colors ${isCompleted ? "hover:bg-surface-2/40 cursor-pointer" : "cursor-default"}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-ink truncate">{flow.client_name || "—"}</div>
+                      <div className="text-[11px] text-muted mt-0.5 truncate">{flow.invoice_number || "—"}</div>
+                    </div>
+                    <div className="flex items-center gap-5 flex-shrink-0">
+                      <Stat label="Owed" value={fmtAmount(r.refund_owed)} />
+                      <Stat label="Refunded" value={fmtAmount(r.refunded)} />
+                      <div className="text-right">
+                        <div className="text-[12px] font-medium text-muted">Remaining</div>
+                        {r.remaining === 0 ? (
+                          <div className="text-[13px] font-bold tabular-nums text-danger-ink">Fully refunded</div>
+                        ) : (
+                          <div className="text-[13px] font-semibold tabular-nums text-danger-ink">{fmtAmount(r.remaining)}</div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

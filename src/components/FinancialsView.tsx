@@ -252,6 +252,9 @@ export default function FinancialsView() {
   const [role, setRole]               = useState("buyer_payment");
   const [note, setNote]               = useState("");
   const [allocBusy, setAllocBusy]     = useState(false);
+  // Split mode: allow one transaction to be divided across multiple deals (partial
+  // amounts, leg by leg). The backend keeps the running total <= the txn amount.
+  const [allowSplit, setAllowSplit]   = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -657,9 +660,11 @@ export default function FinancialsView() {
     if (!(amt > 0)) { toast("Enter an amount", "error"); return; }
     setAllocBusy(true);
     try {
-      await api.allocateBankTxn(openId, selectedDeal.id, amt, role, note.trim());
-      toast("Allocated to deal");
+      await api.allocateBankTxn(openId, selectedDeal.id, amt, role, note.trim(), allowSplit);
+      toast(allowSplit ? "Split leg allocated" : "Allocated to deal");
+      // In split mode keep the panel primed for the next leg; otherwise reset.
       setSelectedDeal(null); setDealQuery(""); setNote("");
+      if (!allowSplit) setAmountStr("");
       await refreshAll(true);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setAllocBusy(false); }
@@ -1110,6 +1115,8 @@ export default function FinancialsView() {
                           setRole={setRole}
                           note={note}
                           setNote={setNote}
+                          allowSplit={allowSplit}
+                          setAllowSplit={setAllowSplit}
                           busy={allocBusy}
                           onSubmit={submitAlloc}
                           onRemove={removeAlloc}
@@ -2024,6 +2031,8 @@ function AllocationPanel(props: {
   setRole: (v: string) => void;
   note: string;
   setNote: (v: string) => void;
+  allowSplit: boolean;
+  setAllowSplit: (v: boolean) => void;
   busy: boolean;
   onSubmit: () => void;
   onRemove: (id: string) => void;
@@ -2035,9 +2044,13 @@ function AllocationPanel(props: {
   const {
     txn, allocs, loading, targetType, setTargetType, filteredDeals, dealQuery, setDealQuery, dealListOpen, setDealListOpen,
     selectedDeal, onPickDeal, filteredLoans, loanQuery, setLoanQuery, loanListOpen, setLoanListOpen, selectedLoan, onPickLoan,
-    amountStr, setAmountStr, role, setRole, note, setNote, busy, onSubmit, onRemove, onUntagLoan, onCreateRule,
+    amountStr, setAmountStr, role, setRole, note, setNote, allowSplit, setAllowSplit, busy, onSubmit, onRemove, onUntagLoan, onCreateRule,
     newDealBusy, onCreateDeal,
   } = props;
+
+  // Live split math: how much of this transaction is still unallocated across ALL deals.
+  const splitAllocated = allocs.reduce((s, a) => s + (a.amount || 0), 0);
+  const splitRemaining = Math.max((txn.amount || 0) - splitAllocated, 0);
 
   // "Create a deal from this transaction" — retroactive backfill form (local state).
   const [showNewDeal, setShowNewDeal] = useState(false);
@@ -2245,6 +2258,20 @@ function AllocationPanel(props: {
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Allocate
             </button>
           </div>
+          {/* Split one payment across multiple deals — allocate a partial amount to
+              each; the backend keeps the running total within the transaction. */}
+          <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer mt-1">
+            <input type="checkbox" checked={allowSplit} onChange={(e) => setAllowSplit(e.target.checked)} className="accent-accent" />
+            Split this payment across multiple deals
+          </label>
+          {allowSplit && (
+            <div className="flex items-center gap-2 text-[11.5px] text-muted mt-1 flex-wrap">
+              <span>Enter a partial amount, pick a deal + role, Allocate — repeat for each deal.</span>
+              <span className="ml-auto tabular-nums whitespace-nowrap">
+                Unallocated <span className={`font-semibold ${splitRemaining > 0.005 ? "text-ink" : "text-success-ink"}`}>{fmtAmount(splitRemaining)}</span> of {fmtAmount(txn.amount)}
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-2 flex-wrap">
             <input
               value={note}
