@@ -51,7 +51,7 @@ export default function DealFlowView() {
   const [search,       setSearch]       = useState("");
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [syncing,      setSyncing]      = useState(false);
-  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean }>>({});
+  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
   const [refundsOpen, setRefundsOpen] = useState(false);
@@ -147,11 +147,17 @@ export default function DealFlowView() {
     (f) => f.stage !== "complete" && !activeRefund(f) && isInvoiceActive(f) && matchFl(f)
   );
   const completed = flows.filter((f) => f.stage === "complete");
-  const completedFiltered = completed.filter(matchFl);
+  // Completed deals, most recent completion first, so the list always reads top-down
+  // by date. Missing dates sort last.
+  const completedFiltered = completed.filter(matchFl).sort((a, b) => {
+    const ta = a.completed_at ? Date.parse(a.completed_at) : 0;
+    const tb = b.completed_at ? Date.parse(b.completed_at) : 0;
+    return tb - ta;
+  });
   const totalCompleted    = completed.length;
-  // A completed deal "needs work" only when it has NO bank financials linked and
-  // hasn't been acknowledged as a no-bank-records deal — not per unpaired leg.
-  const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_financials).length;
+  // A completed deal "needs review" when a money leg has no linked bank transaction
+  // and hasn't been marked "no record" — so we flag exactly which side is missing.
+  const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_review).length;
 
   // ACTIVE refunds only — a balance still owed. Fully-refunded deals are done and
   // live in Completed; keeping them out of here keeps the refund numbers on point.
@@ -269,7 +275,7 @@ export default function DealFlowView() {
               <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{totalCompleted}</span>
               {needsWorkCount > 0 && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning-ink bg-warning-bg px-2 py-0.5 rounded-full">
-                  <AlertTriangle size={10} /> {needsWorkCount} need financials
+                  <AlertTriangle size={10} /> {needsWorkCount} need review
                 </span>
               )}
             </button>
@@ -429,7 +435,7 @@ const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 
 function DealFlowCard({
   flow, onReload, zebra, refund, reconStatus,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean } }) {
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
   const refundView = refundOverride ?? !!refund;
@@ -573,13 +579,21 @@ function DealFlowCard({
               {NODE_LABELS[flow.stage as Stage]}
             </span>
           )}
-          {/* Completed deals warn ONLY when no bank financials are linked (and not acknowledged) */}
-          {isComplete && reconStatus?.needs_financials && (
-            <span className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink flex-shrink-0">
-              <AlertTriangle size={10} /> No financials
+          {/* Completed deals: date + which payment link (if any) is potentially missing */}
+          {isComplete && flow.completed_at && (
+            <span className="text-[11.5px] text-muted tabular-nums flex-shrink-0">
+              {new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
             </span>
           )}
-          {isComplete && reconStatus && !reconStatus.needs_financials && reconStatus.fully_reconciled && (
+          {isComplete && reconStatus?.needs_review && (
+            <span className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink flex-shrink-0">
+              <AlertTriangle size={10} />
+              {reconStatus.buyer_missing && reconStatus.supplier_missing ? "Missing links"
+                : reconStatus.buyer_missing ? "Missing buyer payment"
+                : "Missing supplier payment"}
+            </span>
+          )}
+          {isComplete && reconStatus && !reconStatus.needs_review && reconStatus.fully_reconciled && (
             <span className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-0.5 rounded-full bg-success-bg text-success-ink flex-shrink-0">
               <CheckCircle2 size={10} /> Reconciled
             </span>
@@ -1222,12 +1236,41 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
         </div>
       </div>
 
+      <DealNotes flow={flow} onReload={onReload} />
+
       <div className="flex items-center justify-end pt-1">
         <button onClick={onAdvance}
           className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
           Continue to profit <Check size={14} strokeWidth={2.5} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── Deal notes — explain anything (e.g. why a leg has no bank record) ──
+function DealNotes({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
+  const [val, setVal] = useState(flow.notes || "");
+  const [saving, setSaving] = useState(false);
+  const dirty = (flow.notes || "") !== val;
+  const save = async () => {
+    setSaving(true);
+    try { await api.updateDealFlowNotes(flow.id, val.trim() || null); toast("Note saved"); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  return (
+    <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
+      <div className="text-[12px] font-medium text-muted mb-1.5">Notes</div>
+      <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={2}
+        placeholder="Explain anything about this deal — e.g. why a payment has no bank record"
+        className="w-full border border-line rounded-lg px-2.5 py-2 text-[12.5px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y" />
+      {dirty && (
+        <div className="flex justify-end mt-1.5">
+          <button onClick={save} disabled={saving}
+            className="text-[12px] font-medium px-3 h-8 rounded-lg bg-accent text-on-accent disabled:opacity-50 transition-colors">Save note</button>
+        </div>
+      )}
     </div>
   );
 }

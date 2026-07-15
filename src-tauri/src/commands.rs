@@ -10432,9 +10432,16 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
         let pr = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
         let sp = if supplier_cost > 0.01 { supplier_paired >= supplier_cost - 0.5 } else { supplier_paired > 0.01 };
-        // "needs work" = complete deal with NO financials linked and not acknowledged
-        // as a no-bank-records deal. Partial links no longer nag per-leg.
         let acknowledged = no_buyer && no_supplier;
+        // Per-leg "potentially missing payment link": the leg has money expected but no
+        // linked bank transaction AND hasn't been marked "no record". Lets the completed
+        // list flag exactly which side needs attention, while the user can still add the
+        // link or check the "no record" box to clear it.
+        let buyer_linked    = buyer_paired > 0.01;
+        let supplier_linked = supplier_paired > 0.01;
+        let buyer_missing    = !buyer_linked    && !no_buyer    && buyer_target  > 0.01;
+        let supplier_missing = !supplier_linked && !no_supplier && supplier_cost > 0.01;
+        let needs_review = buyer_missing || supplier_missing;
         Ok(json!({
             "deal_flow_id": id,
             "payment_received_paired": pr,
@@ -10445,6 +10452,9 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
             "no_buyer_link": no_buyer,
             "no_supplier_link": no_supplier,
             "needs_financials": !has_financials && !acknowledged,
+            "buyer_missing": buyer_missing,
+            "supplier_missing": supplier_missing,
+            "needs_review": needs_review,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())

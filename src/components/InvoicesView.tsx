@@ -178,8 +178,9 @@ export default function InvoicesView() {
     } else if (viewTab === "drafts") { if (lo !== "draft") return false; }
     else if (viewTab === "sent")   { if (!(lo === "sent" || lo === "deposit_pending" || lo === "overdue")) return false; }
     else if (viewTab === "paid")   { if (lo !== "paid") return false; }
-    // Completed invoices hidden unless the toggle is on (or explicitly on the paid tab).
-    if (!showCompleted && viewTab !== "paid" && i.is_complete) return false;
+    // Completed invoices hidden unless the toggle is on (or on the paid/all tabs).
+    // "All" is the see-everything archive — every invoice ever, always searchable.
+    if (!showCompleted && viewTab !== "paid" && viewTab !== "all" && i.is_complete) return false;
     // Search by number / client / amount.
     if (q) {
       const hay = `${i.number} ${clientName(i.client_id)} ${i.total}`.toLowerCase();
