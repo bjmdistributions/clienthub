@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, Note } from "../lib/api";
-import { Plus, Pin, Trash2, StickyNote, GripVertical } from "lucide-react";
+import { Plus, Pin, Trash2, StickyNote, GripVertical, Lock } from "lucide-react";
 
 const COLORS: { key: string; fill: string; accent: string }[] = [
   { key: "yellow", fill: "rgba(250,204,21,0.18)",  accent: "#FACC15" },
@@ -38,7 +38,11 @@ function relTime(iso: string): string {
 }
 const exactTime = (iso: string) => { const t = new Date(iso); return isNaN(+t) ? "" : t.toLocaleString(); };
 
-export default function NotesView() {
+// A lock older than this is treated as stale (the editor left without releasing) —
+// well above the 5s pull cadence + ~30s renew, so an active editor never flickers.
+const LOCK_TTL_MS = 75000;
+
+export default function NotesView({ me }: { me: string }) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [, tick] = useState(0);
@@ -50,6 +54,8 @@ export default function NotesView() {
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const pendingBodies = useRef<Record<string, string>>({}); // last unsaved body per note
   const pendingCreates = useRef<Set<string>>(new Set());     // ids created locally, not yet echoed by the server
+  const heldLock = useRef<string | null>(null);              // note id whose edit-lock this device holds
+  const lastRenew = useRef<number>(0);                       // last time we re-stamped the held lock
 
   const load = useCallback(() => {
     api.listNotes().then((ns) => {
@@ -116,6 +122,8 @@ export default function NotesView() {
       const body = pendingBodies.current[id];
       if (body !== undefined) api.updateNote(id, { body }).catch(() => {});
     }
+    // Release the edit-lock so leaving the tab doesn't strand a note locked.
+    if (heldLock.current) api.setNoteEditing(heldLock.current, false).catch(() => {});
   }, []);
 
   // Drag + resize — global listeners read the latest via refs (no stale closures).
@@ -196,9 +204,34 @@ export default function NotesView() {
   // Bump updated_at on every optimistic change so the sync merge's newer-wins guard
   // protects it — otherwise a concurrent pull could snap the note back to its old value.
   const now = () => new Date().toISOString();
+
+  // Advisory edit-lock. lockedBy returns the OTHER user currently editing a note
+  // (empty/self/stale-TTL → not locked). Acquire on focus, release on blur/unmount;
+  // renew while typing so a long edit doesn't TTL-expire under a teammate.
+  const lockedBy = (n: Note): string | null => {
+    if (!n.editing_by || n.editing_by === me) return null;
+    const at = Date.parse(n.editing_at || "");
+    if (!at || Date.now() - at > LOCK_TTL_MS) return null;
+    return n.editing_by;
+  };
+  const acquireLock = (id: string) => {
+    heldLock.current = id; lastRenew.current = Date.now();
+    api.setNoteEditing(id, true).catch(() => {});
+  };
+  const releaseLock = (id: string) => {
+    if (heldLock.current !== id) return; // only release a lock we actually hold
+    heldLock.current = null;
+    api.setNoteEditing(id, false).catch(() => {});
+  };
+
   const editBody = (id: string, body: string) => {
     pendingBodies.current[id] = body;
     setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, body, updated_at: now() } : n)));
+    // Keep the lock fresh during a long edit (throttled well under the TTL).
+    if (heldLock.current === id && Date.now() - lastRenew.current > 25000) {
+      lastRenew.current = Date.now();
+      api.setNoteEditing(id, true).catch(() => {});
+    }
     clearTimeout(saveTimers.current[id]);
     saveTimers.current[id] = setTimeout(() => {
       api.updateNote(id, { body }).catch(() => {});
@@ -218,6 +251,7 @@ export default function NotesView() {
     clearTimeout(saveTimers.current[id]); // cancel a pending body save so it can't fire post-delete
     delete saveTimers.current[id]; delete pendingBodies.current[id];
     pendingCreates.current.delete(id);
+    if (heldLock.current === id) heldLock.current = null;
     setNotes((prev) => prev.filter((n) => n.id !== id));
     api.deleteNote(id).catch(() => {});
   };
@@ -262,20 +296,30 @@ export default function NotesView() {
           <div ref={boardRef} className="notes-board" style={{ minHeight: boardH }}>
             {notes.map((n) => {
               const c = colorOf(n.color);
+              const locker = lockedBy(n);
               return (
                 <div key={n.id} className="sticky-note"
                   style={{ left: n.x, top: n.y, width: wOf(n), height: hOf(n), minHeight: 0, zIndex: n.pinned ? 5 : 1,
                     transform: `rotate(${stableRot(n.id)}deg)`,
                     background: `linear-gradient(162deg, ${c.fill}, transparent 78%), var(--t-s1)`,
-                    borderColor: `${c.accent}55` }}>
+                    borderColor: locker ? `${c.accent}` : `${c.accent}55` }}>
                   <div className="sn-grip" onPointerDown={(e) => startDrag(e, n.id)} title="Drag to move">
                     <GripVertical size={13} style={{ color: c.accent, opacity: 0.8 }} />
                     <span className="sn-grip-fill" />
+                    {locker && (
+                      <span className="flex items-center gap-1 text-[10px] font-medium truncate"
+                        style={{ color: c.accent }} title={`${locker} is editing this note`}>
+                        <Lock size={10} /> {locker} editing
+                      </span>
+                    )}
                     {n.pinned && <Pin size={12} style={{ color: c.accent, fill: c.accent }} />}
                   </div>
                   <textarea id={`note-ta-${n.id}`} value={n.body} onChange={(e) => editBody(n.id, e.target.value)}
-                    placeholder="Write a note…" spellCheck={false} className="sn-body"
-                    style={{ color: "var(--t-tx1)", fontSize: `${(13.5 * fontScale(n)).toFixed(1)}px`, lineHeight: 1.5 }} />
+                    onFocus={() => { if (!locker) acquireLock(n.id); }} onBlur={() => releaseLock(n.id)}
+                    readOnly={!!locker}
+                    placeholder={locker ? "" : "Write a note…"} spellCheck={false} className="sn-body"
+                    style={{ color: "var(--t-tx1)", fontSize: `${(13.5 * fontScale(n)).toFixed(1)}px`, lineHeight: 1.5,
+                             cursor: locker ? "not-allowed" : "text", opacity: locker ? 0.7 : 1 }} />
                   <div className="sn-foot">
                     <div className="sn-dots">
                       {COLORS.map((o) => (
@@ -285,7 +329,7 @@ export default function NotesView() {
                     </div>
                     <div className="sn-actions">
                       <button title={n.pinned ? "Unpin" : "Pin"} onClick={() => togglePin(n.id, !n.pinned)} style={{ color: n.pinned ? c.accent : "var(--t-tx4)" }}><Pin size={13} /></button>
-                      <button title="Delete" onClick={() => remove(n.id)} className="sn-del" style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>
+                      {!locker && <button title="Delete" onClick={() => remove(n.id)} className="sn-del" style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>}
                     </div>
                   </div>
                   <div className="sn-time" title={exactTime(n.updated_at)}>

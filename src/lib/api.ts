@@ -13,6 +13,8 @@ export interface Note {
   y: number;
   w: number;
   h: number;
+  editing_by: string;
+  editing_at: string;
 }
 export interface Client {
   id: string;
@@ -2061,6 +2063,8 @@ export const api = {
   // Sticky notes
   // Pull remote sync events now (near-live) — used by the shared notes board.
   pullNow: () => invoke<number>("pull_now"),
+  // Acquire/release the advisory edit-lock on a note (who's editing it right now).
+  setNoteEditing: (id: string, editing: boolean) => invoke<void>("set_note_editing", { id, editing }),
   listNotes: () => invoke<Note[]>("list_notes"),
   createNote: (body: string, color?: string, x?: number, y?: number) => invoke<Note>("create_note", { body, color, x, y }),
   updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean; x?: number; y?: number; w?: number; h?: number }) =>

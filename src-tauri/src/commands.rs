@@ -13221,6 +13221,8 @@ pub struct Note {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    pub editing_by: String,
+    pub editing_at: String,
 }
 
 fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
@@ -13236,10 +13238,12 @@ fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
         y: r.get(8)?,
         w: r.get(9)?,
         h: r.get(10)?,
+        editing_by: r.get(11)?,
+        editing_at: r.get(12)?,
     })
 }
 
-const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0), COALESCE(w,226), COALESCE(h,190)";
+const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0), COALESCE(w,226), COALESCE(h,190), COALESCE(editing_by,''), COALESCE(editing_at,'')";
 
 /// Pull remote sync events on demand (in addition to the background 20s loop) so a
 /// live board — e.g. the shared notes board — reflects the other user's changes in
@@ -13296,7 +13300,39 @@ pub async fn create_note(body: String, color: Option<String>, x: Option<f64>, y:
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
     crate::netsync::push_now(); // reach the other device promptly, not on the next poll
-    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now, x, y, w, h })
+    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now, x, y, w, h,
+              editing_by: String::new(), editing_at: String::new() })
+}
+
+/// Acquire or release the advisory edit-lock on a note. Acquire stamps the current
+/// user + now; release clears it but ONLY if this user holds it (so a late acquirer
+/// isn't cleared by an earlier editor's blur). Synced + pushed so peers see the lock
+/// within a pull tick; readers TTL-expire it, so a crashed editor never locks a note
+/// forever.
+#[tauri::command]
+pub async fn set_note_editing(id: String, editing: bool) -> Result<(), String> {
+    let me = crate::employees::current_display_name();
+    let now = chrono::Utc::now().to_rfc3339();
+    let (editing_by, editing_at) = if editing { (me.clone(), now.clone()) } else { (String::new(), String::new()) };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let changed = if editing {
+            conn.execute("UPDATE notes SET editing_by=?1, editing_at=?2, updated_at=?3 WHERE id=?4",
+                rusqlite::params![editing_by, editing_at, now, id]).map_err(|e| e.to_string())?
+        } else {
+            // Only clear our own lock.
+            conn.execute("UPDATE notes SET editing_by='', editing_at='', updated_at=?1 WHERE id=?2 AND editing_by=?3",
+                rusqlite::params![now, id, me]).map_err(|e| e.to_string())?
+        };
+        if changed == 0 { return Ok(()); } // nothing to do (release of a lock we don't hold)
+    }
+    let mut cols = Map::new();
+    cols.insert("editing_by".into(), json!(editing_by));
+    cols.insert("editing_at".into(), json!(editing_at));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
 }
 
 #[tauri::command]

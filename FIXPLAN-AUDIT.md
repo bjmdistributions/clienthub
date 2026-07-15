@@ -146,7 +146,16 @@ Original per-item detail (kept for reference):
     free-cash aging alerts → deep-link to the filtered Transactions view; rules are
     device-local — say so in UI or move txn_rule into the synced schema.
 
-### Phase 3 — Notes section upgrades (owner asks 1-4) — 3a DONE v0.15.75; edit-lock (3.3) REMAINS
+### Phase 3 — Notes section upgrades (owner asks 1-4) — DONE (3a v0.15.75, edit-lock v0.15.76)
+Edit-lock (3.3) shipped v0.15.76: migration 69 (notes.editing_by/editing_at) + droplet backfill
+(deployed, verified cols 12/13, 0 replay errors); set_note_editing command (stamps current user
+on focus, clears own lock on blur, synced + push_now); NotesView acquires on focus / releases on
+blur+unmount+delete, renews every 25s while typing, 75s TTL so a crashed editor never locks
+forever; a note being edited by someone else shows a "<name> editing" chip, read-only textarea,
+and hidden delete. Guarded so a read-only textarea's focus can't steal the lock. STILL TODO:
+3.4e commit the server w/h + lock schema to the clienthub-api git REPO (droplet is hand-patched
+via its own sync.rs backfill — a git-based redeploy would lose these ALTERs); 3.5 polish
+(bring-to-front, cap resize at board width, styled confirm) optional.
 Shipped 3a: 3.1 font scales with note size (√area, clamped); 3.2 near-live via new pull_now
 command (NotesView polls every 5s + on focus); 3.4 bug fixes — deleted notes no longer
 resurrect (pendingCreates set gates the merge re-add), debounced body edit flushed on unmount +

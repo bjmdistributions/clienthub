@@ -492,7 +492,7 @@ export default function App() {
   const paneContent = (t: Tab) => {
     if (t === "dashboard") return <DashboardView onNavigate={setTab} me={me} />;
     if (t === "globe") return <GlobeView />;
-    if (t === "notes") return <NotesView />;
+    if (t === "notes") return <NotesView me={me?.display_name || ""} />;
     if (t === "approvals") return <ApprovalsView />;
     if (t === "checkup") return <CheckupView />;
     return (

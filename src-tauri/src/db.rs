@@ -1477,4 +1477,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE invoices ADD COLUMN voided_at TEXT;
         "#,
     ),
+    (
+        69,
+        // Advisory edit-lock on a sticky note: who is currently editing and when
+        // they last touched it (TTL-expired on the reader side). Synced columns so
+        // the lock is visible on every device.
+        r#"
+        ALTER TABLE notes ADD COLUMN editing_by TEXT NOT NULL DEFAULT '';
+        ALTER TABLE notes ADD COLUMN editing_at TEXT NOT NULL DEFAULT '';
+        "#,
+    ),
 ];
