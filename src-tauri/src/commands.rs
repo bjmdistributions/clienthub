@@ -10953,7 +10953,7 @@ pub async fn get_money_config() -> Result<Value, String> {
         "credit_card_balance": read_setting_f64(&conn, "money_credit_card_balance", 0.0),
         "cash_floor": read_setting_f64(&conn, "money_cash_floor", 0.0),
         "tax_sweep_pct": read_setting_f64(&conn, "money_tax_sweep_pct", 0.30),
-        "refund_reserve_pct": read_setting_f64(&conn, "money_refund_reserve_pct", 0.10),
+        "refund_reserve_pct": read_setting_f64(&conn, "money_refund_reserve_pct", 0.30),
         "war_chest": read_setting_f64(&conn, "money_war_chest", 25000.0),
     }))
 }
@@ -11017,13 +11017,14 @@ pub async fn financials_overview() -> Result<Value, String> {
          WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01",
         [], |r| r.get(0)).unwrap_or(0.0);
 
-    // Reserves: share of this calendar year's realized (completed-deal) profit set
-    // aside for taxes, and share of realized revenue held back against future refunds.
-    // Percentages are stored as fractions (0.30 = 30%).
+    // Reserves: a slice of THIS YEAR's realized (completed-deal) NET PROFIT set aside
+    // for taxes, and another slice set aside against future refunds — i.e. the amount
+    // to move into a separate refunds account. Percentages are fractions (0.30 = 30%).
+    // Refund reserve is on PROFIT, not revenue: reserving 10% of gross revenue
+    // over-reserved by a mile and crushed Free Cash.
     let tax_sweep_pct = read_setting_f64(&conn, "money_tax_sweep_pct", 0.30);
-    let refund_reserve_pct = read_setting_f64(&conn, "money_refund_reserve_pct", 0.10);
-    // Reserves obey the accuracy contract too: archived + fell-through deals out,
-    // refunds netted off both profit (tax base) and revenue (refund-reserve base)
+    let refund_reserve_pct = read_setting_f64(&conn, "money_refund_reserve_pct", 0.30);
+    // Accuracy contract: archived + fell-through deals out; refunds netted off profit
     // so we don't reserve against money already handed back.
     let year_profit: f64 = conn.query_row(
         "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
@@ -11031,14 +11032,10 @@ pub async fn financials_overview() -> Result<Value, String> {
            AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1)) \
            AND df.completed_at >= date('now','start of year')",
         [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
-    let year_revenue: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(df.gross_revenue - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
-         FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
-           AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1)) \
-           AND df.completed_at >= date('now','start of year')",
-        [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
     let tax_reserve = (year_profit * tax_sweep_pct).max(0.0);
-    let refund_reserve = (year_revenue * refund_reserve_pct).max(0.0);
+    // 30% of what we've actually netted this year — the target to park in a separate
+    // refunds account. Link that account later and reconcile against this number.
+    let refund_reserve = (year_profit * refund_reserve_pct).max(0.0);
 
     // Loans still owed (principal − set aside) for open loans.
     let loan_outstanding: f64 = conn.query_row(
@@ -11055,8 +11052,15 @@ pub async fn financials_overview() -> Result<Value, String> {
     let status = if free_cash > 0.0 && (trailing_opex <= 0.0 || runway >= 3.0) { "green" }
                  else if free_cash > 0.0 { "yellow" } else { "red" };
 
+    // Only ACTIVE refunds (still owed after payments + bank refund-outs) — a fully
+    // refunded deal is done and shouldn't count as outstanding.
     let refund_deals: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows WHERE COALESCE(archived,0)=0 AND refund_owed > 0.01", [], |r| r.get(0)).unwrap_or(0);
+        "SELECT COUNT(*) FROM deal_flows df WHERE COALESCE(df.archived,0)=0 AND df.refund_owed > 0.01
+           AND (df.refund_owed
+                - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0)
+                - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0)
+               ) > 0.01",
+        [], |r| r.get(0)).unwrap_or(0);
     let stale_unallocated: i64 = conn.query_row(
         "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND bt.category != 'internal_transfer'
            AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
@@ -11082,6 +11086,8 @@ pub async fn financials_overview() -> Result<Value, String> {
         "refund_liability": round2(refund_liability),
         "tax_reserve": round2(tax_reserve),
         "refund_reserve": round2(refund_reserve),
+        "refund_reserve_base": round2(year_profit),
+        "refund_reserve_pct": refund_reserve_pct,
         "cash_floor": round2(cash_floor),
         "loan_outstanding": round2(loan_outstanding),
         "war_chest": round2(war_chest),

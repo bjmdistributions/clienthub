@@ -132,7 +132,7 @@ export default function FreeCashView() {
         { label: "Supplier payables",                  tag: "not yours",    value: ov.supplier_payables },
         { label: "Refund liability (we owe buyers)",   tag: "not yours",    value: ov.refund_liability },
         { label: "Tax reserve",                        tag: "untouchable",  value: ov.tax_reserve, strong: true },
-        { label: "Refund reserve",                     tag: "untouchable",  value: ov.refund_reserve },
+        { label: `Refund reserve · ${Math.round((ov.refund_reserve_pct ?? 0.3) * 100)}% of ${fmtAmount(ov.refund_reserve_base ?? 0)} net profit`, tag: "set aside", value: ov.refund_reserve },
         { label: "Cash floor",                         tag: "untouchable",  value: ov.cash_floor },
         { label: "Loans outstanding",                  tag: "not yours",    value: ov.loan_outstanding },
       ]
@@ -321,7 +321,7 @@ export default function FreeCashView() {
               />
               <NumField
                 label="Refund reserve"
-                hint="Share of this year's completed-deal revenue held back against future refunds."
+                hint="Share of this year's net profit to set aside for refunds — the amount to park in a separate account (link it later and reconcile)."
                 suffix="%"
                 value={refundStr}
                 onChange={setRefundStr}

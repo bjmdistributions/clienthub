@@ -1462,6 +1462,8 @@ export interface FinancialsOverview {
   refund_liability: number;
   tax_reserve: number;
   refund_reserve: number;
+  refund_reserve_base: number;
+  refund_reserve_pct: number;
   cash_floor: number;
   loan_outstanding: number;
   war_chest: number;

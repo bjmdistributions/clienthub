@@ -139,11 +139,12 @@ export default function DealFlowView() {
     return !inv.is_complete;
   };
 
-  // A deal in refund mode is a refund, not an active pipeline deal — it drops out of
-  // the active list (regardless of stage or draft status) and lives in the Refunds
-  // section below.
+  // A deal with an ACTIVE refund (balance still owed) drops out of the active list and
+  // lives in the Refunds section. A fully-refunded deal is no longer "in refund mode",
+  // so it stays on its normal track (and won't vanish now that Refunds is active-only).
+  const activeRefund = (f: DealFlow) => !!refundMap[f.id] && refundMap[f.id].remaining > 0.01;
   const active    = flows.filter(
-    (f) => f.stage !== "complete" && !refundMap[f.id] && isInvoiceActive(f) && matchFl(f)
+    (f) => f.stage !== "complete" && !activeRefund(f) && isInvoiceActive(f) && matchFl(f)
   );
   const completed = flows.filter((f) => f.stage === "complete");
   const completedFiltered = completed.filter(matchFl);
@@ -152,9 +153,10 @@ export default function DealFlowView() {
   // hasn't been acknowledged as a no-bank-records deal — not per unpaired leg.
   const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_financials).length;
 
-  // Every deal with refund activity, most-owed first.
+  // ACTIVE refunds only — a balance still owed. Fully-refunded deals are done and
+  // live in Completed; keeping them out of here keeps the refund numbers on point.
   const refundFlows = flows
-    .filter((f) => refundMap[f.id])
+    .filter((f) => refundMap[f.id] && refundMap[f.id].remaining > 0.01)
     .sort((a, b) => refundMap[b.id].remaining - refundMap[a.id].remaining);
 
   // Skeleton mirrors the real layout (header, search, deal cards) — and only on
