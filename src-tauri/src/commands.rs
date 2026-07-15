@@ -10004,12 +10004,19 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
 pub async fn refund_status_all() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
+        // Refunded = custom refunds (refunds table, NOT bank-linked) + EVERY refund_out
+        // bank allocation. A bank-linked refund lives in both refunds AND bank_allocation,
+        // so we count it on the allocation side and exclude bank-linked refunds rows to
+        // avoid double-counting. This makes a refund_out paired straight in Financials
+        // count here too — not just refunds recorded in the refund workspace.
         "SELECT df.id, COALESCE(df.refund_owed,0),
-                COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)
+                COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0)
+                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0
            AND (COALESCE(df.refund_owed,0) > 0.01
-                OR EXISTS (SELECT 1 FROM refunds r WHERE r.deal_flow_id=df.id))",
+                OR EXISTS (SELECT 1 FROM refunds r WHERE r.deal_flow_id=df.id)
+                OR EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'))",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;
