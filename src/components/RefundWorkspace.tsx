@@ -106,7 +106,7 @@ function TxnPicker({ txns, onPick, onClose }: {
   );
 }
 
-export default function RefundWorkspace({ dealFlowId, primary = false }: { dealFlowId: string; primary?: boolean }) {
+export default function RefundWorkspace({ dealFlowId, primary = false, onChange }: { dealFlowId: string; primary?: boolean; onChange?: () => void }) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [receipts, setReceipts] = useState<DealReceipt[]>([]);
   const [refunds, setRefunds] = useState<RefundRow[]>([]);
@@ -146,7 +146,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setErr(null);
-    try { await fn(); await load(); }
+    try { await fn(); await load(); onChange?.(); }
     catch (e: any) {
       const msg = typeof e === "string" ? e : e?.message || "Something went wrong";
       setErr(msg); toast(msg, "error");

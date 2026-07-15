@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search, Calculator } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
 import { api, DealFlow, DealAllocation, UnallocatedTxn } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
@@ -27,8 +27,6 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
   const [busy, setBusy] = useState(false);
-  // "Complete pairing" reveals the profit calculation derived from what's linked.
-  const [showBreakdown, setShowBreakdown] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -206,18 +204,8 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
           </div>
         </div>
 
-        {/* Complete pairing → recompute from what's linked and reveal the full math */}
-        <div className="px-4 pb-3">
-          <button
-            onClick={async () => { await load(); setShowBreakdown((v) => !v); }}
-            disabled={!anyPaired || busy}
-            className="w-full flex items-center justify-center gap-1.5 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-medium disabled:opacity-40 transition-colors"
-          >
-            <Calculator size={14} /> {showBreakdown ? "Recalculate profit" : "Complete pairing"}
-          </button>
-        </div>
-
-        {showBreakdown && recon && (
+        {/* Profit from what's linked — updates live as you pair, no button needed */}
+        {anyPaired && recon && (
           <div className="px-4 pb-4">
             <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
               <div className="text-[12px] font-medium text-muted mb-1">Profit from linked payments</div>

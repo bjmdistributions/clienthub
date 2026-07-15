@@ -263,6 +263,9 @@ export default function FinancialsView() {
           api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
         ]);
         setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
+        // Heal any payment previously paired to a duplicate deal_flow row so it
+        // shows on the deal the deal view displays (idempotent; usually a no-op).
+        api.reattachOrphanedDealAllocations().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
       } catch (e: any) { toast(String(e), "error"); }
       finally { setLoading(false); }
     })();
@@ -914,7 +917,18 @@ export default function FinancialsView() {
     const ot = openId ? txns.find((t) => t.id === openId) : null;
     const cp = (ot?.counterparty_name || "").trim().toLowerCase();
     const amt = ot?.amount || 0;
-    return deals
+    // Collapse duplicate deal_flow rows for one invoice to the single highest-stage
+    // survivor — the same row Deal Flow shows — so an allocation can never land on a
+    // ghost duplicate the deal view hides (which would look like "no linked payment").
+    const rankOf = (s?: string) =>
+      ({ invoiced: 0, payment_received: 1, supplier_paid: 2, complete: 3 } as Record<string, number>)[s || ""] ?? -1;
+    const survivorByInv: Record<string, DealFlow> = {};
+    for (const d of deals) {
+      const key = d.invoice_id || d.id;
+      const prev = survivorByInv[key];
+      if (!prev || rankOf(d.stage) > rankOf(prev.stage)) survivorByInv[key] = d;
+    }
+    return Object.values(survivorByInv)
       .filter((d) => !q || `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(q))
       .map((d) => {
         // Rank deals that match the open transaction (same buyer / same amount) to

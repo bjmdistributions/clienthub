@@ -302,7 +302,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
       <ReconciliationPanel flow={flow} />
 
       {/* Full refund workflow: received money, owed, refund payments, remaining */}
-      <RefundWorkspace dealFlowId={flow.id} />
+      <RefundWorkspace dealFlowId={flow.id} onChange={onReload} />
 
       {/* Actions */}
       <div className="flex items-center gap-3 pt-1">

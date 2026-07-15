@@ -24,9 +24,9 @@ function si(s: string): number { return STAGES.indexOf(s as Stage); }
 
 const NODE_LABELS: Record<Stage, string> = {
   invoiced:         "Invoiced",
-  payment_received: "Payment in",
+  payment_received: "Cost & payment",
   supplier_paid:    "Supplier paid",
-  complete:         "Complete",
+  complete:         "Pair & complete",
 };
 
 // Auto-open the panel for the NEXT step needed
@@ -116,6 +116,12 @@ export default function DealFlowView() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Self-heal: re-point any payment stranded on a duplicate deal_flow row onto the
+  // survivor this view shows, then reload so the link appears. Idempotent + cheap.
+  useEffect(() => {
+    api.reattachOrphanedDealAllocations().then((n) => { if (n > 0) load(); }).catch(() => {});
+  }, [load]);
 
   // Cross-tab navigation restore
   useEffect(() => {
@@ -399,7 +405,7 @@ export default function DealFlowView() {
                     </button>
                     {isExp && (
                       <div className="px-5 pb-4 pt-1 bg-surface-2/30">
-                        <RefundWorkspace dealFlowId={flow.id} primary />
+                        <RefundWorkspace dealFlowId={flow.id} primary onChange={load} />
                       </div>
                     )}
                   </div>
@@ -724,18 +730,26 @@ function DealFlowCard({
 
             {refundView ? (
               /* Refund mode: the refund workspace IS the view; deal-flow panels hidden. */
-              <RefundWorkspace dealFlowId={flow.id} primary />
+              <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
             ) : (
               <>
                 {panel === "invoiced"         && <PanelInvoiced     flow={flow} />}
                 {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
                 {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
-                {panel === "complete"         && <PanelComplete     flow={flow} onReload={onReload} />}
-                {/* Pair real bank transactions to this deal once money is due. */}
-                {si(flow.stage) >= si("payment_received") && (
-                  <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
+                {/* Pairing the real bank money is the final step. On the Complete panel
+                    it leads, with the gated completion action directly below it; on the
+                    earlier panels it sits underneath so money can be paired as it lands. */}
+                {panel === "complete" ? (
+                  <>
+                    <ReconciliationPanel flow={flow} />
+                    <div className="mt-3"><PanelComplete flow={flow} onReload={onReload} /></div>
+                  </>
+                ) : (
+                  si(flow.stage) >= si("payment_received") && (
+                    <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
+                  )
                 )}
-                <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} /></div>
+                <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} onChange={onReload} /></div>
               </>
             )}
           </div>
@@ -950,7 +964,7 @@ function PanelPayment({ flow, onReload }: { flow: DealFlow; onReload: () => void
 
   return (
     <div className="space-y-4">
-      <SectionLabel>{isDone ? "Payment received" : "Add supplier & receive payment"}</SectionLabel>
+      <SectionLabel>{isDone ? "Payment received" : "Supplier cost & payment"}</SectionLabel>
 
       {/* Existing supplier payments */}
       {existingPayments.length > 0 && (
@@ -1479,6 +1493,11 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   // Default = apply the configured split. The old default (false) silently routed
   // 100% of every completed deal to the business share, burying the user's split.
   const [payoutIncluded, setPayoutIncluded] = useState(true);
+  // Pairing gate — the deal can't close until the user affirms every dollar that
+  // will ever be linked (bank-paired above, or a custom cash/Zelle line) is linked.
+  // Deliberately a manual confirmation, not an automatic bank check: money that
+  // never hits the feed still counts, so the user is the one who says "that's all".
+  const [moneyLinked, setMoneyLinked] = useState(false);
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
 
@@ -1570,13 +1589,29 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               </button>
             </div>
           </div>
+          {/* Pairing gate — confirm all money is linked before the deal can close. */}
+          <button
+            type="button"
+            onClick={() => setMoneyLinked((v) => !v)}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${
+              moneyLinked ? "border-success bg-success-bg" : "border-line bg-surface hover:border-accent/40"
+            }`}
+          >
+            {moneyLinked
+              ? <CheckCircle2 size={16} className="text-success-ink flex-shrink-0" />
+              : <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />}
+            <span className={`text-[12.5px] leading-snug ${moneyLinked ? "text-success-ink font-medium" : "text-ink-2"}`}>
+              This is all the money that will ever be linked to this deal
+            </span>
+          </button>
           <button
             onClick={handleCompleteClick}
-            disabled={saving}
+            disabled={saving || !moneyLinked}
+            title={!moneyLinked ? "Confirm all money is linked first" : undefined}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg
-                       text-[14px] font-medium disabled:opacity-40 transition-colors"
+                       text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Complete deal
+            {moneyLinked ? "Complete deal" : "Complete deal — confirm money linked above"}
           </button>
         </div>
       )}

@@ -9852,6 +9852,66 @@ pub async fn deal_allocations(deal_flow_id: String) -> Result<Vec<Value>, String
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Heal allocations stranded on a duplicate ("ghost") deal_flow row. Some invoices
+/// carry more than one deal_flow row; the deal-flow view collapses them to the
+/// single highest-stage survivor, but the Financials allocator historically listed
+/// every row, so a payment could be paired to a ghost the deal view never shows —
+/// making the deal look like it has "no linked payment". This re-points every such
+/// allocation onto the same survivor the UI displays (highest stage, newest on a
+/// tie), through the sync layer so the fix reaches the server and other devices.
+/// Idempotent: once healed it finds nothing and returns 0.
+#[tauri::command]
+pub async fn reattach_orphaned_deal_allocations() -> Result<i64, String> {
+    // Stage rank must match the deal-flow UI's dedup (invoiced<payment_received<
+    // supplier_paid<complete). Survivor per invoice = highest rank, newest on a tie.
+    const SURV: &str =
+        "SELECT id FROM deal_flows WHERE invoice_id=?1 AND COALESCE(archived,0)=0 \
+         ORDER BY (CASE stage WHEN 'complete' THEN 3 WHEN 'supplier_paid' THEN 2 \
+         WHEN 'payment_received' THEN 1 ELSE 0 END) DESC, created_at DESC LIMIT 1";
+    let orphans: Vec<(String, String, f64, String, String, String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.bank_txn_id, a.amount, a.role, COALESCE(a.note,''), df.invoice_id, COALESCE(a.created_at,'') \
+             FROM bank_allocation a JOIN deal_flows df ON df.id=a.deal_flow_id \
+             WHERE COALESCE(df.archived,0)=0 AND df.invoice_id IS NOT NULL \
+               AND df.id <> (SELECT d2.id FROM deal_flows d2 \
+                             WHERE d2.invoice_id=df.invoice_id AND COALESCE(d2.archived,0)=0 \
+                             ORDER BY (CASE d2.stage WHEN 'complete' THEN 3 WHEN 'supplier_paid' THEN 2 \
+                             WHEN 'payment_received' THEN 1 ELSE 0 END) DESC, d2.created_at DESC LIMIT 1)",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?,
+            r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
+        ))).map_err(|e| e.to_string())?;
+        rows.filter_map(|x| x.ok()).collect()
+    };
+    if orphans.is_empty() { return Ok(0); }
+    let mut fixed = 0i64;
+    for (id, bank_txn_id, amount, role, note, invoice_id, created_at) in orphans {
+        let survivor: Option<String> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.query_row(SURV, [&invoice_id], |r| r.get::<_, String>(0)).ok()
+        };
+        let Some(survivor) = survivor else { continue };
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("bank_txn_id".into(), json!(bank_txn_id));
+        cols.insert("deal_flow_id".into(), json!(survivor));
+        cols.insert("amount".into(), json!(amount));
+        cols.insert("role".into(), json!(role));
+        cols.insert("note".into(), json!(note));
+        cols.insert("created_at".into(), json!(created_at));
+        cols.insert("updated_at".into(), json!(now));
+        sync::record_upsert("bank_allocation", &id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE bank_allocation SET deal_flow_id=?1, updated_at=?2 WHERE id=?3",
+            rusqlite::params![survivor, now, id]).map_err(|e| e.to_string())?;
+        fixed += 1;
+    }
+    if fixed > 0 { crate::netsync::push_now(); }
+    Ok(fixed)
+}
+
 /// Bank transactions available to pair to a deal, split by direction. A txn is
 /// offered iff it has NO allocation to a deal other than this one (exclusive
 /// links — once linked anywhere it's gone from every other deal's picker) and it

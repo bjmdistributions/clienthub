@@ -716,6 +716,7 @@ fn main() {
             remove_bank_allocation,
             list_bank_allocations_for_txn,
             deal_allocations,
+            reattach_orphaned_deal_allocations,
             unallocated_bank_txns,
             deal_reconciliation,
             reconciliation_status_all,

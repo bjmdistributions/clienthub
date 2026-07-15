@@ -2109,6 +2109,10 @@ export const api = {
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
   dealAllocations: (dealFlowId: string) =>
     invoke<DealAllocation[]>("deal_allocations", { dealFlowId }),
+  // Re-point allocations stranded on a duplicate deal_flow row onto the survivor
+  // the deal view shows. Idempotent; returns how many were fixed.
+  reattachOrphanedDealAllocations: () =>
+    invoke<number>("reattach_orphaned_deal_allocations"),
   unallocatedBankTxns: (dealFlowId?: string) =>
     invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
   dealReconciliation: (dealFlowId: string) =>
