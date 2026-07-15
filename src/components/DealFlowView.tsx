@@ -9,7 +9,6 @@ import {
 } from "../lib/api";
 import { fmtAmount, primarySupplierLabel } from "../lib/format";
 import { toast } from "./Toast";
-import CompletedBreakdown from "./CompletedBreakdown";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -51,8 +50,8 @@ export default function DealFlowView() {
   const [loading,      setLoading]      = useState(true);
   const [search,       setSearch]       = useState("");
   const [drawerOpen,   setDrawerOpen]   = useState(false);
-  const [expandedDone, setExpandedDone] = useState<string | null>(null);
-  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean }>>({});
+  const [syncing,      setSyncing]      = useState(false);
+  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
   const [refundsOpen, setRefundsOpen] = useState(false);
@@ -149,6 +148,9 @@ export default function DealFlowView() {
   const completed = flows.filter((f) => f.stage === "complete");
   const completedFiltered = completed.filter(matchFl);
   const totalCompleted    = completed.length;
+  // A completed deal "needs work" only when it has NO bank financials linked and
+  // hasn't been acknowledged as a no-bank-records deal — not per unpaired leg.
+  const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_financials).length;
 
   // Every deal with refund activity, most-owed first.
   const refundFlows = flows
@@ -183,6 +185,16 @@ export default function DealFlowView() {
       </div>
     </div>
   );
+
+  const syncCompleted = async () => {
+    setSyncing(true);
+    try {
+      const n = await api.resyncAllCompletedDeals();
+      toast(`Synced ${n} completed deal${n !== 1 ? "s" : ""} from bank — numbers and dates updated`);
+      await load();
+    } catch (e: any) { toast(String(e), "error"); }
+    setSyncing(false);
+  };
 
   const handleExportDealFlows = async () => {
     const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: "deal-flows.csv" });
@@ -248,106 +260,38 @@ export default function DealFlowView() {
       {/* ── Completed deals drawer ──────────────────────────────────────── */}
       {totalCompleted > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          {/* Drawer toggle */}
-          <button
-            onClick={() => setDrawerOpen(!drawerOpen)}
-            className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-surface-2/50 transition-colors"
-          >
-            <div className="flex items-center gap-2.5">
-              <CheckCircle2 size={14} className="text-success-ink" />
+          <div className="w-full flex items-center justify-between px-5 py-3.5">
+            <button onClick={() => setDrawerOpen(!drawerOpen)} className="flex items-center gap-2.5 text-left min-w-0">
+              <CheckCircle2 size={14} className="text-success-ink flex-shrink-0" />
               <span className="text-[13px] font-semibold text-ink">Completed deals</span>
-              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">
-                {totalCompleted}
-              </span>
+              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{totalCompleted}</span>
+              {needsWorkCount > 0 && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning-ink bg-warning-bg px-2 py-0.5 rounded-full">
+                  <AlertTriangle size={10} /> {needsWorkCount} need financials
+                </span>
+              )}
+            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={syncCompleted} disabled={syncing}
+                className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg hover:bg-surface-3 disabled:opacity-50 transition-colors"
+                title="Re-pull recorded numbers from the bank and date each completed deal to when the supplier was actually paid">
+                <RefreshCw size={13} className={syncing ? "animate-spin" : ""} /> Sync from bank
+              </button>
+              <button onClick={() => setDrawerOpen(!drawerOpen)} className="p-1 rounded-lg hover:bg-surface-3 transition-colors">
+                <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${drawerOpen ? "rotate-180" : ""}`} />
+              </button>
             </div>
-            <ChevronDown
-              size={14}
-              className={`text-muted transition-transform duration-200 ${drawerOpen ? "rotate-180" : ""}`}
-            />
-          </button>
-
-          {/* Drawer body */}
+          </div>
           {drawerOpen && (
-            <div className="border-t border-line divide-y divide-line-2">
+            <div className="border-t border-line p-4 space-y-4">
               {completedFiltered.length === 0 ? (
                 <p className="text-[12px] text-faint text-center py-8">
                   {search ? "No completed deals match your search" : "No completed deals yet"}
                 </p>
               ) : (
-                completedFiltered.map((flow) => {
-                  const margin = flow.gross_revenue > 0
-                    ? (flow.net_profit / flow.gross_revenue) * 100
-                    : 0;
-                  const isExp = expandedDone === flow.id;
-                  const sup = primarySupplierLabel(flow.supplier_payments);
-                  return (
-                    <div key={flow.id}>
-                      <button
-                        onClick={() => setExpandedDone(isExp ? null : flow.id)}
-                        className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-surface-2/40 transition-colors"
-                      >
-                        <ChevronRight
-                          size={12}
-                          className={`text-faint flex-shrink-0 transition-transform ${isExp ? "rotate-90" : ""}`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[13px] font-medium text-ink flex items-center gap-2 min-w-0">
-                            <span className="truncate">{flow.client_name || "—"}</span>
-                            {recon[flow.id]?.fully_reconciled ? (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-success-ink flex-shrink-0">
-                                <CheckCircle2 size={11} /> Reconciled
-                              </span>
-                            ) : recon[flow.id] && !recon[flow.id].has_payment ? (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-danger-ink flex-shrink-0">
-                                <AlertTriangle size={10} /> No payments linked
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-warning-ink flex-shrink-0">
-                                <AlertTriangle size={10} />
-                                {!recon[flow.id]?.payment_received_paired && !recon[flow.id]?.supplier_paid_paired
-                                  ? "Needs pairing"
-                                  : !recon[flow.id]?.payment_received_paired
-                                    ? "Needs payment"
-                                    : "Needs supplier"}
-                              </span>
-                            )}
-                            {refundMap[flow.id] && (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-danger-ink flex-shrink-0">
-                                <RotateCcw size={10} />
-                                {refundMap[flow.id].remaining > 0 ? `Refund · ${fmtAmount(refundMap[flow.id].remaining)}` : "Refunded"}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-muted mt-0.5 truncate">
-                            {flow.invoice_number}
-                            {flow.completed_at
-                              ? ` · ${new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
-                              : ""}
-                            {sup ? ` → ${sup}` : ""}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-5 flex-shrink-0">
-                          <Stat label="Revenue" value={fmtAmount(flow.gross_revenue)} />
-                          <Stat
-                            label="Profit"
-                            value={fmtAmount(flow.net_profit)}
-                            clr={flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}
-                          />
-                          <Stat
-                            label="Margin"
-                            value={`${margin.toFixed(1)}%`}
-                            clr={margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink"}
-                          />
-                        </div>
-                      </button>
-                      {isExp && (
-                        <div className="border-t border-line-2 bg-surface-2/40 px-5 py-5">
-                          <CompletedBreakdown flow={flow} onReload={load} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
+                completedFiltered.map((flow, i) => (
+                  <DealFlowCard key={flow.id} flow={flow} onReload={load} refund={refundMap[flow.id]} zebra={i % 2 === 1} reconStatus={recon[flow.id]} />
+                ))
               )}
             </div>
           )}
@@ -482,8 +426,8 @@ type SectionKey = typeof SECTIONS[number]["key"];
 const sIdx = (k: SectionKey) => SECTIONS.findIndex((s) => s.key === k);
 
 function DealFlowCard({
-  flow, onReload, zebra, refund,
-}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number } }) {
+  flow, onReload, zebra, refund, reconStatus,
+}: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
   const refundView = refundOverride ?? !!refund;
@@ -622,9 +566,20 @@ function DealFlowCard({
             })()}
           </div>
           <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${invPill.cls}`}>{invPill.label}</span>
-          {flow.stage !== "invoiced" && (
+          {flow.stage !== "invoiced" && !isComplete && (
             <span className={`text-[12.5px] font-medium px-2 py-0.5 rounded-full ${stagePill[flow.stage as Stage]}`}>
               {NODE_LABELS[flow.stage as Stage]}
+            </span>
+          )}
+          {/* Completed deals warn ONLY when no bank financials are linked (and not acknowledged) */}
+          {isComplete && reconStatus?.needs_financials && (
+            <span className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink flex-shrink-0">
+              <AlertTriangle size={10} /> No financials
+            </span>
+          )}
+          {isComplete && reconStatus && !reconStatus.needs_financials && reconStatus.fully_reconciled && (
+            <span className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-0.5 rounded-full bg-success-bg text-success-ink flex-shrink-0">
+              <CheckCircle2 size={10} /> Reconciled
             </span>
           )}
           <button
@@ -1231,6 +1186,13 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
 
 // ─── Section 3: Link financials ───────────────────────────────────────────
 function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: () => void; onAdvance: () => void }) {
+  const meta = (() => { try { return JSON.parse((flow as any).metadata || "{}"); } catch { return {}; } })();
+  const [noBuyer,    setNoBuyer]    = useState<boolean>(!!meta.no_buyer_link);
+  const [noSupplier, setNoSupplier] = useState<boolean>(!!meta.no_supplier_link);
+  const saveNa = async (nb: boolean, ns: boolean) => {
+    setNoBuyer(nb); setNoSupplier(ns);
+    try { await api.setDealLinkNa(flow.id, nb, ns); onReload(); } catch (e: any) { toast(String(e), "error"); }
+  };
   return (
     <div className="space-y-4">
       <div>
@@ -1241,6 +1203,23 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
         </div>
       </div>
       <ReconciliationPanel flow={flow} onChange={onReload} />
+
+      {/* "Didn't happen" — mark a leg as having no bank record to link (cash, etc.) so
+          this deal stops being flagged as needing financials. */}
+      <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
+        <div className="text-[12px] font-medium text-muted mb-2">No bank record for a leg? Mark it so this deal isn't flagged.</div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => saveNa(!noBuyer, noSupplier)}
+            className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noBuyer ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
+            {noBuyer ? <Check size={12} /> : <X size={12} />} No buyer payment to link
+          </button>
+          <button onClick={() => saveNa(noBuyer, !noSupplier)}
+            className={`inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${noSupplier ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
+            {noSupplier ? <Check size={12} /> : <X size={12} />} No supplier payment to link
+          </button>
+        </div>
+      </div>
+
       <div className="flex items-center justify-end pt-1">
         <button onClick={onAdvance}
           className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
@@ -1345,6 +1324,15 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
   useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.stage]);
+  // Default the completion date to when the supplier was actually paid (bank date),
+  // so backdated / backlogged deals land on the real finalization date.
+  useEffect(() => {
+    if (flow.stage === "complete") return;
+    api.dealAllocations(flow.id).then((allocs) => {
+      const sup = allocs.filter((a) => a.role === "supplier_payment" && a.posted_at).map((a) => a.posted_at as string).sort();
+      if (sup.length) setCompletedDate(sup[sup.length - 1].slice(0, 10));
+    }).catch(() => {});
+  }, [flow.id, flow.stage]);
 
   const canComplete = flow.stage === "payment_received" || flow.stage === "supplier_paid";
   const isComplete  = flow.stage === "complete";

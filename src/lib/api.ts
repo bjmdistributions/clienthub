@@ -1771,6 +1771,9 @@ export const api = {
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
   recalcDealFromBank: (id: string) => invoke<any>("recalc_deal_from_bank", { id }),
   cleanupOrphanAllocations: () => invoke<number>("cleanup_orphan_allocations"),
+  resyncAllCompletedDeals: () => invoke<number>("resync_all_completed_deals"),
+  setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean) =>
+    invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier }),
   setDealPayoutIncluded: (id: string, included: boolean) => invoke<void>("set_deal_payout_included", { id, included }),
   updateDealCompletedAt: (id: string, date: string) =>
     invoke<void>("update_deal_completed_at", { id, date }),
@@ -2126,7 +2129,7 @@ export const api = {
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>
-    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean }[]>("reconciliation_status_all"),
+    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
     invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),

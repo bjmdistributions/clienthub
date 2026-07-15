@@ -562,6 +562,8 @@ fn main() {
             complete_deal_flow,
             recalc_deal_from_bank,
             cleanup_orphan_allocations,
+            resync_all_completed_deals,
+            set_deal_link_na,
             uncomplete_deal_flow,
             set_deal_payout_included,
             update_deal_completed_at,

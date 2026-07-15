@@ -4280,12 +4280,21 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
     let df = read_df(id)?;
     if df.stage != "complete" { return Ok(()); }
 
-    let (gross, total_cost, net, _has_bank, snapshot) = {
+    let (gross, total_cost, net, _has_bank, snapshot, supplier_date) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         // Fallback = already-recorded gross/cost (the completion snapshot), so a
         // vanished bank link keeps what's on the books instead of zeroing it.
         let (g, c, n, hb) = deal_bank_actuals(&conn, id, df.gross_revenue, df.total_cost);
-        (g, c, n, hb, bank_snapshot_value(&conn, id))
+        // When the supplier was paid via a linked bank transaction, THAT date is when
+        // the deal actually finalized — use it as the completion date so weekly /
+        // financial breakdowns reflect what really happened and when (not the day it
+        // was entered). Only overrides when we actually have that date.
+        let sup_date: Option<String> = conn.query_row(
+            "SELECT MAX(bt.posted_at) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
+             WHERE a.deal_flow_id=?1 AND a.role='supplier_payment' AND COALESCE(bt.posted_at,'') != ''",
+            [id], |r| r.get::<_, Option<String>>(0),
+        ).ok().flatten();
+        (g, c, n, hb, bank_snapshot_value(&conn, id), sup_date)
     };
 
     let split = read_profit_split()?;
@@ -4312,6 +4321,7 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
     cols.insert("profit_business".into(), json!(business));
     cols.insert("metadata".into(), json!(meta_json));
     cols.insert("updated_at".into(), json!(now.clone()));
+    if let Some(d) = &supplier_date { cols.insert("completed_at".into(), json!(d)); }
     sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
 
     let mut inv_cols = Map::new();
@@ -4325,6 +4335,9 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
         "UPDATE deal_flows SET gross_revenue=?1, total_cost=?2, net_profit=?3, profit_jack=?4, profit_ben=?5, profit_business=?6, metadata=?7, updated_at=?8 WHERE id=?9",
         rusqlite::params![gross, total_cost, net, jack, ben, business, meta_json, now, id],
     ).map_err(|e| e.to_string())?;
+    if let Some(d) = &supplier_date {
+        conn.execute("UPDATE deal_flows SET completed_at=?1 WHERE id=?2", rusqlite::params![d, id]).ok();
+    }
     conn.execute(
         "UPDATE invoices SET profit=?1, total_cost=?2, margin=?3 WHERE id=?4",
         rusqlite::params![net, total_cost, margin_pct, df.invoice_id],
@@ -9994,6 +10007,48 @@ pub async fn cleanup_orphan_allocations() -> Result<i64, String> {
     Ok(rows.len() as i64)
 }
 
+/// Re-derive EVERY completed deal from its linked bank transactions — recorded
+/// numbers AND completion date (set to the supplier-payment bank date when linked).
+/// Powers "Sync completed from bank" so backlogged deals land on the date the money
+/// actually moved, not the day they were entered. Returns how many were processed.
+#[tauri::command]
+pub async fn resync_all_completed_deals() -> Result<i64, String> {
+    let ids: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0")
+            .map_err(|e| e.to_string())?;
+        let v: Vec<String> = stmt.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        v
+    };
+    let n = ids.len() as i64;
+    for id in &ids { let _ = resync_completed_deal(id); }
+    crate::netsync::push_now();
+    Ok(n)
+}
+
+/// Mark a completed deal's money legs as "no bank record to link" — a cash-only
+/// deal, or a leg that legitimately never happened — so it stops being flagged as
+/// needing financials. Stored in metadata and synced.
+#[tauri::command]
+pub async fn set_deal_link_na(id: String, no_buyer: bool, no_supplier: bool) -> Result<(), String> {
+    let df = read_df(&id)?;
+    let mut meta = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}"))
+        .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    meta.insert("no_buyer_link".into(), json!(no_buyer));
+    meta.insert("no_supplier_link".into(), json!(no_supplier));
+    let meta_json = serde_json::to_string(&Value::Object(meta)).unwrap_or_else(|_| "{}".into());
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), json!(meta_json.clone()));
+    cols.insert("updated_at".into(), json!(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deal_flows SET metadata=?1, updated_at=?2 WHERE id=?3", rusqlite::params![meta_json, now, id])
+        .map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
 /// Allocations on one transaction, with the deal name / invoice number.
 #[tauri::command]
 pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Value>, String> {
@@ -10354,7 +10409,9 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
     let mut stmt = conn.prepare(
         "SELECT df.id, COALESCE(i.total,0), COALESCE(df.total_supplier_cost,0), COALESCE(df.gross_revenue,0),
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='buyer_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0),
-                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='supplier_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='supplier_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0),
+                EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),
+                COALESCE(df.metadata,'')
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0",
     ).map_err(|e| e.to_string())?;
@@ -10365,15 +10422,29 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
         let gross_revenue: f64 = r.get(3)?;
         let buyer_paired: f64 = r.get(4)?;
         let supplier_paired: f64 = r.get(5)?;
+        let has_financials: bool = r.get(6)?;
+        let metadata: String = r.get(7)?;
+        // "no bank records expected" acknowledgement — a completed deal the user has
+        // marked as having no buyer / no supplier money to link (cash-only, etc.).
+        let meta: Value = serde_json::from_str(&metadata).unwrap_or(Value::Null);
+        let no_buyer    = meta.get("no_buyer_link").and_then(|v| v.as_bool()).unwrap_or(false);
+        let no_supplier = meta.get("no_supplier_link").and_then(|v| v.as_bool()).unwrap_or(false);
         let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
         let pr = if buyer_target > 0.01 { buyer_paired >= buyer_target - 0.5 } else { buyer_paired > 0.01 };
         let sp = if supplier_cost > 0.01 { supplier_paired >= supplier_cost - 0.5 } else { supplier_paired > 0.01 };
+        // "needs work" = complete deal with NO financials linked and not acknowledged
+        // as a no-bank-records deal. Partial links no longer nag per-leg.
+        let acknowledged = no_buyer && no_supplier;
         Ok(json!({
             "deal_flow_id": id,
             "payment_received_paired": pr,
             "supplier_paid_paired": sp,
             "fully_reconciled": pr && sp,
             "has_payment": buyer_paired > 0.01,
+            "has_financials": has_financials,
+            "no_buyer_link": no_buyer,
+            "no_supplier_link": no_supplier,
+            "needs_financials": !has_financials && !acknowledged,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
