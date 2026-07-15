@@ -96,13 +96,17 @@ async fn post(path: &str, body: Value) -> Result<Value> {
 
 /// Create a Link token to open Plaid Link in the UI.
 pub async fn create_link_token() -> Result<String> {
-    let v = post("/link/token/create", json!({
+    let mut body = json!({
         "user": { "client_user_id": "bjm-owner" },
         "client_name": "Ecliptr",
         "products": ["transactions"],
         "country_codes": ["US"],
         "language": "en"
-    })).await?;
+    });
+    if let Some(cfg) = crate::netsync::config() {
+        body["webhook"] = json!(format!("{}/api/plaid/webhook", cfg.url.trim_end_matches('/')));
+    }
+    let v = post("/link/token/create", body).await?;
     v.get("link_token").and_then(|t| t.as_str()).map(String::from)
         .ok_or_else(|| anyhow!("No link_token in Plaid response"))
 }
@@ -111,7 +115,7 @@ pub async fn create_link_token() -> Result<String> {
 /// (where bank logins/OAuth work, unlike an embedded webview). Returns
 /// (link_token, hosted_link_url). Poll link_token_get() for the result.
 pub async fn create_hosted_link() -> Result<(String, String)> {
-    let v = post("/link/token/create", json!({
+    let mut body = json!({
         "user": { "client_user_id": "bjm-owner" },
         "client_name": "Ecliptr",
         "products": ["transactions"],
@@ -121,7 +125,11 @@ pub async fn create_hosted_link() -> Result<(String, String)> {
         // cleaned for the full year.
         "transactions": { "days_requested": 730 },
         "hosted_link": {}
-    })).await?;
+    });
+    if let Some(cfg) = crate::netsync::config() {
+        body["webhook"] = json!(format!("{}/api/plaid/webhook", cfg.url.trim_end_matches('/')));
+    }
+    let v = post("/link/token/create", body).await?;
     let token = v.get("link_token").and_then(|t| t.as_str()).map(String::from)
         .ok_or_else(|| anyhow!("No link_token in Plaid response"))?;
     let url = v.get("hosted_link_url").and_then(|t| t.as_str()).map(String::from)

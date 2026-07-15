@@ -2223,6 +2223,8 @@ export const api = {
     invoke<boolean>("push_desktop_smtp_to_pi", { fromName }),
   pushEmailLoginToServer: () =>
     invoke<boolean>("push_email_login_to_server"),
+  shareConnectionsWithTeam: () =>
+    invoke<string>("share_connections_with_team"),
   getSmtpSettingsForPi: () =>
     invoke<Record<string, string>>("get_smtp_settings_for_pi"),
 

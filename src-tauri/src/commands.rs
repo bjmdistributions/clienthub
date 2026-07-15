@@ -4930,9 +4930,9 @@ pub async fn get_shopify_config() -> Result<Value, String> {
 #[tauri::command]
 pub async fn set_shopify_secret(secret: String) -> Result<(), String> {
     let s = secret.trim().to_string();
-    let mut cols = Map::new();
-    cols.insert("value".into(), Value::String(s.clone()));
-    sync::record_upsert("settings", "shopify_webhook_secret", cols).map_err(|e| e.to_string())?;
+    // Device-local only — the Shopify webhook secret must NEVER enter the sync
+    // oplog (it would ship in plaintext to every device). It travels via the
+    // authed org-secret bridge (share_connections_with_team) instead.
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params!["shopify_webhook_secret", s]).map_err(|e| e.to_string())?;
     Ok(())
@@ -10151,17 +10151,21 @@ pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
         let accounts = crate::plaid::accounts_get(&access).await.map_err(|e| e.to_string())?;
         let accounts_json = accounts.get("accounts").cloned().unwrap_or(json!([])).to_string();
         let now = Utc::now().to_rfc3339();
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [&item_id], |_| Ok(())).is_ok();
-        if !exists {
-            let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
-            let env = crate::plaid::get_env();
-            conn.execute(
-                "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
-                 VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
-                rusqlite::params![id, item_id, access, inst, accounts_json, now, env],
-            ).map_err(|e| e.to_string())?;
+        let env = crate::plaid::get_env();
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [&item_id], |_| Ok(())).is_ok();
+            if !exists {
+                let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
+                conn.execute(
+                    "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
+                     VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
+                    rusqlite::params![id, item_id, access, inst, accounts_json, now, env],
+                ).map_err(|e| e.to_string())?;
+            }
         }
+        // Best-effort: hand the token to the server so teammates + hosted sync can use it.
+        let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &inst, &accounts_json, &env).await;
         return Ok(json!({ "status": "connected", "institution": inst }));
     }
     Ok(json!({ "status": "pending" }))
@@ -10177,12 +10181,16 @@ pub async fn plaid_exchange(public_token: String, institution: String) -> Result
     let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
     let env = crate::plaid::get_env();
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
-         VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
-        rusqlite::params![id, item_id, access, institution, accounts_json, now, env],
-    ).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
+             VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
+            rusqlite::params![id, item_id, access, institution, accounts_json, now, env],
+        ).map_err(|e| e.to_string())?;
+    }
+    // Best-effort: hand the token to the server so teammates + hosted sync can use it.
+    let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &institution, &accounts_json, &env).await;
     Ok(())
 }
 
@@ -11807,6 +11815,22 @@ pub async fn push_email_login_to_server() -> Result<bool, String> {
     }
     crate::netsync::push_email_secrets_to_server().await?;
     Ok(true)
+}
+
+/// One-click "share every connection saved on this device with my team": pushes all
+/// sharable secrets (email/Stripe/Google/Shopify/Plaid keys + linked banks) to the
+/// org's server store so sibling admins inherit them without re-typing. Returns a
+/// short human summary for the toast.
+#[tauri::command]
+pub async fn share_connections_with_team() -> Result<String, String> {
+    if crate::netsync::config().is_none() {
+        return Err("Sign in to the server first to share connections with your team.".into());
+    }
+    let n = crate::netsync::push_all_secrets_to_server().await?;
+    if n == 0 {
+        return Ok("No shareable connections found on this device yet.".into());
+    }
+    Ok(format!("Shared {} connection{} with your team.", n, if n == 1 { "" } else { "s" }))
 }
 
 #[tauri::command]

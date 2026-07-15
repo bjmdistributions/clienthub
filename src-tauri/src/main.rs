@@ -778,6 +778,7 @@ fn main() {
             save_smtp_settings_for_pi,
             push_desktop_smtp_to_pi,
             push_email_login_to_server,
+            share_connections_with_team,
             get_smtp_settings_for_pi,
             // Categories
             list_categories,

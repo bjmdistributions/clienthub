@@ -408,6 +408,10 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     // stranded rows), clone the current state directly. Runs at most once per
     // install; best-effort so a hiccup never blocks sign-in.
     auto_heal_if_behind().await;
+    // Pull any org-shared connection secrets this device is missing (email, Stripe,
+    // Google, Shopify, Plaid keys + linked banks) so a fresh admin inherits the
+    // team's connections without re-typing. Best-effort — only writes what's absent.
+    let _ = materialize_all_secrets_from_server().await;
     Ok(identity)
 }
 
@@ -957,6 +961,202 @@ pub async fn materialize_email_secrets_from_server() -> Result<u32, String> {
         }
     }
     Ok(cached)
+}
+
+// ---------- connection sharing: ALL sharable secrets ↔ server org store ----------
+
+/// Org `settings` keys (NOT keyring-backed) that carry sharable secrets: the
+/// Shopify webhook secret and the Plaid client_id/secret. These are materialized
+/// straight into the local `settings` table, never into the encrypted keyring.
+const SHARABLE_SETTINGS_KEYS: [&str; 3] = ["shopify_webhook_secret", "plaid_client_id", "plaid_secret"];
+
+/// Read a `settings` value (trimmed, non-empty) from the local DB.
+fn settings_get(key: &str) -> Option<String> {
+    let conn = pool().get().ok()?;
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Write a `settings` value locally (device-local plain execute — never synced).
+fn settings_put(key: &str, val: &str) {
+    if let Ok(conn) = pool().get() {
+        let _ = conn.execute(
+            "INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![key, val],
+        );
+    }
+}
+
+/// Push EVERY sharable connection secret this device holds up to the org store so
+/// teammates on other devices can materialize them without re-typing — the
+/// "Share my connections with my team" action. Carries: SMTP/IMAP passwords
+/// (shared + each org monitor inbox), Stripe keys, Google refresh tokens, the
+/// Shopify webhook secret, the Plaid client_id/secret, and every linked Plaid item
+/// (as JSON under `plaid_item_{item_id}`). Best-effort: no-ops (Ok(0)) when offline
+/// / not signed in, and only sends the secrets actually present locally. Returns
+/// the number of secrets sent.
+///
+/// WRITE half of the bridge (mirrors `push_email_secrets_to_server`, widened).
+pub async fn push_all_secrets_to_server() -> Result<u32, String> {
+    let cfg = match config() { Some(c) => c, None => return Ok(0) };
+    let mut secrets = serde_json::Map::new();
+
+    // Keyring-backed credentials (via the encrypted secret_store).
+    for key in ["smtp_pass", "imap_pass", "stripe_publishable_key", "stripe_secret_key",
+                "stripe_webhook_secret", "oauth_refresh_token", "gcontacts_refresh_token"] {
+        if let Some(v) = crate::email::cred_opt(key).filter(|p| !p.is_empty()) {
+            secrets.insert(key.into(), serde_json::Value::String(v));
+        }
+    }
+    // Per-org-inbox IMAP passwords (keyed `imap_pass_{id}`).
+    for ib in crate::email::load_org_inboxes() {
+        let k = format!("imap_pass_{}", ib.id);
+        if let Some(v) = crate::email::cred_opt(&k).filter(|p| !p.is_empty()) {
+            secrets.insert(k, serde_json::Value::String(v));
+        }
+    }
+    // Settings-backed secrets (Shopify webhook + Plaid keys).
+    for key in SHARABLE_SETTINGS_KEYS {
+        if let Some(v) = settings_get(key) {
+            secrets.insert(key.into(), serde_json::Value::String(v));
+        }
+    }
+    // Each linked Plaid item, serialized as a JSON string under `plaid_item_{item_id}`.
+    if let Ok(conn) = pool().get() {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT item_id, access_token, institution, accounts_json, env FROM plaid_items",
+        ) {
+            let rows: Vec<serde_json::Value> = stmt
+                .query_map([], |r| Ok(serde_json::json!({
+                    "item_id": r.get::<_, String>(0)?,
+                    "access_token": r.get::<_, String>(1)?,
+                    "institution": r.get::<_, String>(2)?,
+                    "accounts_json": r.get::<_, String>(3)?,
+                    "env": r.get::<_, String>(4)?,
+                })))
+                .map(|it| it.flatten().collect())
+                .unwrap_or_default();
+            for row in rows {
+                if let Some(item_id) = row.get("item_id").and_then(|v| v.as_str()) {
+                    secrets.insert(format!("plaid_item_{}", item_id), serde_json::Value::String(row.to_string()));
+                }
+            }
+        }
+    }
+
+    if secrets.is_empty() {
+        return Ok(0);
+    }
+    let count = secrets.len() as u32;
+    let resp = http()
+        .put(format!("{}/api/org-secrets", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "secrets": secrets }))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server — check your connection.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Admin permission required.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    Ok(count)
+}
+
+/// Materialize the org's shared connection secrets into THIS device by fetching
+/// them once from the server (admin-gated, same-org). Only writes a secret that is
+/// MISSING locally, so a device that already holds it is untouched. Routes each
+/// returned key to the right store: keyring creds (smtp/imap/stripe/oauth/gcontacts),
+/// settings values (Shopify + Plaid keys), and `plaid_item_{id}` rows into
+/// `plaid_items`. Best-effort: no-op offline / not signed in. Returns count cached.
+///
+/// READ half of the bridge (mirrors `materialize_email_secrets_from_server`).
+pub async fn materialize_all_secrets_from_server() -> Result<u32, String> {
+    let cfg = match config() { Some(c) => c, None => return Ok(0) };
+    let resp = http()
+        .get(format!("{}/api/org-secrets/materialize", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("Admin permission required.".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let obj = match body.as_object() { Some(o) => o, None => return Ok(0) };
+    let mut cached = 0u32;
+    for (skey, val) in obj {
+        let value = match val.as_str().filter(|s| !s.is_empty()) { Some(v) => v, None => continue };
+        if let Some(item_id) = skey.strip_prefix("plaid_item_") {
+            if materialize_plaid_item(item_id, value) { cached += 1; }
+        } else if SHARABLE_SETTINGS_KEYS.contains(&skey.as_str()) {
+            if settings_get(skey).is_none() { settings_put(skey, value); cached += 1; }
+        } else {
+            // Everything else is a keyring-backed credential.
+            if crate::email::cred_opt(skey).filter(|p| !p.is_empty()).is_none()
+                && crate::email::save_cred(skey, value).is_ok() { cached += 1; }
+        }
+    }
+    Ok(cached)
+}
+
+/// Insert a Plaid item shared by a teammate into this device's `plaid_items` if it
+/// isn't already present. `payload` is the JSON string emitted by
+/// `push_all_secrets_to_server`. Returns true when a new row was written.
+fn materialize_plaid_item(item_id: &str, payload: &str) -> bool {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return false };
+    let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [item_id], |_| Ok(())).is_ok();
+    if exists { return false; }
+    let row: serde_json::Value = match serde_json::from_str(payload) { Ok(v) => v, Err(_) => return false };
+    let access = match row.get("access_token").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(a) => a, None => return false,
+    };
+    let inst = row.get("institution").and_then(|v| v.as_str()).unwrap_or("Bank");
+    let accounts_json = row.get("accounts_json").and_then(|v| v.as_str()).unwrap_or("[]");
+    let env = row.get("env").and_then(|v| v.as_str()).unwrap_or("production");
+    let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
+         VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
+        rusqlite::params![id, item_id, access, inst, accounts_json, now, env],
+    ).is_ok()
+}
+
+/// Best-effort: hand a freshly-linked Plaid item's token to the server so the org's
+/// hosted sync (and teammates) can use it. No-op offline / not signed in — the
+/// device-local `plaid_items` row remains the fallback either way.
+pub async fn push_plaid_item_to_server(
+    item_id: &str,
+    access_token: &str,
+    institution: &str,
+    accounts_json: &str,
+    env: &str,
+) -> Result<(), String> {
+    let cfg = match config() { Some(c) => c, None => return Ok(()) };
+    let resp = http()
+        .post(format!("{}/api/plaid/items", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({
+            "item_id": item_id,
+            "access_token": access_token,
+            "institution": institution,
+            "accounts_json": accounts_json,
+            "env": env,
+        }))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach the server.".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    Ok(())
 }
 
 /// Upload the current company logo bytes to the server so the hosted invoice

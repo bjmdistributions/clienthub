@@ -75,7 +75,7 @@ export default function InvoicesView() {
   const [editing, setEditing]           = useState<Invoice | null>(null);
   const [busy, setBusy]                 = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [viewTab, setViewTab]            = useState<"all" | "drafts" | "sent" | "paid" | "recurring">("all");
+  const [viewTab, setViewTab]            = useState<"active" | "all" | "drafts" | "sent" | "paid" | "recurring">("active");
   const [search, setSearch]              = useState("");
   // Completed invoices are hidden by default to cut list bloat.
   const [showCompleted, setShowCompleted] = useState(false);
@@ -167,10 +167,15 @@ export default function InvoicesView() {
   // invoices only show under "all" so they stay out of the working lists.
   const visible = invoices.filter((i) => {
     const lo = i.status.toLowerCase();
-    // Voided ("deal fell through") invoices stay out of the working tabs — they
-    // only appear under "all" (dimmed) so they're still referenceable.
-    if (isVoided(i)) { if (viewTab === "drafts" || viewTab === "sent" || viewTab === "paid") return false; }
-    else if (viewTab === "drafts") { if (lo !== "draft") return false; }
+    const inRefund = !!(i.deal_flow_id && refundMap[i.deal_flow_id]);
+    // "Active" is the default working view: live deals only — hide fell-through
+    // (voided) invoices and anything in a refund. They stay reachable under the
+    // "All" tab (voided dimmed) and Deal Flow → Refunds.
+    if (viewTab === "active") {
+      if (isVoided(i) || inRefund) return false;
+    } else if (isVoided(i)) {
+      if (viewTab === "drafts" || viewTab === "sent" || viewTab === "paid") return false;
+    } else if (viewTab === "drafts") { if (lo !== "draft") return false; }
     else if (viewTab === "sent")   { if (!(lo === "sent" || lo === "deposit_pending" || lo === "overdue")) return false; }
     else if (viewTab === "paid")   { if (lo !== "paid") return false; }
     // Completed invoices hidden unless the toggle is on (or explicitly on the paid tab).
@@ -223,7 +228,7 @@ export default function InvoicesView() {
 
       {/* Tabs */}
       <div className="flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 w-fit mb-5">
-        {(["all", "drafts", "sent", "paid", "recurring"] as const).map((t) => (
+        {(["active", "all", "drafts", "sent", "paid", "recurring"] as const).map((t) => (
           <button key={t} onClick={() => setViewTab(t)}
             className={`px-3.5 h-8 rounded-md text-[12.5px] font-medium transition-colors capitalize ${viewTab === t ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
             {t}

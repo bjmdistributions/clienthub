@@ -86,6 +86,7 @@ import {
   AlignCenter,
   AlignRight,
   ExternalLink,
+  Share2,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -4575,8 +4576,40 @@ function PeoplePanel() {
     try { await api.deleteStaff(id); load(); } catch (e: any) { window.alert(typeof e === "string" ? e : (e?.message || "Failed to remove")); }
   };
 
+  // Share every connection saved on THIS device (email, Stripe, Google, Shopify,
+  // Plaid keys + linked banks) up to the org store so other admins inherit them
+  // without re-typing. Secrets travel via an authed round-trip — never the sync log.
+  const [sharing, setSharing] = useState(false);
+  const shareConnections = async () => {
+    if (!window.confirm(
+      "Share your connections with your team?\n\n" +
+      "This uploads the logins saved on this device — email (SMTP/IMAP), Stripe keys, Google connections, Shopify and Plaid keys, and any linked banks — to your team's secure server store so other admins inherit them without re-typing.\n\n" +
+      "Nothing is added to the sync log."
+    )) return;
+    setSharing(true);
+    try {
+      const msg = await api.shareConnectionsWithTeam();
+      toast(msg, "success");
+    } catch (e: any) {
+      toast(typeof e === "string" ? e : (e?.message || "Couldn't share connections"), "error");
+    } finally {
+      setSharing(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
+      <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium text-ink text-[13px]">Share my connections with my team</div>
+          <div className="text-[11.5px] text-muted">Upload the email, Stripe, Google, Shopify, Plaid and bank logins saved on this device so other admins inherit them without re-typing.</div>
+        </div>
+        <button onClick={shareConnections} disabled={sharing}
+          title="Push this device's saved connections up to your team's secure server store — no re-typing on other admins' devices."
+          className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors whitespace-nowrap flex-shrink-0">
+          {sharing ? <RefreshCw size={13} className="animate-spin" /> : <Share2 size={13} />} {sharing ? "Sharing…" : "Share connections"}
+        </button>
+      </div>
       {rp && (
         <div className="bg-surface border border-line rounded-xl px-4 py-3 space-y-3">
           <label className="flex items-center justify-between cursor-pointer gap-3">
