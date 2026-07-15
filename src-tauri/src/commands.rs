@@ -4183,6 +4183,125 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     Ok(json!({ "profit": net, "is_loss": is_loss, "warning": warning }))
 }
 
+/// Recalculate a deal flow by syncing bank_allocation reconciliation data
+/// back into supplier_payments_json and total_supplier_cost.
+/// Fixes deals where supplier costs were only paired via reconciliation
+/// but never written into the deal flow's own cost tracking.
+#[tauri::command]
+pub async fn recalc_deal_from_bank(id: String) -> Result<Value, String> {
+    let df = read_df(&id)?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    // Get bank-allocated amounts
+    let supplier_paired: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(ba.amount),0) FROM bank_allocation ba
+         JOIN bank_txn bt ON bt.id = ba.bank_txn_id
+         WHERE ba.deal_flow_id=?1 AND ba.role='supplier_payment' AND bt.direction='money_out'",
+        [&id], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let fee_paired: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(ba.amount),0) FROM bank_allocation ba
+         JOIN bank_txn bt ON bt.id = ba.bank_txn_id
+         WHERE ba.deal_flow_id=?1 AND ba.role='wire_fee' AND bt.direction='money_out'",
+        [&id], |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    let mut payments: Vec<SupplierPayment> = df.supplier_payments.clone();
+    // Remove old auto-generated bank-sync entries so we don't duplicate
+    payments.retain(|p| p.supplier_name != "(Bank sync)");
+
+    // Get detailed bank txn info for supplier payments
+    if supplier_paired > 0.01 {
+        let mut stmt = conn.prepare(
+            "SELECT bt.id, bt.counterparty_name, ba.amount FROM bank_allocation ba
+             JOIN bank_txn bt ON bt.id = ba.bank_txn_id
+             WHERE ba.deal_flow_id=?1 AND ba.role='supplier_payment' AND bt.direction='money_out'"
+        ).map_err(|e| e.to_string())?;
+        let txns: Vec<(String, String, f64)> = stmt.query_map([&id], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,f64>(2)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        for (txn_id, name, amt) in txns {
+            payments.push(SupplierPayment {
+                id: Uuid::new_v4().to_string(),
+                supplier_name: name,
+                supplier_id: None,
+                amount: amt,
+                original_amount: Some(amt),
+                price_changed: false,
+                quantity: None,
+                unit_price: None,
+                method: Some("(Bank sync)".into()),
+                notes: Some(format!("txn:{}", txn_id)),
+                paid: true,
+                paid_at: Some(Utc::now().to_rfc3339()),
+                category: Some("supplier".into()),
+            });
+        }
+    }
+
+    // Add wire fees from bank
+    if fee_paired > 0.01 {
+        let mut stmt = conn.prepare(
+            "SELECT bt.counterparty_name, ba.amount FROM bank_allocation ba
+             JOIN bank_txn bt ON bt.id = ba.bank_txn_id
+             WHERE ba.deal_flow_id=?1 AND ba.role='wire_fee' AND bt.direction='money_out'"
+        ).map_err(|e| e.to_string())?;
+        let fees: Vec<(String, f64)> = stmt.query_map([&id], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        for (name, amt) in fees {
+            payments.push(SupplierPayment {
+                id: Uuid::new_v4().to_string(),
+                supplier_name: name,
+                supplier_id: None,
+                amount: amt,
+                original_amount: Some(amt),
+                price_changed: false,
+                quantity: None,
+                unit_price: None,
+                method: Some("(Bank sync)".into()),
+                notes: None,
+                paid: true,
+                paid_at: Some(Utc::now().to_rfc3339()),
+                category: Some("wire_fee".into()),
+            });
+        }
+    }
+
+    write_sp(&id, &payments, &df.invoice_id)?;
+
+    // If deal is complete, also recalculate profit splits
+    if df.stage == "complete" {
+        let split = read_profit_split()?;
+        let gross = df.payment_received_amount;
+        let total_cost: f64 = payments.iter().map(|p| p.amount).sum();
+        let net = gross - total_cost;
+
+        let meta: Option<Value> = serde_json::from_str(df.metadata.as_deref().unwrap_or("{}")).ok();
+        let include_payout = meta.as_ref().and_then(|m| m.get("payout_included")).and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let (jack, ben, business) = if include_payout {
+            ((net * (split.jack_pct / 100.0) * 100.0).round() / 100.0,
+             (net * (split.ben_pct / 100.0) * 100.0).round() / 100.0,
+             (net * (split.business_pct / 100.0) * 100.0).round() / 100.0)
+        } else { (0.0, 0.0, net) };
+
+        let margin_pct = if gross > 0.0 { (net / gross * 100.0 * 100.0).round() / 100.0 } else { 0.0 };
+        let now = Utc::now().to_rfc3339();
+
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET total_cost=?1, net_profit=?2, profit_jack=?3, profit_ben=?4, profit_business=?5, updated_at=?6 WHERE id=?7",
+            rusqlite::params![total_cost, net, jack, ben, business, now, id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE invoices SET profit=?1, total_cost=?2, margin=?3 WHERE id=?4",
+            rusqlite::params![net, total_cost, margin_pct, df.invoice_id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(json!({ "supplier_cost": payments.iter().map(|p| p.amount).sum::<f64>(), "payment_count": payments.len() }))
+}
+
 #[tauri::command]
 pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     let df = read_df(&id)?;

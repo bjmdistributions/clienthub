@@ -560,6 +560,7 @@ fn main() {
             mark_supplier_payment_paid,
             unmark_supplier_payment_paid,
             complete_deal_flow,
+            recalc_deal_from_bank,
             uncomplete_deal_flow,
             set_deal_payout_included,
             update_deal_completed_at,

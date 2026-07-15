@@ -4,8 +4,8 @@
     {
       "name": "www",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8095", "--directory", "C:/Users/Jack/Desktop/clienthub-api/www"],
-      "port": 8095
+      "runtimeArgs": ["-m", "http.server", "8098", "--directory", "C:/Users/Jack/Desktop/clienthub-api/www"],
+      "port": 8098
     },
     {
       "name": "desktop",

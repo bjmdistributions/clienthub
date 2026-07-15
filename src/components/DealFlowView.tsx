@@ -1741,6 +1741,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           >
             <RotateCcw size={11} /> Undo Complete
           </button>
+          <button
+            onClick={async () => { setSaving(true); try { const r = await api.recalcDealFromBank(flow.id); toast(`Recalculated: ${r?.supplier_cost} supplier cost from ${r?.payment_count} bank entries`, "success"); onReload(); } catch(e:any) { toast(String(e), "error"); } setSaving(false); }}
+            disabled={saving}
+            className="flex items-center gap-1.5 text-[12px] text-accent hover:text-accent
+                       px-2.5 py-1 rounded-lg hover:bg-accent/10 border border-accent/30 transition-colors"
+          >
+            <RefreshCw size={11} /> Recalculate from Bank
+          </button>
         </div>
       )}
     </div>
