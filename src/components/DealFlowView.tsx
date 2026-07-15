@@ -53,8 +53,9 @@ export default function DealFlowView() {
   const [syncing,      setSyncing]      = useState(false);
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
-  const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
+  const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
   const [refundsOpen, setRefundsOpen] = useState(false);
+  const [showDoneRefunds, setShowDoneRefunds] = useState(false);
   const [expandedRefund, setExpandedRefund] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -139,12 +140,11 @@ export default function DealFlowView() {
     return !inv.is_complete;
   };
 
-  // A deal with an ACTIVE refund (balance still owed) drops out of the active list and
-  // lives in the Refunds section. A fully-refunded deal is no longer "in refund mode",
-  // so it stays on its normal track (and won't vanish now that Refunds is active-only).
-  const activeRefund = (f: DealFlow) => !!refundMap[f.id] && refundMap[f.id].remaining > 0.01;
+  // ANY deal with refund activity is a refund, not an active pipeline deal — it lives
+  // in the Refunds section (even fully-refunded, until marked fully done) and never
+  // shows in the active list.
   const active    = flows.filter(
-    (f) => f.stage !== "complete" && !activeRefund(f) && isInvoiceActive(f) && matchFl(f)
+    (f) => f.stage !== "complete" && !refundMap[f.id] && isInvoiceActive(f) && matchFl(f)
   );
   const completed = flows.filter((f) => f.stage === "complete");
   // Completed deals, most recent completion first, so the list always reads top-down
@@ -159,11 +159,13 @@ export default function DealFlowView() {
   // and hasn't been marked "no record" — so we flag exactly which side is missing.
   const needsWorkCount    = completed.filter((f) => recon[f.id]?.needs_review).length;
 
-  // ACTIVE refunds only — a balance still owed. Fully-refunded deals are done and
-  // live in Completed; keeping them out of here keeps the refund numbers on point.
+  // Refunds section: everything with refund activity, most-owed first — active refunds
+  // AND fully-refunded ones (so a fully-refunded deal stays here, not in the pipeline),
+  // until it's marked "fully done". "Show done" reveals the closed-out ones.
   const refundFlows = flows
-    .filter((f) => refundMap[f.id] && refundMap[f.id].remaining > 0.01)
+    .filter((f) => refundMap[f.id] && (showDoneRefunds || !refundMap[f.id].done))
     .sort((a, b) => refundMap[b.id].remaining - refundMap[a.id].remaining);
+  const doneRefundCount = flows.filter((f) => refundMap[f.id]?.done).length;
 
   // Skeleton mirrors the real layout (header, search, deal cards) — and only on
   // first load, so refreshes after an action don't blank the whole view.
@@ -309,23 +311,25 @@ export default function DealFlowView() {
       {/* ── Refunds drawer ──────────────────────────────────────────────── */}
       {refundFlows.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          {/* Drawer toggle */}
-          <button
-            onClick={() => setRefundsOpen(!refundsOpen)}
-            className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-surface-2/50 transition-colors"
-          >
-            <div className="flex items-center gap-2.5">
-              <RotateCcw size={14} className="text-danger-ink" />
+          {/* Drawer header */}
+          <div className="w-full flex items-center justify-between px-5 py-3.5">
+            <button onClick={() => setRefundsOpen(!refundsOpen)} className="flex items-center gap-2.5 text-left min-w-0">
+              <RotateCcw size={14} className="text-danger-ink flex-shrink-0" />
               <span className="text-[13px] font-semibold text-ink">Refunds</span>
-              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">
-                {refundFlows.length}
-              </span>
+              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{refundFlows.length}</span>
+            </button>
+            <div className="flex items-center gap-2">
+              {doneRefundCount > 0 && (
+                <button onClick={() => setShowDoneRefunds((v) => !v)}
+                  className={`text-[11.5px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${showDoneRefunds ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
+                  {showDoneRefunds ? "Hide done" : `Show done (${doneRefundCount})`}
+                </button>
+              )}
+              <button onClick={() => setRefundsOpen(!refundsOpen)} className="p-1 rounded-lg hover:bg-surface-3 transition-colors">
+                <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${refundsOpen ? "rotate-180" : ""}`} />
+              </button>
             </div>
-            <ChevronDown
-              size={14}
-              className={`text-muted transition-transform duration-200 ${refundsOpen ? "rotate-180" : ""}`}
-            />
-          </button>
+          </div>
 
           {/* Drawer body */}
           {refundsOpen && (
@@ -333,8 +337,9 @@ export default function DealFlowView() {
               {refundFlows.map((flow) => {
                 const r = refundMap[flow.id];
                 const isExp = expandedRefund === flow.id;
+                const fullyRefunded = r.remaining <= 0.01;
                 return (
-                  <div key={flow.id}>
+                  <div key={flow.id} className={r.done ? "opacity-60" : ""}>
                     <button
                       onClick={() => setExpandedRefund(isExp ? null : flow.id)}
                       className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-surface-2/40 cursor-pointer transition-colors"
@@ -348,12 +353,27 @@ export default function DealFlowView() {
                         <Stat label="Refunded" value={fmtAmount(r.refunded)} />
                         <div className="text-right">
                           <div className="text-[12px] font-medium text-muted">Remaining</div>
-                          {r.remaining === 0 ? (
+                          {fullyRefunded ? (
                             <div className="text-[13px] font-bold tabular-nums text-danger-ink">Fully refunded</div>
                           ) : (
                             <div className="text-[13px] font-semibold tabular-nums text-danger-ink">{fmtAmount(r.remaining)}</div>
                           )}
                         </div>
+                        {/* Mark fully done / reopen — only once there's nothing left owed */}
+                        {fullyRefunded && (r.done ? (
+                          <span className="inline-flex items-center gap-1.5 flex-shrink-0">
+                            <span className="text-[10.5px] font-semibold text-success-ink inline-flex items-center gap-1"><CheckCircle2 size={11} /> Done</span>
+                            <span role="button" tabIndex={0}
+                              onClick={(e) => { e.stopPropagation(); api.setRefundDone(flow.id, false).then(() => { toast("Refund reopened"); load(); }).catch((err) => toast(String(err), "error")); }}
+                              className="text-[11px] text-muted hover:text-ink-2 px-2 h-7 flex items-center rounded-lg border border-line transition-colors">Reopen</span>
+                          </span>
+                        ) : (
+                          <span role="button" tabIndex={0}
+                            onClick={(e) => { e.stopPropagation(); api.setRefundDone(flow.id, true).then(() => { toast("Marked fully done"); load(); }).catch((err) => toast(String(err), "error")); }}
+                            className="text-[11px] font-medium text-success-ink hover:bg-success-bg px-2.5 h-7 flex items-center gap-1 rounded-lg border border-success/40 flex-shrink-0 transition-colors">
+                            <Check size={12} /> Mark fully done
+                          </span>
+                        ))}
                         <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isExp ? "rotate-180" : ""}`} />
                       </div>
                     </button>

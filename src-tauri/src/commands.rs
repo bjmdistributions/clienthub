@@ -10049,6 +10049,28 @@ pub async fn set_deal_link_na(id: String, no_buyer: bool, no_supplier: bool) -> 
     Ok(())
 }
 
+/// Mark a refund as fully done (closed out) or reopen it. A done refund stays out of
+/// the active pipeline and drops from the Refunds list unless "Show done" is on.
+/// Stored in metadata, synced.
+#[tauri::command]
+pub async fn set_refund_done(id: String, done: bool) -> Result<(), String> {
+    let df = read_df(&id)?;
+    let mut meta = serde_json::from_str::<Value>(df.metadata.as_deref().unwrap_or("{}"))
+        .ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    meta.insert("refund_done".into(), json!(done));
+    let meta_json = serde_json::to_string(&Value::Object(meta)).unwrap_or_else(|_| "{}".into());
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("metadata".into(), json!(meta_json.clone()));
+    cols.insert("updated_at".into(), json!(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE deal_flows SET metadata=?1, updated_at=?2 WHERE id=?3", rusqlite::params![meta_json, now, id])
+        .map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
 /// Allocations on one transaction, with the deal name / invoice number.
 #[tauri::command]
 pub async fn list_bank_allocations_for_txn(bank_txn_id: String) -> Result<Vec<Value>, String> {
@@ -10474,7 +10496,8 @@ pub async fn refund_status_all() -> Result<Vec<Value>, String> {
         // count here too — not just refunds recorded in the refund workspace.
         "SELECT df.id, COALESCE(df.refund_owed,0),
                 COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0)
-                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0)
+                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0),
+                COALESCE(df.metadata,'')
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0
            AND (COALESCE(df.refund_owed,0) > 0.01
@@ -10485,11 +10508,17 @@ pub async fn refund_status_all() -> Result<Vec<Value>, String> {
         let id: String = r.get(0)?;
         let owed: f64 = r.get(1)?;
         let refunded: f64 = r.get(2)?;
+        let metadata: String = r.get(3)?;
+        // "Fully done" — the user has closed out this refund; it stays out of the
+        // active pipeline and drops from the Refunds list (unless Show done is on).
+        let done = serde_json::from_str::<Value>(&metadata).ok()
+            .and_then(|m| m.get("refund_done").and_then(|v| v.as_bool())).unwrap_or(false);
         Ok(json!({
             "deal_flow_id": id,
             "refund_owed": r2(owed),
             "refunded": r2(refunded),
             "remaining": r2((owed - refunded).max(0.0)),
+            "done": done,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())

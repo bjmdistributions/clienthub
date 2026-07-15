@@ -1776,6 +1776,7 @@ export const api = {
   resyncAllCompletedDeals: () => invoke<number>("resync_all_completed_deals"),
   setDealLinkNa: (id: string, noBuyer: boolean, noSupplier: boolean) =>
     invoke<void>("set_deal_link_na", { id, noBuyer, noSupplier }),
+  setRefundDone: (id: string, done: boolean) => invoke<void>("set_refund_done", { id, done }),
   setDealPayoutIncluded: (id: string, included: boolean) => invoke<void>("set_deal_payout_included", { id, included }),
   updateDealCompletedAt: (id: string, date: string) =>
     invoke<void>("update_deal_completed_at", { id, date }),
@@ -2133,7 +2134,7 @@ export const api = {
   reconciliationStatusAll: () =>
     invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
-    invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number }[]>("refund_status_all"),
+    invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
   setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
     invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),
