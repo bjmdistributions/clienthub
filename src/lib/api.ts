@@ -1131,6 +1131,16 @@ export interface LotDetails {
   moq?: number | null;
   size_run?: { size: string; qty: number }[] | null;
   price_text?: string | null;   // free-text price shown verbatim when price_type === "custom"
+  // Shopify-style variants: option TYPES (Color, Size…) each with their values, and
+  // one variant row per combination the seller stocks, with its own qty + price.
+  options?: LotOption[] | null;
+  variants?: LotVariant[] | null;
+}
+export interface LotOption { name: string; values: string[] }
+export interface LotVariant {
+  values: string[];              // one value per option, aligned to options order (e.g. ["Red","M"])
+  qty: number;
+  price?: number | null;         // per-variant price; null → falls back to the lot's asking price
 }
 
 export interface FollowUpRule {

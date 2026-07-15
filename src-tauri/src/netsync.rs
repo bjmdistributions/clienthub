@@ -1231,6 +1231,38 @@ pub async fn upload_inventory_photo(lot_id: &str, rel: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// Upload a lot's manifest FILE to the server so the public storefront can serve it
+/// (the sync oplog only carries the manifest_path text, not the bytes). `rel` is the
+/// stored path "media/inventory/<lot>/manifest.<ext>".
+pub async fn upload_inventory_manifest(lot_id: &str, rel: &str) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let name = rel.rsplit('/').next().unwrap_or("");
+    if name.is_empty() || name.contains("..") {
+        return Err("bad manifest path".into());
+    }
+    let local = crate::db::app_data_dir().join("sync").join(rel);
+    let bytes = std::fs::read(&local).map_err(|e| e.to_string())?;
+    let ctype = if name.ends_with(".pdf") {
+        "application/pdf"
+    } else if name.ends_with(".csv") || name.ends_with(".tsv") || name.ends_with(".txt") {
+        "text/csv"
+    } else {
+        "application/octet-stream"
+    };
+    let resp = http()
+        .post(format!("{}/api/inventory/{}/manifest/{}", cfg.url.trim_end_matches('/'), lot_id, name))
+        .bearer_auth(&cfg.token)
+        .header("content-type", ctype)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Platform-owner (superadmin) signups overview: every workspace with owner email,
 /// plan, signup date and usage. Server gates this to the org_default owner.
 #[tauri::command]

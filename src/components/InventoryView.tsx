@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, CompanyInfo, StorefrontConfig } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -1133,6 +1133,25 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
   const [moq, setMoq] = useState<number>(details0.moq ?? 0);
   const [sizeRun, setSizeRun] = useState<{ size: string; qty: number }[]>(details0.size_run ?? []);
+  // Shopify-style variants: option types (Color/Size) + a row per combination.
+  const [options, setOptions] = useState<LotOption[]>(details0.options ?? []);
+  const [variants, setVariants] = useState<LotVariant[]>(details0.variants ?? []);
+  // Every combination of option values (the cartesian product) — the variant grid.
+  // Variants are stored sparsely (only rows the seller filled in); the grid looks
+  // each combo up by its values, so adding/removing options never orphans data.
+  const variantCombos: string[][] = (() => {
+    const clean = options.map((o) => o.values.map((v) => v.trim()).filter(Boolean));
+    if (!clean.length || clean.some((vs) => vs.length === 0)) return [];
+    return clean.reduce<string[][]>((acc, vals) => acc.flatMap((combo) => vals.map((v) => [...combo, v])), [[]]);
+  })();
+  const sameVals = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const variantFor = (combo: string[]) => variants.find((v) => sameVals(v.values, combo));
+  const upsertVariant = (combo: string[], patch: Partial<LotVariant>) => {
+    setVariants((prev) => {
+      const cur = prev.find((v) => sameVals(v.values, combo)) || { values: combo, qty: 0, price: null };
+      return [...prev.filter((v) => !sameVals(v.values, combo)), { ...cur, ...patch }];
+    });
+  };
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
   const [dragActive, setDragActive] = useState(false); // dropzone highlight while dragging files
@@ -1209,6 +1228,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     name, desc, category, qty, cost, ask, priceType, priceText,
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
+    variants: JSON.stringify({ options, variants }),
   }).current;
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
@@ -1217,7 +1237,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     supplier !== initialSnapshot.supplier || location !== initialSnapshot.location || notes !== initialSnapshot.notes ||
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
     photos.length !== initialSnapshot.photos || pallets !== initialSnapshot.pallets || msrp !== initialSnapshot.msrp ||
-    moq !== initialSnapshot.moq || JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile;
+    moq !== initialSnapshot.moq || JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile ||
+    JSON.stringify({ options, variants }) !== initialSnapshot.variants;
   const requestClose = () => {
     if (isDirty() && !confirm("Discard this lot? Your changes will be lost.")) return;
     onClose();
@@ -1237,9 +1258,20 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       const isCustom = priceType === "custom";
       const priceTextClean = isCustom ? priceText.trim() : "";
       const effAsk = isCustom ? 0 : ask;
+      // Variants: keep only fully-named option types with values, and only variant
+      // rows the seller actually stocks (a qty or a price).
+      const cleanOptions = options
+        .map((o) => ({ name: o.name.trim(), values: o.values.map((v) => v.trim()).filter(Boolean) }))
+        .filter((o) => o.name && o.values.length > 0);
+      const cleanVariants: LotVariant[] = cleanOptions.length > 0
+        ? variants.filter((v) => v.qty > 0 || (v.price != null && v.price > 0))
+                  .map((v) => ({ values: v.values, qty: v.qty || 0, price: v.price != null && v.price > 0 ? v.price : null }))
+        : [];
+      const hasVariants = cleanOptions.length > 0 && cleanVariants.length > 0;
       const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun };
       if (priceTextClean) detailsObj.price_text = priceTextClean;
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean;
+      if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
@@ -1347,6 +1379,59 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <Plus size={13} /> Add size
               </button>
             </div>
+          </div>
+
+          {/* Variants — Shopify-style option types (Color/Size) → a grid of every
+              combination, each with its own quantity and price. */}
+          <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Variants (colors, sizes, per-option pricing)</label>
+            <div className="space-y-1.5">
+              {options.map((o, oi) => (
+                <div key={oi} className="flex items-center gap-2">
+                  <input className={inp + " w-32"} value={o.name} placeholder="Option (e.g. Color)"
+                    onChange={(e) => setOptions(options.map((x, i) => i === oi ? { ...x, name: e.target.value } : x))} />
+                  <input className={inp + " flex-1"} value={o.values.join(", ")} placeholder="Values, comma-separated — Red, Blue, Green"
+                    onChange={(e) => setOptions(options.map((x, i) => i === oi ? { ...x, values: e.target.value.split(",").map((s) => s.trim()).filter((v, idx, a) => v && a.indexOf(v) === idx) } : x))} />
+                  <button onClick={() => setOptions(options.filter((_, i) => i !== oi))} title="Remove option"
+                    className="w-8 h-9 flex items-center justify-center text-muted hover:text-danger-ink transition-colors flex-shrink-0"><X size={14} /></button>
+                </div>
+              ))}
+              {options.length < 3 && (
+                <button onClick={() => setOptions([...options, { name: "", values: [] }])}
+                  className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
+                  <Plus size={13} /> Add option
+                </button>
+              )}
+            </div>
+            {variantCombos.length > 0 && (
+              <div className="mt-2 border border-line rounded-lg overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 text-[11px] font-medium text-muted">
+                  <span className="flex-1 min-w-0 truncate">{options.map((o) => o.name || "Option").join(" / ")}</span>
+                  <span className="w-20 text-right">Qty</span>
+                  <span className="w-28 text-right">Price</span>
+                </div>
+                <div className="max-h-56 overflow-y-auto divide-y divide-line-2">
+                  {variantCombos.map((combo, ci) => {
+                    const v = variantFor(combo);
+                    return (
+                      <div key={ci} className="flex items-center gap-2 px-3 py-1.5">
+                        <span className="flex-1 min-w-0 text-[12.5px] text-ink truncate">{combo.join(" / ")}</span>
+                        <input className={inp + " w-20 tabular-nums text-right"} type="number" value={v?.qty || ""} placeholder="0"
+                          onChange={(e) => upsertVariant(combo, { qty: parseInt(e.target.value) || 0 })} />
+                        <div className="relative w-28">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
+                          <input className={inp + " w-28 pl-5 tabular-nums text-right"} type="number" step="0.01" value={v?.price ?? ""} placeholder="—"
+                            onChange={(e) => upsertVariant(combo, { price: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="px-3 py-1 text-[10.5px] text-muted bg-surface-2/50">
+                  {variantCombos.length} variant{variantCombos.length !== 1 ? "s" : ""} · a blank price uses the lot's asking price
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-5 pt-0.5">

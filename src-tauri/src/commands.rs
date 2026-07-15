@@ -7106,6 +7106,10 @@ pub async fn attach_lot_manifest(lot_id: String, file_path: String) -> Result<St
     cols.insert("manifest_path".into(), json!(rel_path));
     cols.insert("updated_at".into(), json!(now));
     crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
+    // Push the FILE to the server (the oplog only carries the path text) so the
+    // public storefront can serve it. Best-effort — a failure here still keeps the
+    // local attach; a later Repair/re-attach re-uploads.
+    let _ = crate::netsync::upload_inventory_manifest(&lot_id, &rel_path).await;
     Ok(rel_path)
 }
 
