@@ -771,10 +771,11 @@ export default function FinancialsView() {
     const ids = Array.from(selected);
     setBulkActionBusy(true);
     let done = 0, failed = 0;
+    let firstErr = ""; // surface WHY (usually "already linked to another deal")
     for (const id of ids) {
       const t = txns.find((x) => x.id === id);
       if (!t) continue;
-      try { await fn(t); } catch { failed += 1; }
+      try { await fn(t); } catch (e: any) { failed += 1; if (!firstErr) firstErr = String(e?.message || e); }
       done += 1;
       setBulkProgress(`Updating ${done} of ${ids.length}…`);
     }
@@ -782,7 +783,7 @@ export default function FinancialsView() {
     setBulkActionBusy(false);
     clearSelection();
     await refreshAll(true);
-    if (failed > 0) toast(`${failed} of ${ids.length} could not be updated`, "error");
+    if (failed > 0) toast(`${failed} of ${ids.length} couldn't be updated${firstErr ? ` — ${firstErr}` : ""}`, "error");
   };
 
   const bulkSetCategory = (cat: string) =>
@@ -950,7 +951,10 @@ export default function FinancialsView() {
         if (t.direction === "in") sumIn += t.amount; else sumOut += t.amount;
       }
       if (!(t.category || "").trim()) unclassified++;
-      if (t.counterparty_type !== "loan" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001) needsDeal++;
+      // "Needs a deal" = still in the review queue (reviewed=0) with money to tie
+      // out. Booking a row as an expense marks it reviewed, so it clears the flag —
+      // the counter can now actually reach zero instead of counting every expense.
+      if (!t.reviewed && t.counterparty_type !== "loan" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001) needsDeal++;
     }
     return { total, reviewed, sumIn, sumOut, unclassified, needsDeal };
   }, [txns, fromDate, toDate]);
