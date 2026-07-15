@@ -24,7 +24,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
   const paired = recon ? recon.pieces.buyer_paired + recon.pieces.supplier_paired + recon.pieces.fee_paired : 0;
   const fromPayments = paired > 0.005;
   const revenue = fromPayments ? recon!.pieces.buyer_paired : flow.gross_revenue;
-  const costs   = fromPayments ? recon!.pieces.supplier_paired + recon!.pieces.fee_paired + recon!.pieces.refund_total : flow.total_cost;
+  const costs   = fromPayments ? recon!.pieces.supplier_paired + recon!.pieces.fee_paired + recon!.pieces.refund_total - recon!.pieces.refund_in : flow.total_cost;
   const profit  = fromPayments ? recon!.actual_profit : flow.net_profit;
   const margin  = revenue > 0 ? (profit / revenue) * 100 : 0;
   const payments = flow.supplier_payments || [];

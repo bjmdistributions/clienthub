@@ -8,11 +8,6 @@ const inputCls =
   "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 // Status → plain colored text (no dot, no pill, never the orange accent).
-const STATUS: Record<FinancialsOverview["status"], { label: string; cls: string }> = {
-  green:  { label: "Healthy",  cls: "text-success-ink" },
-  yellow: { label: "Tight",    cls: "text-warning-ink" },
-  red:    { label: "Critical", cls: "text-danger-ink" },
-};
 
 // One deduction row in the ledger. Money right-aligned, tabular, shown negative.
 // `strong` lifts a figure that deserves attention (e.g. the tax set-aside).
@@ -146,8 +141,10 @@ export default function FreeCashView() {
   const reconciled = ov
     ? ov.allocated_actuals.buyer_in + ov.allocated_actuals.supplier_paid + ov.allocated_actuals.refunds_out
     : 0;
-  const status  = ov ? STATUS[ov.status] : null;
-  const numCls  = ov && ov.status === "red" ? "text-danger-ink" : "text-ink";
+  // Runway / traffic-light removed: it derived from business_expense, which has no
+  // writer, so it was always "green" / "— months". Colour the number by whether
+  // free cash is actually negative — an honest signal we can back up.
+  const numCls  = ov && ov.free_cash < 0 ? "text-danger-ink" : "text-ink";
   const hasAlerts = !!ov && (ov.alerts.refund_deals > 0 || ov.alerts.stale_unallocated_in > 0);
 
   return (
@@ -190,10 +187,6 @@ export default function FreeCashView() {
                 <span className={`text-[34px] font-semibold tabular-nums leading-none tracking-tight ${numCls}`}>
                   {fmtAmount(ov.free_cash)}
                 </span>
-                {status && <span className={`text-[13px] font-semibold ${status.cls}`}>{status.label}</span>}
-              </div>
-              <div className="text-[11.5px] text-faint mt-2 tabular-nums">
-                {ov.runway_months < 0 ? "—" : `${ov.runway_months.toFixed(1)} months of runway`}
               </div>
             </div>
 

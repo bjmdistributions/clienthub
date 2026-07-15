@@ -1431,6 +1431,7 @@ export interface DealReconciliation {
     supplier_paired: number;
     fee_paired: number;
     refund_total: number;
+    refund_in: number;
   };
   payment_received_paired: boolean;
   supplier_paid_paired: boolean;

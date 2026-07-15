@@ -229,6 +229,12 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
                   <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.refund_total)}</span>
                 </div>
               )}
+              {recon.pieces.refund_in > 0.005 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-2">Supplier refund received</span>
+                  <span className="tabular-nums text-success-ink">+{fmtAmount(recon.pieces.refund_in)}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between pt-1.5 border-t border-line-2">
                 <span className="font-semibold text-ink">Actual profit</span>
                 <span className={`font-bold tabular-nums ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>

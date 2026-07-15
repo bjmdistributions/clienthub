@@ -10235,6 +10235,10 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     let supplier_paired = role_sum("supplier_payment");
     let fee_paired      = role_sum("fee");
     let refund_out      = role_sum("refund_out");
+    // Money-in refund FROM a supplier (a supplier reversal) — offsets supplier
+    // cost, so it lifts actual profit. Previously accepted + pickable but never
+    // read, so a supplier refund silently vanished from the deal's actuals.
+    let refund_in       = role_sum("refund_in");
 
     // NON-bank-linked cash refunds only — a bank-linked refund also has a
     // refund_out allocation (counted above), so counting it here too would
@@ -10260,7 +10264,8 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     // that had both a cash refund and a separate bank-paired one). Matches
     // refund_status_all and financials_overview.
     let refund_total = refund_out + refunds;
-    let actual_profit = buyer_paired - supplier_paired - fee_paired - refund_total;
+    // + refund_in: a supplier reversal came back to us, reducing net supplier cost.
+    let actual_profit = buyer_paired - supplier_paired - fee_paired - refund_total + refund_in;
 
     // Reconciled = paired AMOUNTS cover what's owed (within 50¢), not just "a txn exists".
     let buyer_target = if invoice_total > 0.01 { invoice_total } else { gross_revenue };
@@ -10278,6 +10283,7 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
             "supplier_paired": r2(supplier_paired),
             "fee_paired":      r2(fee_paired),
             "refund_total":    r2(refund_total),
+            "refund_in":       r2(refund_in),
         },
         "payment_received_paired": payment_received_paired,
         "supplier_paid_paired":    supplier_paid_paired,

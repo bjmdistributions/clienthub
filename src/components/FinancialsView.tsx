@@ -146,8 +146,8 @@ const loanTagLabel = (direction: string) => (direction === "in" ? "Loan received
 // allocate_bank_txn — money-in can't be a supplier payment, etc.).
 const rolesFor = (direction: string) =>
   direction === "out"
-    ? ROLES.filter((r) => ["supplier_payment", "refund_out", "adjustment"].includes(r.value))
-    : ROLES.filter((r) => ["buyer_payment", "refund_in", "adjustment"].includes(r.value));
+    ? ROLES.filter((r) => ["supplier_payment", "refund_out"].includes(r.value))
+    : ROLES.filter((r) => ["buyer_payment", "refund_in"].includes(r.value));
 
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
