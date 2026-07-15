@@ -4753,9 +4753,17 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
             (None, String::new(), 0.0, "profit_pct".into(), 0, false)
         };
     let unmatched_name = if rep_unmatched { client_rep_name.clone() } else { None };
-    let (refunded, keep): (f64, i64) = conn.query_row(
-        "SELECT COALESCE(SUM(amount),0), COALESCE(MAX(keep_rep_cut),0) FROM refunds WHERE deal_flow_id=?1",
-        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0.0, 0));
+    // Refund-aware payout: refunded = non-bank-linked refunds + refund_out
+    // allocations paired straight in Financials (the rule_4 formula). The old
+    // query read the refunds table only, so a bank-paired refund never reduced the
+    // rep cut or owner split. `keep_rep_cut` still reads across all refunds.
+    let keep: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(keep_rep_cut),0) FROM refunds WHERE deal_flow_id=?1",
+        [&deal_flow_id], |r| r.get(0)).unwrap_or(0);
+    let refunded: f64 = conn.query_row(
+        "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE deal_flow_id=?1 AND COALESCE(bank_txn_id,'')=''),0) \
+              + COALESCE((SELECT SUM(amount) FROM bank_allocation WHERE deal_flow_id=?1 AND role='refund_out'),0)",
+        [&deal_flow_id], |r| r.get(0)).unwrap_or(0.0);
     let eff_net = net - refunded;
     let eff_gross = gross - refunded;
     let has_cut = enabled && rep_id.is_some() && hide == 0;
@@ -10129,7 +10137,9 @@ pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value
          FROM bank_txn bt
          WHERE bt.category != 'internal_transfer'
            AND NOT EXISTS (SELECT 1 FROM bank_allocation a
-                           WHERE a.bank_txn_id = bt.id AND a.deal_flow_id != ?1)
+                           JOIN deal_flows d ON d.id = a.deal_flow_id
+                           WHERE a.bank_txn_id = bt.id AND a.deal_flow_id != ?1
+                             AND COALESCE(d.archived,0)=0)
          ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows: Vec<Value> = stmt.query_map([&this], |r| {
@@ -10178,9 +10188,11 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
     let fee_paired      = role_sum("fee");
     let refund_out      = role_sum("refund_out");
 
-    // Cash refunds already recorded on the deal (independent of the bank feed).
+    // NON-bank-linked cash refunds only — a bank-linked refund also has a
+    // refund_out allocation (counted above), so counting it here too would
+    // double it. Matches the refund_status_all rule.
     let refunds: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(amount),0) FROM refunds WHERE deal_flow_id = ?1",
+        "SELECT COALESCE(SUM(amount),0) FROM refunds WHERE deal_flow_id = ?1 AND COALESCE(bank_txn_id,'')=''",
         [&deal_flow_id], |r| r.get(0)).unwrap_or(0.0);
 
     // Expected figures off the deal flow, plus the invoice total the buyer owes and
@@ -10195,10 +10207,11 @@ pub async fn deal_reconciliation(deal_flow_id: String) -> Result<Value, String> 
         [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     ).map_err(|_| "Deal not found".to_string())?;
 
-    // A bank refund_out allocation and a recorded cash refund can describe the
-    // SAME money (financials_overview treats them as reducing one owed amount).
-    // Take the max so a deal isn't penalized twice for the same refund.
-    let refund_total = refund_out.max(refunds);
+    // refund_out = bank-paired refunds; refunds = cash refunds with no bank link.
+    // They describe DIFFERENT money, so sum them (the old max() undercounted a deal
+    // that had both a cash refund and a separate bank-paired one). Matches
+    // refund_status_all and financials_overview.
+    let refund_total = refund_out + refunds;
     let actual_profit = buyer_paired - supplier_paired - fee_paired - refund_total;
 
     // Reconciled = paired AMOUNTS cover what's owed (within 50¢), not just "a txn exists".
@@ -10329,6 +10342,7 @@ pub async fn clear_bank_txns(scope: String) -> Result<Value, String> {
         let conn = pool().get().map_err(|e| e.to_string())?;
         if conn.execute("DELETE FROM bank_txn WHERE id=?1", [id]).unwrap_or(0) > 0 { deleted += 1; }
     }
+    if deleted + alloc_removed > 0 { crate::netsync::push_now(); } // reach peers now, not on the next poll
     Ok(json!({ "deleted": deleted, "allocations_removed": alloc_removed }))
 }
 
@@ -10450,11 +10464,23 @@ pub async fn plaid_exchange(public_token: String, institution: String) -> Result
     let env = crate::plaid::get_env();
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
-             VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
-            rusqlite::params![id, item_id, access, institution, accounts_json, now, env],
-        ).map_err(|e| e.to_string())?;
+        // Dedup on item_id — relinking the same institution must NOT insert a second
+        // row, or plaid_balances would sum its accounts twice and double the bank
+        // balance in Free Cash. Refresh the token/accounts on the existing row instead.
+        let existing: Option<String> = conn.query_row(
+            "SELECT id FROM plaid_items WHERE item_id=?1", [&item_id], |r| r.get(0)).ok();
+        if let Some(eid) = existing {
+            conn.execute(
+                "UPDATE plaid_items SET access_token=?1, accounts_json=?2, env=?3 WHERE id=?4",
+                rusqlite::params![access, accounts_json, env, eid],
+            ).map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
+                 VALUES (?1,?2,?3,?4,'',?5,?6,?7)",
+                rusqlite::params![id, item_id, access, institution, accounts_json, now, env],
+            ).map_err(|e| e.to_string())?;
+        }
     }
     // Best-effort: hand the token to the server so teammates + hosted sync can use it.
     let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &institution, &accounts_json, &env).await;
@@ -10633,9 +10659,27 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     if conn.execute("DELETE FROM bank_txn WHERE id=?1", [&id]).unwrap_or(0) > 0 { removed += 1; }
                 }
             }
+            // A row failed to persist — do NOT advance the cursor, or Plaid never
+            // re-serves this page and those transactions vanish from the ledger.
+            // Break here (cursor unchanged) so the next sync retries the same page;
+            // the id-exists check + INSERT OR IGNORE make the replay safe.
+            if status == "error" { break; }
             cursor = next_cursor_now.to_string();
             let _ = conn.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
             if !has_more_now { break; }
+        }
+        // Refresh this item's stored balances so Free Cash reflects the CURRENT bank
+        // balance instead of the snapshot from link day (which never updated, so the
+        // headline silently drifted every day). Best-effort; a failure leaves the
+        // prior balance in place. /accounts/get carries balances.current.
+        if status != "error" {
+            if let Ok(acc) = crate::plaid::accounts_get(&access).await {
+                if let Some(list) = acc.get("accounts") {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    let _ = conn.execute("UPDATE plaid_items SET accounts_json=?1 WHERE id=?2",
+                        rusqlite::params![list.to_string(), item_pk]);
+                }
+            }
         }
         imported += item_imported;
         results.push(json!({
@@ -10770,7 +10814,9 @@ pub async fn financials_overview() -> Result<Value, String> {
                  WHERE a.deal_flow_id=df.id AND a.role='supplier_payment')
          )),0)
          FROM deal_flows df
-         WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')",
+         WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
+           AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id
+                           AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))",
         [], |r| r.get(0)).unwrap_or(0.0);
 
     // Refund liability (we owe buyers back): per deal, refund_owed minus refunds
@@ -10796,11 +10842,20 @@ pub async fn financials_overview() -> Result<Value, String> {
     // Percentages are stored as fractions (0.30 = 30%).
     let tax_sweep_pct = read_setting_f64(&conn, "money_tax_sweep_pct", 0.30);
     let refund_reserve_pct = read_setting_f64(&conn, "money_refund_reserve_pct", 0.10);
+    // Reserves obey the accuracy contract too: archived + fell-through deals out,
+    // refunds netted off both profit (tax base) and revenue (refund-reserve base)
+    // so we don't reserve against money already handed back.
     let year_profit: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= date('now','start of year')",
+        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+         FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1)) \
+           AND df.completed_at >= date('now','start of year')",
         [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
     let year_revenue: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND completed_at >= date('now','start of year')",
+        "SELECT COALESCE(SUM(df.gross_revenue - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+         FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1)) \
+           AND df.completed_at >= date('now','start of year')",
         [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
     let tax_reserve = (year_profit * tax_sweep_pct).max(0.0);
     let refund_reserve = (year_revenue * refund_reserve_pct).max(0.0);
@@ -10831,8 +10886,13 @@ pub async fn financials_overview() -> Result<Value, String> {
     // Actuals reconciled from the bank feed via allocations (totals by role), so the
     // dashboard can show how much of the money math is backed by real transactions.
     let war_chest = read_setting_f64(&conn, "money_war_chest", 25000.0).max(0.0);
+    // Actuals exclude allocations whose deal was archived (soft-deleted) — a dead
+    // deal's paired money shouldn't count toward buyer-in / supplier-paid / refunds.
     let alloc_role_sum = |role: &str| -> f64 {
-        conn.query_row("SELECT COALESCE(SUM(amount),0) FROM bank_allocation WHERE role=?1", [role], |r| r.get(0)).unwrap_or(0.0)
+        conn.query_row(
+            "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a \
+             JOIN deal_flows d ON d.id=a.deal_flow_id WHERE a.role=?1 AND COALESCE(d.archived,0)=0",
+            [role], |r| r.get(0)).unwrap_or(0.0)
     };
 
     Ok(json!({
@@ -10945,7 +11005,11 @@ pub async fn ai_categorize_bank_txns() -> Result<Value, String> {
     let items: Vec<Value> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, description, direction FROM bank_txn WHERE reviewed=0 ORDER BY posted_at DESC LIMIT 40",
+            // Only UNcategorized rows — the caller loops until "remaining" (reviewed=0
+            // AND category='') stops falling. Without this filter the batch kept
+            // re-sending the same 40 already-categorized rows, burning AI calls
+            // without ever reaching the real backlog.
+            "SELECT id, description, direction FROM bank_txn WHERE reviewed=0 AND COALESCE(category,'')='' ORDER BY posted_at DESC LIMIT 40",
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok(json!({
             "id": r.get::<_, String>(0)?,

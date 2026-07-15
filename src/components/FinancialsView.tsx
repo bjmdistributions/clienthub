@@ -298,9 +298,11 @@ export default function FinancialsView() {
 
   // Reload txns + summary, and (optionally) the open row's allocations.
   const refreshAll = async (keepOpen = true) => {
-    // Loan tags change outstanding, so refresh loans alongside txns (cheap).
-    const [t, s, ln] = await Promise.all([api.listBankTxns(), api.bankTxnSummary(), api.listLoans()]);
-    setTxns(t); setSummary(s); setLoans(ln);
+    // Loan tags change outstanding, so refresh loans alongside txns (cheap). Deals
+    // too — a deal added on another device (the netsync-applied path) or elsewhere
+    // in the app must reach the allocation picker without a full remount.
+    const [t, s, ln, d] = await Promise.all([api.listBankTxns(), api.bankTxnSummary(), api.listLoans(), api.listDealFlows()]);
+    setTxns(t); setSummary(s); setLoans(ln); setDeals(d);
     if (keepOpen && openId) {
       const a = await api.listBankAllocationsForTxn(openId);
       setAllocs(a);

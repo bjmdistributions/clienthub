@@ -81,7 +81,23 @@ Original per-item detail (kept for reference):
 
 1.5 Minor: TiersView empty-state colSpan 8→9 (TiersView.tsx:178).
 
-### Phase 2 — Financials engine hardening (Free Cash to the cent)
+### Phase 2 — Financials engine hardening (Free Cash to the cent) — CORE DONE v0.15.74
+Shipped: 2.1 frozen bank balance now refreshed each plaid_sync via /accounts/get (Free Cash
+tracks reality, not link day); 2.2 reserves + supplier_payables exclude archived/fell-through +
+refund-net the reserve bases; 2.3 deal_reconciliation refund = refund_out + non-bank-linked
+refunds (was max(), undercounted); 2.5 plaid_exchange dedups on item_id (relink no longer
+doubles balance); 2.4 plaid_sync no longer advances the cursor past a failed row (no more
+permanent txn loss); 2.6 archived-deal allocations excluded from unallocated pickers +
+allocated_actuals (lossless-restore preserved — allocations not deleted); 2.7 deal_flow_payout
+refund-aware (rule_4). Minors: AI-categorize only pulls uncategorized rows (no 25-call loops);
+clear_bank_txns push_now; refreshAll re-fetches deals. Verified on live DB: refund_liability
+$12,890 (real owed-back), reserve/payable/actuals guards confirmed.
+STILL OPEN (deferred): 2.8 loans UX (toasts, reopen, received_at, mark-paid confirm),
+free-cash Adjust manual-vs-live, bank_txn_summary transfer/card double-count, rule busy state,
+new-deal-from-txn direction guard, bulk-allocate ghost dedup + failure reasons, Plaid
+env-switch/prepare-banner/poll-tolerance; 2.9 half-built (runway/business_expense,
+refund_in/adjustment roles, cash_purchase/reserve_entry, loan.bank_txn_id, Plaid remove-vs-secret).
+Original per-item detail (kept for reference):
 2.1 **Free Cash bank balance frozen at link time (CRITICAL)** — plaid_items.accounts_json is
     written once and never refreshed; plaid.rs has no balance call. Implement
     `/accounts/balance/get` in plaid.rs, refresh in plaid_sync + plaid_refresh_sync, UPDATE
