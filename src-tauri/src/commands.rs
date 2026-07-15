@@ -3017,11 +3017,15 @@ pub async fn set_invoice_sent_date(invoice_id: String, sent_date: String) -> Res
 #[tauri::command]
 pub async fn set_invoice_void(invoice_id: String, void: bool) -> Result<(), String> {
     let flag = if void { 1 } else { 0 };
+    // Stamp when the void happened (cleared on un-void) so periodic stats can
+    // count deals lost per period, not just the flag.
+    let voided_at: Option<String> = if void { Some(Utc::now().to_rfc3339()) } else { None };
     let mut cols = Map::new();
     cols.insert("voided".into(), Value::from(flag));
+    cols.insert("voided_at".into(), voided_at.clone().map(Value::from).unwrap_or(Value::Null));
     sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE invoices SET voided=?1 WHERE id=?2", rusqlite::params![flag, invoice_id])
+    conn.execute("UPDATE invoices SET voided=?1, voided_at=?2 WHERE id=?3", rusqlite::params![flag, voided_at, invoice_id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -8114,8 +8118,11 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
-            "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM(df.net_profit),0)
-             FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 GROUP BY m ORDER BY m"
+            "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), \
+                    COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0)
+             FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+             WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 GROUP BY m ORDER BY m"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
@@ -8162,11 +8169,17 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     // `open_deals` mirrors the active-pipeline filter (archived + voided/archived
     // invoice excluded); `completed_this_month` counts non-archived completions in
     // the current calendar month.
+    // One open deal per INVOICE, and only when its best (survivor) flow hasn't
+    // completed. COUNT(*) over raw rows counted duplicate ghost flows and orphans
+    // (invoice deleted, LEFT JOIN passing NULLs) — inflating the hero severalfold.
     let open_deals: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
-             WHERE df.stage != 'complete' AND COALESCE(df.archived,0)=0
-               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+            "SELECT COUNT(*) FROM ( \
+               SELECT df.invoice_id, MAX(CASE df.stage WHEN 'complete' THEN 4 WHEN 'supplier_paid' THEN 3 \
+                      WHEN 'payment_received' THEN 2 ELSE 1 END) AS best \
+               FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+               WHERE COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+               GROUP BY df.invoice_id) WHERE best < 4",
             [], |r| r.get(0),
         ).unwrap_or(0);
     let completed_this_month: i64 = conn
@@ -8197,9 +8210,13 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Voided (fell-through) invoices get their own bucket instead of vanishing —
+    // the rows now sum to the headline invoice count, and a sent invoice's history
+    // stays visible even after the deal dies.
     let invoice_status_breakdown: Vec<Value> = {
         let mut stmt = conn.prepare(
-            "SELECT status, COUNT(*), COALESCE(SUM(total),0) FROM invoices WHERE COALESCE(archived,0)=0 AND COALESCE(voided,0)=0 GROUP BY status"
+            "SELECT CASE WHEN COALESCE(voided,0)=1 THEN 'void' ELSE status END AS st, COUNT(*), COALESCE(SUM(total),0) \
+             FROM invoices WHERE COALESCE(archived,0)=0 GROUP BY st"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok(json!({
             "status": r.get::<_,String>(0)?,
@@ -8252,17 +8269,26 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
+    // Profit is refund-aware (refunds come off the deal's profit) and fell-through
+    // deals (voided/archived invoice) are excluded — the same accuracy rules as the
+    // brief, so the two surfaces can never disagree by construction.
     const PROFIT_MONTH_SQL: &str =
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows \
-         WHERE stage='complete' AND COALESCE(archived,0)=0 AND strftime('%Y-%m', completed_at) = ?1";
+        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND strftime('%Y-%m', df.completed_at) = ?1";
     let profit_mtd: f64 = conn.query_row(PROFIT_MONTH_SQL, [&this_month], |r| r.get(0)).unwrap_or(0.0);
     let profit_prev_month: f64 = conn.query_row(PROFIT_MONTH_SQL, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
     let profit_all_time: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
+        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let deals_mtd: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1",
+        "SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND df.completed_at >= ?1",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0);
 
@@ -8295,21 +8321,56 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     };
 
     let loss_deals_this_month: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1 AND net_profit < 0",
+        "SELECT COUNT(*) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND df.completed_at >= ?1 AND df.net_profit < 0",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0);
     let loss_total_this_month: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND completed_at >= ?1 AND net_profit < 0",
+        "SELECT COALESCE(SUM(df.net_profit),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND df.completed_at >= ?1 AND df.net_profit < 0",
         [&month_start], |r| r.get(0)
     ).unwrap_or(0.0);
+    // All-time deal outcomes for the analytics dashboard: won = distinct invoices
+    // with a completed live flow; lost = fell-through (voided) invoices.
+    let deals_won_all: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+        [], |r| r.get(0)
+    ).unwrap_or(0);
+    let deals_lost_all: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM invoices WHERE COALESCE(voided,0)=1 AND COALESCE(archived,0)=0",
+        [], |r| r.get(0)
+    ).unwrap_or(0);
 
-    // All-time totals from completed deal flows
+    // All-time totals from completed deal flows — fell-through excluded, profit
+    // refund-aware (revenue stays gross; refunds are surfaced as their own stat).
     let all_time_revenue: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
+        "SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let all_time_profit: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0",
+        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    // Refund story for the analytics dashboard: total refunded (rule: non-bank-linked
+    // refunds rows + every refund_out allocation, so bank-linked ones count once) and
+    // what's still owed back to customers.
+    let refunded_total: f64 = conn.query_row(
+        "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE COALESCE(bank_txn_id,'')=''),0) \
+              + COALESCE((SELECT SUM(amount) FROM bank_allocation WHERE role='refund_out'),0)",
+        [], |r| r.get(0)
+    ).unwrap_or(0.0);
+    let refund_owed_remaining: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(MAX(owed - refunded, 0)),0) FROM ( \
+           SELECT COALESCE(df.refund_owed,0) AS owed, \
+                  COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0) \
+                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0) AS refunded \
+           FROM deal_flows df WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01)",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
 
@@ -8346,6 +8407,10 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "top_suppliers": top_suppliers,
         "all_time_revenue": all_time_revenue,
         "all_time_profit": all_time_profit,
+        "refunded_total": refunded_total,
+        "refund_owed_remaining": refund_owed_remaining,
+        "deals_won_all": deals_won_all,
+        "deals_lost_all": deals_lost_all,
     }))
 }
 
@@ -8583,67 +8648,70 @@ pub async fn get_payables_aging() -> Result<Value, String> {
 #[tauri::command]
 pub async fn get_analytics_range(start_date: String, end_date: String) -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let has_start = !start_date.is_empty();
-    let has_end   = !end_date.is_empty();
 
-    // Build WHERE clauses for deal_flows
-    let df_where = match (has_start, has_end) {
-        (true,  true)  => format!("stage='complete' AND date(completed_at)>='{start_date}' AND date(completed_at)<='{end_date}'"),
-        (true,  false) => format!("stage='complete' AND date(completed_at)>='{start_date}'"),
-        (false, true)  => format!("stage='complete' AND date(completed_at)<='{end_date}'"),
-        (false, false) => "stage='complete'".to_string(),
-    };
+    // Every aggregate obeys the accuracy contract: archived flows out, fell-through
+    // (voided/archived invoice) out, refunds off the profit, dates parameterized
+    // (empty string = unbounded). Duplicate flow rows are archived by the ghost
+    // cleanup, so plain SUMs over live rows are safe; counts still dedupe by invoice.
+    const DF: &str =
+        "FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND (?1='' OR date(df.completed_at) >= ?1) AND (?2='' OR date(df.completed_at) <= ?2)";
+    const NP: &str = "(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0))";
+    let p = rusqlite::params![start_date, end_date];
 
-    let total_revenue: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows WHERE {df_where}"),
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
-    let total_cost: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(total_cost),0) FROM deal_flows WHERE {df_where}"),
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
-    let net_profit: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE {df_where}"),
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
-    let avg_margin: f64 = conn.query_row(
-        &format!("SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows WHERE {df_where}"),
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
+    let (total_revenue, total_cost, net_profit): (f64, f64, f64) = conn.query_row(
+        &format!("SELECT COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0) {DF}"),
+        p, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    ).unwrap_or((0.0, 0.0, 0.0));
+    // Volume-weighted blended margin — a $100 deal at 90% can't offset a $100k deal at 5%.
+    let avg_margin: f64 = if total_revenue > 0.0 { (net_profit / total_revenue) * 100.0 } else { 0.0 };
     let deal_count: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM deal_flows WHERE {df_where}"),
-        [], |r| r.get(0)
+        &format!("SELECT COUNT(DISTINCT df.invoice_id) {DF}"),
+        p, |r| r.get(0)
     ).unwrap_or(0);
 
-    // Monthly buckets for the bar chart
+    // Deals lost (fell through) + refunds inside the same window, for the win-rate
+    // and refund cards. Lost is bounded by voided_at (historical voids without a
+    // stamp only show in all-time).
+    let deals_lost: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM invoices WHERE COALESCE(voided,0)=1 AND COALESCE(archived,0)=0 \
+           AND (?1='' OR (voided_at IS NOT NULL AND date(voided_at) >= ?1)) \
+           AND (?2='' OR voided_at IS NULL OR date(voided_at) <= ?2)",
+        p, |r| r.get(0)
+    ).unwrap_or(0);
+    let refunded_in_range: f64 = conn.query_row(
+        "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE COALESCE(bank_txn_id,'')='' \
+                           AND (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)),0) \
+              + COALESCE((SELECT SUM(amount) FROM bank_allocation WHERE role='refund_out' \
+                           AND (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)),0)",
+        p, |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    // Monthly buckets for the bar chart (refund-aware profit)
     let monthly: Vec<Value> = {
         let mut stmt = conn.prepare(
-            &format!("SELECT strftime('%Y-%m', completed_at) as m, COALESCE(SUM(gross_revenue),0), COALESCE(SUM(total_cost),0), COALESCE(SUM(net_profit),0)
-             FROM deal_flows WHERE {df_where} GROUP BY m ORDER BY m")
+            &format!("SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), \
+                             COALESCE(SUM(df.total_cost),0), COALESCE(SUM({NP}),0) {DF} GROUP BY m ORDER BY m")
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(json!({
+        let rows = stmt.query_map(p, |r| Ok(json!({
             "month": r.get::<_,String>(0)?, "revenue": r.get::<_,f64>(1)?,
             "cost":  r.get::<_,f64>(2)?,   "profit":  r.get::<_,f64>(3)?,
         }))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    // Top clients by profit in range
-    let inv_where = match (has_start, has_end) {
-        (true,  true)  => format!("df2.stage='complete' AND date(df2.completed_at)>='{start_date}' AND date(df2.completed_at)<='{end_date}'"),
-        (true,  false) => format!("df2.stage='complete' AND date(df2.completed_at)>='{start_date}'"),
-        (false, true)  => format!("df2.stage='complete' AND date(df2.completed_at)<='{end_date}'"),
-        (false, false) => "df2.stage='complete'".to_string(),
-    };
+    // Top clients by refund-aware profit in range
     let top_clients: Vec<Value> = {
         let mut stmt = conn.prepare(
-            &format!("SELECT c.name, COALESCE(SUM(df2.gross_revenue),0), COALESCE(SUM(df2.net_profit),0),
-                    CASE WHEN COALESCE(SUM(df2.gross_revenue),0)>0 THEN (COALESCE(SUM(df2.net_profit),0)/SUM(df2.gross_revenue))*100 ELSE 0 END
-             FROM deal_flows df2 JOIN invoices i ON i.id=df2.invoice_id JOIN clients c ON c.id=i.client_id
-             WHERE {inv_where}
-             GROUP BY i.client_id, c.name ORDER BY SUM(df2.net_profit) DESC LIMIT 5")
+            &format!("SELECT c.name, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM({NP}),0), \
+                    CASE WHEN COALESCE(SUM(df.gross_revenue),0)>0 THEN (COALESCE(SUM({NP}),0)/SUM(df.gross_revenue))*100 ELSE 0 END \
+             {DF_JOIN} GROUP BY i.client_id, c.name ORDER BY SUM({NP}) DESC LIMIT 5",
+             DF_JOIN = DF.replacen("JOIN invoices i ON i.id=df.invoice_id",
+                                   "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id", 1))
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(json!({
+        let rows = stmt.query_map(p, |r| Ok(json!({
             "name": r.get::<_,String>(0)?, "total_revenue": r.get::<_,f64>(1)?,
             "total_profit": r.get::<_,f64>(2)?, "margin": r.get::<_,f64>(3)?,
         }))).map_err(|e| e.to_string())?;
@@ -8655,6 +8723,8 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
         "total_profit": net_profit,     "avg_margin": avg_margin,
         "deal_count": deal_count,       "monthly_profit": monthly,
         "top_clients_by_profit": top_clients,
+        "deals_lost": deals_lost,
+        "refunded_in_range": refunded_in_range,
     }))
 }
 
@@ -8922,24 +8992,35 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let last_week_end = week_start.clone();
     let _ = &last_week_end;
 
+    // Data-accuracy guards shared by every deal_flow stat below:
+    // - `live` keeps archived (soft-deleted) deals AND fell-through deals (voided
+    //   or archived invoice) out of all stats — a completed deal that later fell
+    //   through must not keep counting as won revenue.
+    // - `np` is refund-aware net profit — a deal's refunds come straight off its
+    //   profit (locked P&L rule: refunds reduce profit), so a refunded deal can't
+    //   keep inflating the brief.
+    let live = " AND COALESCE(df.archived,0)=0 AND NOT EXISTS (SELECT 1 FROM invoices iv \
+                 WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))";
+    let np = "(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0))";
+
     let revenue_this_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
     let revenue_last_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_this_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COALESCE(SUM({np}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
     let profit_last_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COALESCE(SUM({np}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
     let avg_margin_this_week: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows df WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2"),
         [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
 
@@ -8947,51 +9028,51 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
 
     struct DfProfit { count: u32, net_profit: f64, jack: f64, ben: f64, business: f64, loss_count: u32, loss_total: f64 }
     let df_this_week: DfProfit = conn.query_row(
-        &format!("SELECT COUNT(*) as count, COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), COUNT(CASE WHEN net_profit < 0 THEN 1 END), COALESCE(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COUNT(*) as count, COALESCE(SUM({np}),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), COUNT(CASE WHEN net_profit < 0 THEN 1 END), COALESCE(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl],
         |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: r.get::<_,i64>(5).unwrap_or(0) as u32, loss_total: r.get(6)? })
     ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
 
     let df_last_week_count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1 AND completed_at < ?2",
+        &format!("SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2"),
         [&last_week_start, &week_start], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
     let df_last_week_profit: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(net_profit),0) FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COALESCE(SUM({np}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let df_mtd: DfProfit = conn.query_row(
-        &format!("SELECT COUNT(*), COALESCE(SUM(net_profit),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1{rep_filter}"),
+        &format!("SELECT COUNT(*), COALESCE(SUM({np}),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1{rep_filter}"),
         [&month_start],
         |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: 0, loss_total: 0.0 })
     ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
 
     let df_all_jack: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(profit_jack),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
+        &format!("SELECT COALESCE(SUM(profit_jack),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
     let df_all_ben: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(profit_ben),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
+        &format!("SELECT COALESCE(SUM(profit_ben),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
     let df_all_biz: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(profit_business),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"), [], |r| r.get(0)
+        &format!("SELECT COALESCE(SUM(profit_business),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter}"), [], |r| r.get(0)
     ).unwrap_or(0.0);
 
     // Config-driven payout breakdown: split net profit across the org's configured
     // recipients (empty when unconfigured). Included vs. excluded net is bucketed by
     // each completed deal's payout_included flag (default false → business keeps all).
-    let net_incl = "COALESCE(SUM(CASE WHEN COALESCE(json_extract(df.metadata,'$.payout_included'),0)=1 THEN df.net_profit ELSE 0 END),0)";
-    let net_excl = "COALESCE(SUM(CASE WHEN COALESCE(json_extract(df.metadata,'$.payout_included'),0)=1 THEN 0 ELSE df.net_profit END),0)";
+    let net_incl = format!("COALESCE(SUM(CASE WHEN COALESCE(json_extract(df.metadata,'$.payout_included'),0)=1 THEN {np} ELSE 0 END),0)");
+    let net_excl = format!("COALESCE(SUM(CASE WHEN COALESCE(json_extract(df.metadata,'$.payout_included'),0)=1 THEN 0 ELSE {np} END),0)");
     let split_week: (f64, f64) = conn.query_row(
-        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0.0, 0.0));
     let split_month: (f64, f64) = conn.query_row(
-        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete' AND df.completed_at >= ?1{rep_filter}"),
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1{rep_filter}"),
         [&month_start], |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0.0, 0.0));
     let split_all: (f64, f64) = conn.query_row(
-        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{rep_filter}"),
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter}"),
         [], |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0.0, 0.0));
     let payout_recipients = read_profit_split_shares();
@@ -9019,11 +9100,24 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Closed/lost come from the REAL pipeline (deal_flows + voided invoices), not
+    // the standalone deals CRM table — that table's won_at/lost_at are never set by
+    // the invoice→deal-flow workflow, which left these stats permanently at zero.
+    // Closed = live deal flows completed in the window (distinct invoices, so
+    // duplicate flow rows can't inflate it; `live` keeps a completed-then-fell-
+    // through deal from counting as both). Lost = invoices voided (deal fell
+    // through) in the window, via the voided_at stamp. Both honor the rep scope,
+    // so a rep's brief shows their own win rate, not the org's.
     let deals_closed: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE won_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+        &format!("SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df {rep_join} \
+         WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        [&week_start, &end_excl], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
+    let lost_join = if rep_name.is_some() { "JOIN clients c ON c.id=i.client_id" } else { "" };
     let deals_lost: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE lost_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+        &format!("SELECT COUNT(*) FROM invoices i {lost_join} \
+         WHERE COALESCE(i.voided,0)=1 AND COALESCE(i.archived,0)=0 AND i.voided_at >= ?1 AND i.voided_at < ?2{rep_filter}"),
+        [&week_start, &end_excl], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
     let win_rate = if deals_closed + deals_lost > 0 { (deals_closed as f64 / (deals_closed + deals_lost) as f64) * 100.0 } else { 0.0 };
 
@@ -9095,7 +9189,7 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
 
     // Refunds on deals completed in the period (rep-filtered) — "deals that fell through".
     let (refunded_deals_this_week, refunded_total_this_week): (u32, f64) = conn.query_row(
-        &format!("SELECT COUNT(DISTINCT rf.deal_flow_id), COALESCE(SUM(rf.amount),0) FROM refunds rf JOIN deal_flows df ON df.id=rf.deal_flow_id {rep_join} WHERE df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
+        &format!("SELECT COUNT(DISTINCT rf.deal_flow_id), COALESCE(SUM(rf.amount),0) FROM refunds rf JOIN deal_flows df ON df.id=rf.deal_flow_id {rep_join} WHERE COALESCE(df.archived,0)=0 AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| Ok((r.get::<_,i64>(0)? as u32, r.get::<_,f64>(1)?))
     ).unwrap_or((0, 0.0));
 
@@ -9912,6 +10006,62 @@ pub async fn reattach_orphaned_deal_allocations() -> Result<i64, String> {
     Ok(fixed)
 }
 
+/// Archive duplicate ("ghost") and orphaned deal_flow rows so raw SQL aggregates
+/// (dashboard open-deals, free-cash reserves, payables, analytics) stop counting
+/// rows the deal-flow view already hides. Ghost = a non-archived row that is not
+/// its invoice's survivor (highest stage, newest on a tie — the row every picker
+/// and list shows). Orphan = a non-archived row whose invoice no longer exists.
+/// Allocations are re-pointed to the survivor first, and any row still carrying
+/// refunds/receipts/rep/allocation data is left alone — so archiving is lossless
+/// and reversible from the Archive view. Synced; idempotent (finds 0 once clean).
+#[tauri::command]
+pub async fn cleanup_ghost_deal_flows() -> Result<i64, String> {
+    // Move stranded payments onto survivors before ghosts leave the picture.
+    let _ = reattach_orphaned_deal_allocations().await?;
+    let ghosts: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT df.id FROM deal_flows df \
+             WHERE COALESCE(df.archived,0)=0 AND ( \
+               df.invoice_id IS NULL OR df.invoice_id='' \
+               OR NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id=df.invoice_id) \
+               OR df.id <> (SELECT d2.id FROM deal_flows d2 \
+                            WHERE d2.invoice_id=df.invoice_id AND COALESCE(d2.archived,0)=0 \
+                            ORDER BY (CASE d2.stage WHEN 'complete' THEN 3 WHEN 'supplier_paid' THEN 2 \
+                            WHEN 'payment_received' THEN 1 ELSE 0 END) DESC, d2.created_at DESC LIMIT 1))",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|x| x.ok()).collect()
+    };
+    if ghosts.is_empty() { return Ok(0); }
+    let mut archived = 0i64;
+    for id in ghosts {
+        // Conservative guard: never archive a row that still owns money/rep data.
+        let has_data: bool = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT 1 WHERE EXISTS (SELECT 1 FROM bank_allocation WHERE deal_flow_id=?1) \
+                    OR EXISTS (SELECT 1 FROM refunds WHERE deal_flow_id=?1) \
+                    OR EXISTS (SELECT 1 FROM deal_receipts WHERE deal_flow_id=?1) \
+                    OR EXISTS (SELECT 1 FROM deal_reps WHERE deal_flow_id=?1)",
+                [&id], |_| Ok(()),
+            ).is_ok()
+        };
+        if has_data { continue; }
+        let now = Utc::now().to_rfc3339();
+        let mut cols = Map::new();
+        cols.insert("archived".into(), Value::from(1));
+        cols.insert("archived_at".into(), Value::String(now.clone()));
+        sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET archived=1, archived_at=?1 WHERE id=?2",
+            rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+        archived += 1;
+    }
+    if archived > 0 { crate::netsync::push_now(); }
+    Ok(archived)
+}
+
 /// Bank transactions available to pair to a deal, split by direction. A txn is
 /// offered iff it has NO allocation to a deal other than this one (exclusive
 /// links — once linked anywhere it's gone from every other deal's picker) and it
@@ -10577,10 +10727,14 @@ pub async fn financials_overview() -> Result<Value, String> {
     // Refund liability (we owe buyers back): per deal, refund_owed minus refunds
     // already paid AND minus refund-out actuals allocated from the bank feed, clamped
     // per deal so an overpaid/archived-deal refund can't cancel another's owed amount.
+    // A bank-linked refund lives in BOTH refunds (with bank_txn_id) and
+    // bank_allocation (role refund_out) — count it once, on the allocation side,
+    // matching refund_status_all. Counting both double-subtracted every linked
+    // refund and overstated Free Cash.
     let refund_liability: f64 = conn.query_row(
         "SELECT COALESCE(SUM(MAX(0,
             df.refund_owed
-            - (SELECT COALESCE(SUM(amount),0) FROM refunds r WHERE r.deal_flow_id=df.id)
+            - (SELECT COALESCE(SUM(amount),0) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')='')
             - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
                  WHERE a.deal_flow_id=df.id AND a.role='refund_out')
          )),0)
@@ -11003,6 +11157,9 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<i64, String> {
         });
         let (_, rule_cat, target_type, target_id, _) = match rule { Some(r) => r, None => continue };
         let is_loan = target_type == "loan" && !target_id.is_empty();
+        // A category-less non-loan rule has nothing to apply — skipping it keeps a
+        // blank rule from mass-clearing categories on every matching transaction.
+        if !is_loan && rule_cat.trim().is_empty() { continue; }
         // Loan rules derive the category from direction so a mixed set books each
         // side correctly; other rules use the memorized category verbatim.
         let (category, loan_name) = if is_loan {

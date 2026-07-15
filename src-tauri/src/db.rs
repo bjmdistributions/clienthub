@@ -1469,4 +1469,12 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE notes ADD COLUMN h REAL NOT NULL DEFAULT 190;
         "#,
     ),
+    (
+        68,
+        // When an invoice was voided (deal fell through) — lets the brief count
+        // "deals lost this period". Historical voids stay NULL (untimestamped).
+        r#"
+        ALTER TABLE invoices ADD COLUMN voided_at TEXT;
+        "#,
+    ),
 ];

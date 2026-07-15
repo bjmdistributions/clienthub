@@ -263,9 +263,9 @@ export default function FinancialsView() {
           api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
         ]);
         setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
-        // Heal any payment previously paired to a duplicate deal_flow row so it
-        // shows on the deal the deal view displays (idempotent; usually a no-op).
-        api.reattachOrphanedDealAllocations().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
+        // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
+        // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
+        api.cleanupGhostDealFlows().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
       } catch (e: any) { toast(String(e), "error"); }
       finally { setLoading(false); }
     })();
@@ -2422,6 +2422,9 @@ function RulesCard({
 
   const add = () => {
     if (!cp.trim()) { toast("Enter a counterparty to match", "error"); return; }
+    // A rule applies its category to EVERY matching un-booked transaction — an
+    // empty ("Uncategorized") rule would mass-clear categories across the ledger.
+    if (!cat) { toast("Pick a category for the rule", "error"); return; }
     onCreate(cp.trim(), cat, dir);
     setCp(""); setCat(""); setDir("");
   };

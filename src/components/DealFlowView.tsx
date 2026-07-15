@@ -117,10 +117,10 @@ export default function DealFlowView() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Self-heal: re-point any payment stranded on a duplicate deal_flow row onto the
-  // survivor this view shows, then reload so the link appears. Idempotent + cheap.
+  // Self-heal: re-point payments stranded on duplicate deal_flow rows, then archive
+  // the duplicate/orphan rows themselves so no aggregate counts them. Idempotent.
   useEffect(() => {
-    api.reattachOrphanedDealAllocations().then((n) => { if (n > 0) load(); }).catch(() => {});
+    api.cleanupGhostDealFlows().then((n) => { if (n > 0) load(); }).catch(() => {});
   }, [load]);
 
   // Cross-tab navigation restore

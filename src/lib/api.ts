@@ -1107,6 +1107,10 @@ export interface DashboardStats {
   top_suppliers: { name: string; contact_name: string; deal_count: number; total_paid: number }[];
   all_time_revenue: number;
   all_time_profit: number;
+  refunded_total: number;
+  refund_owed_remaining: number;
+  deals_won_all: number;
+  deals_lost_all: number;
 }
 
 export interface User {
@@ -2115,6 +2119,10 @@ export const api = {
   // the deal view shows. Idempotent; returns how many were fixed.
   reattachOrphanedDealAllocations: () =>
     invoke<number>("reattach_orphaned_deal_allocations"),
+  // Archive duplicate/orphan deal_flow rows (re-pointing allocations first) so
+  // aggregates stop counting rows the UI hides. Idempotent; returns rows archived.
+  cleanupGhostDealFlows: () =>
+    invoke<number>("cleanup_ghost_deal_flows"),
   unallocatedBankTxns: (dealFlowId?: string) =>
     invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
   dealReconciliation: (dealFlowId: string) =>

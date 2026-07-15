@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, DashboardStats } from "../lib/api";
+import { api, DashboardStats, FinancialsOverview } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, FileDown, TrendingUp, TrendingDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -56,7 +56,7 @@ function usePalette() {
     accent, success, danger, warning, info, neutral, bar,
     grid: rgbVar("--c-line"),
     CLR: { indigo: accent, emerald: success, rose: danger, amber: warning, sky: info, slate: neutral },
-    STATUS: { paid: success, sent: info, overdue: danger, draft: neutral } as Record<string, string>,
+    STATUS: { paid: success, sent: info, overdue: danger, draft: neutral, void: danger } as Record<string, string>,
     TT: {
       contentStyle: {
         background: rgbVar("--c-surface"),
@@ -114,6 +114,7 @@ export default function AnalyticsView() {
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
+  const [money,     setMoney]     = useState<FinancialsOverview | null>(null);
   const [loading,   setLoading]   = useState(true);
   const [bars,      setBars]      = useState(false);
   const [preset,    setPreset]    = useState<string>("All time");
@@ -161,6 +162,9 @@ export default function AnalyticsView() {
       setStats(s);
       setTiers(t);
       setRangeData(r);
+      // Cash position is secondary — load separately so a Plaid/overview hiccup
+      // never blanks the analytics page.
+      api.financialsOverview().then(setMoney).catch(() => {});
     } catch {}
     setLoading(false);
   };
@@ -199,10 +203,13 @@ export default function AnalyticsView() {
     month: new Date(m.month + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
   }));
 
-  // Month-over-month movement for the lead stats — derived from data we
-  // already have (monthly_profit), no new backend.
-  const momLast = monthlySource.length > 1 ? monthlySource[monthlySource.length - 1] : null;
-  const momPrev = monthlySource.length > 1 ? monthlySource[monthlySource.length - 2] : null;
+  // Month-over-month movement for the lead stats — derived from data we already
+  // have (monthly_profit). The in-progress current month is skipped: comparing a
+  // half-finished month against a complete one always reads as a fake drop.
+  const curMonth = new Date().toISOString().slice(0, 7);
+  const momSource = monthlySource.filter((m: any) => m.month !== curMonth);
+  const momLast = momSource.length > 1 ? momSource[momSource.length - 1] : null;
+  const momPrev = momSource.length > 1 ? momSource[momSource.length - 2] : null;
 
   const tierMap  = tiers.reduce((acc: Record<string, number>, t: any) => {
     acc[t.tier] = (acc[t.tier] || 0) + 1; return acc;
@@ -360,6 +367,51 @@ export default function AnalyticsView() {
         ) : <Blank h={300} />}
         </div>
       </div>
+
+      {/* ── Deal outcomes: won / lost / win rate / refunded, range-aware ── */}
+      {(() => {
+        const won      = rangeData?.deal_count ?? stats.deals_won_all ?? 0;
+        const lost     = rangeData?.deals_lost ?? stats.deals_lost_all ?? 0;
+        const winRate  = won + lost > 0 ? (won / (won + lost)) * 100 : 0;
+        const refunded = rangeData?.refunded_in_range ?? stats.refunded_total ?? 0;
+        return (
+          <div className="bg-surface border border-line rounded-2xl overflow-hidden">
+            <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
+              <div className="p-5">
+                <div className="text-[12.5px] font-medium text-muted">Deals won</div>
+                <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{won}</div>
+                <div className="text-[11px] text-faint mt-1.5">completed in range</div>
+              </div>
+              <div className="p-5">
+                <div className="text-[12.5px] font-medium text-muted">Deals lost</div>
+                <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
+                  style={{ color: lost > 0 ? CLR.rose : "var(--t-tx1)" }}>{lost}</div>
+                <div className="text-[11px] text-faint mt-1.5">fell through</div>
+              </div>
+              <div className="p-5 border-t border-line lg:border-t-0">
+                <div className="text-[12.5px] font-medium text-muted">Win rate</div>
+                <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
+                  style={{ color: winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose }}>
+                  {won + lost > 0 ? `${winRate.toFixed(0)}%` : "—"}
+                </div>
+                <div className="text-[11px] text-faint mt-1.5">won vs fell through</div>
+              </div>
+              <div className="p-5 border-t border-line lg:border-t-0">
+                <div className="text-[12.5px] font-medium text-muted">Refunded</div>
+                <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
+                  style={{ color: refunded > 0 ? CLR.rose : "var(--t-tx1)" }}>
+                  {refunded > 0 ? `−${fmtAmount(refunded)}` : fmtAmount(0)}
+                </div>
+                <div className="text-[11px] text-faint mt-1.5">
+                  {stats.refund_owed_remaining > 0
+                    ? `${fmtAmount(stats.refund_owed_remaining)} still owed back`
+                    : "returned to customers"}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Row: Profit Trend (area) + Client Mix (donut) ──────────
           Two new chart *types* — an area trend + a donut — for variety
@@ -637,20 +689,23 @@ export default function AnalyticsView() {
           ) : <Blank h={160} text="No profit data yet" />}
         </div>
 
-        {/* Financial snapshot */}
+        {/* Financial snapshot — same range-filtered deal source as the hero, so
+            revenue − cost = profit holds inside one card (the old card mixed a
+            YTD paid-invoice number with all-time costs from a different base). */}
         <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
-          <p className="text-[12.5px] font-medium text-muted mb-5">
-            Financial snapshot
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Financial snapshot</h3>
+          <p className="text-[11px] text-muted mb-5">
+            Completed deals · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-5">
             {[
-              { label: "Total revenue",  value: fmtAmount(stats.paid_ytd),         clr: "var(--t-tx1)" },
-              { label: "Total cost",     value: fmtAmount(stats.total_cost),        clr: "var(--t-tx1)" },
-              { label: "Net profit",     value: fmtAmount(stats.total_profit),
-                clr: stats.total_profit >= 0 ? CLR.emerald : CLR.rose },
-              { label: "Avg margin",     value: `${stats.avg_margin.toFixed(1)}%`, clr: "var(--t-tx1)" },
-              { label: "Outstanding",    value: fmtAmount(stats.outstanding),       clr: CLR.amber },
-              { label: "Open closeouts", value: String(stats.incomplete_shipping),  clr: "var(--t-tx1)" },
+              { label: "Revenue",       value: fmtAmount(displayStats?.total_revenue ?? 0), clr: "var(--t-tx1)" },
+              { label: "Total cost",    value: fmtAmount(displayStats?.total_cost ?? 0),    clr: "var(--t-tx1)" },
+              { label: "Net profit",    value: fmtAmount(displayStats?.total_profit ?? 0),
+                clr: (displayStats?.total_profit ?? 0) >= 0 ? CLR.emerald : CLR.rose },
+              { label: "Margin",        value: `${(displayStats?.avg_margin ?? 0).toFixed(1)}%`, clr: "var(--t-tx1)" },
+              { label: "Outstanding (current)", value: fmtAmount(stats.outstanding), clr: CLR.amber },
+              { label: "Open closeouts",        value: String(stats.incomplete_shipping), clr: "var(--t-tx1)" },
             ].map((item) => (
               <div key={item.label}>
                 <div className="text-[12.5px] font-medium text-muted mb-1.5">
@@ -663,6 +718,78 @@ export default function AnalyticsView() {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* ── Row: Cash position + Top suppliers ─────────────────── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+
+        {/* Cash position — live from the Financials engine (always current, not range) */}
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Cash position</h3>
+          <p className="text-[11px] text-muted mb-5">Live from Financials · not affected by the date range</p>
+          {money ? (
+            <div className="space-y-3">
+              <div className="flex items-end justify-between">
+                <span className="text-[12.5px] font-medium text-muted">Free cash</span>
+                <span className="text-[24px] font-bold tabular-nums leading-none"
+                  style={{ color: money.free_cash >= 0 ? CLR.emerald : CLR.rose }}>
+                  {fmtAmount(money.free_cash)}
+                </span>
+              </div>
+              <div className="border-t border-line-2 pt-3 space-y-2">
+                {[
+                  { label: "Bank balance",       v: money.bank_balance,       out: false },
+                  { label: "Credit card owed",   v: money.credit_card_balance, out: true },
+                  { label: "Supplier payables",  v: money.supplier_payables,  out: true },
+                  { label: "Refund liability",   v: money.refund_liability,   out: true },
+                  { label: "Reserves (tax + refund)", v: money.tax_reserve + money.refund_reserve, out: true },
+                  { label: "Loans outstanding",  v: money.loan_outstanding,   out: true },
+                ].filter((r) => r.v > 0.005 || r.label === "Bank balance").map((r) => (
+                  <div key={r.label} className="flex items-center justify-between text-[12.5px]">
+                    <span className="text-ink-2">{r.label}</span>
+                    <span className={`tabular-nums font-medium ${r.out ? "text-danger-ink" : "text-success-ink"}`}>
+                      {r.out ? "−" : ""}{fmtAmount(r.v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : <Blank h={160} text="Connect a bank in Financials to see cash position" />}
+        </div>
+
+        {/* Top suppliers — where the cost of goods goes */}
+        <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
+          <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top suppliers</h3>
+          <p className="text-[11px] text-muted mb-4">By total paid across completed deals · all time</p>
+          {(stats.top_suppliers ?? []).length > 0 ? (
+            <div className="space-y-1">
+              {(() => {
+                const maxPaid = Math.max(...stats.top_suppliers.map((s) => s.total_paid), 1);
+                return stats.top_suppliers.map((s, i) => (
+                  <div key={i} className="relative rounded-xl overflow-hidden">
+                    <div className="absolute inset-y-0 left-0 rounded-xl transition-all duration-700 ease-out"
+                      style={{
+                        width: bars ? `${(s.total_paid / maxPaid) * 100}%` : "0%",
+                        background: "rgb(var(--c-accent) / 0.06)",
+                        transitionDelay: `${200 + i * 70}ms`,
+                      }} />
+                    <div className="relative flex items-center gap-3 px-4 py-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] font-medium text-ink truncate">{s.name}</div>
+                        <div className="text-[11px] text-muted">
+                          {s.deal_count} deal{s.deal_count !== 1 ? "s" : ""}
+                        </div>
+                      </div>
+                      <span className="text-[13px] font-semibold text-ink tabular-nums flex-shrink-0">
+                        {fmtAmount(s.total_paid)}
+                      </span>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          ) : <Blank h={160} text="No supplier payments yet" />}
         </div>
       </div>
 
