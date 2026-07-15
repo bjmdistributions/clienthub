@@ -63,6 +63,7 @@ export default function DealFlowView() {
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
   const [refundsOpen, setRefundsOpen] = useState(false);
+  const [expandedRefund, setExpandedRefund] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -367,30 +368,37 @@ export default function DealFlowView() {
             <div className="border-t border-line divide-y divide-line-2">
               {refundFlows.map((flow) => {
                 const r = refundMap[flow.id];
-                const isCompleted = flow.stage === "complete";
+                const isExp = expandedRefund === flow.id;
                 return (
-                  <button
-                    key={flow.id}
-                    onClick={() => { if (isCompleted) { setDrawerOpen(true); setExpandedDone(flow.id); } }}
-                    className={`w-full flex items-center gap-3 px-5 py-4 text-left transition-colors ${isCompleted ? "hover:bg-surface-2/40 cursor-pointer" : "cursor-default"}`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium text-ink truncate">{flow.client_name || "—"}</div>
-                      <div className="text-[11px] text-muted mt-0.5 truncate">{flow.invoice_number || "—"}</div>
-                    </div>
-                    <div className="flex items-center gap-5 flex-shrink-0">
-                      <Stat label="Owed" value={fmtAmount(r.refund_owed)} />
-                      <Stat label="Refunded" value={fmtAmount(r.refunded)} />
-                      <div className="text-right">
-                        <div className="text-[12px] font-medium text-muted">Remaining</div>
-                        {r.remaining === 0 ? (
-                          <div className="text-[13px] font-bold tabular-nums text-danger-ink">Fully refunded</div>
-                        ) : (
-                          <div className="text-[13px] font-semibold tabular-nums text-danger-ink">{fmtAmount(r.remaining)}</div>
-                        )}
+                  <div key={flow.id}>
+                    <button
+                      onClick={() => setExpandedRefund(isExp ? null : flow.id)}
+                      className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-surface-2/40 cursor-pointer transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] font-medium text-ink truncate">{flow.client_name || "—"}</div>
+                        <div className="text-[11px] text-muted mt-0.5 truncate">{flow.invoice_number || "—"}</div>
                       </div>
-                    </div>
-                  </button>
+                      <div className="flex items-center gap-5 flex-shrink-0">
+                        <Stat label="Owed" value={fmtAmount(r.refund_owed)} />
+                        <Stat label="Refunded" value={fmtAmount(r.refunded)} />
+                        <div className="text-right">
+                          <div className="text-[12px] font-medium text-muted">Remaining</div>
+                          {r.remaining === 0 ? (
+                            <div className="text-[13px] font-bold tabular-nums text-danger-ink">Fully refunded</div>
+                          ) : (
+                            <div className="text-[13px] font-semibold tabular-nums text-danger-ink">{fmtAmount(r.remaining)}</div>
+                          )}
+                        </div>
+                        <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isExp ? "rotate-180" : ""}`} />
+                      </div>
+                    </button>
+                    {isExp && (
+                      <div className="px-5 pb-4 pt-1 bg-surface-2/30">
+                        <RefundWorkspace dealFlowId={flow.id} primary />
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </div>

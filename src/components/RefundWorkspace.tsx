@@ -164,6 +164,12 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
   // As the primary view (refund mode) it's always open — no collapse.
   const open = primary ? true : (openOverride ?? hasActivity);
 
+  // Lock a FULLY-completed refund so it can't be changed by accident; Reopen
+  // re-enables editing. An in-progress refund (pending balance) is never locked.
+  const [reopened, setReopened] = useState(false);
+  const complete = refundOwed > 0 && remaining <= 0.005;
+  const locked = complete && !reopened;
+
   // Actions
   const linkReceived = (t: UnallocatedTxn, amount: number) => run(async () => {
     await api.allocateBankTxn(t.id, dealFlowId, amount, "buyer_payment", "Payment received");
@@ -216,6 +222,18 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
 
       {open && (
         <div className="px-4 pb-4 pt-1 space-y-4 border-t border-line-2">
+          {/* Complete refunds are locked read-only; Reopen to make changes. */}
+          {complete && (
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 border border-line px-3 py-2">
+              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-success-ink">
+                <CheckCircle2 size={13} /> Refund complete{locked ? " · locked" : " · editing"}
+              </span>
+              <button onClick={() => setReopened((v) => !v)}
+                className="text-[11.5px] font-medium text-accent hover:text-accent-hover">
+                {locked ? "Reopen to edit" : "Done editing"}
+              </button>
+            </div>
+          )}
           {/* 1 · Money received */}
           <section>
             <div className="flex items-center justify-between mb-2">
@@ -231,8 +249,8 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
                     {a.counterparty_name || a.description || "Payment"}
                   </span>
                   <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
-                  <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
-                    title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>
+                  {!locked && <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
+                    title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
                 </div>
               ))}
               {receipts.map((r) => (
@@ -241,22 +259,22 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
                   <span className="text-muted text-[11px] w-11 flex-shrink-0">custom</span>
                   <span className="flex-1 min-w-0 truncate text-ink">{r.label || "Received (manual)"}</span>
                   <span className="tabular-nums text-ink">{fmtAmount(r.amount)}</span>
-                  <button onClick={() => run(async () => { await api.deleteDealReceipt(r.id); })} disabled={busy}
-                    title="Remove" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>
+                  {!locked && <button onClick={() => run(async () => { await api.deleteDealReceipt(r.id); })} disabled={busy}
+                    title="Remove" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
                 </div>
               ))}
               {receivedLinked.length === 0 && receipts.length === 0 && (
                 <div className="text-[11.5px] text-muted py-1">No payments recorded yet.</div>
               )}
             </div>
-            <div className="flex items-center gap-4 mt-2">
+            {!locked && <div className="flex items-center gap-4 mt-2">
               <button onClick={() => { setPickReceived((v) => !v); setShowCustomRecv(false); }}
                 className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover"><Link2 size={12} /> Link a payment</button>
               <button onClick={() => { setShowCustomRecv((v) => !v); setPickReceived(false); }}
                 className="flex items-center gap-1 text-[11.5px] text-muted hover:text-ink-2"><Plus size={12} /> Add custom line</button>
-            </div>
-            {pickReceived && <TxnPicker txns={unalloc.money_in} onPick={linkReceived} onClose={() => setPickReceived(false)} />}
-            {showCustomRecv && (
+            </div>}
+            {!locked && pickReceived && <TxnPicker txns={unalloc.money_in} onPick={linkReceived} onClose={() => setPickReceived(false)} />}
+            {!locked && showCustomRecv && (
               <div className="flex items-center gap-2 mt-2">
                 <input value={customRecvAmt} onChange={(e) => setCustomRecvAmt(e.target.value)} placeholder="Amount"
                   className="bg-surface-2 border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums" />
@@ -273,16 +291,20 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
           {/* 2 · Refund owed */}
           <section className="flex items-center gap-2">
             <span className="text-[12.5px] font-medium text-ink-2 flex-1">Refund owed</span>
-            <input
-              type="number" key={refundOwed} defaultValue={refundOwed || ""}
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (isFinite(v)) run(async () => { await api.setRefundOwed(dealFlowId, v); }); }}
-              placeholder="0.00"
-              className="bg-surface-2 border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right"
-            />
-            <button onClick={() => run(async () => { await api.setRefundOwed(dealFlowId, totalReceived); })} disabled={busy || totalReceived <= 0}
-              className="text-[11px] text-muted hover:text-ink-2 px-2 h-8 border border-line rounded-lg whitespace-nowrap disabled:opacity-40 transition-colors">
-              Full ({fmtAmount(totalReceived)})
-            </button>
+            {locked ? (
+              <span className="tabular-nums text-[13px] font-semibold text-ink">{fmtAmount(refundOwed)}</span>
+            ) : (<>
+              <input
+                type="number" key={refundOwed} defaultValue={refundOwed || ""}
+                onBlur={(e) => { const v = parseFloat(e.target.value); if (isFinite(v)) run(async () => { await api.setRefundOwed(dealFlowId, v); }); }}
+                placeholder="0.00"
+                className="bg-surface-2 border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right"
+              />
+              <button onClick={() => run(async () => { await api.setRefundOwed(dealFlowId, totalReceived); })} disabled={busy || totalReceived <= 0}
+                className="text-[11px] text-muted hover:text-ink-2 px-2 h-8 border border-line rounded-lg whitespace-nowrap disabled:opacity-40 transition-colors">
+                Full ({fmtAmount(totalReceived)})
+              </button>
+            </>)}
           </section>
 
           <div className="border-t border-line-2" />
@@ -306,20 +328,20 @@ export default function RefundWorkspace({ dealFlowId, primary = false }: { dealF
                     {r.reason || (r.source === "supplier" ? "Supplier reversal" : "Refund")}
                   </span>
                   <span className="tabular-nums text-ink">{fmtAmount(r.amount)}</span>
-                  <button onClick={() => run(async () => { await api.deleteRefund(r.id); })} disabled={busy}
-                    title="Remove refund" className="text-faint hover:text-danger-ink transition-colors"><Trash2 size={12} /></button>
+                  {!locked && <button onClick={() => run(async () => { await api.deleteRefund(r.id); })} disabled={busy}
+                    title="Remove refund" className="text-faint hover:text-danger-ink transition-colors"><Trash2 size={12} /></button>}
                 </div>
               ))}
               {refunds.length === 0 && <div className="text-[11.5px] text-muted py-1">No refunds recorded yet.</div>}
             </div>
-            <div className="flex items-center gap-4 mt-2">
+            {!locked && <div className="flex items-center gap-4 mt-2">
               <button onClick={() => { setPickRefund((v) => !v); setShowManualRefund(false); }}
                 className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover"><Link2 size={12} /> Link a refund payment</button>
               <button onClick={() => { setShowManualRefund((v) => !v); setPickRefund(false); }}
                 className="flex items-center gap-1 text-[11.5px] text-muted hover:text-ink-2"><Plus size={12} /> Add custom amount</button>
-            </div>
-            {pickRefund && <TxnPicker txns={unalloc.money_out} onPick={linkRefund} onClose={() => setPickRefund(false)} />}
-            {showManualRefund && (
+            </div>}
+            {!locked && pickRefund && <TxnPicker txns={unalloc.money_out} onPick={linkRefund} onClose={() => setPickRefund(false)} />}
+            {!locked && showManualRefund && (
               <div className="space-y-2 mt-2 bg-surface-2 rounded-lg p-2.5">
                 <div className="flex items-center gap-2">
                   <input value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder="Refund amount"
