@@ -59,7 +59,7 @@ export default function DealFlowView() {
   const [search,       setSearch]       = useState("");
   const [drawerOpen,   setDrawerOpen]   = useState(false);
   const [expandedDone, setExpandedDone] = useState<string | null>(null);
-  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean }>>({});
+  const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number }>>({});
   const [refundsOpen, setRefundsOpen] = useState(false);
@@ -288,6 +288,10 @@ export default function DealFlowView() {
                             {recon[flow.id]?.fully_reconciled ? (
                               <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-success-ink flex-shrink-0">
                                 <CheckCircle2 size={11} /> Reconciled
+                              </span>
+                            ) : recon[flow.id] && !recon[flow.id].has_payment ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-danger-ink flex-shrink-0">
+                                <AlertTriangle size={10} /> No payments linked
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 text-[10px] font-medium text-warning-ink flex-shrink-0">

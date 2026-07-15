@@ -9992,6 +9992,7 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
             "payment_received_paired": pr,
             "supplier_paid_paired": sp,
             "fully_reconciled": pr && sp,
+            "has_payment": buyer_paired > 0.01,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())

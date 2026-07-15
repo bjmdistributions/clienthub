@@ -16,8 +16,17 @@ const fieldCls =
 // Shared by DealFlowView's completed list and the supplier deal history.
 export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow; onReload: () => void }) {
   const [saving, setSaving] = useState(false);
+  const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
+  useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id]);
 
-  const margin = flow.gross_revenue > 0 ? (flow.net_profit / flow.gross_revenue) * 100 : 0;
+  // Once bank payments are paired, the P&L reflects what actually moved (from the
+  // linked payments), not the deal's projected figures. Nothing linked → projected.
+  const paired = recon ? recon.pieces.buyer_paired + recon.pieces.supplier_paired + recon.pieces.fee_paired : 0;
+  const fromPayments = paired > 0.005;
+  const revenue = fromPayments ? recon!.pieces.buyer_paired : flow.gross_revenue;
+  const costs   = fromPayments ? recon!.pieces.supplier_paired + recon!.pieces.fee_paired + recon!.pieces.refund_total : flow.total_cost;
+  const profit  = fromPayments ? recon!.actual_profit : flow.net_profit;
+  const margin  = revenue > 0 ? (profit / revenue) * 100 : 0;
   const payments = flow.supplier_payments || [];
   const supplierLabel = primarySupplierLabel(flow.supplier_payments);
 
@@ -157,27 +166,32 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
         </div>
       </div>
 
-      {/* P&L summary */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        {[
-          { label: "Revenue",                                    value: fmtAmount(flow.gross_revenue), clr: "text-ink"   },
-          { label: "Total costs",                                value: fmtAmount(flow.total_cost),    clr: "text-ink"   },
-          {
-            label: flow.net_profit >= 0 ? "Profit" : "Loss",
-            value: fmtAmount(flow.net_profit),
-            clr:   flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink",
-          },
-          {
-            label: "Margin",
-            value: `${margin.toFixed(1)}%`,
-            clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
-          },
-        ].map((item) => (
-          <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
-            <div className="text-[12px] font-medium text-muted">{item.label}</div>
-            <div className={`text-[18px] font-bold tabular-nums mt-1 ${item.clr}`}>{item.value}</div>
-          </div>
-        ))}
+      {/* P&L summary — reflects linked payments once any are paired */}
+      <div>
+        <div className="text-[11px] text-muted mb-2">
+          {fromPayments ? "Profit & loss — from linked payments" : "Profit & loss — projected (no payments linked yet)"}
+        </div>
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          {[
+            { label: "Revenue",     value: fmtAmount(revenue), clr: "text-ink" },
+            { label: "Total costs", value: fmtAmount(costs),   clr: "text-ink" },
+            {
+              label: profit >= 0 ? "Profit" : "Loss",
+              value: fmtAmount(profit),
+              clr:   profit >= 0 ? "text-success-ink" : "text-danger-ink",
+            },
+            {
+              label: "Margin",
+              value: `${margin.toFixed(1)}%`,
+              clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
+            },
+          ].map((item) => (
+            <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">
+              <div className="text-[12px] font-medium text-muted">{item.label}</div>
+              <div className={`text-[18px] font-bold tabular-nums mt-1 ${item.clr}`}>{item.value}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Products sold — what was on the invoice */}

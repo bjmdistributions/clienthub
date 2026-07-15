@@ -2114,7 +2114,7 @@ export const api = {
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>
-    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean }[]>("reconciliation_status_all"),
+    invoke<{ deal_flow_id: string; payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean }[]>("reconciliation_status_all"),
   refundStatusAll: () =>
     invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
