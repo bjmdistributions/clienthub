@@ -617,53 +617,26 @@ function DealFlowCard({
             </div>
           )}
 
-          {/* Deal-flow steps — hidden in refund mode (irrelevant during a refund) */}
+          {/* ── New 4-step progress bar ── */}
           {!refundView && (
-          <div className="px-5 pt-4 pb-3 border-t border-line">
-            <div className="flex items-start">
-              {STAGES.map((key, i) => {
-                const isDone    = i < currentSi;
-                const isCurrent = i === currentSi;
-                const isFuture  = i > currentSi + 1;
-                const isActive  = panel === key;
-                const clickable = !isFuture;
-
+          <div className="px-5 pt-5 pb-2 border-t border-line">
+            <div className="flex items-center">
+              {(["cost","payment","link","finalize"] as const).map((key, i) => {
+                const done = i < currentSi;
+                const cur  = i === currentSi;
+                const future = i > currentSi;
+                const labels = ["Cost & supplier","Payment received","Link financials","Finalize"];
                 return (
-                  <div key={key} className="flex items-start flex-1 last:flex-none last:w-auto">
-                    <div className="flex flex-col items-center" style={{ minWidth: 0 }}>
-                      <button
-                        onClick={() => clickNode(key)}
-                        disabled={!clickable}
-                        title={NODE_LABELS[key]}
-                        className={[
-                          "w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-bold transition-all duration-200",
-                          isDone    ? "bg-accent text-on-accent" :
-                          isCurrent ? "bg-surface border-2 border-accent text-accent shadow-[0_0_0_4px_var(--accent-tint)]" :
-                          i === currentSi + 1
-                                    ? "bg-surface border-2 border-line-3 text-muted hover:border-accent hover:text-accent"
-                                    : "bg-surface-3 border-2 border-line text-faint cursor-default",
-                          isActive && clickable ? "ring-2 ring-accent ring-offset-2" : "",
-                        ].join(" ")}
-                      >
-                        {isDone ? <Check size={14} strokeWidth={2.5} /> : <span>{i + 1}</span>}
-                      </button>
-                      <span
-                        className={[
-                          "text-[10px] font-medium mt-1.5 text-center leading-tight",
-                          isFuture  ? "text-faint"  :
-                          isCurrent ? "text-accent" : "text-muted",
-                        ].join(" ")}
-                        style={{ maxWidth: 68 }}
-                      >
-                        {NODE_LABELS[key]}
+                  <div key={key} className="flex items-center flex-1 last:flex-none last:w-auto">
+                    <button onClick={() => { if (!future) clickNode(STAGES[i]); }} disabled={future}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${cur ? "bg-accent/10 ring-1 ring-accent/20" : done ? "text-muted" : "text-faint cursor-default"}`}>
+                      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold transition-all ${
+                        done ? "bg-accent text-on-accent" : cur ? "bg-accent text-on-accent ring-4 ring-accent/20" : "bg-surface-3 text-faint"}`}>
+                        {done ? <Check size={14} strokeWidth={2.5} /> : i+1}
                       </span>
-                    </div>
-                    {i < STAGES.length - 1 && (
-                      <div className={[
-                        "h-[2px] flex-1 mx-2 mt-[18px] rounded-full",
-                        i < currentSi ? "bg-accent" : "bg-surface-3",
-                      ].join(" ")} />
-                    )}
+                      <span className="text-[11px] font-semibold text-left leading-tight hidden sm:block">{labels[i]}</span>
+                    </button>
+                    {i < 3 && <div className={`flex-1 h-[2px] mx-1 rounded-full ${i < currentSi ? "bg-accent" : "bg-surface-3"}`} />}
                   </div>
                 );
               })}
@@ -671,7 +644,7 @@ function DealFlowCard({
           </div>
           )}
 
-          {/* Invoice breakdown — what was bought, exactly as on the invoice */}
+          {/* Invoice breakdown quick view */}
           {invItems.length > 0 && (
             <div className="px-5 pb-4 border-t border-line">
               <div className="text-[12.5px] font-medium text-muted mt-3 mb-2">
@@ -736,27 +709,22 @@ function DealFlowCard({
             </div>
 
             {refundView ? (
-              /* Refund mode: the refund workspace IS the view; deal-flow panels hidden. */
               <RefundWorkspace dealFlowId={flow.id} primary onChange={onReload} />
             ) : (
               <>
                 {panel === "invoiced"         && <PanelInvoiced     flow={flow} />}
                 {panel === "payment_received" && <PanelPayment      flow={flow} onReload={onReload} />}
                 {panel === "supplier_paid"    && <PanelSupplierPaid flow={flow} onReload={onReload} onGoToComplete={() => setPanel("complete")} />}
-                {/* Pairing the real bank money is the final step. On the Complete panel
-                    it leads, with the gated completion action directly below it; on the
-                    earlier panels it sits underneath so money can be paired as it lands. */}
-                {panel === "complete" ? (
+                {panel === "complete" && (
                   <>
                     <ReconciliationPanel flow={flow} />
-                    <div className="mt-3"><PanelComplete flow={flow} onReload={onReload} /></div>
+                    <PanelComplete flow={flow} onReload={onReload} />
                   </>
-                ) : (
-                  si(flow.stage) >= si("payment_received") && (
-                    <div className="mt-3"><ReconciliationPanel flow={flow} /></div>
-                  )
                 )}
-                <div className="mt-3"><RefundWorkspace dealFlowId={flow.id} onChange={onReload} /></div>
+                {panel !== "complete" && si(flow.stage) >= si("payment_received") && (
+                  <ReconciliationPanel flow={flow} />
+                )}
+                <RefundWorkspace dealFlowId={flow.id} onChange={onReload} />
               </>
             )}
           </div>

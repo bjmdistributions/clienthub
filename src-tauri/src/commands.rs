@@ -3744,6 +3744,11 @@ pub async fn mark_payment_received(id: String, input: PaymentReceivedInput) -> R
     let df = read_df(&id)?;
     if df.stage != "invoiced" && df.stage != "payment_received" { return Err("Can only mark payment received from 'invoiced' or 'payment_received' stage".into()); }
 
+    let has_supplier = df.supplier_payments.iter().any(|p| p.amount > 0.0 || p.category != Some("wire_fee".into()));
+    if !has_supplier {
+        return Err("Please add at least one supplier cost before marking payment received".into());
+    }
+
     let now = Utc::now().to_rfc3339();
     let received_at = input.received_at.unwrap_or_else(|| now.clone());
 
@@ -4305,21 +4310,21 @@ pub async fn recalc_deal_from_bank(id: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     let df = read_df(&id)?;
-    if df.stage != "complete" { return Ok(()); } // Already not complete — nothing to undo
+    if df.stage != "complete" { return Ok(()); }
 
     let now = Utc::now().to_rfc3339();
     let mut cols = Map::new();
-    cols.insert("stage".into(), Value::String("supplier_paid".into()));
+    cols.insert("stage".into(), Value::String("invoiced".into()));
     cols.insert("completed_at".into(), Value::Null);
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
 
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute("UPDATE deal_flows SET stage='supplier_paid', completed_at=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='invoiced', completed_at=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     }
 
-    sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
+    sync_invoice_stage(&df.invoice_id, "invoiced")?;
 
     // Critical: clear is_complete and profit data so the invoice reappears in Deal Flow
     {
@@ -9886,6 +9891,12 @@ pub async fn allocate_bank_txn(
          VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
         rusqlite::params![id, bank_txn_id, deal_flow_id, amt, role, note, now],
     ).map_err(|e| e.to_string())?;
+    drop(conn); // release before recalc acquires its own connection
+
+    if role == "supplier_payment" {
+        let _ = recalc_deal_from_bank(deal_flow_id.clone()).await;
+    }
+
     crate::netsync::push_now(); // reach the other device promptly, not on the next poll
     Ok(id)
 }
