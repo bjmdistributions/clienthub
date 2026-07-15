@@ -3286,133 +3286,6 @@ pub async fn update_deal_stage(id: String, stage: String, lost_reason: Option<St
     Ok(())
 }
 
-#[derive(Serialize, Debug, Clone)]
-pub struct PipelineAnalytics {
-    pub funnel_counts: std::collections::HashMap<String, u32>,
-    pub funnel_values: std::collections::HashMap<String, f64>,
-    pub avg_days_per_stage: std::collections::HashMap<String, f64>,
-    pub conversion_rates: std::collections::HashMap<String, f64>,
-    pub win_rate_overall: f64,
-    pub win_rate_last_30d: f64,
-    pub win_rate_last_90d: f64,
-    pub avg_deal_size_won: f64,
-    pub avg_deal_size_lost: f64,
-    pub avg_cycle_time_days: f64,
-    pub stuck_deals: Vec<StuckDeal>,
-    pub top_lost_reasons: Vec<(String, u32)>,
-}
-
-#[tauri::command]
-pub async fn pipeline_analytics(timeframe_days: Option<u32>) -> Result<PipelineAnalytics, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let days = timeframe_days.unwrap_or(0);
-    let date_filter = if days > 0 {
-        format!(" AND d.created_at >= date('now','-{} days')", days)
-    } else { String::new() };
-
-    let mut funnel_counts = std::collections::HashMap::new();
-    let mut funnel_values = std::collections::HashMap::new();
-    for stage in &["lead","quoted","negotiating","won","lost"] {
-        let count: u32 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM deals WHERE stage=?1{}", date_filter),
-            [*stage], |r| r.get::<_,i64>(0)
-        ).unwrap_or(0) as u32;
-        let value: f64 = conn.query_row(
-            &format!("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage=?1{}", date_filter),
-            [*stage], |r| r.get(0)
-        ).unwrap_or(0.0);
-        funnel_counts.insert(stage.to_string(), count);
-        funnel_values.insert(stage.to_string(), value);
-    }
-
-    let mut avg_days_per_stage = std::collections::HashMap::new();
-    for stage in &["lead","quoted","negotiating"] {
-        let next = match *stage { "lead" => "quoted", "quoted" => "negotiating", "negotiating" => "won", _ => "won" };
-        let avg_days: f64 = conn.query_row(
-            "SELECT COALESCE(AVG(julianday(h2.changed_at) - julianday(h1.changed_at)),0)
-             FROM deal_stage_history h1 JOIN deal_stage_history h2 ON h1.deal_id=h2.deal_id
-             WHERE h1.to_stage=?1 AND h2.to_stage=?2 AND h1.deal_id = h2.deal_id",
-            rusqlite::params![*stage, next], |r| r.get(0)
-        ).unwrap_or(0.0);
-        avg_days_per_stage.insert(stage.to_string(), avg_days.max(0.0));
-    }
-
-    let mut conversion_rates = std::collections::HashMap::new();
-    let stages_pairs = [("lead","quoted"),("quoted","negotiating"),("negotiating","won")];
-    let dt_filter_cr = if days > 0 { format!(" AND created_at >= date('now','-{} days')", days) } else { String::new() };
-    for (from, to) in &stages_pairs {
-        let from_cnt: f64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM deals WHERE (stage=?1 OR stage=?2 OR stage='won' OR stage='lost'){}", dt_filter_cr),
-            rusqlite::params![from, to], |r| r.get::<_,i64>(0)
-        ).unwrap_or(0) as f64;
-        let to_cnt: f64 = funnel_counts.get(to.to_owned()).copied().unwrap_or(0) as f64 + funnel_counts.get("won").copied().unwrap_or(0) as f64;
-        let rate = if from_cnt > 0.0 { to_cnt / from_cnt * 100.0 } else { 0.0 };
-        conversion_rates.insert(format!("{}_to_{}", from, to), rate);
-    }
-
-    let total_deals: f64 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE (stage='won' OR stage='lost')", [], |r| r.get::<_,i64>(0)
-    ).unwrap_or(0) as f64;
-    let won_deals: f64 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE stage='won'", [], |r| r.get::<_,i64>(0)
-    ).unwrap_or(0) as f64;
-    let win_rate_overall = if total_deals > 0.0 { (won_deals / total_deals) * 100.0 } else { 0.0 };
-
-    let won_30d: f64 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE stage='won' AND won_at >= date('now','-30 days')", [], |r| r.get::<_,i64>(0)
-    ).unwrap_or(0) as f64;
-    let total_30d: f64 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE (stage='won' OR stage='lost') AND (won_at >= date('now','-30 days') OR lost_at >= date('now','-30 days'))", [], |r| r.get::<_,i64>(0)
-    ).unwrap_or(0) as f64;
-    let win_rate_last_30d = if total_30d > 0.0 { (won_30d / total_30d) * 100.0 } else { 0.0 };
-
-    let won_90d: f64 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE stage='won' AND won_at >= date('now','-90 days')", [], |r| r.get::<_,i64>(0)
-    ).unwrap_or(0) as f64;
-    let total_90d: f64 = conn.query_row(
-        "SELECT COUNT(*) FROM deals WHERE (stage='won' OR stage='lost') AND (won_at >= date('now','-90 days') OR lost_at >= date('now','-90 days'))", [], |r| r.get::<_,i64>(0)
-    ).unwrap_or(0) as f64;
-    let win_rate_last_90d = if total_90d > 0.0 { (won_90d / total_90d) * 100.0 } else { 0.0 };
-
-    let avg_deal_size_won: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(asking_price),0) FROM deals WHERE stage='won'", [], |r| r.get(0)
-    ).unwrap_or(0.0);
-    let avg_deal_size_lost: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(asking_price),0) FROM deals WHERE stage='lost'", [], |r| r.get(0)
-    ).unwrap_or(0.0);
-
-    let avg_cycle_time_days: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(julianday(won_at) - julianday(created_at)),0) FROM deals WHERE stage='won' AND won_at IS NOT NULL",
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
-
-    let stuck_deals: Vec<StuckDeal> = {
-        let mut stmt = conn.prepare(
-            "SELECT d.id, d.title, d.stage, CAST(julianday('now') - julianday(d.updated_at) AS INTEGER) as days
-             FROM deals d WHERE d.stage NOT IN ('won','lost') ORDER BY days DESC LIMIT 10"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(StuckDeal {
-            deal_id: r.get(0)?, title: r.get(1)?, stage: r.get(2)?, days_in_stage: r.get::<_,i64>(3).unwrap_or(0).max(0) as u32,
-        })).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
-
-    let top_lost_reasons: Vec<(String, u32)> = {
-        let mut stmt = conn.prepare(
-            "SELECT lost_reason, COUNT(*) FROM deals WHERE stage='lost' AND lost_reason IS NOT NULL GROUP BY lost_reason ORDER BY COUNT(*) DESC LIMIT 5"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_,i64>(1)? as u32)))
-            .map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
-
-    Ok(PipelineAnalytics {
-        funnel_counts, funnel_values, avg_days_per_stage, conversion_rates,
-        win_rate_overall, win_rate_last_30d, win_rate_last_90d,
-        avg_deal_size_won, avg_deal_size_lost, avg_cycle_time_days,
-        stuck_deals, top_lost_reasons,
-    })
-}
 
 #[tauri::command]
 pub async fn delete_deal(id: String) -> Result<(), String> {
@@ -8952,14 +8825,6 @@ pub struct InvoiceHighlight {
     pub total: f64,
 }
 
-#[derive(Serialize, Debug, Clone)]
-pub struct StuckDeal {
-    pub deal_id: String,
-    pub title: String,
-    pub stage: String,
-    pub days_in_stage: u32,
-}
-
 /// One configured payout recipient's cut across the brief's periods. The whole
 /// list is empty when the org has not set up a payout split, so the UI shows no
 /// breakdown (never an assumed split or partner names).
@@ -8984,19 +8849,15 @@ pub struct WeeklyBrief {
     pub profit_last_week: f64,
     pub profit_change_pct: f64,
     pub avg_margin_this_week: f64,
-    pub deals_by_stage: Vec<Value>,
-    pub pipeline_value: f64,
     pub deals_closed_this_week: u32,
     pub deals_lost_this_week: u32,
     pub win_rate_this_week: f64,
-    pub at_risk_customers: Vec<BuyerTier>,
     pub overdue_invoices_count: u32,
     pub overdue_invoices_value: f64,
     pub follow_ups_due: u32,
     pub best_margin_deal: Option<DealHighlight>,
     pub worst_margin_deal: Option<DealHighlight>,
     pub biggest_invoice: Option<InvoiceHighlight>,
-    pub stuck_deals: Vec<StuckDeal>,
     pub new_clients_this_week: u32,
     pub interactions_this_week: u32,
     pub completed_deals_this_week: u32,
@@ -9150,19 +9011,6 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         all_time: alloc_all.get(i).map(|x| x.2).unwrap_or(0.0),
     }).collect();
 
-    let pipeline_value: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost')", [], |r| r.get(0)
-    ).unwrap_or(0.0);
-
-    let deals_by_stage: Vec<Value> = {
-        let mut stmt = conn.prepare(
-            "SELECT stage, COUNT(*), COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost') GROUP BY stage"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(json!({ "stage": r.get::<_,String>(0)?, "count": r.get::<_,i64>(1)?, "value": r.get::<_,f64>(2)? })))
-            .map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
-
     // Closed/lost come from the REAL pipeline (deal_flows + voided invoices), not
     // the standalone deals CRM table — that table's won_at/lost_at are never set by
     // the invoice→deal-flow workflow, which left these stats permanently at zero.
@@ -9183,9 +9031,6 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         [&week_start, &end_excl], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
     let win_rate = if deals_closed + deals_lost > 0 { (deals_closed as f64 / (deals_closed + deals_lost) as f64) * 100.0 } else { 0.0 };
-
-    let at_risk_customers: Vec<BuyerTier> = buyer_tiers().await?.into_iter()
-        .filter(|h| h.tier == "C" || h.tier == "Prospect").take(5).collect();
 
     let overdue_invoices_count: u32 = conn.query_row(
         "SELECT COUNT(*) FROM invoices WHERE status='sent' AND due_date < date('now')", [], |r| r.get::<_,i64>(0)
@@ -9227,17 +9072,6 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         stmt.query_row([&week_start, &end_excl], |r| Ok(InvoiceHighlight {
             invoice_id: r.get(0)?, client_name: r.get(1)?, number: r.get(2)?, total: r.get(3)?,
         })).ok()
-    };
-
-    let stuck_deals: Vec<StuckDeal> = {
-        let mut stmt = conn.prepare(
-            "SELECT d.id, d.title, d.stage, CAST(julianday('now') - julianday(d.updated_at) AS INTEGER) as days
-             FROM deals d WHERE d.stage NOT IN ('won','lost') ORDER BY days DESC LIMIT 5"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(StuckDeal {
-            deal_id: r.get(0)?, title: r.get(1)?, stage: r.get(2)?, days_in_stage: r.get::<_,i64>(3).unwrap_or(0).max(0) as u32,
-        })).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
     };
 
     let new_clients_this_week: u32 = conn.query_row(
@@ -9296,19 +9130,15 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         profit_last_week,
         profit_change_pct: if profit_last_week > 0.0 { ((profit_this_week - profit_last_week) / profit_last_week) * 100.0 } else { 0.0 },
         avg_margin_this_week,
-        deals_by_stage,
-        pipeline_value,
         deals_closed_this_week: deals_closed,
         deals_lost_this_week: deals_lost,
         win_rate_this_week: win_rate,
-        at_risk_customers,
         overdue_invoices_count,
         overdue_invoices_value,
         follow_ups_due,
         best_margin_deal,
         worst_margin_deal,
         biggest_invoice,
-        stuck_deals,
         new_clients_this_week,
         interactions_this_week,
         completed_deals_this_week: df_this_week.count,

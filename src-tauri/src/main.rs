@@ -642,7 +642,6 @@ fn main() {
             buyer_tiers,
             get_buyer_tier,
             generate_weekly_brief,
-            pipeline_analytics,
             // Geocoding
             geocode_client,
             geocode_all_clients,

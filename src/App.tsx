@@ -40,7 +40,6 @@ import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
 import SettingsView from "./components/SettingsView";
 import DashboardView from "./components/DashboardView";
-import DealsView from "./components/DealsView";
 import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
 import InventoryView from "./components/InventoryView";

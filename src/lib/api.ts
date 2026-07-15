@@ -924,13 +924,6 @@ export interface InvoiceHighlight {
   total: number;
 }
 
-export interface StuckDeal {
-  deal_id: string;
-  title: string;
-  stage: string;
-  days_in_stage: number;
-}
-
 export interface WeeklyBrief {
   generated_at: string;
   week_start: string;
@@ -942,19 +935,15 @@ export interface WeeklyBrief {
   profit_last_week: number;
   profit_change_pct: number;
   avg_margin_this_week: number;
-  deals_by_stage: { stage: string; count: number; value: number }[];
-  pipeline_value: number;
   deals_closed_this_week: number;
   deals_lost_this_week: number;
   win_rate_this_week: number;
-  at_risk_customers: BuyerTier[];
   overdue_invoices_count: number;
   overdue_invoices_value: number;
   follow_ups_due: number;
   best_margin_deal: DealHighlight | null;
   worst_margin_deal: DealHighlight | null;
   biggest_invoice: InvoiceHighlight | null;
-  stuck_deals: StuckDeal[];
   new_clients_this_week: number;
   interactions_this_week: number;
   completed_deals_this_week: number;
@@ -981,20 +970,6 @@ export interface WeeklyBrief {
   payout_totals: PayoutTotal[];
 }
 
-export interface PipelineAnalytics {
-  funnel_counts: Record<string, number>;
-  funnel_values: Record<string, number>;
-  avg_days_per_stage: Record<string, number>;
-  conversion_rates: Record<string, number>;
-  win_rate_overall: number;
-  win_rate_last_30d: number;
-  win_rate_last_90d: number;
-  avg_deal_size_won: number;
-  avg_deal_size_lost: number;
-  avg_cycle_time_days: number;
-  stuck_deals: StuckDeal[];
-  top_lost_reasons: [string, number][];
-}
 
 export interface DuplicateGroup {
   key: string;
@@ -1921,7 +1896,6 @@ export const api = {
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),
   generateWeeklyBrief: (forDate?: string | null, repName?: string | null) => invoke<WeeklyBrief>("generate_weekly_brief", { forDate: forDate ?? null, repName }),
-  pipelineAnalytics: (timeframeDays?: number) => invoke<PipelineAnalytics>("pipeline_analytics", { timeframeDays }),
   detectDuplicateClients: () => invoke<DuplicateGroup[]>("detect_duplicate_clients"),
   cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),
 
