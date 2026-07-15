@@ -162,10 +162,14 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     setInteractions(await api.listInteractions(clientId));
     setInvoices(await api.listInvoicesForClient(clientId));
     api.getBuyerTier(clientId).then(setTier).catch(() => {});
-    // Sum net profit across this client's completed deal flows.
+    // Sum net profit across this client's completed deal flows, deduped by invoice
+    // so a duplicate flow row can't double-count (belt-and-suspenders on top of the
+    // ghost cleanup that archives duplicates).
     api.listDealFlows().then((flows) => {
+      const seen = new Set<string>();
       const p = flows
         .filter((f) => f.client_id === clientId && f.stage === "complete")
+        .filter((f) => (seen.has(f.invoice_id) ? false : (seen.add(f.invoice_id), true)))
         .reduce((s, f) => s + (f.net_profit || 0), 0);
       setClientProfit(p);
     }).catch(() => setClientProfit(null));
@@ -197,13 +201,19 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
       </div>
     );
 
-  const outstanding = invoices
+  // Fell-through (voided) invoices are excluded from the money tiles — a voided
+  // sent invoice isn't really outstanding, and a voided paid one isn't revenue.
+  const live = invoices.filter((i) => !i.voided);
+  const outstanding = live
     .filter((i) => i.status === "sent" || i.status === "overdue")
     .reduce((s, i) => s + i.total, 0);
-  const paid = invoices
+  const paid = live
     .filter((i) => i.status === "paid")
     .reduce((s, i) => s + i.total, 0);
-  const revenue = client.total_revenue || paid;
+  // total_revenue is the authoritative refund-netted figure from the backend.
+  const revenue = client.total_revenue ?? paid;
+  // Invoices sent = actually sent (sent/overdue/paid), voided excluded — always tracked.
+  const sentCount = live.filter((i) => ["sent", "overdue", "paid"].includes(i.status)).length;
 
   // Sales rep — must be shown. Falls back to company name, then "Unassigned".
   const meta = client.metadata || {};
@@ -363,7 +373,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
           <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
           <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
-          <StatTile label="Invoices sent" value={String(client.invoice_count)} tone="ink" />
+          <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
         </div>
 
         {credit && (

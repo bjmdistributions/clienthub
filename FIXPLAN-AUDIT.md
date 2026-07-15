@@ -42,8 +42,16 @@ bottom of this file. Follow CLAUDE.md: surgical changes, simplicity first, verif
 
 ## HANDOFF — remaining work, in priority order
 
-### Phase 1 — Client tier stats correctness (owner-reported)
-All in `src-tauri/src/commands.rs` unless noted. The audit's exact fixes:
+### Phase 1 — Client tier stats correctness (owner-reported) — DONE v0.15.73
+Shipped: extracted one shared `tier_for()` + `refunded_by_client()` + `CLIENT_REFUNDED_SQL`
+(no more duplicated thresholds). buyer_tiers + build_client_tier_map net refunds out of
+`actual_paid`/`net_paid`, count invoices_sent as sent/overdue/paid, and gate the margin query
+(archived/voided/archived-invoice excluded). tier_rank fixed to codes (tier_drop + tier_history
+now fire). list_clients/get_client total_revenue = MAX(0, paid − refunds). ClientDetailView
+outstanding/paid exclude voided, revenue trusts total_revenue, profit deduped by invoice,
+"Invoices sent" = real sent count. TiersView colSpan 9. Verified on live DB: Kameron S→A
+(refund-netted), Tyler Cobb no phantom revenue, overdue counts as sent.
+Original per-item detail (kept for reference):
 
 1.1 **Refund-aware tiers (CRITICAL)** — `buyer_tiers()` (~8692) and `build_client_tier_map`
     (~1646) compute `actual_paid` from paid invoices with zero refund awareness; a fully

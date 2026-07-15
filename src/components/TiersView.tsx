@@ -175,7 +175,7 @@ export default function TiersView() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-5 py-16 text-center">
+                <td colSpan={9} className="px-5 py-16 text-center">
                   <Layers size={24} className="text-faint mx-auto mb-2" />
                   <p className="text-[13px] text-muted">No clients in this tier</p>
                 </td>

@@ -155,14 +155,14 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                     NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                                COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
-                    COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
+                    MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active'),
                     COALESCE(c.high_value,0),
                     COALESCE(c.exclusive,0),
                     ({fc}) AS first_contact
              FROM clients c
-             ORDER BY c.name", fc = FIRST_CONTACT_SQL);
+             ORDER BY c.name", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL);
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| e.to_string())?;
@@ -226,14 +226,14 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
+                MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 COALESCE(c.high_value,0),
                 COALESCE(c.exclusive,0),
                 ({fc}) AS first_contact
          FROM clients c
-         WHERE c.id=?1", fc = FIRST_CONTACT_SQL);
+         WHERE c.id=?1", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL);
     let res: rusqlite::Result<Client> = conn.query_row(
         &sql,
         [&id],
@@ -1643,15 +1643,60 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     }
 }
 
+/// The ONE tier-threshold definition, shared by `buyer_tiers()` (display) and
+/// `build_client_tier_map()` (filter + automation) so the two can never drift.
+/// `net_paid` = paid invoices minus refunds; `invoices_sent` counts sent/overdue/paid.
+fn tier_for(effective_annual: f64, net_paid: f64, invoices_sent: i64, quotes_sent: i64) -> &'static str {
+    if effective_annual > 100000.0 || net_paid > 50000.0 { "S" }
+    else if effective_annual > 50000.0 || net_paid > 20000.0 || (net_paid > 5000.0 && invoices_sent >= 3) { "A" }
+    else if effective_annual > 10000.0 || net_paid > 5000.0 || (net_paid > 1000.0 && invoices_sent >= 1) { "B" }
+    // Quoting a client is active engagement: it lifts a bare prospect to C.
+    else if effective_annual > 0.0 || net_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
+    else { "Prospect" }
+}
+
+/// Total refunded per client, via deal_flow→invoice. Counts non-bank-linked
+/// `refunds` rows + every `refund_out` allocation (the `refund_status_all` rule) so
+/// a bank-linked refund — which lives in BOTH tables — is counted exactly once.
+/// Used to net refunds out of tier revenue so a fully refunded client can't hold a
+/// tier or show phantom revenue.
+fn refunded_by_client(conn: &rusqlite::Connection) -> std::collections::HashMap<String, f64> {
+    let mut m = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT iv.client_id, COALESCE(SUM(x.amt),0) FROM ( \
+            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+            UNION ALL \
+            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+         ) x JOIN deal_flows df ON df.id=x.dfid JOIN invoices iv ON iv.id=df.invoice_id \
+         GROUP BY iv.client_id"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))) {
+            for row in rows.flatten() { m.insert(row.0, row.1); }
+        }
+    }
+    m
+}
+
+/// Correlated SQL fragment (returns a client's refunded total) for netting refunds
+/// out of `total_revenue` in list_clients/get_client. `c.id` must be in scope.
+const CLIENT_REFUNDED_SQL: &str =
+    "COALESCE((SELECT SUM(x.amt) FROM ( \
+        SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+        UNION ALL \
+        SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+     ) x JOIN deal_flows df ON df.id=x.dfid JOIN invoices iv ON iv.id=df.invoice_id \
+     WHERE iv.client_id=c.id),0)";
+
 fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, String>, String> {
     let mut map = std::collections::HashMap::new();
     let mut stmt = conn.prepare(
         "SELECT client_id, COALESCE(SUM(CASE WHEN status='paid' THEN total ELSE 0 END),0),
-                COUNT(CASE WHEN status IN ('sent','paid') THEN 1 END)
+                COUNT(CASE WHEN status IN ('sent','overdue','paid') THEN 1 END)
          FROM invoices WHERE COALESCE(archived,0)=0 AND COALESCE(voided,0)=0 GROUP BY client_id"
     ).map_err(|e| e.to_string())?;
     let invoice_data: Vec<(String, f64, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,i64>(2)?)))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let refunded_map = refunded_by_client(conn);
 
     let mut client_stmt = conn.prepare("SELECT id, metadata FROM clients").map_err(|e| e.to_string())?;
     let clients: Vec<(String, Option<String>)> = client_stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -1672,6 +1717,7 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
 
     for (client_id, meta_str) in &clients {
         let (actual_paid, invoices_sent) = invoice_map.get(client_id).copied().unwrap_or((0.0, 0));
+        let net_paid = (actual_paid - refunded_map.get(client_id).copied().unwrap_or(0.0)).max(0.0);
         let quotes_sent = quotes_map.get(client_id).copied().unwrap_or(0);
         let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
         let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
@@ -1682,11 +1728,7 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
             "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
         };
         let effective_annual = freq_mult * annual_spend;
-        let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
-        else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
-        else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
-        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
-        else { "Prospect" };
+        let tier = tier_for(effective_annual, net_paid, invoices_sent, quotes_sent);
         map.insert(client_id.clone(), tier.to_string());
     }
     Ok(map)
@@ -7701,7 +7743,10 @@ pub async fn process_followup_rules() -> Result<Vec<FollowUpLogEntry>, String> {
                     .filter_map(|r| r.ok()).collect()
             }
             "tier_drop" => {
-                let tier_rank = |t: &str| -> i32 { match t { "Diamond"=>4,"Gold"=>3,"Silver"=>2,"Bronze"=>1,_=>0 } };
+                // Tiers are stored/compared as CODES (S/A/B/C), not labels — the old
+                // label match made every rank 0, so tier-drop never fired and
+                // tier_history stayed empty.
+                let tier_rank = |t: &str| -> i32 { match t { "S"=>4,"A"=>3,"B"=>2,"C"=>1,_=>0 } };
                 let mut results = Vec::new();
                 let mut stmt_c = conn.prepare("SELECT id, name, email, metadata FROM clients").map_err(|e| e.to_string())?;
                 let clients: Vec<(String, Option<String>, Option<String>, Option<String>)> = stmt_c.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,Option<String>>(3)?)))
@@ -8758,11 +8803,13 @@ fn tier_label(s: &str) -> &str {
 pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
 
+    // "Sent" always includes overdue — an invoice going overdue can't erase the
+    // fact it was sent, and dropping it here could demote a client a full tier.
     let invoice_data: Vec<(String, f64, u32, Option<String>)> = {
         let mut stmt = conn.prepare(
             "SELECT client_id, COALESCE(SUM(CASE WHEN status='paid' THEN total ELSE 0 END),0),
-                    COUNT(CASE WHEN status IN ('sent','paid') THEN 1 END),
-                    MAX(CASE WHEN status IN ('sent','paid') THEN issue_date END)
+                    COUNT(CASE WHEN status IN ('sent','overdue','paid') THEN 1 END),
+                    MAX(CASE WHEN status IN ('sent','overdue','paid') THEN issue_date END)
              FROM invoices WHERE COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 GROUP BY client_id"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,i64>(2)? as u32, r.get(3)?)))
@@ -8771,6 +8818,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
     };
     let invoice_map: std::collections::HashMap<String, (f64, u32, Option<String>)> =
         invoice_data.into_iter().map(|(id, p, s, d)| (id, (p, s, d))).collect();
+    let refunded_map = refunded_by_client(&conn);
 
     // Quotes per client: (total sent, accepted/converted). Used for engagement
     // signal AND buyer-reliability scoring (how often quotes turn into deals).
@@ -8794,14 +8842,17 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    // Avg commission % (margin) per client from completed deal flows
+    // Avg commission % (margin) per client from completed deal flows — same
+    // accuracy contract as every other stat: archived deals, fell-through (voided
+    // invoice) deals, and archived invoices are excluded so they can't skew margin.
     let commission_map: std::collections::HashMap<String, f64> = {
         let mut stmt = conn.prepare(
             "SELECT i.client_id,
                     COALESCE(AVG(CASE WHEN df.gross_revenue > 0 THEN (df.net_profit / df.gross_revenue) * 100 END), 0)
              FROM deal_flows df
              JOIN invoices i ON i.id = df.invoice_id
-             WHERE df.stage = 'complete'
+             WHERE df.stage = 'complete' AND COALESCE(df.archived,0)=0
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
              GROUP BY i.client_id"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?)))
@@ -8821,8 +8872,11 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         };
         let effective_annual = freq_mult * annual_spend;
 
-        let (actual_paid, invoices_sent, last_inv) = invoice_map.get(client_id)
+        let (paid, invoices_sent, last_inv) = invoice_map.get(client_id)
             .map(|(p, s, d)| (*p, *s, d.clone())).unwrap_or((0.0, 0, None));
+        // Net of refunds — a fully refunded buyer can't hold a tier on money we
+        // gave back. This becomes the "actually paid" figure shown in the UI.
+        let actual_paid = (paid - refunded_map.get(client_id).copied().unwrap_or(0.0)).max(0.0);
         let (quotes_sent, quotes_won) = quotes_map.get(client_id).copied().unwrap_or((0, 0));
         // Buyer reliability: of the quotes we've sent, how many converted to a
         // deal. Only meaningful once we've sent a few — flagged after 3.
@@ -8832,12 +8886,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             else if reliability_pct >= 25.0 { "mixed" }
             else { "low" };
 
-        let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
-        else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
-        else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
-        // Quoting a client is active engagement: it lifts a bare prospect to C.
-        else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
-        else { "Prospect" };
+        let tier = tier_for(effective_annual, actual_paid, invoices_sent as i64, quotes_sent as i64);
 
         let avg_commission_pct = commission_map.get(client_id).copied().unwrap_or(0.0);
         results.push(BuyerTier {
