@@ -26,7 +26,14 @@ const NODE_LABELS: Record<Stage, string> = {
   invoiced:         "Invoiced",
   payment_received: "Cost & payment",
   supplier_paid:    "Supplier paid",
-  complete:         "Pair & complete",
+  complete:         "Review & complete",
+};
+
+const NODE_DESC: Record<Stage, string> = {
+  invoiced:         "Invoice sent",
+  payment_received: "Add supplier costs then mark payment",
+  supplier_paid:    "Confirm all suppliers paid",
+  complete:         "Finalize deal & lock",
 };
 
 // Auto-open the panel for the NEXT step needed
