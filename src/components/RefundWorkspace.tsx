@@ -157,7 +157,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   const receivedLinked = allocs.filter((a) => a.role === "buyer_payment");
   const totalReceived = receivedLinked.reduce((s, a) => s + a.amount, 0) + receipts.reduce((s, r) => s + r.amount, 0);
   const refundOwed: number = payout?.refund_owed || 0;
-  const totalRefunded = refunds.reduce((s, r) => s + r.amount, 0);
+  const totalRefunded = payout?.refunded || refunds.reduce((s, r) => s + r.amount, 0);
   const remaining = Math.max(refundOwed - totalRefunded, 0);
 
   const hasActivity = refundOwed > 0 || refunds.length > 0;
