@@ -20,28 +20,40 @@ use crate::db::pool;
 
 // ---------- Credentials ----------
 
+// Secrets now live in an app-local encrypted store (secret_store) instead of the OS
+// keychain, so an ad-hoc-signed build stops re-prompting for keychain access on every
+// macOS update. Existing installs are migrated on first read (one keychain prompt,
+// then never again). On any store error we fall back to the keyring so nothing breaks.
 pub fn cred(key: &str) -> Result<String> {
-    keyring::Entry::new("clienthub", key)
-        .context("keyring entry")?
-        .get_password()
-        .context(format!("missing credential: {}", key))
+    cred_opt(key).ok_or_else(|| anyhow!("missing credential: {}", key))
 }
 
 pub fn cred_opt(key: &str) -> Option<String> {
-    keyring::Entry::new("clienthub", key)
-        .ok()
-        .and_then(|e| e.get_password().ok())
+    // 1) app-local encrypted store — no keychain access, no prompt.
+    if let Some(v) = crate::secret_store::get(key) {
+        return Some(v);
+    }
+    // 2) one-time migration: read the legacy OS keyring (prompts ONCE on macOS for a
+    //    still-present item), copy it into the store, then never touch the keyring
+    //    again for this key. A genuinely-absent entry returns None WITHOUT prompting.
+    if let Some(v) = keyring::Entry::new("clienthub", key).ok().and_then(|e| e.get_password().ok()) {
+        let _ = crate::secret_store::put(key, &v);
+        return Some(v);
+    }
+    None
 }
 
 pub fn save_cred(key: &str, value: &str) -> Result<()> {
-    keyring::Entry::new("clienthub", key)?
-        .set_password(value)
-        .map_err(Into::into)
+    // Store only — a keyring WRITE also re-prompts on macOS, which would defeat the fix.
+    crate::secret_store::put(key, value)
 }
 
 pub fn delete_cred(key: &str) -> Result<()> {
-    let entry = keyring::Entry::new("clienthub", key)?;
-    let _ = entry.delete_password();
+    let _ = crate::secret_store::remove(key);
+    // Best-effort clear the legacy keyring copy so it can't be silently re-migrated.
+    if let Ok(entry) = keyring::Entry::new("clienthub", key) {
+        let _ = entry.delete_password();
+    }
     Ok(())
 }
 

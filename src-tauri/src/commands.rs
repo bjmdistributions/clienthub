@@ -4369,7 +4369,7 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     // It fails cleanly, before any refund row is written, if the txn can't take it.
     if let Some(ref t) = txn {
         allocate_bank_txn(t.clone(), deal_flow_id.clone(), amt, "refund_out".to_string(),
-            reason.clone().unwrap_or_else(|| "Refund".into())).await?;
+            reason.clone().unwrap_or_else(|| "Refund".into()), None).await?;
     }
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -9719,6 +9719,7 @@ pub async fn set_bank_txn_review(
 #[tauri::command]
 pub async fn allocate_bank_txn(
     bank_txn_id: String, deal_flow_id: String, amount: f64, role: String, note: String,
+    allow_split: Option<bool>,
 ) -> Result<String, String> {
     let (txn_amount, allocated, direction): (f64, f64, String) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -9738,7 +9739,11 @@ pub async fn allocate_bank_txn(
             rusqlite::params![bank_txn_id, deal_flow_id], |_| Ok(()),
         ).is_ok()
     };
-    if linked_elsewhere {
+    // The split flow (explicit "Split across deals") deliberately lifts this single-deal
+    // guard so one payment can be divided across multiple deals. The SUM invariant below
+    // (amt <= remaining across ALL allocations) still keeps the split balanced, and the
+    // deal-side pickers stay exclusive, so a split txn never leaks into unrelated deals.
+    if linked_elsewhere && !allow_split.unwrap_or(false) {
         return Err("This transaction is already linked to another deal.".into());
     }
     // A role has to match the transaction's direction, or role-based reconciliation

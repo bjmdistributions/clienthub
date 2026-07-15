@@ -2100,8 +2100,8 @@ export const api = {
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
     invoke<void>("set_bank_txn_review", { id, category, counterpartyName, counterpartyType, counterpartyId, reviewed }),
-  allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string) =>
-    invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note }),
+  allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>
+    invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note, allowSplit }),
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
   clearBankTxns: (scope: "statements" | "plaid" | "all") =>
     invoke<{ deleted: number; allocations_removed: number }>("clear_bank_txns", { scope }),

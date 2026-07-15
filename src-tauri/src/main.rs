@@ -21,6 +21,7 @@ mod signup_rules;
 mod netsync;
 mod sync;
 mod sync_crypto;
+mod secret_store;
 mod template;
 
 use commands::*;
