@@ -10123,6 +10123,50 @@ pub async fn cleanup_ghost_deal_flows() -> Result<i64, String> {
     Ok(archived)
 }
 
+/// Heal transactions whose allocations exceed the transaction amount. allocate_bank_txn
+/// enforces SUM(allocations) <= amount LOCALLY, but two devices allocating the same txn
+/// concurrently each pass their own check, and after the sync merge the SUM can exceed
+/// the amount — double-booking that money on two deals and skewing every actuals figure.
+/// This trims the NEWEST allocations (synced) until the invariant holds again.
+/// Idempotent; returns how many allocations were removed.
+#[tauri::command]
+pub async fn heal_overallocated_txns() -> Result<i64, String> {
+    let bad: Vec<(String, f64)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT bt.id, bt.amount FROM bank_txn bt JOIN bank_allocation a ON a.bank_txn_id=bt.id \
+             GROUP BY bt.id HAVING COALESCE(SUM(a.amount),0) > bt.amount + 0.01",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|x| x.ok()).collect()
+    };
+    if bad.is_empty() { return Ok(0); }
+    let mut removed = 0i64;
+    for (txn_id, amount) in bad {
+        let allocs: Vec<(String, f64)> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(
+                "SELECT id, amount FROM bank_allocation WHERE bank_txn_id=?1 ORDER BY created_at DESC, id DESC",
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([&txn_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|x| x.ok()).collect()
+        };
+        let mut running: f64 = allocs.iter().map(|(_, a)| *a).sum();
+        for (aid, amt) in allocs {
+            if running <= amount + 0.01 { break; }
+            sync::record_delete("bank_allocation", &aid).map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM bank_allocation WHERE id=?1", [&aid]).map_err(|e| e.to_string())?;
+            running -= amt;
+            removed += 1;
+        }
+    }
+    if removed > 0 { crate::netsync::push_now(); }
+    Ok(removed)
+}
+
 /// Bank transactions available to pair to a deal, split by direction. A txn is
 /// offered iff it has NO allocation to a deal other than this one (exclusive
 /// links — once linked anywhere it's gone from every other deal's picker) and it
@@ -10976,9 +11020,12 @@ pub async fn create_loan(name: String, lender: String, principal: f64, received_
 }
 
 #[tauri::command]
-pub async fn update_loan(id: String, name: String, lender: String, principal: f64, set_aside: f64, status: String, note: String) -> Result<(), String> {
+pub async fn update_loan(id: String, name: String, lender: String, principal: f64, set_aside: f64, status: String, note: String, received_at: Option<String>) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
     let paid_at = if status == "paid" { now.clone() } else { String::new() };
+    // received_at is optional — a typo'd disbursement date can now be corrected in
+    // edit; only overwrite when a non-empty value is supplied.
+    let rec = received_at.unwrap_or_default();
     let mut cols = Map::new();
     cols.insert("name".into(), json!(name));
     cols.insert("lender".into(), json!(lender));
@@ -10988,11 +11035,13 @@ pub async fn update_loan(id: String, name: String, lender: String, principal: f6
     cols.insert("paid_at".into(), json!(paid_at));
     cols.insert("note".into(), json!(note));
     cols.insert("updated_at".into(), json!(now));
+    if !rec.is_empty() { cols.insert("received_at".into(), json!(rec)); }
     sync::record_upsert("loan", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE loan SET name=?1,lender=?2,principal=?3,set_aside=?4,status=?5,paid_at=?6,note=?7,updated_at=?8 WHERE id=?9",
-        rusqlite::params![name, lender, principal, set_aside, status, paid_at, note, now, id],
+        "UPDATE loan SET name=?1,lender=?2,principal=?3,set_aside=?4,status=?5,paid_at=?6,note=?7,updated_at=?8, \
+                received_at=CASE WHEN ?9<>'' THEN ?9 ELSE received_at END WHERE id=?10",
+        rusqlite::params![name, lender, principal, set_aside, status, paid_at, note, now, rec, id],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }

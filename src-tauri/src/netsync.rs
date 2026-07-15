@@ -36,6 +36,10 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds",
     "client_credits", "rep_payouts", "intake_sources", "deal_reps", "staff_accounts",
     "settings",
+    // Financial engine tables — the server already snapshots these; without them a
+    // device that missed events (or a fresh install) could never heal its ledger via
+    // Repair sync. Restore is UPSERT-only, so this only ADDS rows, never prunes.
+    "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts",
 ];
 
 pub fn ensure_tables() -> Result<()> {

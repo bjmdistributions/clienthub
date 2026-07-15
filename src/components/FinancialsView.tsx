@@ -215,6 +215,7 @@ export default function FinancialsView() {
   const [aiPreviewPath, setAiPreviewPath] = useState<string | null>(null);
   const [aiPreview, setAiPreview]         = useState<BankAiPreview | null>(null);
   const [aiExtracting, setAiExtracting]   = useState(false);
+  const [previewing, setPreviewing]       = useState(false); // parsing a single statement for preview
   const [aiImporting, setAiImporting]     = useState(false);
 
   // Filters
@@ -280,6 +281,9 @@ export default function FinancialsView() {
         // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
         // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
         api.cleanupGhostDealFlows().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
+        // Trim any allocation that exceeds its txn amount from a concurrent-device
+        // double-book (idempotent; refresh if it actually fixed something).
+        api.healOverallocatedTxns().then((n) => { if (n > 0) refreshAll(false).catch(() => {}); }).catch(() => {});
       } catch (e: any) { toast(String(e), "error"); }
       finally { setLoading(false); }
     })();
@@ -555,10 +559,12 @@ export default function FinancialsView() {
     const selected = paths[0];
     setPreviewPath(selected);
     setPreview(null);
+    setPreviewing(true);
     try {
       const p = await api.bankPreview(selected);
       setPreview(p);
     } catch (e: any) { toast(String(e), "error"); setPreviewPath(null); }
+    finally { setPreviewing(false); }
   };
 
   // Import many statements sequentially, all into the current account.
@@ -1264,10 +1270,10 @@ export default function FinancialsView() {
           </label>
           <button
             onClick={pickAndPreview}
-            disabled={bulkBusy}
+            disabled={bulkBusy || previewing}
             className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
           >
-            {bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Import statement
+            {bulkBusy || previewing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Import statement
           </button>
           <button
             onClick={pickAndPreviewAi}

@@ -231,7 +231,21 @@ statement-preview busy state.
 4.4 Historical brief periods: several queries lower-bound only (>= week_start with no upper) —
     audit lists them; add `< end_excl`.
 
-### Phase 5 — Sync invariants (bulletproofing, lower urgency)
+### Item 2 (durability), item 3 remainder, Phase 5 — DONE v0.15.80 (+ clienthub-api 1e0c15d)
+- Item 2: clienthub-api repo (commit 1e0c15d) now carries notes w/h + editing_by/editing_at +
+  invoices voided_at in schema.sql/employees.rs/sync.rs — a git redeploy won't drop them.
+- Item 3: loan received_at is editable end-to-end (update_loan gained the optional param); the
+  single-statement import shows a busy spinner. Plaid env-switch DEFERRED — each env has its own
+  secret, so persisting an env flip alone would sync against the wrong credentials; correct fix
+  needs per-env key storage.
+- Phase 5.1: heal_overallocated_txns trims newest allocations when SUM > txn amount
+  (concurrent-device double-book); auto-runs on Financials mount; verified 0 current offenders.
+- Phase 5.2: desktop SNAPSHOT_TABLES now mirrors the server (bank_txn, bank_allocation,
+  cash_purchase, business_expense, reserve_entry, loan, deal_receipts) so Repair sync heals the
+  ledger. SAFE: snapshot restore is UPSERT-only (never prunes) and the server already snapshots
+  these — the old memory prune-risk didn't match the actual code.
+
+### Phase 5 — Sync invariants (original notes, for reference)
 5.1 Allocation invariants are local-only; concurrent devices can exceed a txn's amount or
     double-link. Add a post-sync heal (find SUM(allocations)>amount+ε or multi-deal links
     without split) — pattern already exists in reattach_orphaned_deal_allocations.

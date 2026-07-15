@@ -100,8 +100,8 @@ export default function LoansView() {
       if (editingId) {
         const l = loans.find((x) => x.id === editingId);
         if (l) {
-          // Edit only touches name/lender/principal/note — keep set_aside + status.
-          await api.updateLoan(editingId, fName.trim(), fLender.trim(), principal, l.set_aside, l.status, fNote);
+          // Edit keeps set_aside + status; name/lender/principal/note/received date editable.
+          await api.updateLoan(editingId, fName.trim(), fLender.trim(), principal, l.set_aside, l.status, fNote, fReceived);
         }
       } else {
         await api.createLoan(fName.trim(), fLender.trim(), principal, fReceived, "", fNote);
@@ -223,16 +223,14 @@ export default function LoansView() {
                 />
               </div>
             </Field>
-            {!editingId && (
-              <Field label="Date received">
-                <input
-                  type="date"
-                  value={fReceived}
-                  onChange={(e) => setFReceived(e.target.value)}
-                  className="field-input tabular-nums"
-                />
-              </Field>
-            )}
+            <Field label="Date received">
+              <input
+                type="date"
+                value={fReceived}
+                onChange={(e) => setFReceived(e.target.value)}
+                className="field-input tabular-nums"
+              />
+            </Field>
           </div>
 
           <Field label="Note">

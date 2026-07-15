@@ -788,6 +788,7 @@ fn main() {
             deal_allocations,
             reattach_orphaned_deal_allocations,
             cleanup_ghost_deal_flows,
+            heal_overallocated_txns,
             pull_now,
             set_note_editing,
             unallocated_bank_txns,

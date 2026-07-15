@@ -2130,6 +2130,10 @@ export const api = {
   // aggregates stop counting rows the UI hides. Idempotent; returns rows archived.
   cleanupGhostDealFlows: () =>
     invoke<number>("cleanup_ghost_deal_flows"),
+  // Trim allocations that exceed their txn amount (concurrent-device double-book).
+  // Idempotent; returns how many allocations were removed.
+  healOverallocatedTxns: () =>
+    invoke<number>("heal_overallocated_txns"),
   unallocatedBankTxns: (dealFlowId?: string) =>
     invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
   dealReconciliation: (dealFlowId: string) =>
@@ -2146,8 +2150,8 @@ export const api = {
   listLoans: () => invoke<Loan[]>("list_loans"),
   createLoan: (name: string, lender: string, principal: number, receivedAt: string, bankTxnId: string, note: string) =>
     invoke<string>("create_loan", { name, lender, principal, receivedAt, bankTxnId, note }),
-  updateLoan: (id: string, name: string, lender: string, principal: number, setAside: number, status: string, note: string) =>
-    invoke<void>("update_loan", { id, name, lender, principal, setAside, status, note }),
+  updateLoan: (id: string, name: string, lender: string, principal: number, setAside: number, status: string, note: string, receivedAt?: string) =>
+    invoke<void>("update_loan", { id, name, lender, principal, setAside, status, note, receivedAt }),
   deleteLoan: (id: string) => invoke<void>("delete_loan", { id }),
   tagBankTxnToLoan: (bankTxnId: string, loanId: string) =>
     invoke<void>("tag_bank_txn_to_loan", { bankTxnId, loanId }),
