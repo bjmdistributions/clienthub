@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search, Calculator } from "lucide-react";
 import { api, DealFlow, DealAllocation, UnallocatedTxn } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
@@ -27,6 +27,8 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
   const [allocs, setAllocs] = useState<DealAllocation[]>([]);
   const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
   const [busy, setBusy] = useState(false);
+  // "Complete pairing" reveals the profit calculation derived from what's linked.
+  const [showBreakdown, setShowBreakdown] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -180,27 +182,86 @@ export default function ReconciliationPanel({ flow }: { flow: DealFlow }) {
         </div>
       </div>
 
-      {/* Actual vs expected profit */}
-      <div className="px-4 py-3 border-t border-line bg-surface-2/60 flex items-end justify-between gap-4">
-        <div>
-          <div className="text-[11px] text-muted">Expected profit</div>
-          <div className="text-[18px] font-bold tabular-nums text-ink mt-0.5">{fmtAmount(expected)}</div>
+      {/* Actual vs expected profit + complete-pairing breakdown */}
+      <div className="border-t border-line bg-surface-2/60">
+        <div className="px-4 py-3 flex items-end justify-between gap-4">
+          <div>
+            <div className="text-[11px] text-muted">Expected profit</div>
+            <div className="text-[18px] font-bold tabular-nums text-ink mt-0.5">{fmtAmount(expected)}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[11px] text-muted">Actual profit (from bank)</div>
+            {!anyPaired ? (
+              <div className="text-[18px] font-bold tabular-nums mt-0.5 text-faint">—</div>
+            ) : (
+              <div className={`text-[18px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+                {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
+              </div>
+            )}
+            {anyPaired && recon && Math.abs(variance) >= 0.5 && (
+              <div className="text-[11px] tabular-nums text-muted mt-0.5">
+                {variance >= 0 ? "+" : "−"}{fmtAmount(Math.abs(variance))} vs expected
+              </div>
+            )}
+          </div>
         </div>
-        <div className="text-right">
-          <div className="text-[11px] text-muted">Actual profit (from bank)</div>
-          {!anyPaired ? (
-            <div className="text-[18px] font-bold tabular-nums mt-0.5 text-faint">—</div>
-          ) : (
-            <div className={`text-[18px] font-bold tabular-nums mt-0.5 ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
-              {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
-            </div>
-          )}
-          {anyPaired && recon && Math.abs(variance) >= 0.5 && (
-            <div className="text-[11px] tabular-nums text-muted mt-0.5">
-              {variance >= 0 ? "+" : "−"}{fmtAmount(Math.abs(variance))} vs expected
-            </div>
-          )}
+
+        {/* Complete pairing → recompute from what's linked and reveal the full math */}
+        <div className="px-4 pb-3">
+          <button
+            onClick={async () => { await load(); setShowBreakdown((v) => !v); }}
+            disabled={!anyPaired || busy}
+            className="w-full flex items-center justify-center gap-1.5 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-medium disabled:opacity-40 transition-colors"
+          >
+            <Calculator size={14} /> {showBreakdown ? "Recalculate profit" : "Complete pairing"}
+          </button>
         </div>
+
+        {showBreakdown && recon && (
+          <div className="px-4 pb-4">
+            <div className="rounded-lg border border-line bg-surface px-3 py-2.5 text-[12.5px] space-y-1.5">
+              <div className="text-[12px] font-medium text-muted mb-1">Profit from linked payments</div>
+              <div className="flex items-center justify-between">
+                <span className="text-ink-2">Payments received</span>
+                <span className="tabular-nums text-success-ink">+{fmtAmount(recon.pieces.buyer_paired)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-ink-2">Supplier paid</span>
+                <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.supplier_paired)}</span>
+              </div>
+              {recon.pieces.fee_paired > 0.005 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-2">Wire fees</span>
+                  <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.fee_paired)}</span>
+                </div>
+              )}
+              {recon.pieces.refund_total > 0.005 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-2">Refunds paid</span>
+                  <span className="tabular-nums text-danger-ink">−{fmtAmount(recon.pieces.refund_total)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-1.5 border-t border-line-2">
+                <span className="font-semibold text-ink">Actual profit</span>
+                <span className={`font-bold tabular-nums ${actual >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+                  {actual < 0 ? "−" : ""}{fmtAmount(Math.abs(actual))}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-muted">
+                <span>Expected profit</span>
+                <span className="tabular-nums">{fmtAmount(expected)}</span>
+              </div>
+              {Math.abs(variance) >= 0.5 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Difference</span>
+                  <span className={`tabular-nums font-medium ${variance >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+                    {variance >= 0 ? "+" : "−"}{fmtAmount(Math.abs(variance))}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
