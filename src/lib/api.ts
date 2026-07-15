@@ -1480,6 +1480,7 @@ export interface FinancialsOverview {
   loan_outstanding: number;
   war_chest: number;
   free_cash: number;
+  has_plaid: boolean;
   status: "green" | "yellow" | "red";
   runway_months: number;
   alerts: { refund_deals: number; stale_unallocated_in: number };

@@ -1280,7 +1280,8 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     ws3.write_string_with_format(0, 5, "Margin %", &bold).map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT c.name, COALESCE(c.company,''), COUNT(i.id), COALESCE(SUM(i.total),0), COALESCE(SUM(i.profit),0)
-         FROM clients c JOIN invoices i ON i.client_id=c.id WHERE i.status='paid'
+         FROM clients c JOIN invoices i ON i.client_id=c.id
+         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
          GROUP BY c.id ORDER BY SUM(i.total) DESC LIMIT 50"
     ).map_err(|e| e.to_string())?;
     let client_rows: Vec<(String,String,i64,f64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
@@ -1295,12 +1296,17 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
         ws3.write_string(row, 5, format!("{:.1}%", margin_pct).as_str()).map_err(|e| e.to_string())?;
     }
 
-    // Sheet 4: Deal Pipeline
+    // Sheet 4: Deal Pipeline — from the REAL pipeline (deal_flows, one per invoice,
+    // fell-through excluded), not the dead deals CRM table which is always empty.
     let ws4 = wb.add_worksheet().set_name("Deal Pipeline").map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 0, "Stage", &bold).map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 1, "Count", &bold).map_err(|e| e.to_string())?;
     ws4.write_string_with_format(0, 2, "Value", &bold).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT stage, COUNT(*), COALESCE(SUM(asking_price),0) FROM deals WHERE COALESCE(archived,0)=0 GROUP BY stage ORDER BY stage").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT df.stage, COUNT(DISTINCT df.invoice_id), COALESCE(SUM(df.gross_revenue),0) \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+         GROUP BY df.stage ORDER BY df.stage").map_err(|e| e.to_string())?;
     let pipeline_rows: Vec<(String,i64,f64)> = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     for (i, (stage, cnt, val)) in pipeline_rows.iter().enumerate() {
         let row = (i + 1) as u32;
@@ -10904,6 +10910,9 @@ pub async fn financials_overview() -> Result<Value, String> {
         "loan_outstanding": round2(loan_outstanding),
         "war_chest": round2(war_chest),
         "free_cash": free_cash,
+        // True when a bank is connected via Plaid — the bank/card balances are then
+        // live from the feed, so the manual Adjust fields are display-only.
+        "has_plaid": has_plaid,
         "status": status,
         "runway_months": if runway.is_finite() { round2(runway) } else { -1.0 },
         "alerts": { "refund_deals": refund_deals, "stale_unallocated_in": stale_unallocated },

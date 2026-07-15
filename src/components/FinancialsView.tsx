@@ -361,7 +361,13 @@ export default function FinancialsView() {
   // background a few times (~every 20s) until transactions land, then stop.
   const schedulePrepRetries = (left: number) => {
     if (prepTimerRef.current !== null) clearTimeout(prepTimerRef.current);
-    if (left <= 0) return;
+    if (left <= 0) {
+      // Retries exhausted — clear the "preparing" banner so it doesn't sit forever,
+      // and tell the user how to finish once the bank's history is ready.
+      setPlaidPreparing(false);
+      toast("Your bank is still preparing transactions — use Sync now in a few minutes.");
+      return;
+    }
     prepTimerRef.current = window.setTimeout(async () => {
       prepTimerRef.current = null;
       try {
@@ -389,6 +395,7 @@ export default function FinancialsView() {
       const { hosted_link_url, link_token } = await api.plaidConnectStart();
       await api.openExternal(hosted_link_url);
       let attempts = 0;
+      let pollErrors = 0;
       const maxAttempts = 100; // ~5 minutes at 3s each
       const tick = async () => {
         if (pollCancelRef.current) return;
@@ -396,6 +403,7 @@ export default function FinancialsView() {
         try {
           const r = await api.plaidConnectPoll(link_token);
           if (pollCancelRef.current) return;
+          pollErrors = 0; // a good poll resets the tolerance
           if (r.status === "connected") {
             stopPolling();
             const inst = r.institution || "bank";
@@ -422,9 +430,17 @@ export default function FinancialsView() {
           }
           pollTimerRef.current = window.setTimeout(tick, 3000);
         } catch (e: any) {
-          stopPolling();
-          toast(String(e), "error");
-          setPlaidConnecting(false);
+          // A transient blip (network, laptop sleep) shouldn't abort a valid connect
+          // while the user is mid-login. Tolerate a few in a row before giving up.
+          pollErrors += 1;
+          if (pollCancelRef.current) return;
+          if (pollErrors >= 5) {
+            stopPolling();
+            toast(String(e), "error");
+            setPlaidConnecting(false);
+          } else {
+            pollTimerRef.current = window.setTimeout(tick, 3000);
+          }
         }
       };
       pollTimerRef.current = window.setTimeout(tick, 3000);
@@ -704,7 +720,7 @@ export default function FinancialsView() {
   const createRule = async (
     matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string,
     direction: string,
-  ) => {
+  ): Promise<boolean> => {
     try {
       await api.createTxnRule(matchCounterparty, category, tType, targetId, "", direction);
       const r = await api.applyTxnRules();
@@ -712,7 +728,8 @@ export default function FinancialsView() {
       toast(`Rule saved — tagged ${r.updated}${dirWord} transaction${r.updated === 1 ? "" : "s"}`);
       setRules(await api.listTxnRules());
       await refreshAll(false);
-    } catch (e: any) { toast(String(e), "error"); }
+      return true;
+    } catch (e: any) { toast(String(e), "error"); return false; }
   };
 
   const deleteRule = async (id: string) => {
@@ -1746,8 +1763,9 @@ export default function FinancialsView() {
                     onClick={async () => {
                       const c = groupCatOverride[g.key] ?? g.defaultCat;
                       if (!c) return;
-                      dismissGroup(g.key);
-                      await createRule(g.payee, c, "expense", "", g.direction);
+                      // Only dismiss on success — otherwise a failed rule left the
+                      // rows untagged AND hid the group so they couldn't be found.
+                      if (await createRule(g.payee, c, "expense", "", g.direction)) dismissGroup(g.key);
                     }}
                     disabled={!cat}
                     className="text-[12px] font-medium text-accent hover:text-accent-hover disabled:text-faint disabled:cursor-not-allowed transition-colors whitespace-nowrap"

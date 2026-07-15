@@ -212,9 +212,13 @@ excludes internal_transfer + card_payment (no double count); Brief best/worst-ma
 re-sourced from completed deal_flows (refund-aware, rep-scoped, windowed) — the deals-table
 won_at was never set so they never rendered (verified: 0 old candidates → real candidates now);
 biggest-invoice highlight excludes voided + bounds the window.
-Remaining Phase 2 minors: free-cash Adjust manual-vs-live badge, dead `summary` fetch, needs-a-
-deal counter counts expenses, Plaid env-switch/prepare-banner/poll-tolerance, suggested-group
-dismiss-before-fail, bulk failure reasons, loan received_at editable (needs update_loan param),
+More minors DONE v0.15.78: xlsx export (Top Clients excludes voided; Deal Pipeline sheet now
+from deal_flows not the dead deals table); free-cash Adjust shows bank/card as live + disabled
+when Plaid connected (financials_overview now returns has_plaid); Plaid prepare-banner clears on
+retry exhaustion with a toast; connect-poll tolerates 5 transient errors before aborting;
+suggested-group "Tag all" dismisses only on success (createRule returns bool).
+Remaining Phase 2 minors: dead `summary` fetch, needs-a-deal counter counts expenses, Plaid
+env-switch, bulk failure reasons, loan received_at editable (needs update_loan param),
 statement-preview busy state.
 
 ### Phase 4 — Analytics leftovers (brief highlights DONE in v0.15.77)

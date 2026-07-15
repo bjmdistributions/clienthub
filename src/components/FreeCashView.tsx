@@ -33,7 +33,7 @@ function DeductionRow({ label, tag, value, strong }: { label: string; tag: strin
 // A number input bound to a raw string buffer so it can be cleared and accept
 // decimals (coerced to a number only on save).
 function NumField({
-  label, hint, prefix, suffix, value, onChange,
+  label, hint, prefix, suffix, value, onChange, disabled,
 }: {
   label: string;
   hint?: string;
@@ -41,6 +41,7 @@ function NumField({
   suffix?: string;
   value: string;
   onChange: (v: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -55,7 +56,8 @@ function NumField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="0"
-          className={inputCls + (prefix ? " pl-6" : "") + (suffix ? " pr-8" : "")}
+          readOnly={disabled}
+          className={inputCls + (prefix ? " pl-6" : "") + (suffix ? " pr-8" : "") + (disabled ? " opacity-50 cursor-not-allowed" : "")}
         />
         {suffix && (
           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">{suffix}</span>
@@ -296,17 +298,19 @@ export default function FreeCashView() {
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto">
               <NumField
                 label="Current bank balance"
-                hint="Enter from your latest statement — this figure is maintained by you."
+                hint={ov?.has_plaid ? "Live from your connected bank — managed automatically." : "Enter from your latest statement — this figure is maintained by you."}
                 prefix="$"
-                value={bankStr}
+                value={ov?.has_plaid ? String(ov.bank_balance) : bankStr}
                 onChange={setBankStr}
+                disabled={!!ov?.has_plaid}
               />
               <NumField
                 label="Credit card balance owed"
-                hint="Total owed across your business credit cards — enter from your latest statements."
+                hint={ov?.has_plaid ? "Live from your connected card — managed automatically." : "Total owed across your business credit cards — enter from your latest statements."}
                 prefix="$"
-                value={cardStr}
+                value={ov?.has_plaid ? String(ov.credit_card_balance) : cardStr}
                 onChange={setCardStr}
+                disabled={!!ov?.has_plaid}
               />
               <NumField
                 label="Cash floor"
