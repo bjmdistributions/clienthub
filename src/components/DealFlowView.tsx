@@ -138,8 +138,11 @@ export default function DealFlowView() {
     return !inv.is_complete;
   };
 
+  // A deal in refund mode is a refund, not an active pipeline deal — it drops out of
+  // the active list (regardless of stage or draft status) and lives in the Refunds
+  // section below.
   const active    = flows.filter(
-    (f) => f.stage !== "complete" && isInvoiceActive(f) && matchFl(f)
+    (f) => f.stage !== "complete" && !refundMap[f.id] && isInvoiceActive(f) && matchFl(f)
   );
   const completed = flows.filter((f) => f.stage === "complete");
   const completedFiltered = completed.filter(matchFl);
