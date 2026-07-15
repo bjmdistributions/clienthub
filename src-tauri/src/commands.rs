@@ -9975,8 +9975,11 @@ pub async fn cleanup_orphan_allocations() -> Result<i64, String> {
             "SELECT a.id, a.deal_flow_id FROM bank_allocation a
              WHERE NOT EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
         ).map_err(|e| e.to_string())?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect()
+        // Bind into a Vec so the row iterator (which borrows stmt/conn) is fully
+        // consumed before this block drops stmt and conn.
+        let v: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        v
     };
     if rows.is_empty() { return Ok(0); }
     let mut deals: Vec<String> = rows.iter().map(|(_, d)| d.clone()).collect();
