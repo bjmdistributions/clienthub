@@ -13262,11 +13262,33 @@ pub async fn sheet_category_column_values() -> Result<Vec<String>, String> {
     Ok(values)
 }
 
+/// The inbound Google Sheets pull is OPT-IN and defaults OFF.
+///
+/// `sync_from_sheet` rebuilds a matched client's metadata from an empty object and
+/// re-imports through whatever column mapping THIS device happens to hold. Run
+/// unattended every 10 minutes that meant: geocoded lat/lng (and high_value,
+/// exclusive, tags, cf:* …) were wiped on every tick — reverting the geocoder's own
+/// work and emptying the globe — while a drifted per-device column mapping wrote
+/// wrong names into the org-shared client book. Until the importer merges metadata
+/// and the mapping is a single shared source of truth, this stays off unless the
+/// user explicitly turns it on.
+fn sheet_sync_enabled() -> bool {
+    let conn = match pool().get() { Ok(c) => c, Err(_) => return false };
+    conn.query_row("SELECT value FROM settings WHERE key='sheet_sync_enabled'", [], |r| r.get::<_, String>(0))
+        .map(|v| { let v = v.trim(); v == "1" || v.eq_ignore_ascii_case("true") })
+        .unwrap_or(false)
+}
+
+/// Periodic inbound sheet pull. The enable check is INSIDE the loop so the setting
+/// can be flipped without restarting the app.
 pub fn spawn_periodic_sheet_sync(interval_secs: u64) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         loop {
             interval.tick().await;
+            if !sheet_sync_enabled() {
+                continue;
+            }
             if let Err(e) = sync_from_sheet().await {
                 tracing::warn!("periodic sheet sync failed: {}", e);
             }
