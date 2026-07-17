@@ -569,7 +569,7 @@ pub async fn approve_client(id: String) -> Result<(), String> {
     resolve_client_approvals(&id, "approved")?;
     // Write the approved lead back to the connected sheet + archive its source
     // email (both best-effort — a failure never blocks approval).
-    match crate::sheet_writeback::append_approved_client(&id).await {
+    match crate::sheet_writeback::upsert_approved_client(&id).await {
         Ok(true) => tracing::info!("wrote approved client {} back to sheet", id),
         Ok(false) => {}
         Err(e) => tracing::warn!("sheet write-back for {} failed: {}", id, e),
@@ -736,7 +736,7 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
                 // Write the approved lead back to the connected Google Sheet (new
                 // direction). Best-effort: silently skips if no sheet/token is set,
                 // and never blocks the approval on a sheet error.
-                match crate::sheet_writeback::append_approved_client(eid).await {
+                match crate::sheet_writeback::upsert_approved_client(eid).await {
                     Ok(true) => tracing::info!("wrote approved client {} back to sheet", eid),
                     Ok(false) => {}
                     Err(e) => tracing::warn!("sheet write-back for {} failed: {}", eid, e),
