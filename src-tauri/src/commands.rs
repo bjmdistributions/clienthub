@@ -1537,12 +1537,32 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
 
     if let Some(ref s) = filter.search {
         let pat = format!("%{}%", s.to_lowercase());
-        conds.push(format!(
-            "(LOWER(c.name) LIKE ?{p} OR LOWER(c.email) LIKE ?{p} OR LOWER(c.company) LIKE ?{p})",
-            p = param_idx
-        ));
-        params.push(Box::new(pat));
-        param_idx += 1;
+        // Phone search is format-agnostic: strip every non-digit from BOTH the stored
+        // phone and the typed query, then substring-match. So "847-393-6858",
+        // "8473936858" and "393-6858" all find the same client regardless of how the
+        // number was saved. Only kicks in when the query itself contains a digit, so a
+        // name/email search isn't dragged through the phone column.
+        let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            conds.push(format!(
+                "(LOWER(c.name) LIKE ?{p} OR LOWER(c.email) LIKE ?{p} OR LOWER(c.company) LIKE ?{p})",
+                p = param_idx
+            ));
+            params.push(Box::new(pat));
+            param_idx += 1;
+        } else {
+            // strip ( ) - space . + from c.phone, leaving digits to compare against.
+            const PHONE_DIGITS: &str =
+                "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(c.phone,''),'(',''),')',''),'-',''),' ',''),'.',''),'+','')";
+            conds.push(format!(
+                "(LOWER(c.name) LIKE ?{p} OR LOWER(c.email) LIKE ?{p} OR LOWER(c.company) LIKE ?{p} \
+                  OR c.phone LIKE ?{p} OR {pd} LIKE ?{pdig})",
+                p = param_idx, pd = PHONE_DIGITS, pdig = param_idx + 1
+            ));
+            params.push(Box::new(pat));
+            params.push(Box::new(format!("%{}%", digits)));
+            param_idx += 2;
+        }
     }
     if let Some(ref s) = filter.category {
         if s == "__none__" {

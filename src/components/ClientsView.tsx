@@ -501,7 +501,7 @@ export default function ClientsView() {
         <div className="relative flex-1 min-w-[200px]">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <input
-            placeholder="Search by name, company, or email..."
+            placeholder="Search by name, company, email, or phone..."
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             className="border border-line w-full pl-9 pr-9 h-10 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"

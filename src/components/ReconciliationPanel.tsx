@@ -17,7 +17,7 @@ const fmtShortDate = (s?: string | null) => {
 };
 
 type Leg = {
-  role: "buyer_payment" | "supplier_payment" | "fee";
+  role: "buyer_payment" | "supplier_payment" | "fee" | "refund_in";
   direction: "in" | "out";
   label: string;
   target: number; // expected amount, drives the "match" hint
@@ -45,13 +45,17 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
   const supplier = byRole("supplier_payment");
   const fees = byRole("fee");
   const feeSum = fees.reduce((s, f) => s + f.amount, 0);
+  // Money BACK from a supplier (a short-shipped or lost load, a price correction).
+  // It offsets what the goods actually cost us, so it lifts actual profit.
+  const refundIn = byRole("refund_in");
+  const refundInSum = refundIn.reduce((s, r) => s + r.amount, 0);
 
   const buyerSum = buyer.reduce((s, a) => s + a.amount, 0);
   const supplierSum = supplier.reduce((s, a) => s + a.amount, 0);
   const buyerComplete = flow.invoice_total > 0 ? buyerSum >= flow.invoice_total - 0.5 : buyer.length > 0;
   const supplierComplete = flow.total_supplier_cost > 0 ? supplierSum >= flow.total_supplier_cost - 0.5 : supplier.length > 0;
   const fullyReconciled = recon?.fully_reconciled ?? (buyerComplete && supplierComplete);
-  const anyPaired = buyer.length > 0 || supplier.length > 0 || fees.length > 0;
+  const anyPaired = buyer.length > 0 || supplier.length > 0 || fees.length > 0 || refundIn.length > 0;
 
   const expected = recon?.expected_profit ?? flow.net_profit;
   const actual = recon?.actual_profit ?? 0;
@@ -177,6 +181,31 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
             </div>
           )}
           {picker?.role === "fee" && (
+            <Picker leg={picker} cands={cands} busy={busy} flow={flow} onPair={pair} />
+          )}
+        </div>
+
+        {/* Supplier refund (money-in, optional, adds back to actual profit) — a lost /
+            short-shipped load or a price correction where the supplier sends money back. */}
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[13px] font-medium text-ink">Supplier refund</div>
+            <div className="flex items-center gap-2">
+              {refundInSum > 0 && <span className="text-[13px] font-semibold text-success-ink tabular-nums">+{fmtAmount(refundInSum)}</span>}
+              <PairButton
+                active={picker?.role === "refund_in"}
+                label="Attach supplier refund"
+                onOpen={() => openPicker({ role: "refund_in", direction: "in", label: "Supplier refund", target: 0 })}
+                onClose={() => { setPicker(null); setCands(null); }}
+              />
+            </div>
+          </div>
+          {refundIn.length > 0 && (
+            <div className="mt-2 space-y-1.5">
+              {refundIn.map((r) => <PairedRow key={r.id} a={r} onUnpair={unpair} busy={busy} />)}
+            </div>
+          )}
+          {picker?.role === "refund_in" && (
             <Picker leg={picker} cands={cands} busy={busy} flow={flow} onPair={pair} />
           )}
         </div>
