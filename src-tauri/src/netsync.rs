@@ -25,6 +25,12 @@ use crate::sync::{self, SyncEvent};
 const PUSH_BATCH: i64 = 200;
 const POLL_SECS: u64 = 20;
 
+/// What `auto_heal_if_behind` currently covers. Bump ONLY when the heal check
+/// widens (e.g. new tables in `key_tables`), so devices gated off under a narrower
+/// check get one more pass — without re-healing the fleet on every release.
+/// "3" = the generation that added the financial tables.
+const HEAL_GENERATION: &str = "3";
+
 /// The user-data tables a device clones via /api/sync/snapshot and compares via
 /// /api/sync/counts. Must mirror the server's `SNAPSHOT_TABLES`. `staff_accounts`
 /// arrives hash-stripped; `settings` is keyed by `key`; `deal_reps` by
@@ -94,8 +100,69 @@ pub fn config() -> Option<NetConfig> {
     })
 }
 
+/// NOTE: "a token string is stored", NOT "sync works" — an expired token is
+/// indistinguishable from a live one here. Health is `auth_state()`.
 pub fn is_enabled() -> bool {
     config().is_some()
+}
+
+/// The server accepted this device's credential. `key` is the stamp for the leg
+/// that succeeded (`netsync_last_pull_at` / `netsync_last_push_at`), recorded only
+/// on a real 2xx so status can never show green off an assumption.
+fn note_sync_ok(key: &str) {
+    state_set(key, &chrono::Utc::now().to_rfc3339());
+    state_del("netsync_auth_lost");
+}
+
+/// The server rejected this device and a refresh couldn't save it: the user must
+/// sign in again. Sticky until a call actually succeeds.
+fn note_auth_lost() {
+    state_set("netsync_auth_lost", "1");
+}
+
+/// Trade the stored token for a fresh one. The server accepts a recently-expired
+/// token, so a device that was merely closed for a while heals itself. Stores and
+/// returns the new token.
+async fn refresh_token(base: &str, token: &str) -> Result<String> {
+    let resp = http()
+        .post(format!("{}/api/auth/employee/refresh", base))
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("refresh request")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("refresh failed: HTTP {}", resp.status());
+    }
+    let body: LoginResp = resp.json().await.context("refresh decode")?;
+    let new_token = body.token.context("refresh returned no token")?;
+    state_set("netsync_token", &new_token);
+    tracing::info!("netsync: session token refreshed");
+    Ok(new_token)
+}
+
+/// How long after the last server-confirmed pull/push this device still counts as
+/// live. Three poll ticks — long enough to ride out one missed tick or a blip,
+/// short enough that a device that genuinely stopped talking stops reading green.
+const STALE_AFTER_SECS: i64 = (POLL_SECS as i64) * 3;
+
+/// Honest sync health: `auth_lost` (server rejected us — user action needed), `ok`
+/// (server confirmed a pull/push within STALE_AFTER_SECS), else `offline`.
+fn auth_state() -> &'static str {
+    if !is_enabled() {
+        return "offline";
+    }
+    if state_get("netsync_auth_lost").is_some() {
+        return "auth_lost";
+    }
+    let newest = ["netsync_last_pull_at", "netsync_last_push_at"]
+        .iter()
+        .filter_map(|k| state_get(k))
+        .filter_map(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .max();
+    match newest {
+        Some(t) if (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() <= STALE_AFTER_SECS => "ok",
+        _ => "offline",
+    }
 }
 
 fn http() -> reqwest::Client {
@@ -107,16 +174,39 @@ fn http() -> reqwest::Client {
 
 // ---------- local → server (push) ----------
 
-/// Queue a locally-recorded event for push. Called from `sync::record_*`. No-op
-/// unless a server connection is configured.
+/// Queue a locally-recorded event for push. Called from `sync::record_*`.
+///
+/// Enqueue is UNCONDITIONAL — deliberately not gated on `is_enabled()`. A write made
+/// while disconnected / signed-out / auth-lost is precisely the write that exists in
+/// only one place, and gating here dropped it with no trace: the row lived on locally
+/// while no event ever reached the server, and restore then read that absence as
+/// "deleted upstream" and pruned the only copy. Only PUSHING is gated on being
+/// configured + authed (`push_pending` / `push_now` / `spawn_loop`); the durable record
+/// is not. This is also what `connect`'s "flush anything queued before connecting"
+/// push has always assumed.
+///
+/// No age/count cap, on purpose: the queue is the only durable evidence that a local
+/// write has not reached the server, so evicting the oldest entries would delete
+/// exactly the events least likely to have been pushed — these are the books. Growth is
+/// self-limiting: local events are ~700 bytes and a heavy day is ~1k events (well under
+/// 1 MB/day, and SQLite does not care), and the queue drains to empty on the first poll
+/// tick after a connection exists.
 pub fn on_local_event(event: &SyncEvent) {
-    if !is_enabled() {
-        return;
-    }
-    if let (Ok(json), Ok(conn)) = (serde_json::to_string(event), pool().get()) {
-        let _ = conn.execute(
+    // A swallowed failure here is the very bug this function exists to prevent, so it
+    // is logged loudly rather than dropped on the floor (`ensure_tables` only warns on
+    // failure, so a missing queue table is reachable).
+    let queued = (|| -> Result<()> {
+        let json = serde_json::to_string(event)?;
+        pool().get()?.execute(
             "INSERT OR IGNORE INTO netsync_outbound (event_id, event_json, created_at) VALUES (?1,?2,?3)",
             rusqlite::params![event.id, json, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    })();
+    if let Err(e) = queued {
+        tracing::error!(
+            "netsync: FAILED to queue local event {} — this write may never reach the server: {}",
+            event.id, e
         );
     }
 }
@@ -128,7 +218,12 @@ pub async fn push_pending() -> Result<usize> {
         Some(c) => c,
         None => return Ok(0),
     };
-    let url = format!("{}/api/sync/push", cfg.url.trim_end_matches('/'));
+    let base = cfg.url.trim_end_matches('/').to_string();
+    let url = format!("{}/api/sync/push", base);
+    let mut token = cfg.token;
+    // One refresh attempt per pass — a token that's still rejected after a fresh
+    // mint is a real sign-out, not an expiry, and retrying can't fix it.
+    let mut refreshed = false;
     let mut total = 0;
     loop {
         let batch: Vec<(String, String)> = {
@@ -150,17 +245,31 @@ pub async fn push_pending() -> Result<usize> {
             .collect();
         let resp = http()
             .post(&url)
-            .bearer_auth(&cfg.token)
+            .bearer_auth(&token)
             .json(&serde_json::json!({ "events": events }))
             .send()
             .await
             .context("push request")?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            // Nothing was deleted from the queue, so re-entering the loop re-selects
+            // and re-sends this exact batch with the new token.
+            if !refreshed {
+                refreshed = true;
+                match refresh_token(&base, &token).await {
+                    Ok(t) => {
+                        token = t;
+                        continue;
+                    }
+                    Err(e) => tracing::warn!("netsync push: token refresh failed: {}", e),
+                }
+            }
+            note_auth_lost();
             anyhow::bail!("unauthorized — sign in again");
         }
         if !resp.status().is_success() {
             anyhow::bail!("push failed: HTTP {}", resp.status());
         }
+        note_sync_ok("netsync_last_push_at");
         let conn = pool().get()?;
         for (id, _) in &batch {
             let _ = conn.execute("DELETE FROM netsync_outbound WHERE event_id=?1", [id]);
@@ -188,7 +297,10 @@ pub async fn pull_apply() -> Result<usize> {
         Some(c) => c,
         None => return Ok(0),
     };
-    let base = cfg.url.trim_end_matches('/');
+    let base = cfg.url.trim_end_matches('/').to_string();
+    let mut token = cfg.token;
+    // One refresh attempt per pass — see push_pending.
+    let mut refreshed = false;
     // If a previous pass recorded a failed event but then hit a network error before it
     // could rewind (an early `?` return), honor that pending rewind now so the failed
     // event is re-pulled instead of being stranded below the advanced cursor.
@@ -212,16 +324,30 @@ pub async fn pull_apply() -> Result<usize> {
             .unwrap_or(0);
         let resp = http()
             .get(format!("{}/api/sync/pull?cursor={}", base, cursor))
-            .bearer_auth(&cfg.token)
+            .bearer_auth(&token)
             .send()
             .await
             .context("pull request")?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            // Nothing was applied and the cursor is untouched, so re-entering the loop
+            // re-issues this exact request with the new token.
+            if !refreshed {
+                refreshed = true;
+                match refresh_token(&base, &token).await {
+                    Ok(t) => {
+                        token = t;
+                        continue;
+                    }
+                    Err(e) => tracing::warn!("netsync pull: token refresh failed: {}", e),
+                }
+            }
+            note_auth_lost();
             anyhow::bail!("unauthorized — sign in again");
         }
         if !resp.status().is_success() {
             anyhow::bail!("pull failed: HTTP {}", resp.status());
         }
+        note_sync_ok("netsync_last_pull_at");
         let body: PullResp = resp.json().await.context("pull decode")?;
         let n = body.events.len();
         let mut page_failed = false;
@@ -396,6 +522,9 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     let (token, identity) = probe_login(&base, email, password).await?;
     state_set("netsync_url", &base);
     state_set("netsync_token", &token);
+    // The login just succeeded, so any earlier auth-lost verdict is stale — clear it
+    // now rather than leaving a red "signed out" up until the first pull confirms.
+    state_del("netsync_auth_lost");
     // Persist identity so diagnostics can show who/which org this device is bound to
     // without another round-trip.
     state_set("netsync_email", &identity.email);
@@ -431,10 +560,14 @@ pub fn status_json() -> serde_json::Value {
         .and_then(|c| c.query_row("SELECT COUNT(*) FROM netsync_outbound", [], |r| r.get(0)).ok())
         .unwrap_or(0);
     serde_json::json!({
+        // "a server is configured" — NOT health. Read `auth` for that.
         "connected": is_enabled(),
         "url": state_get("netsync_url").unwrap_or_default(),
         "pending_push": pending,
         "pull_cursor": state_get("netsync_pull_cursor").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+        "auth": auth_state(),
+        "last_pull_at": state_get("netsync_last_pull_at").unwrap_or_default(),
+        "last_push_at": state_get("netsync_last_push_at").unwrap_or_default(),
     })
 }
 
@@ -529,37 +662,12 @@ pub async fn netsync_repair_hard() -> Result<serde_json::Value, String> {
 pub async fn restore_snapshot() -> Result<serde_json::Value> {
     let cfg = config().context("Sign in to your workspace first, then run Restore.")?;
     let base = cfg.url.trim_end_matches('/');
-    // Capture the (table,row_id) keys queued locally BEFORE we drain the push queue.
-    // Even if push succeeds HTTP-wise, the server can silently drop an event that fails
-    // to apply (e.g. a column it lacks under version skew) while still returning 200 —
-    // so we must never prune a row this device just pushed.
-    let pushing: std::collections::HashSet<String> = {
-        let mut set = std::collections::HashSet::new();
-        if let Ok(conn) = pool().get() {
-            if let Ok(mut stmt) = conn.prepare("SELECT event_json FROM netsync_outbound") {
-                if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                    for j in rows.flatten() {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&j) {
-                            let op = v.get("op");
-                            let t = op.and_then(|o| o.get("table")).and_then(|x| x.as_str());
-                            let rid = op.and_then(|o| o.get("row_id")).and_then(|x| x.as_str());
-                            if let (Some(t), Some(rid)) = (t, rid) {
-                                set.insert(format!("{}\u{0}{}", t, rid));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        set
-    };
-    // Flush locally-queued changes to the server BEFORE mirroring its snapshot, so a
-    // row created here but not yet pushed isn't seen as "missing on the server" and
-    // pruned. If the push doesn't fully succeed we still heal missing rows but skip
-    // pruning entirely (below) so unpushed local data can never be deleted.
-    let pushed_ok = push_pending().await.is_ok();
-    if !pushed_ok {
-        tracing::warn!("restore_snapshot: local push incomplete — healing rows but NOT pruning");
+    // Flush locally-queued changes to the server BEFORE mirroring its snapshot, so the
+    // rows applied below are as current as possible. Best-effort: the mirror below never
+    // deletes, so a failed push no longer costs data — it only means the snapshot may lag
+    // this device.
+    if let Err(e) = push_pending().await {
+        tracing::warn!("restore_snapshot: local push incomplete: {}", e);
     }
     let resp = http()
         .get(format!("{}/api/sync/snapshot", base))
@@ -659,20 +767,23 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
             }
         }
 
-        // RECONCILE (mirror): remove stale local rows whose primary key isn't in the
-        // server's set. This is what fixes WRONG TOTALS after a heal — leftover
-        // deals/invoices that were deleted on the server but never removed here (they
-        // inflate revenue / open-deal counts). SAFETY: only prune when the server
-        // returned a NON-EMPTY set for this table — the server sends [] for a table it
-        // failed to read, and pruning on that would mass-delete real local data. Never
-        // prune the user's own account rows or device-local settings.
-        // Never prune: the user's own account rows, device-local settings, and
-        // deal_reps (keyed per-deal_flow, so a single-key DELETE could remove grouped
-        // rows — and it doesn't affect the revenue/open-deal totals we're fixing).
+        // RECONCILE (mirror): REPORT local rows whose primary key isn't in the server's
+        // set — never delete them. Deleting one requires positive proof the server holds
+        // that row's data, and this device cannot produce that proof for any candidate:
+        // a candidate is by definition absent from the snapshot; an empty
+        // `netsync_outbound` cannot tell "pushed and accepted" apart from "written while
+        // disconnected and never queued"; and the server can drop a pushed event that
+        // fails to apply while still returning 200. Absence of evidence never authorises
+        // a delete, so the row is kept and logged. The cost is stale rows skewing totals
+        // (a leftover deal/invoice inflates revenue / open-deal counts) until per-event
+        // acks make proof possible — recoverable, unlike deleting the only copy of
+        // unsynced work.
+        // Not reported: tables the mirror never considered anyway — the user's own
+        // account rows, device-local settings, and deal_reps (keyed per-deal_flow, so its
+        // keys aren't row-unique) — and tables the server returned [] for, which it also
+        // does for a table it failed to read.
         const NO_PRUNE: &[&str] = &["staff_accounts", "settings", "deal_reps"];
-        // Only prune when the pre-push fully succeeded — otherwise a locally-created,
-        // not-yet-pushed row would be absent from the server set and wrongly deleted.
-        if pushed_ok && !NO_PRUNE.contains(&table.as_str()) && !rows.is_empty() {
+        if !NO_PRUNE.contains(&table.as_str()) && !rows.is_empty() {
             let server_pks: std::collections::HashSet<String> = rows
                 .iter()
                 .filter_map(|r| {
@@ -696,23 +807,23 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
                 }
                 v
             };
-            let mut pruned: i64 = 0;
-            for lp in &local_pks {
-                // Never prune a row this device just pushed (guards against the server
-                // silently dropping a pushed event under schema drift), nor one still
-                // present on the server.
-                if !server_pks.contains(lp) && !pushing.contains(&format!("{}\u{0}{}", table, lp)) {
-                    match conn.execute(&format!("DELETE FROM {} WHERE {}=?1", table, pk), [lp]) {
-                        Ok(n) => pruned += n as i64,
-                        Err(e) => tracing::warn!(
-                            "restore_snapshot: prune failed for {}/{}: {}",
-                            table, lp, e
-                        ),
-                    }
-                }
-            }
-            if pruned > 0 {
-                tracing::info!("restore_snapshot: pruned {} stale rows from {}", pruned, table);
+            let kept: Vec<&String> = local_pks
+                .iter()
+                .filter(|lp| !server_pks.contains(*lp))
+                .collect();
+            if !kept.is_empty() {
+                // Bounded sample: this runs against every table and is written to the
+                // daily log file.
+                let sample: Vec<&str> = kept.iter().take(20).map(|s| s.as_str()).collect();
+                tracing::warn!(
+                    "restore_snapshot: KEPT {} local {} row(s) absent from the server snapshot \
+                     — no proof they ever reached the server, so they were NOT deleted \
+                     (may skew totals; ids: {}{})",
+                    kept.len(),
+                    table,
+                    sample.join(","),
+                    if kept.len() > sample.len() { ", …" } else { "" }
+                );
             }
         }
 
@@ -766,12 +877,16 @@ fn local_counts() -> HashMap<String, i64> {
 /// After the initial bootstrap pull, compare the server's `clients` count to this
 /// device's. If the device is materially behind (fewer clients than the server), the
 /// event replay left rows stranded — clone the current state directly. Gated to run
-/// at most once per install via `netsync_autoheal_done` unless that flag is cleared.
+/// at most once per heal GENERATION via `netsync_autoheal_gen`.
 async fn auto_heal_if_behind() {
-    // v2 flag: re-runs once for installs that already healed under the old
-    // clients-only check, so the mirror-reconcile (which also fixes wrong totals
-    // from stale local rows) gets a chance to run.
-    if state_get("netsync_autoheal_v2_done").is_some() {
+    // Keyed by what heal COVERS, not by app version: the old one-shot flag ('1',
+    // already set on shipped devices) gated heal off forever, but keying on the
+    // version instead would re-heal every device on every release — a heal storm
+    // for releases that don't change heal at all. Bump HEAL_GENERATION only when
+    // the coverage below widens; devices that healed under a narrower check then
+    // get exactly one more pass. Costs nothing otherwise — returns before the
+    // network.
+    if state_get("netsync_autoheal_gen").as_deref() == Some(HEAL_GENERATION) {
         return;
     }
     let server = server_counts().await;
@@ -781,9 +896,15 @@ async fn auto_heal_if_behind() {
     let local = local_counts();
     // Heal when this device DIVERGES from the server on any key table — in EITHER
     // direction: missing rows (behind) OR stale extra rows (which skew revenue /
-    // open-deal totals). restore_snapshot upserts the server's rows AND prunes the
-    // stale local ones, so a mismatch on any of these is enough to reconcile.
-    let key_tables = ["clients", "invoices", "deals", "deal_flows", "payments"];
+    // open-deal totals). restore_snapshot upserts the server's rows but never deletes
+    // local ones, so it fixes the missing-rows direction and only REPORTS extra rows.
+    // Financial tables included: these are exactly the ones that went missing on the
+    // Mac, and heal skipping them meant a device could never recover its ledger.
+    let key_tables = [
+        "clients", "invoices", "deals", "deal_flows", "payments",
+        "bank_txn", "bank_allocation", "deal_receipts", "cash_purchase",
+        "business_expense", "reserve_entry", "loan",
+    ];
     let diverged = key_tables.iter().any(|t| {
         match server.get(*t) {
             Some(&sv) => *local.get(*t).unwrap_or(&0) != sv,
@@ -803,7 +924,7 @@ async fn auto_heal_if_behind() {
             }
         }
     }
-    state_set("netsync_autoheal_v2_done", "1");
+    state_set("netsync_autoheal_gen", HEAL_GENERATION);
 }
 
 /// #[tauri::command] wrapper for the Settings "Restore from server" button.

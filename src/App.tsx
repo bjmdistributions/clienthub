@@ -31,6 +31,7 @@ import {
   Landmark,
   Archive as ArchiveIcon,
   CopyPlus,
+  FileCheck2,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -54,6 +55,7 @@ import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
 import ArchiveView from "./components/ArchiveView";
 import SheetCopyView from "./components/SheetCopyView";
+import ReleaseLetterView from "./components/ReleaseLetterView";
 import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import { FeedbackModal } from "./components/FeedbackModal";
@@ -71,7 +73,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { canViewTab, isAdmin } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -408,7 +410,9 @@ export default function App() {
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
-    { id: "quotes", label: "Quote", icon: FileSignature },
+    { id: "quotes", label: "Quote", icon: FileSignature, children: [
+      { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
+    ] },
     { id: "dealflow", label: "Deal Flow", icon: GitBranch },
     { id: "invoices", label: "Invoice", icon: FileText, children: [
       { id: "deals",      label: "Completed",  icon: Briefcase },
@@ -503,6 +507,7 @@ export default function App() {
           {t === "receivables" && <ReceivablesView />}
           {t === "payables"   && <PayablesView />}
           {t === "quotes"     && <QuotesView onNavigate={setTab} />}
+          {t === "releaseletter" && <ReleaseLetterView />}
           {t === "dealflow"   && <DealFlowView />}
           {t === "suppliers"  && <SuppliersView />}
           {t === "inventory"  && <InventoryView />}

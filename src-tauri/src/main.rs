@@ -15,6 +15,7 @@ mod invoice;
 mod manifest;
 mod oauth_flow;
 mod plaid;
+mod release_letter;
 mod sheet_clone;
 mod sheet_writeback;
 mod signup_rules;
@@ -40,6 +41,111 @@ fn write_startup_log(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("startup-error.log")) {
         let _ = f.write_all(line.as_bytes());
     }
+}
+
+const LOG_PREFIX: &str = "ecliptr-";
+const LOG_KEEP_DAYS: i64 = 7;
+
+/// Daily-rolling `tracing` log kept next to the DB. Release builds are
+/// `windows_subsystem = "windows"`, so the subscriber's default stdout writer
+/// goes nowhere and every tracing site in the app is invisible — including sync
+/// failures. Old day-files are pruned so this can't grow without bound.
+struct DailyLog {
+    dir: std::path::PathBuf,
+    /// (day, open file) — replaced as a pair when the date rolls over.
+    current: std::sync::Mutex<Option<(String, std::fs::File)>>,
+}
+
+fn log_day_stamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn open_log_day(dir: &std::path::Path, day: &str) -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{LOG_PREFIX}{day}.log")))
+        .ok()
+}
+
+/// Delete day-files older than `LOG_KEEP_DAYS`. The `%Y-%m-%d` stamp sorts
+/// lexically, so a string compare against the cutoff is enough.
+fn prune_logs(dir: &std::path::Path) {
+    let cutoff = (chrono::Local::now() - chrono::Duration::days(LOG_KEEP_DAYS))
+        .format("%Y-%m-%d")
+        .to_string();
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(day) = name.strip_prefix(LOG_PREFIX).and_then(|s| s.strip_suffix(".log")) {
+            if day < cutoff.as_str() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+impl DailyLog {
+    /// `None` when the dir can't be written — the caller then keeps the previous
+    /// stdout-only behaviour rather than failing startup.
+    fn open(dir: &std::path::Path) -> Option<Self> {
+        let day = log_day_stamp();
+        let f = open_log_day(dir, &day)?;
+        prune_logs(dir);
+        Some(DailyLog {
+            dir: dir.to_path_buf(),
+            current: std::sync::Mutex::new(Some((day, f))),
+        })
+    }
+}
+
+impl std::io::Write for &DailyLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let day = log_day_stamp();
+        // A poisoned lock or a failed write must never take the app down over a
+        // log line, so both degrade to dropping the line.
+        let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        if cur.as_ref().map_or(true, |(d, _)| *d != day) {
+            prune_logs(&self.dir);
+            *cur = open_log_day(&self.dir, &day).map(|f| (day, f));
+        }
+        match cur.as_mut() {
+            Some((_, f)) => f.write(buf).or(Ok(buf.len())),
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        match cur.as_mut() {
+            Some((_, f)) => f.flush().or(Ok(())),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DailyLog {
+    type Writer = &'a DailyLog;
+    fn make_writer(&'a self) -> Self::Writer {
+        self
+    }
+}
+
+fn init_logging(dir: &std::path::Path) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let Some(file) = DailyLog::open(dir) else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+        return;
+    };
+    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false);
+    #[cfg(debug_assertions)]
+    {
+        use tracing_subscriber::fmt::writer::MakeWriterExt;
+        builder.with_writer(file.and(std::io::stdout)).init();
+    }
+    #[cfg(not(debug_assertions))]
+    builder.with_writer(file).init();
 }
 
 /// Resolve the platform app-data dir without pulling in extra deps.
@@ -176,13 +282,6 @@ fn ensure_app_in_applications() {
 fn ensure_app_in_applications() {}
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     // Capture any panic to a log file so a launch crash is diagnosable instead of
     // a silent SIGABRT. Chains to the default hook so console output is preserved.
     let default_hook = std::panic::take_hook();
@@ -210,6 +309,10 @@ fn main() {
             // exit, rather than returning Err (which aborts inside tao's
             // did_finish_launching as a silent SIGABRT).
             expect_startup("Database", db::init(app));
+            // Logging starts here, not in main(): the log sits in the ACTIVE store
+            // dir, which only `db::init` can resolve (it depends on the signed-in
+            // account). Everything that logs runs after this point.
+            init_logging(db::app_data_dir());
             expect_startup("Signup rules table", signup_rules::ensure_table());
             // Unified RBAC tables + system roles (synced with the server).
             if let Err(e) = employees::ensure_rbac() {
@@ -516,6 +619,7 @@ fn main() {
             mark_quote_converted,
             get_quote_numbering_config,
             save_quote_numbering_config,
+            release_letter::generate_release_letter,
             save_invoice_costs,
             save_invoice_shipping,
             set_invoice_sent_date,

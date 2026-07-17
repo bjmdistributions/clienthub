@@ -216,10 +216,17 @@ pub fn record_upsert(
             columns: columns.clone(),
         },
     };
+    // Queue FIRST, before anything that can fail. The caller has already mutated
+    // the local row by the time it calls us, so the row exists here and nowhere
+    // else; if write_event_file (which writes into the folder-sync directory — a
+    // disk-full, AV lock or read-only dir all fail it) returned early, the event
+    // would never be queued and that write could never reach another device.
+    // The insert is idempotent, so queueing a row whose local bookkeeping then
+    // fails is strictly safer than the reverse.
+    crate::netsync::on_local_event(&event); // durably queue for network push, connected or not
     update_row_clocks(table, row_id, &columns, event.hlc)?;
     write_event_file(&event)?;
     mark_applied(&event.id)?;
-    crate::netsync::on_local_event(&event); // queue for network push (no-op if not connected)
     Ok(())
 }
 
@@ -232,10 +239,12 @@ pub fn record_delete(table: &str, row_id: &str) -> Result<()> {
             row_id: row_id.to_string(),
         },
     };
+    // Queue FIRST — same reasoning as record_upsert: the caller may have already
+    // deleted the row locally, so a failure below must not cost us the event.
+    crate::netsync::on_local_event(&event); // durably queue for network push, connected or not
     write_tombstone(table, row_id, event.hlc)?;
     write_event_file(&event)?;
     mark_applied(&event.id)?;
-    crate::netsync::on_local_event(&event); // queue for network push (no-op if not connected)
     Ok(())
 }
 

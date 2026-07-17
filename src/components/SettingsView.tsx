@@ -764,6 +764,33 @@ function ConnectedPill({ ok, onLabel = "Connected", offLabel = "Not set up" }: {
     : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><span className="w-2 h-2 rounded-full bg-line-3" /> {offLabel}</span>;
 }
 
+// Cloud-sync health. Deliberately not ConnectedPill: having a token stored is not
+// health — an expired one looks identical until the server rejects it, which is how
+// a device can sit on a green pill for days syncing nothing. Green only when the
+// server confirmed a pull/push recently; red when it rejected us.
+function SyncPill({ auth, connected }: { auth?: string; connected?: boolean }) {
+  if (auth === "auth_lost")
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-danger-ink bg-danger-bg border border-danger-ink/20 px-2.5 h-7 rounded-full">
+        <AlertCircle size={13} /> Signed out — sign in again
+      </span>
+    );
+  if (auth === "ok") return <ConnectedPill ok />;
+  return <ConnectedPill ok={false} offLabel={connected ? "Not syncing" : "Not set up"} />;
+}
+
+// Last time the SERVER confirmed a pull or push — the only honest "is this working".
+function lastSyncLabel(pullAt?: string, pushAt?: string) {
+  const times = [pullAt, pushAt].filter(Boolean).map((s) => new Date(s!).getTime()).filter((n) => !isNaN(n));
+  if (!times.length) return "Never";
+  const mins = Math.floor((Date.now() - Math.max(...times)) / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  return `${Math.floor(hrs / 24)} days ago`;
+}
+
 // A quiet "Advanced" disclosure for technical/rare fields.
 function Advanced({ label = "Advanced", children }: { label?: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -1756,7 +1783,7 @@ function SyncTab() {
   const [settingPassphrase,setSettingPassphrase]= useState(false);
   const [encryptError,     setEncryptError]     = useState<string | null>(null);
   // Cloud network sync (Phase 2)
-  const [net,   setNet]   = useState<{ connected: boolean; url: string; pending_push: number; pull_cursor: number } | null>(null);
+  const [net,   setNet]   = useState<Awaited<ReturnType<typeof api.netsyncStatus>> | null>(null);
   const [nUrl,  setNUrl]  = useState("https://ecliptr.app");
   const [nEmail,setNEmail]= useState("");
   const [nPass, setNPass] = useState("");
@@ -1866,13 +1893,25 @@ function SyncTab() {
     <div className="max-w-2xl space-y-4">
       {/* Cloud sync — the main thing on this page */}
       <SettingCard icon={Cloud} title="Cloud sync" purpose="Keeps this desktop in step with your Ecliptr workspace."
-        aside={<ConnectedPill ok={!!net?.connected} />}>
+        aside={<SyncPill auth={net?.auth} connected={net?.connected} />}>
         {net?.connected ? (
           <div className="space-y-3">
+            {net.auth === "auth_lost" && (
+              <div className="rounded-xl border border-danger-ink/20 bg-danger-bg px-4 py-3 text-[12.5px] text-danger-ink flex items-start gap-2">
+                <AlertCircle size={14} className="shrink-0 mt-px" />
+                <span>This device is signed out, so nothing is syncing. Sign out and back in to reconnect — your unsynced changes are kept and upload once you do.</span>
+              </div>
+            )}
             <div className="rounded-xl border border-line bg-surface-2/40 px-4 divide-y divide-line-2">
               <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
                 <span className="text-muted">Server</span>
                 <span className="text-ink truncate">{net.url}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+                <span className="text-muted">Last synced</span>
+                <span className={`tabular-nums ${net.auth === "ok" ? "text-ink" : "text-danger-ink"}`}>
+                  {lastSyncLabel(net.last_pull_at, net.last_push_at)}
+                </span>
               </div>
               <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
                 <span className="text-muted">Waiting to upload</span>

@@ -856,6 +856,19 @@ export interface InvoiceInput {
   recurring?: string;
 }
 
+export interface ReleaseLetterInput {
+  buyer_name: string;
+  buyer_company: string;
+  description: string;
+  letter_date: string;
+  seller_name: string;
+  /** Letter body; {BUYER}, {SELLER} and {DESCRIPTION} are substituted server-side. */
+  body: string;
+  /** data:image/png;base64,... from the signature canvas. */
+  signature_png: string | null;
+  output_path: string;
+}
+
 export interface Quote {
   id: string;
   client_id: string;
@@ -1693,6 +1706,10 @@ export const api = {
   getQuoteNumberingConfig: () => invoke<InvoiceNumberingConfig>("get_quote_numbering_config"),
   saveQuoteNumberingConfig: (prefix: string, nextNumber: number, padding: number) =>
     invoke<void>("save_quote_numbering_config", { prefix, nextNumber, padding }),
+
+  // Release letter — one-page closeout authorization PDF on our invoice branding.
+  generateReleaseLetter: (input: ReleaseLetterInput) =>
+    invoke<string>("generate_release_letter", { input }),
   markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
   // Void / un-void an invoice ("deal fell through"). Voided invoices drop out of
@@ -2017,7 +2034,8 @@ export const api = {
 
   // Network sync (Phase 2 — central server push/pull)
   netsyncStatus: () =>
-    invoke<{ connected: boolean; url: string; pending_push: number; pull_cursor: number }>("netsync_status"),
+    invoke<{ connected: boolean; url: string; pending_push: number; pull_cursor: number;
+             auth: "ok" | "auth_lost" | "offline"; last_pull_at: string; last_push_at: string }>("netsync_status"),
   netsyncConnect: (url: string, email: string, password: string) =>
     invoke<void>("netsync_connect", { url, email, password }),
   netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
