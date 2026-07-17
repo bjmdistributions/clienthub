@@ -98,7 +98,7 @@ impl Default for InvoiceTemplate {
 
 impl InvoiceTemplate {
     /// Logo box scale factor for the configured size.
-    fn logo_size_factor(&self) -> f32 {
+    pub(crate) fn logo_size_factor(&self) -> f32 {
         match self.logo_size.as_str() {
             "small" => 0.7,
             "large" => 1.4,
@@ -106,7 +106,7 @@ impl InvoiceTemplate {
         }
     }
     /// Accent color parsed to a printpdf fill/outline color (near-black on bad input).
-    fn accent(&self) -> Color {
+    pub(crate) fn accent(&self) -> Color {
         parse_hex_color(&self.accent_color)
     }
 }
@@ -291,11 +291,11 @@ pub fn parse_client_address(metadata: &Option<String>) -> Option<ClientAddress> 
 
 // ---------- Layout constants ----------
 
-const PAGE_W: f32 = 215.9;
-const PAGE_H: f32 = 279.4;
-const MARGIN_L: f32 = 20.0;
+pub(crate) const PAGE_W: f32 = 215.9;
+pub(crate) const PAGE_H: f32 = 279.4;
+pub(crate) const MARGIN_L: f32 = 20.0;
 const MARGIN_R: f32 = 20.0;
-const CONTENT_R: f32 = PAGE_W - MARGIN_R; // 195.9
+pub(crate) const CONTENT_R: f32 = PAGE_W - MARGIN_R; // 195.9
 
 const LOGO_MAX_W: f32 = 70.6;
 const LOGO_MAX_H: f32 = 28.2;
@@ -345,7 +345,7 @@ fn char_width(ch: char, bold: bool) -> f32 {
     if code >= 32 && code < 128 { table[code - 32] } else { 556.0 }
 }
 
-fn text_width_mm(text: &str, size_pt: f32, bold: bool) -> f32 {
+pub(crate) fn text_width_mm(text: &str, size_pt: f32, bold: bool) -> f32 {
     let units: f32 = text.chars().map(|c| char_width(c, bold)).sum();
     let width_pt = units / 1000.0 * size_pt;
     width_pt * 25.4 / 72.0
@@ -835,7 +835,7 @@ fn logo_x_for(placement: &str, w: f32) -> f32 {
 /// Draw the logo scaled to a `size_factor`-scaled max box and positioned by
 /// `placement`. Returns the box (x, w, bottom_y) so the company text can stack
 /// beneath it.
-fn render_logo(
+pub(crate) fn render_logo(
     layer: &PdfLayerReference,
     logo_path: &str,
     placement: &str,
