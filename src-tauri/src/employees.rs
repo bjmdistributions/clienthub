@@ -239,6 +239,17 @@ pub fn session_actor() -> Option<(String, String)> {
     load_me(&id).map(|m| (m.id, m.display_name))
 }
 
+/// The org that owns rows this device authors. Rows must carry their author's org
+/// rather than relying on the schema's `DEFAULT 'org_default'`, which is only ever
+/// right by luck for the first tenant. An owner PIN session has no staff row and so
+/// no org of its own; it falls back to the default org, which is where its rows
+/// already landed.
+pub fn session_org_id() -> String {
+    current_staff_id()
+        .and_then(|id| staff_org_id(&id))
+        .unwrap_or_else(|| ORG_ID.to_string())
+}
+
 /// Whether a per-org approval toggle is on (stored "1"/"true").
 pub fn approval_required(key: &str) -> bool {
     let conn = match pool().get() { Ok(c) => c, Err(_) => return false };

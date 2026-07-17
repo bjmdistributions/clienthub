@@ -71,7 +71,7 @@ import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
-import { canViewTab, isAdmin } from "./lib/permissions";
+import { can, canViewTab, isAdmin } from "./lib/permissions";
 
 type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "settings";
 
@@ -438,7 +438,9 @@ export default function App() {
   const visible = (id: Tab): boolean =>
     id === "platform" ? (superadmin || localSuper)
     : id === "archive" ? isAdmin(me)              // admin-only, like the money views
-    : id === "financials" ? isAdmin(me)           // owner/admin books area
+    // Books area. Admins keep access unconditionally (as before); a non-admin
+    // now needs an explicit financials:view grant, which no role template hands out.
+    : id === "financials" ? (isAdmin(me) || can(me, "financials:view"))
 
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item

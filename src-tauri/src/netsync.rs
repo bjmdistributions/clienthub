@@ -420,8 +420,17 @@ pub fn spawn_loop(app: tauri::AppHandle) {
     use tauri::Emitter;
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(POLL_SECS));
+        let mut ticks: u32 = 0;
         loop {
             interval.tick().await;
+            // Runs on the first tick (an immediate baseline at startup) and every
+            // CHECK_EVERY_TICKS after. Sits ABOVE the is_enabled gate on purpose: the
+            // orphan-link invariant is about this device's books and holds whether or
+            // not a server is configured.
+            if ticks % CHECK_EVERY_TICKS == 0 {
+                run_invariant_checks();
+            }
+            ticks = ticks.wrapping_add(1);
             if !is_enabled() {
                 continue;
             }
@@ -545,6 +554,9 @@ pub async fn connect(url: &str, email: &str, password: &str) -> Result<ServerIde
     // Google, Shopify, Plaid keys + linked banks) so a fresh admin inherits the
     // team's connections without re-typing. Best-effort — only writes what's absent.
     let _ = materialize_all_secrets_from_server().await;
+    // Baseline the invariants for this store now that the bootstrap pull and any heal
+    // have landed, rather than leaving the panel blank until the first periodic check.
+    run_invariant_checks();
     Ok(identity)
 }
 
@@ -568,7 +580,103 @@ pub fn status_json() -> serde_json::Value {
         "auth": auth_state(),
         "last_pull_at": state_get("netsync_last_pull_at").unwrap_or_default(),
         "last_push_at": state_get("netsync_last_push_at").unwrap_or_default(),
+        // Last result of `run_invariant_checks` — stored rather than recomputed here,
+        // because the UI re-reads status far more often than the checks are worth
+        // running. `invariants_at` is how stale the verdict is.
+        "invariants": state_get("netsync_invariants")
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or_else(|| serde_json::json!([])),
+        "invariants_at": state_get("netsync_invariants_at").unwrap_or_default(),
     })
+}
+
+// ---------- standing invariant checks ----------
+
+/// Poll ticks between self-checks (~30 min at POLL_SECS=20). The checks read two
+/// small tables — too much to repeat on every 20s tick, nothing at this spacing.
+const CHECK_EVERY_TICKS: u32 = 90;
+
+/// A local change still queued this long WHILE the server is answering our calls
+/// means the push leg is failing silently. Well clear of a normal backlog: a
+/// reconnecting device drains its whole queue inside one `push_pending` pass.
+const QUEUE_STALL_SECS: i64 = 15 * 60;
+
+/// Assert the invariants this build actually holds, and LOG whatever breaks them.
+///
+/// A smoke alarm, not a repair crew: it never mutates data. The repairs already exist
+/// (`cleanup_orphan_allocations`, Repair sync, Restore from server) and stay the
+/// user's to run — a check that silently "fixed" the books would destroy the evidence
+/// of the defect that caused the divergence. Findings go to the daily file log at
+/// error level and into `status_json` for the Settings panel.
+///
+/// Deliberately NOT checked — neither is an invariant this build holds:
+///   - "every local row reached the server or sits in netsync_outbound": undecidable
+///     on this device. A drained queue cannot distinguish "pushed and accepted" from
+///     "written while disconnected and never queued", and the server can drop a pushed
+///     event and still answer 200 (`restore_snapshot`'s reconcile note works through
+///     exactly this). Proving it needs per-event acks. The queue check below is the
+///     half that IS observable: work that got queued is still moving.
+///   - "the pull cursor never went backwards": it deliberately goes backwards, and
+///     those are the healthy paths — rewind-on-apply-failure, Repair, Deep repair.
+///     Nothing else writes it: the only other writer stores the server's cursor, and
+///     `pull_events` seeds `max_seq` with the caller's cursor and only ever raises it,
+///     so a smaller value can't come back. There is no unintentional regression left
+///     to detect, so the check could only fire on a deliberate rewind.
+fn run_invariant_checks() {
+    let mut findings: Vec<String> = Vec::new();
+    if let Ok(conn) = pool().get() {
+        // INVARIANT: queued local work reaches the server. Only meaningful while the
+        // server is confirming our calls — an offline device is SUPPOSED to hold a
+        // backlog, and saying otherwise would cry wolf on every closed laptop.
+        if auth_state() == "ok" {
+            let queued: Option<(i64, Option<String>)> = conn
+                .query_row("SELECT COUNT(*), MIN(created_at) FROM netsync_outbound", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .ok();
+            if let Some((n, Some(oldest))) = queued {
+                let age = chrono::DateTime::parse_from_rfc3339(&oldest)
+                    .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds())
+                    .unwrap_or(0);
+                if n > 0 && age > QUEUE_STALL_SECS {
+                    findings.push(format!(
+                        "{} local change(s) have been waiting to upload for {} min while the server is reachable — this device is holding the only copy",
+                        n,
+                        age / 60
+                    ));
+                }
+            }
+        }
+
+        // INVARIANT: no allocation points at a bank transaction that no longer exists.
+        // Re-importing a statement replaces txn ids and can strand the allocations that
+        // referenced them. The money SUMs are guarded with EXISTS(bank_txn) so an orphan
+        // no longer doubles a deal's profit, but it still means a link the user made is
+        // silently doing nothing.
+        let orphans: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bank_allocation a
+                 WHERE NOT EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if orphans > 0 {
+            findings.push(format!(
+                "{} bank link(s) point at a transaction that no longer exists — open Deal flow to clear them",
+                orphans
+            ));
+        }
+    }
+
+    for f in &findings {
+        tracing::error!("invariant check: {}", f);
+    }
+    state_set(
+        "netsync_invariants",
+        &serde_json::to_string(&findings).unwrap_or_else(|_| "[]".into()),
+    );
+    state_set("netsync_invariants_at", &chrono::Utc::now().to_rfc3339());
 }
 
 // ---------- Tauri commands ----------

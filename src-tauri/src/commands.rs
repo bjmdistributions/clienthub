@@ -4570,7 +4570,11 @@ pub async fn add_deal_receipt(deal_flow_id: String, amount: f64, label: Option<S
     let now = Utc::now().to_rfc3339();
     let amt = r2(amount);
     let lbl = label.unwrap_or_default();
+    // Author's org, for the same reason as bank_allocation. (This table has no
+    // created_by column, so there is no authorship stamp to record here.)
+    let org = crate::employees::session_org_id();
     let mut cols = Map::new();
+    cols.insert("org_id".into(), json!(org));
     cols.insert("deal_flow_id".into(), json!(deal_flow_id));
     cols.insert("amount".into(), json!(amt));
     cols.insert("label".into(), json!(lbl));
@@ -4579,8 +4583,8 @@ pub async fn add_deal_receipt(deal_flow_id: String, amount: f64, label: Option<S
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("deal_receipts", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("INSERT INTO deal_receipts (id,deal_flow_id,amount,label,received_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?5,?5)",
-        rusqlite::params![id, deal_flow_id, amt, lbl, now]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO deal_receipts (id,org_id,deal_flow_id,amount,label,received_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6,?6)",
+        rusqlite::params![id, org, deal_flow_id, amt, lbl, now]).map_err(|e| e.to_string())?;
     crate::netsync::push_now();
     Ok(id)
 }
@@ -9856,25 +9860,58 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
     }))
 }
 
-/// Set a transaction's classification (category + counterparty) and reviewed flag.
+/// The columns a review save writes: ONLY the fields actually supplied. `None`
+/// when nothing was, so a no-op save emits no event instead of bumping a clock
+/// for a change that didn't happen.
+///
+/// This is the rule that matters for sync correctness. Writes are per-column
+/// last-write-wins, so naming a column re-stamps its clock with a fresh HLC —
+/// even when the value is unchanged. This function used to be inline and always
+/// named all six columns, which meant a category save also re-asserted
+/// `reviewed`; a stale device re-classifying a transaction would win LWW on
+/// `reviewed=0` and silently un-book work another device had booked. Kept as its
+/// own function so that rule is directly testable (see `review_cols_tests`).
+fn review_cols(
+    category: &Option<String>, counterparty_name: &Option<String>,
+    counterparty_type: &Option<String>, counterparty_id: &Option<String>,
+    flag: Option<i64>, now: &str,
+) -> Option<Map<String, Value>> {
+    let mut cols = Map::new();
+    if let Some(v) = category { cols.insert("category".into(), json!(v)); }
+    if let Some(v) = counterparty_name { cols.insert("counterparty_name".into(), json!(v)); }
+    if let Some(v) = counterparty_type { cols.insert("counterparty_type".into(), json!(v)); }
+    if let Some(v) = counterparty_id { cols.insert("counterparty_id".into(), json!(v)); }
+    if let Some(v) = flag { cols.insert("reviewed".into(), json!(v)); }
+    if cols.is_empty() { return None; }
+    cols.insert("updated_at".into(), json!(now));
+    Some(cols)
+}
+
+/// Mirrors `review_cols` locally: a NULL (omitted) field COALESCEs to the column's
+/// current value, so the local row changes exactly what the sync event does. Named
+/// so the test exercises the same string the command runs.
+const REVIEW_UPDATE_SQL: &str =
+    "UPDATE bank_txn SET category=COALESCE(?1,category), counterparty_name=COALESCE(?2,counterparty_name),
+       counterparty_type=COALESCE(?3,counterparty_type), counterparty_id=COALESCE(?4,counterparty_id),
+       reviewed=COALESCE(?5,reviewed), updated_at=?6 WHERE id=?7";
+
+/// Set a transaction's classification (category + counterparty) and/or reviewed
+/// flag. Every field is optional and only the ones supplied are written, like
+/// `tag_bank_txn_to_loan`. An explicit un-book/re-classify still works: it sends
+/// `reviewed` alone.
 #[tauri::command]
 pub async fn set_bank_txn_review(
-    id: String, category: String, counterparty_name: String,
-    counterparty_type: String, counterparty_id: String, reviewed: bool,
+    id: String, category: Option<String>, counterparty_name: Option<String>,
+    counterparty_type: Option<String>, counterparty_id: Option<String>, reviewed: Option<bool>,
 ) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    let flag = if reviewed { 1 } else { 0 };
-    let mut cols = Map::new();
-    cols.insert("category".into(), json!(category));
-    cols.insert("counterparty_name".into(), json!(counterparty_name));
-    cols.insert("counterparty_type".into(), json!(counterparty_type));
-    cols.insert("counterparty_id".into(), json!(counterparty_id));
-    cols.insert("reviewed".into(), json!(flag));
-    cols.insert("updated_at".into(), json!(now));
+    let flag = reviewed.map(|r| if r { 1i64 } else { 0i64 });
+    let Some(cols) = review_cols(&category, &counterparty_name, &counterparty_type, &counterparty_id, flag, &now)
+    else { return Ok(()); };
     sync::record_upsert("bank_txn", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE bank_txn SET category=?1, counterparty_name=?2, counterparty_type=?3, counterparty_id=?4, reviewed=?5, updated_at=?6 WHERE id=?7",
+        REVIEW_UPDATE_SQL,
         rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, flag, now, id],
     ).map_err(|e| e.to_string())?;
     Ok(())
@@ -9929,20 +9966,26 @@ pub async fn allocate_bank_txn(
     }
     let id = format!("alloc_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
+    // Money rows record who booked them and for which org, at the author. Leaving these
+    // to the schema default silently files every tenant's allocation under 'org_default'.
+    let org = crate::employees::session_org_id();
+    let by = crate::employees::session_actor().map(|(sid, _)| sid).unwrap_or_default();
     let mut cols = Map::new();
+    cols.insert("org_id".into(), json!(org));
     cols.insert("bank_txn_id".into(), json!(bank_txn_id));
     cols.insert("deal_flow_id".into(), json!(deal_flow_id));
     cols.insert("amount".into(), json!(amt));
     cols.insert("role".into(), json!(role));
     cols.insert("note".into(), json!(note));
+    cols.insert("created_by".into(), json!(by));
     cols.insert("created_at".into(), json!(now));
     cols.insert("updated_at".into(), json!(now));
     sync::record_upsert("bank_allocation", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO bank_allocation (id, bank_txn_id, deal_flow_id, amount, role, note, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
-        rusqlite::params![id, bank_txn_id, deal_flow_id, amt, role, note, now],
+        "INSERT INTO bank_allocation (id, org_id, bank_txn_id, deal_flow_id, amount, role, note, created_by, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+        rusqlite::params![id, org, bank_txn_id, deal_flow_id, amt, role, note, by, now],
     ).map_err(|e| e.to_string())?;
     drop(conn); // release before recalc acquires its own connection
 
@@ -10524,13 +10567,29 @@ pub async fn refund_status_all() -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Finished work: a transaction that's been reviewed, or that's already linked to
+/// a deal. Bulk wipes and the bank feed must not destroy these behind Jack's back
+/// — once they're done they don't reopen. A missing row counts as not-finished so
+/// callers still no-op cleanly on it.
+fn bank_txn_is_finished(conn: &rusqlite::Connection, id: &str) -> bool {
+    conn.query_row(
+        "SELECT reviewed=1 OR EXISTS(SELECT 1 FROM bank_allocation WHERE bank_txn_id=?1) FROM bank_txn WHERE id=?1",
+        [id],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) != 0
+}
+
 /// Bulk-remove bank transactions (and their allocations) by source, synced so the
 /// delete propagates to other devices/the server (a raw DB delete would resurrect
 /// via sync). scope: "statements" (everything NOT from the Plaid feed — pdf/ofx/
 /// csv/ai), "plaid", or "all". Use "statements" to drop manual imports once the
 /// live feed is connected.
+///
+/// Reviewed or deal-linked transactions are KEPT and reported (`kept`) unless
+/// `force` — a bulk wipe must not silently take finished books with it. Callers
+/// re-invoke with force=true once the user has been told exactly what's at stake.
 #[tauri::command]
-pub async fn clear_bank_txns(scope: String) -> Result<Value, String> {
+pub async fn clear_bank_txns(scope: String, force: bool) -> Result<Value, String> {
     let where_sql = match scope.as_str() {
         "plaid" => "source_format = 'plaid'",
         "all" => "1=1",
@@ -10544,7 +10603,12 @@ pub async fn clear_bank_txns(scope: String) -> Result<Value, String> {
     };
     let mut deleted = 0i64;
     let mut alloc_removed = 0i64;
+    let mut kept: Vec<String> = Vec::new();
     for id in &ids {
+        if !force {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            if bank_txn_is_finished(&conn, id) { kept.push(id.clone()); continue; }
+        }
         let alloc_ids: Vec<String> = {
             let conn = pool().get().map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare("SELECT id FROM bank_allocation WHERE bank_txn_id=?1").map_err(|e| e.to_string())?;
@@ -10562,7 +10626,13 @@ pub async fn clear_bank_txns(scope: String) -> Result<Value, String> {
         if conn.execute("DELETE FROM bank_txn WHERE id=?1", [id]).unwrap_or(0) > 0 { deleted += 1; }
     }
     if deleted + alloc_removed > 0 { crate::netsync::push_now(); } // reach peers now, not on the next poll
-    Ok(json!({ "deleted": deleted, "allocations_removed": alloc_removed }))
+    if !kept.is_empty() {
+        tracing::warn!(
+            "clear_bank_txns({}): kept {} reviewed/deal-linked transaction(s), deleted {} — kept ids: {}",
+            scope, kept.len(), deleted, kept.join(", ")
+        );
+    }
+    Ok(json!({ "deleted": deleted, "allocations_removed": alloc_removed, "kept": kept.len() }))
 }
 
 // ── Plaid live bank/card feed ───────────────────────────────────────────────
@@ -10756,6 +10826,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let now = Utc::now().to_rfc3339();
     let mut imported = 0i64;
     let mut removed = 0i64;
+    let mut unlinked_removed: Vec<String> = Vec::new(); // bank retracted them AFTER they were reviewed/linked
     let mut preparing = false;  // at least one item still extracting after we waited
     let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
     // Shared budget (seconds) for waiting on freshly-linked items whose initial
@@ -10874,8 +10945,35 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let tid = r.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
                     if tid.is_empty() { continue; }
                     let id = plaid_txn_id(tid);
+                    // The bank retracted this transaction — most often a PENDING row
+                    // being replaced by its posted twin under a NEW transaction_id.
+                    // Honour it. Keeping a retracted row that is reviewed/allocated
+                    // would leave TWO rows for one real transaction: the stale one
+                    // still holding the allocation and the posted one looking unbooked
+                    // and inviting a second — i.e. the double-counted profit this all
+                    // exists to prevent. Its allocations go through the SAME synced
+                    // delete, so no orphan is minted either.
+                    // A completed deal's recorded profit is NOT at risk: it is stored
+                    // on the deal, and resync_completed_deal falls back to the last
+                    // RECORDED figures for a leg that has no live link — losing a link
+                    // can never erase it.
+                    let was_finished = bank_txn_is_finished(&conn, &id);
+                    let allocs: Vec<String> = conn
+                        .prepare("SELECT id FROM bank_allocation WHERE bank_txn_id=?1")
+                        .and_then(|mut st| {
+                            st.query_map([&id], |r| r.get::<_, String>(0))
+                                .map(|rows| rows.filter_map(|x| x.ok()).collect())
+                        })
+                        .unwrap_or_default();
+                    for a in &allocs {
+                        let _ = sync::record_delete("bank_allocation", a);
+                        let _ = conn.execute("DELETE FROM bank_allocation WHERE id=?1", [a]);
+                    }
                     let _ = sync::record_delete("bank_txn", &id);
                     if conn.execute("DELETE FROM bank_txn WHERE id=?1", [&id]).unwrap_or(0) > 0 { removed += 1; }
+                    // Finished work disappearing must never be silent — Jack needs to
+                    // re-link the posted replacement.
+                    if was_finished { unlinked_removed.push(id); }
                 }
             }
             // A row failed to persist — do NOT advance the cursor, or Plaid never
@@ -10913,7 +11011,13 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl(false);
     crate::netsync::push_now(); // freshly imported bank activity reaches other devices now
-    Ok(json!({ "imported": imported, "removed": removed, "preparing": preparing, "results": results }))
+    if !unlinked_removed.is_empty() {
+        tracing::warn!(
+            "plaid_sync: bank retracted {} transaction(s) that were reviewed or linked to a deal — removed and unlinked (usually a pending row replaced by its posted twin; re-link the replacement): {}",
+            unlinked_removed.len(), unlinked_removed.join(", ")
+        );
+    }
+    Ok(json!({ "imported": imported, "removed": removed, "unlinked": unlinked_removed.len(), "preparing": preparing, "results": results }))
 }
 
 /// Force a full re-pull: reset every bank's sync cursor to the start, then sync.
@@ -13748,5 +13852,82 @@ mod payout_tests {
         assert_eq!(restored, shares());
         let empty = Map::new();
         assert!(shares_from_breakdown(&empty).is_none());
+    }
+}
+
+#[cfg(test)]
+mod review_cols_tests {
+    use super::{review_cols, REVIEW_UPDATE_SQL};
+
+    fn s(v: &str) -> Option<String> { Some(v.to_string()) }
+    const NONE: Option<String> = None;
+
+    // The regression. Booking a transaction is real work Jack does once; a save
+    // that merely re-classifies it must not be able to say anything about
+    // `reviewed`, because naming the column re-stamps its LWW clock and a stale
+    // device would then win with reviewed=0 and un-book it.
+    #[test]
+    fn category_save_cannot_touch_reviewed() {
+        let cols = review_cols(&s("supplier_payment"), &NONE, &NONE, &NONE, None, "T").unwrap();
+        assert!(!cols.contains_key("reviewed"), "category save must never emit reviewed");
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["category", "updated_at"]);
+    }
+
+    // Jack's requirement: un-booking / re-classifying by hand must still work.
+    #[test]
+    fn explicit_unbook_emits_reviewed_alone() {
+        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, Some(0), "T").unwrap();
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["reviewed", "updated_at"]);
+        assert_eq!(cols["reviewed"], 0);
+        // ...and booking it, which must not disturb the classification.
+        let booked = review_cols(&NONE, &NONE, &NONE, &NONE, Some(1), "T").unwrap();
+        assert_eq!(booked["reviewed"], 1);
+        assert!(!booked.contains_key("category"));
+    }
+
+    #[test]
+    fn nothing_supplied_emits_nothing() {
+        assert!(review_cols(&NONE, &NONE, &NONE, &NONE, None, "T").is_none());
+    }
+
+    // The local write must agree with the event: re-classifying leaves the row
+    // booked. Runs the exact SQL the command runs.
+    #[test]
+    fn coalesce_update_leaves_unsupplied_columns_alone() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '',
+               counterparty_name TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '',
+               counterparty_id TEXT NOT NULL DEFAULT '', reviewed INTEGER NOT NULL DEFAULT 0,
+               updated_at TEXT NOT NULL DEFAULT '');
+             INSERT INTO bank_txn (id,category,counterparty_name,reviewed) VALUES ('t1','wire_fee','ACME',1);",
+        ).unwrap();
+
+        // Re-classify only — reviewed and counterparty_name must survive.
+        conn.execute(
+            REVIEW_UPDATE_SQL,
+            rusqlite::params![s("supplier_payment"), NONE, NONE, NONE, None::<i64>, "T2", "t1"],
+        ).unwrap();
+        let (cat, name, rev): (String, String, i64) = conn
+            .query_row("SELECT category,counterparty_name,reviewed FROM bank_txn WHERE id='t1'", [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(cat, "supplier_payment");
+        assert_eq!(name, "ACME", "an untouched field must not be blanked");
+        assert_eq!(rev, 1, "re-classifying must not un-book the transaction");
+
+        // Explicit un-book — clears the flag, keeps the new classification.
+        conn.execute(
+            REVIEW_UPDATE_SQL,
+            rusqlite::params![NONE, NONE, NONE, NONE, Some(0i64), "T3", "t1"],
+        ).unwrap();
+        let (cat2, rev2): (String, i64) = conn
+            .query_row("SELECT category,reviewed FROM bank_txn WHERE id='t1'", [],
+                |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(cat2, "supplier_payment");
+        assert_eq!(rev2, 0);
     }
 }

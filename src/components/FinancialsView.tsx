@@ -4,7 +4,7 @@ import {
   Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil,
 } from "lucide-react";
 import {
-  api, BankTxn, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
+  api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
@@ -486,6 +486,13 @@ export default function FinancialsView() {
         }
         await refreshAll(false);
       }
+      // The bank retracted transactions we'd already reviewed or booked to a deal —
+      // usually a pending row replaced by its posted twin. They're gone (keeping them
+      // would leave two rows for one transaction), so say so: the replacement needs
+      // re-linking. Recorded profit on a completed deal is unaffected.
+      if (r.unlinked > 0) {
+        toast(`Your bank replaced ${r.unlinked} transaction${r.unlinked === 1 ? "" : "s"} you'd already reviewed or linked to a deal — re-link the replacement${r.unlinked === 1 ? "" : "s"}. Completed deals keep their recorded profit.`, "error");
+      }
       // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
       for (const x of errored) {
         toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
@@ -494,18 +501,31 @@ export default function FinancialsView() {
     finally { setPlaidSyncing(false); }
   };
 
+  // A bulk clear keeps anything reviewed or linked to a deal; those only go if
+  // you're told exactly what they are and say yes a second time.
+  const clearTxnsGuarded = async (scope: "statements" | "all") => {
+    const r = await api.clearBankTxns(scope);
+    const n = r.kept;
+    if (n === 0) return r;
+    if (!confirm(
+      `Kept ${n} transaction${n === 1 ? "" : "s"} that ${n === 1 ? "is" : "are"} already reviewed or linked to a deal.\n\nDelete ${n === 1 ? "it" : "them"} too? Any deal linked to ${n === 1 ? "it" : "them"} loses that money from its recorded profit. This can't be undone.`
+    )) return r;
+    const f = await api.clearBankTxns(scope, true);
+    return { deleted: r.deleted + f.deleted, allocations_removed: r.allocations_removed + f.allocations_removed, kept: 0 };
+  };
+
   const clearAndRepull = async () => {
     if (!confirm(
-      "Clear ALL bank transactions (including any tags and deal/loan allocations) and re-pull fresh from your currently connected banks?\n\nUse this after removing a wrong account. This can't be undone."
+      "Clear bank transactions and re-pull fresh from your currently connected banks?\n\nAnything reviewed or linked to a deal is kept — you'll be asked separately before those go. Use this after removing a wrong account. This can't be undone."
     )) return;
     setPlaidSyncing(true);
     try {
-      const c = await api.clearBankTxns("all");
+      const c = await clearTxnsGuarded("all");
       const r = await api.plaidResyncAll();
       const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
       setPlaidPreparing(stillPreparing);
       if (stillPreparing) schedulePrepRetries(6);
-      toast(`Cleared ${c.deleted} old, pulled ${r.imported} fresh transaction${r.imported === 1 ? "" : "s"}`);
+      toast(`Cleared ${c.deleted} old, pulled ${r.imported} fresh transaction${r.imported === 1 ? "" : "s"}${c.kept > 0 ? ` (kept ${c.kept} reviewed or deal-linked)` : ""}`);
       for (const x of r.results.filter((x) => x.status === "error")) {
         toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
       }
@@ -647,37 +667,32 @@ export default function FinancialsView() {
   const clearStatementImports = async () => {
     if (clearing) return;
     if (!window.confirm(
-      "Remove all transactions imported from statement files (PDF/OFX/CSV)? This keeps everything from the live bank feed (Plaid). Any allocations on the removed transactions are also cleared. This can't be undone (you can re-import statements later)."
+      "Remove all transactions imported from statement files (PDF/OFX/CSV)? This keeps everything from the live bank feed (Plaid), plus anything reviewed or linked to a deal — you'll be asked separately before those go. This can't be undone (you can re-import statements later)."
     )) return;
     setClearing(true);
     try {
-      const r = await api.clearBankTxns("statements");
+      const r = await clearTxnsGuarded("statements");
       toast(
-        r.allocations_removed > 0
-          ? `Removed ${r.deleted} statement transactions (${r.allocations_removed} allocations cleared)`
-          : `Removed ${r.deleted} statement transactions`,
+        [
+          `Removed ${r.deleted} statement transactions`,
+          r.allocations_removed > 0 ? ` (${r.allocations_removed} allocations cleared)` : "",
+          r.kept > 0 ? ` — kept ${r.kept} reviewed or deal-linked` : "",
+        ].join(""),
       );
       await refreshAll(false);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setClearing(false); }
   };
 
-  // Save classification / reviewed flag (merges with existing fields).
-  const saveReview = async (
-    t: BankTxn,
-    patch: Partial<Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "reviewed">>,
-  ) => {
-    const m = {
-      category:          t.category || "",
-      counterparty_name: t.counterparty_name || "",
-      counterparty_type: t.counterparty_type || "",
-      counterparty_id:   t.counterparty_id || "",
-      reviewed:          t.reviewed,
-      ...patch,
-    };
+  // Save classification / reviewed flag. Sends ONLY the field being changed —
+  // never the whole cached row. Sync is per-column last-write-wins, so re-sending
+  // an untouched field re-stamps it with a fresh clock and lets this device's
+  // (possibly stale) copy beat a newer edit from another device. That is how
+  // changing a category used to un-book a transaction booked elsewhere.
+  const saveReview = async (t: BankTxn, patch: BankTxnReviewPatch) => {
     try {
-      await api.setBankTxnReview(t.id, m.category, m.counterparty_name, m.counterparty_type, m.counterparty_id, m.reviewed);
-      setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...m } : x)));
+      await api.setBankTxnReview(t.id, patch);
+      setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
       const s = await api.bankTxnSummary();
       setSummary(s);
     } catch (e: any) { toast(String(e), "error"); }
@@ -793,9 +808,9 @@ export default function FinancialsView() {
   };
 
   const bulkSetCategory = (cat: string) =>
-    runBulk((t) => api.setBankTxnReview(t.id, cat, t.counterparty_name || "", t.counterparty_type || "", t.counterparty_id || "", t.reviewed));
+    runBulk((t) => api.setBankTxnReview(t.id, { category: cat }));
   const bulkSetReviewed = (val: boolean) =>
-    runBulk((t) => api.setBankTxnReview(t.id, t.category || "", t.counterparty_name || "", t.counterparty_type || "", t.counterparty_id || "", val));
+    runBulk((t) => api.setBankTxnReview(t.id, { reviewed: val }));
   // Allocate each selected txn's remaining amount to one deal; role auto-picked by
   // direction so mixed in/out selections book to the correct side.
   const bulkAllocate = (deal: DealFlow) =>

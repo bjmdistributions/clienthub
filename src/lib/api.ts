@@ -1353,6 +1353,11 @@ export interface BankTxn {
   alloc_count: number;
   unallocated: number;
 }
+/// The fields a review save may change. Every one is optional because a save
+/// sends only what the user actually edited (see setBankTxnReview).
+export type BankTxnReviewPatch = Partial<
+  Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "reviewed">
+>;
 export interface BankTxnSummary {
   total: number;
   reviewed: number;
@@ -2035,7 +2040,8 @@ export const api = {
   // Network sync (Phase 2 — central server push/pull)
   netsyncStatus: () =>
     invoke<{ connected: boolean; url: string; pending_push: number; pull_cursor: number;
-             auth: "ok" | "auth_lost" | "offline"; last_pull_at: string; last_push_at: string }>("netsync_status"),
+             auth: "ok" | "auth_lost" | "offline"; last_pull_at: string; last_push_at: string;
+             invariants: string[]; invariants_at: string }>("netsync_status"),
   netsyncConnect: (url: string, email: string, password: string) =>
     invoke<void>("netsync_connect", { url, email, password }),
   netsyncDisconnect: () => invoke<void>("netsync_disconnect"),
@@ -2117,18 +2123,29 @@ export const api = {
     invoke<void>("plaid_exchange", { publicToken, institution }),
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
-  plaidSync: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
-  plaidResyncAll: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
-  plaidRefreshSync: () => invoke<{ imported: number; removed: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_refresh_sync"),
+  plaidSync: () => invoke<{ imported: number; removed: number; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
+  plaidResyncAll: () => invoke<{ imported: number; removed: number; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
+  plaidRefreshSync: () => invoke<{ imported: number; removed: number; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_refresh_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
-  setBankTxnReview: (id: string, category: string, counterpartyName: string, counterpartyType: string, counterpartyId: string, reviewed: boolean) =>
-    invoke<void>("set_bank_txn_review", { id, category, counterpartyName, counterpartyType, counterpartyId, reviewed }),
+  // Takes a patch, not a full row: only the fields present are written. Sync is
+  // per-column last-write-wins, so sending a field you aren't changing re-stamps
+  // it and can clobber another device's newer edit (a category change used to
+  // un-book a reviewed txn this way).
+  setBankTxnReview: (id: string, patch: BankTxnReviewPatch) =>
+    invoke<void>("set_bank_txn_review", {
+      id,
+      category: patch.category,
+      counterpartyName: patch.counterparty_name,
+      counterpartyType: patch.counterparty_type,
+      counterpartyId: patch.counterparty_id,
+      reviewed: patch.reviewed,
+    }),
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>
     invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note, allowSplit }),
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
-  clearBankTxns: (scope: "statements" | "plaid" | "all") =>
-    invoke<{ deleted: number; allocations_removed: number }>("clear_bank_txns", { scope }),
+  clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
+    invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
   dealAllocations: (dealFlowId: string) =>

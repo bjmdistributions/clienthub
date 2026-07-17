@@ -8,7 +8,8 @@ export interface Perms {
 export type Feature =
   | "dashboard" | "clients" | "invoices" | "quotes" | "deals" | "dealflow"
   | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings"
-  | "health" | "inventory" | "automation" | "notes" | "receivables" | "payables";
+  | "health" | "inventory" | "automation" | "notes" | "receivables" | "payables"
+  | "financials";
 
 /** True if the user holds a permission (wildcard "*" grants everything). */
 export function can(me: Perms | null | undefined, perm: string): boolean {
@@ -33,6 +34,9 @@ export function tabPerm(feature: Feature): string | null {
     case "receivables":
     case "payables":     return "deal_flow:view";
     case "quotes":       return "quotes:view";
+    // The books (bank balances, allocations, free cash). Admins also reach this
+    // via `*`/admin:manage — see the financials case in App.tsx's `visible`.
+    case "financials":   return "financials:view";
     case "suppliers":
     case "inventory":    return "inventory:view";
     case "analytics":

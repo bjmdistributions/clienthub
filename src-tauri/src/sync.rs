@@ -431,9 +431,10 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
 const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts"];
 
 /// True if peers will actually apply an event for `table`. Emitting a record for a
-/// table outside this set produces an event that the apply side rejects — which (with
-/// the pull retry loop) stalls a peer's sync. Callers that reassign rows across tables
-/// should broadcast ONLY for synced tables; the local UPDATE keeps this device correct.
+/// table outside this set produces an event the apply side dead-letters (logged and
+/// skipped, never applied) — the peer stays healthy, but the row silently does not
+/// replicate. Callers that reassign rows across tables should broadcast ONLY for
+/// synced tables; the local UPDATE keeps this device correct.
 pub fn is_synced_table(table: &str) -> bool {
     ALLOWED_TABLES.contains(&table)
 }
@@ -444,11 +445,29 @@ fn apply_event(event: &SyncEvent) -> Result<()> {
     }
     observe_remote(event.hlc);
 
+    // Dead-letter an event for a table this build doesn't know: log it, record it as
+    // applied, and skip. This must NOT be an error — every caller treats an apply
+    // failure as "retry this event", so a permanently-unknown table would re-fail every
+    // pass, holding the pull cursor back and stalling the device (the v0.15.44 outage).
+    // A newer peer emitting a table we haven't shipped yet is expected, not corruption,
+    // so it is the one apply outcome that is skipped instead of retried. The rows are
+    // recoverable after upgrading via Restore from server, which mirrors the server
+    // snapshot and does not consult sync_meta.
+    let table = match &event.op {
+        SyncOp::Upsert { table, .. } | SyncOp::Delete { table, .. } => table,
+    };
+    if !ALLOWED_TABLES.contains(&table.as_str()) {
+        tracing::warn!(
+            "sync: dead-lettered event {} for unknown table {} — this build cannot store it; run Restore from server after updating if data is missing",
+            event.id,
+            table
+        );
+        mark_applied(&event.id)?;
+        return Ok(());
+    }
+
     match &event.op {
         SyncOp::Upsert { table, row_id, columns } => {
-            if !ALLOWED_TABLES.contains(&table.as_str()) {
-                anyhow::bail!("unknown table {}", table);
-            }
             // If a tombstone with newer or equal HLC exists, skip.
             if let Some(ts) = tombstone_clock(table, row_id)? {
                 if ts >= event.hlc {
@@ -459,9 +478,6 @@ fn apply_event(event: &SyncEvent) -> Result<()> {
             apply_upsert(table, row_id, columns, event.hlc)?;
         }
         SyncOp::Delete { table, row_id } => {
-            if !ALLOWED_TABLES.contains(&table.as_str()) {
-                anyhow::bail!("unknown table {}", table);
-            }
             apply_delete(table, row_id, event.hlc)?;
         }
     }
