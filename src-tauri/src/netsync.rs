@@ -211,8 +211,27 @@ pub fn on_local_event(event: &SyncEvent) {
     }
 }
 
-/// Push all queued events to the server in batches, deleting each batch only on a
-/// successful response. Leaves the queue intact on any failure so it retries.
+/// What the server did with each event in a pushed batch. Both fields are absent on
+/// a server that predates the per-event ack — see `push_pending`.
+#[derive(Deserialize)]
+struct PushResp {
+    /// Applied AND appended to the org's pull log — durable, and every other device
+    /// will pull it. The ONLY safe reason to drop an event from the queue.
+    applied: Option<Vec<String>>,
+    /// Permanently refused (non-pushable table, or a row owned by another org).
+    /// Retrying can never change the answer, so these are dropped too — otherwise
+    /// the first one would sit at the head of the queue and block it forever. The
+    /// desktop queues every local event, including tables the server won't take
+    /// (deal_reps, staff_accounts, roles), so this is a normal, common case.
+    rejected: Option<Vec<String>>,
+}
+
+/// Push all queued events to the server in batches. An event leaves the queue ONLY
+/// when the server NAMES it applied (or permanently rejected). HTTP 200 is not an
+/// ack: the server warns-and-continues past an event whose apply fails and still
+/// returns 200, so deleting the whole batch on 200 — which is what this used to do —
+/// silently and permanently dropped those events from the only device that had them.
+/// Anything unnamed stays queued and retries on the next pass.
 pub async fn push_pending() -> Result<usize> {
     let cfg = match config() {
         Some(c) => c,
@@ -270,12 +289,47 @@ pub async fn push_pending() -> Result<usize> {
             anyhow::bail!("push failed: HTTP {}", resp.status());
         }
         note_sync_ok("netsync_last_push_at");
-        let conn = pool().get()?;
-        for (id, _) in &batch {
-            let _ = conn.execute("DELETE FROM netsync_outbound WHERE event_id=?1", [id]);
+        let acked: PushResp = resp.json().await.context("push response")?;
+        // No `applied` field = a server older than the per-event ack. Fall back to the
+        // historical behaviour (200 clears the batch) rather than keeping everything
+        // queued: against an old server nothing would ever be named, so the queue could
+        // never drain, this loop would re-send the same full batch forever, and every
+        // later local write would pile up behind it. That trade only exists if the
+        // droplet is rolled BACK after this ships, and the fallback is no worse than
+        // what shipping today already does.
+        let done: Vec<String> = match &acked.applied {
+            Some(applied) => applied
+                .iter()
+                .chain(acked.rejected.iter().flatten())
+                .cloned()
+                .collect(),
+            None => {
+                tracing::warn!(
+                    "netsync push: server did not ack events individually (old build) — \
+                     falling back to clearing the batch on HTTP 200"
+                );
+                batch.iter().map(|(id, _)| id.clone()).collect()
+            }
+        };
+        {
+            let conn = pool().get()?;
+            for id in &done {
+                let _ = conn.execute("DELETE FROM netsync_outbound WHERE event_id=?1", [id]);
+            }
         }
-        total += batch.len();
-        if (batch.len() as i64) < PUSH_BATCH {
+        if done.len() < batch.len() {
+            tracing::warn!(
+                "netsync push: server did not apply {} of {} event(s) — still queued, will retry",
+                batch.len() - done.len(),
+                batch.len()
+            );
+        }
+        total += done.len();
+        // Nothing left the queue, so re-selecting would hand back the same batch —
+        // stop and let the next poll tick retry. Otherwise keep draining: the events
+        // that stayed behind sit at the head and ride along with the next batch, so
+        // one un-appliable event can't stall everything queued behind it.
+        if done.is_empty() || (batch.len() as i64) < PUSH_BATCH {
             break;
         }
     }
@@ -318,6 +372,9 @@ pub async fn pull_apply() -> Result<usize> {
     // tick instead of being skipped forever. The old code advanced unconditionally,
     // permanently stranding any event that errored (the "stuck device" data-loss class).
     let mut earliest_failure: Option<i64> = None;
+    // Every event that failed THIS pass, with why. These ids — not the range they happen
+    // to sit in — are what a give-up may skip.
+    let mut failed: Vec<(String, String)> = Vec::new();
     loop {
         let cursor: i64 = state_get("netsync_pull_cursor")
             .and_then(|s| s.parse().ok())
@@ -354,6 +411,7 @@ pub async fn pull_apply() -> Result<usize> {
         for ev in &body.events {
             if let Err(e) = sync::apply_remote(ev) {
                 tracing::warn!("netsync apply failed for {}: {}", ev.id, e);
+                failed.push((ev.id.clone(), e.to_string()));
                 page_failed = true;
             } else {
                 applied += 1;
@@ -374,8 +432,8 @@ pub async fn pull_apply() -> Result<usize> {
 
     // If anything failed this pass, rewind the stored cursor to the earliest failed
     // page so those events are retried next tick — but bound the retries so a genuinely
-    // un-appliable ("poison") event advances after N tries (logged; run Deep repair to
-    // recover) rather than re-pulling the same page forever.
+    // un-appliable ("poison") event is dead-lettered after N tries rather than re-pulling
+    // the same page forever.
     const MAX_STUCK_RETRIES: u32 = 5;
     match earliest_failure {
         Some(rewind) => {
@@ -389,18 +447,35 @@ pub async fn pull_apply() -> Result<usize> {
                 0
             };
             if attempts >= MAX_STUCK_RETRIES {
-                tracing::error!(
-                    "netsync: an event at/after cursor {} failed to apply {} times; advancing past it (logged) — run Deep repair if data is missing",
-                    rewind, attempts
-                );
+                // Give up on the events that actually failed — BY ID, one at a time. The old
+                // code gave up on a RANGE: it left the cursor at the head of the pass, so
+                // every event between the poison one and the head was skipped without ever
+                // being applied or even looked at (this is what erased the Mac's financials
+                // — the first bank_txn event failed, and everything after it went with it).
+                // Dead-lettering marks these ids applied, so the next pass re-pulls this
+                // same page and applies every OTHER event in it normally.
+                for (id, reason) in &failed {
+                    match sync::dead_letter(id, reason) {
+                        Ok(()) => tracing::error!(
+                            "netsync: dead-lettered event {} after {} failed attempts: {} — run Restore from server if data is missing",
+                            id, attempts, reason
+                        ),
+                        // Couldn't record it, so we haven't earned the right to skip it.
+                        // The rewind below re-pulls it and we try again.
+                        Err(e) => tracing::error!("netsync: could not dead-letter {}: {}", id, e),
+                    }
+                }
                 state_set("netsync_stuck_cursor", "");
                 state_set("netsync_stuck_attempts", "0");
-                // leave netsync_pull_cursor advanced (skip the poison event)
             } else {
                 state_set("netsync_stuck_cursor", &rewind.to_string());
                 state_set("netsync_stuck_attempts", &(attempts + 1).to_string());
-                state_set("netsync_pull_cursor", &rewind.to_string());
             }
+            // Rewind either way. This is the structural half of the invariant: a failed
+            // page is the cursor's ceiling, and the ONLY way past it is every failing
+            // event in it being applied or dead-lettered. There is no branch that leaves
+            // the cursor above an event this device never accounted for.
+            state_set("netsync_pull_cursor", &rewind.to_string());
         }
         None => {
             if state_get("netsync_stuck_cursor").map(|s| !s.is_empty()).unwrap_or(false) {

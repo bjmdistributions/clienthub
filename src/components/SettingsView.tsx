@@ -1902,6 +1902,14 @@ function SyncTab() {
                 <span>This device is signed out, so nothing is syncing. Sign out and back in to reconnect — your unsynced changes are kept and upload once you do.</span>
               </div>
             )}
+            {net.invariants.length > 0 && (
+              <div className="text-[12.5px] text-warning-ink bg-warning-bg border border-warning rounded-xl px-4 py-3 flex items-start gap-2">
+                <AlertCircle size={14} className="mt-px shrink-0" />
+                <div className="space-y-1">
+                  {net.invariants.map((f, i) => <p key={i}>{f}</p>)}
+                </div>
+              </div>
+            )}
             <div className="rounded-xl border border-line bg-surface-2/40 px-4 divide-y divide-line-2">
               <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
                 <span className="text-muted">Server</span>
@@ -4405,9 +4413,10 @@ function BackupTab() {
 const MODULE_LABELS: Record<string, string> = {
   clients: "Clients", inventory: "Inventory", deal_flow: "Deals & pay (financial)",
   quotes: "Quotes", email: "Email", manifests: "Manifests",
-  analytics: "Analytics & reports", settings: "Settings",
+  analytics: "Analytics & reports", financials: "Financials (books, bank & free cash)",
+  settings: "Settings",
 };
-const MATRIX_MODULES = ["clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "settings"];
+const MATRIX_MODULES = ["clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "financials", "settings"];
 const ACTIONS = ["view", "edit", "export"] as const;
 // Sensitive per-role visibility flags (separate from the module×action grid).
 const VIS_TOGGLES: [string, string, string][] = [

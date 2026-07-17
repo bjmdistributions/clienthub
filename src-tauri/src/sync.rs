@@ -196,6 +196,15 @@ fn ensure_meta_tables() -> Result<()> {
         CREATE TABLE IF NOT EXISTS replayed_files (
             name TEXT PRIMARY KEY
         );
+        -- Events this device could not apply and has given up retrying. The durable
+        -- half of "a cursor only advances past an event that was applied or RECORDED
+        -- AS FAILED" — without this row, moving the cursor past an event loses it
+        -- with no trace of what was lost.
+        CREATE TABLE IF NOT EXISTS sync_dead_letters (
+            event_id TEXT PRIMARY KEY,
+            reason TEXT NOT NULL,
+            at TEXT NOT NULL
+        );
         "#,
     )?;
     Ok(())
@@ -286,6 +295,19 @@ fn mark_applied(event_id: &str) -> Result<()> {
         rusqlite::params![event_id, Utc::now().to_rfc3339()],
     )?;
     Ok(())
+}
+
+/// Durably record an event this device could not apply, then mark it applied so the
+/// pull cursor can move past THAT EVENT and nothing else. Recording is what makes the
+/// advance legitimate: the event is accounted for, named, and recoverable via Restore
+/// from server. Errors so the caller can keep retrying rather than advance blind.
+pub fn dead_letter(event_id: &str, reason: &str) -> Result<()> {
+    let conn = pool().get()?;
+    conn.execute(
+        "INSERT OR REPLACE INTO sync_dead_letters (event_id, reason, at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![event_id, reason, Utc::now().to_rfc3339()],
+    )?;
+    mark_applied(event_id)
 }
 
 fn already_applied(event_id: &str) -> Result<bool> {
@@ -462,7 +484,10 @@ fn apply_event(event: &SyncEvent) -> Result<()> {
             event.id,
             table
         );
-        mark_applied(&event.id)?;
+        // Durably record it, not just log: the daily log rotates, and a skip with no
+        // on-disk evidence of what was dropped is unaccountable. Same ledger as every
+        // other dead-letter.
+        dead_letter(&event.id, &format!("unknown table {}", table))?;
         return Ok(());
     }
 
