@@ -26,6 +26,7 @@ import {
   MessageSquarePlus,
   ClipboardCheck,
   Building2,
+  ShieldAlert,
   Wallet,
   Banknote,
   Landmark,
@@ -53,6 +54,7 @@ import TiersView from "./components/TiersView";
 import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
+import DataSafetyView from "./components/DataSafetyView";
 import ArchiveView from "./components/ArchiveView";
 import SheetCopyView from "./components/SheetCopyView";
 import ReleaseLetterView from "./components/ReleaseLetterView";
@@ -73,7 +75,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { can, canViewTab, isAdmin } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -431,12 +433,15 @@ export default function App() {
     { id: "notes",    label: "Notes",    icon: StickyNote },
     { id: "archive",  label: "Archive",  icon: ArchiveIcon },
     { id: "platform", label: "Platform", icon: Building2 },
+    { id: "datasafety", label: "Data safety", icon: ShieldAlert },
     { id: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
   // Same per-id gating as before (parents, children, and utility items alike).
   const visible = (id: Tab): boolean =>
     id === "platform" ? (superadmin || localSuper)
+    : id === "datasafety" ? (superadmin || localSuper) // secret integrity console
+
     : id === "archive" ? isAdmin(me)              // admin-only, like the money views
     // Books area. Admins keep access unconditionally (as before); a non-admin
     // now needs an explicit financials:view grant, which no role template hands out.
@@ -523,6 +528,7 @@ export default function App() {
           {t === "email"      && <EmailView />}
           {t === "settings"   && <SettingsView me={me} />}
           {t === "platform"   && <PlatformView />}
+          {t === "datasafety" && <DataSafetyView />}
         </div>
       </div>
     );

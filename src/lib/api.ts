@@ -1061,6 +1061,21 @@ export interface ArchiveItem {
   archived_at: string | null;
 }
 
+// Data safety — one cross-device integrity anomaly and the rows a converge would delete.
+export interface IntegrityTarget {
+  table: string;
+  id: string;
+  label: string;
+}
+export interface IntegrityItem {
+  kind: "resurrected_invoice" | "orphan_payment" | "orphan_deal_flow";
+  id: string;
+  title: string;
+  detail: string;
+  amount: number | null;
+  targets: IntegrityTarget[];
+}
+
 export interface DashboardStats {
   clients: number;
   invoices: number;
@@ -1818,6 +1833,12 @@ export const api = {
     invoke<void>("restore_archived", { kind, id }),
   recoverDeletedFromBackups: () =>
     invoke<{ deal_flows: number; invoices: number }>("recover_deleted_from_backups"),
+
+  // Data safety (superadmin) — scan for cross-device integrity anomalies + converge one
+  // to deleted everywhere via the sync path.
+  scanDataIntegrity: () => invoke<IntegrityItem[]>("scan_data_integrity"),
+  convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>
+    invoke<string[]>("converge_integrity_item", { kind, id }),
 
   // Profit Split
   getProfitSplit: () => invoke<ProfitSplit>("get_profit_split"),

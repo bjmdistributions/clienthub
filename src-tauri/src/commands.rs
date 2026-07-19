@@ -13771,6 +13771,273 @@ pub async fn delete_note(id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ============================================================
+//  Data safety — cross-device integrity scan + manual converge
+//  (superadmin-only surface). Surfaces rows that are inconsistent
+//  ACROSS devices — a resurrected invoice (row + tombstone), a
+//  payment/deal-flow whose invoice is gone — and lets the operator
+//  converge each to deleted EVERYWHERE via the sync path
+//  (record_delete emits a fresh-HLC tombstone that pushes to the
+//  server and every device), instead of a raw local delete that a
+//  newer clock would simply resurrect again.
+// ============================================================
+
+#[derive(serde::Serialize)]
+pub struct IntegrityTarget {
+    pub table: String,
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct IntegrityItem {
+    /// resurrected_invoice | orphan_payment | orphan_deal_flow
+    pub kind: String,
+    /// The row `converge_integrity_item` is keyed on.
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub amount: Option<f64>,
+    /// Every row a converge would delete — shown in the confirm dialog.
+    pub targets: Vec<IntegrityTarget>,
+}
+
+#[tauri::command]
+pub async fn scan_data_integrity() -> Result<Vec<IntegrityItem>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut items: Vec<IntegrityItem> = Vec::new();
+
+    // 1) Resurrected invoices — an invoice row that ALSO carries a tombstone (another device
+    //    deleted it, but a newer local write out-clocked the delete so the row survives).
+    //    Cascade targets: its payments + deal flows.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.id, COALESCE(i.number,''), COALESCE(i.voided,0), COALESCE(i.archived,0), COALESCE(i.total,0) \
+                 FROM invoices i JOIN tombstones t ON t.tbl='invoices' AND t.row_id=i.id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String, i64, i64, f64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        for (iid, number, voided, archived, total) in rows {
+            let num_label = if number.is_empty() { "(no number)".to_string() } else { number.clone() };
+            let mut targets = vec![IntegrityTarget {
+                table: "invoices".into(),
+                id: iid.clone(),
+                label: format!("Invoice {}", num_label),
+            }];
+            let mut pay_total = 0.0;
+            {
+                let mut s = conn
+                    .prepare("SELECT id, COALESCE(amount,0) FROM payments WHERE invoice_id=?1")
+                    .map_err(|e| e.to_string())?;
+                let pr: Vec<(String, f64)> = s
+                    .query_map([&iid], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|x| x.ok())
+                    .collect();
+                for (pid, amt) in pr {
+                    pay_total += amt;
+                    targets.push(IntegrityTarget { table: "payments".into(), id: pid, label: format!("Payment (${:.2})", amt) });
+                }
+            }
+            {
+                let mut s = conn
+                    .prepare("SELECT id FROM deal_flows WHERE invoice_id=?1")
+                    .map_err(|e| e.to_string())?;
+                let dr: Vec<String> = s
+                    .query_map([&iid], |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|x| x.ok())
+                    .collect();
+                for did in dr {
+                    targets.push(IntegrityTarget { table: "deal_flows".into(), id: did, label: "Deal flow".into() });
+                }
+            }
+            let status = if voided == 1 { "voided" } else if archived == 1 { "archived" } else { "active" };
+            let ndeps = targets.len() - 1;
+            items.push(IntegrityItem {
+                kind: "resurrected_invoice".into(),
+                id: iid,
+                title: format!("Invoice {} — deleted on another device but still here", num_label),
+                detail: format!(
+                    "This {} invoice carries a tombstone (another device deleted it) yet the row still exists here, with {} linked row(s). It will not converge on its own. Converging deletes it and its dependents everywhere through the sync path.",
+                    status, ndeps
+                ),
+                amount: Some(if pay_total > 0.0 { pay_total } else { total }),
+                targets,
+            });
+        }
+    }
+
+    // 2) Orphan payments — invoice missing/voided/archived, EXCLUDING any whose invoice is
+    //    tombstoned (already covered as a resurrected-invoice dependent in section 1).
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id, COALESCE(p.amount,0), COALESCE(i.number,''), CASE WHEN i.id IS NULL THEN 1 ELSE 0 END, COALESCE(i.voided,0), COALESCE(i.archived,0) \
+                 FROM payments p LEFT JOIN invoices i ON i.id=p.invoice_id \
+                 WHERE (i.id IS NULL OR i.voided=1 OR i.archived=1) \
+                   AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.tbl='invoices' AND t.row_id=p.invoice_id)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, f64, String, i64, i64, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        for (pid, amt, number, missing, voided, _archived) in rows {
+            let num = if number.is_empty() { "(no number)".to_string() } else { number };
+            let why = if missing == 1 {
+                "its invoice no longer exists".to_string()
+            } else if voided == 1 {
+                format!("its invoice {} is voided", num)
+            } else {
+                format!("its invoice {} is archived", num)
+            };
+            items.push(IntegrityItem {
+                kind: "orphan_payment".into(),
+                title: format!("Payment (${:.2}) with no live invoice", amt),
+                detail: format!("This payment is linked to an invoice where {} — money recorded against a deal that is not live. Converging deletes the payment everywhere.", why),
+                amount: Some(amt),
+                targets: vec![IntegrityTarget { table: "payments".into(), id: pid.clone(), label: format!("Payment (${:.2})", amt) }],
+                id: pid,
+            });
+        }
+    }
+
+    // 3) Orphan deal flows — an ACTIVE deal flow whose invoice_id points at an invoice row
+    //    that is gone here. Archived orphans are excluded: they're expected residue of a
+    //    deleted invoice (soft-deleted, off the pipeline), and surfacing dozens of them would
+    //    bury the anomalies that actually need action.
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.id FROM deal_flows d \
+                 WHERE d.invoice_id IS NOT NULL AND d.invoice_id<>'' \
+                   AND COALESCE(d.archived,0)=0 \
+                   AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id=d.invoice_id)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        for did in rows {
+            items.push(IntegrityItem {
+                kind: "orphan_deal_flow".into(),
+                title: "Deal flow with no invoice".into(),
+                detail: "This deal flow points at an invoice that no longer exists here — a stray left behind when the invoice was removed. Converging deletes the deal flow everywhere.".into(),
+                amount: None,
+                targets: vec![IntegrityTarget { table: "deal_flows".into(), id: did.clone(), label: "Deal flow".into() }],
+                id: did,
+            });
+        }
+    }
+
+    Ok(items)
+}
+
+/// Delete one row through the sync path: a fresh-HLC tombstone (record_delete) that pushes
+/// to the server + every device, then remove the local row. Whitelisted tables only.
+fn converge_delete_row(table: &str, id: &str) -> Result<(), String> {
+    if !matches!(table, "invoices" | "deal_flows" | "payments") {
+        return Err(format!("refusing to converge unknown table {}", table));
+    }
+    sync::record_delete(table, id).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(&format!("DELETE FROM {} WHERE id=?1", table), [id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn converge_integrity_item(kind: String, id: String) -> Result<Vec<String>, String> {
+    let mut deleted: Vec<String> = Vec::new();
+    match kind.as_str() {
+        "resurrected_invoice" => {
+            // Re-confirm the anomaly independent of the UI: the invoice must still carry a
+            // tombstone, so a legitimately-restored invoice can never be reaped here.
+            let has_tomb = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                conn.query_row(
+                    "SELECT COUNT(*) FROM tombstones WHERE tbl='invoices' AND row_id=?1",
+                    [&id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                    > 0
+            };
+            if !has_tomb {
+                return Err("This invoice no longer looks resurrected — rescan.".into());
+            }
+            let pays: Vec<String> = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let mut s = conn.prepare("SELECT id FROM payments WHERE invoice_id=?1").map_err(|e| e.to_string())?;
+                let v: Vec<String> = s.query_map([&id], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+                v
+            };
+            let dfs: Vec<String> = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let mut s = conn.prepare("SELECT id FROM deal_flows WHERE invoice_id=?1").map_err(|e| e.to_string())?;
+                let v: Vec<String> = s.query_map([&id], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect();
+                v
+            };
+            // Dependents first, then the invoice.
+            for p in &pays { converge_delete_row("payments", p)?; }
+            if !pays.is_empty() { deleted.push(format!("{} payment(s)", pays.len())); }
+            for d in &dfs { converge_delete_row("deal_flows", d)?; }
+            if !dfs.is_empty() { deleted.push(format!("{} deal flow(s)", dfs.len())); }
+            converge_delete_row("invoices", &id)?;
+            deleted.push("the invoice".into());
+        }
+        "orphan_payment" => {
+            // Re-confirm it's still an orphan so a stale scan can't delete a payment whose
+            // invoice came back to life.
+            let still = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                conn.query_row(
+                    "SELECT CASE WHEN i.id IS NULL OR i.voided=1 OR i.archived=1 THEN 1 ELSE 0 END \
+                     FROM payments p LEFT JOIN invoices i ON i.id=p.invoice_id WHERE p.id=?1",
+                    [&id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+            };
+            if still == 0 {
+                return Err("This payment now has a live invoice — rescan.".into());
+            }
+            converge_delete_row("payments", &id)?;
+            deleted.push("the payment".into());
+        }
+        "orphan_deal_flow" => {
+            // Re-confirm the linked invoice is still gone before deleting.
+            let still = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                conn.query_row(
+                    "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id=d.invoice_id) THEN 1 ELSE 0 END \
+                     FROM deal_flows d WHERE d.id=?1",
+                    [&id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+            };
+            if still == 0 {
+                return Err("This deal flow's invoice exists again — rescan.".into());
+            }
+            converge_delete_row("deal_flows", &id)?;
+            deleted.push("the deal flow".into());
+        }
+        other => return Err(format!("unknown integrity item kind: {}", other)),
+    }
+    // Push the deletes now so the server converges without waiting for the next poll tick.
+    crate::netsync::push_now();
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod payout_tests {
     use super::{allocate_payout, build_payout_breakdown, parse_split_shares, shares_from_breakdown};
