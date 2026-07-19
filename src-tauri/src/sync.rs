@@ -207,6 +207,11 @@ fn ensure_meta_tables() -> Result<()> {
         );
         "#,
     )?;
+    // Older installs created sync_dead_letters without event_json. OUTBOUND dead-letters
+    // (a local write the server never acked after N push attempts) store the full payload
+    // here so it can be re-pushed by hand / a Repair sync; inbound dead-letters leave it
+    // NULL. Idempotent — the duplicate-column error on re-run is ignored.
+    let _ = conn.execute("ALTER TABLE sync_dead_letters ADD COLUMN event_json TEXT", []);
     Ok(())
 }
 
@@ -308,6 +313,20 @@ pub fn dead_letter(event_id: &str, reason: &str) -> Result<()> {
         rusqlite::params![event_id, reason, Utc::now().to_rfc3339()],
     )?;
     mark_applied(event_id)
+}
+
+/// Record an OUTBOUND event we've given up PUSHING to the server (it returned HTTP 200 but
+/// never named the event applied or rejected across N passes). Unlike `dead_letter`, this
+/// preserves the full payload — so the write can be re-pushed by hand or by a Repair sync —
+/// and does NOT touch `sync_meta`: the event was authored and applied LOCALLY already; only
+/// its replication to the server failed, and the underlying local row is intact.
+pub fn dead_letter_outbound(event_id: &str, event_json: &str, reason: &str) -> Result<()> {
+    let conn = pool().get()?;
+    conn.execute(
+        "INSERT OR REPLACE INTO sync_dead_letters (event_id, reason, at, event_json) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![event_id, reason, Utc::now().to_rfc3339(), event_json],
+    )?;
+    Ok(())
 }
 
 fn already_applied(event_id: &str) -> Result<bool> {

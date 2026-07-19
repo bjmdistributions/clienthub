@@ -59,6 +59,15 @@ pub fn ensure_tables() -> Result<()> {
         );
         "#,
     )?;
+    // A push event the server accepts (HTTP 200) but never names in applied[]/rejected[]
+    // is a transient server-side apply failure: it stays queued and retries. Count how many
+    // passes it has survived so a permanently un-appliable ("poison") event is dead-lettered
+    // instead of wedging the head of the queue. Idempotent — the duplicate-column error on
+    // installs that already have the column is ignored.
+    let _ = conn.execute(
+        "ALTER TABLE netsync_outbound ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     Ok(())
 }
 
@@ -244,6 +253,11 @@ pub async fn push_pending() -> Result<usize> {
     // mint is a real sign-out, not an expiry, and retrying can't fix it.
     let mut refreshed = false;
     let mut total = 0;
+    // Events the server saw (HTTP 200) but did NOT name applied or rejected — a transient
+    // apply error server-side. Deduped across every batch this pass: a stuck event sits at
+    // the head of the queue and reappears in each full batch, so this keeps it counted at
+    // most ONCE per pass. Maps event_id -> its JSON, so a dead-letter can preserve the payload.
+    let mut stuck_this_pass: HashMap<String, String> = HashMap::new();
     loop {
         let batch: Vec<(String, String)> = {
             let conn = pool().get()?;
@@ -317,6 +331,16 @@ pub async fn push_pending() -> Result<usize> {
                 let _ = conn.execute("DELETE FROM netsync_outbound WHERE event_id=?1", [id]);
             }
         }
+        // Whatever the server didn't account for stays queued. Remember it (with its payload)
+        // so its retry count is bumped exactly once at the end of the pass, below.
+        {
+            let done_set: std::collections::HashSet<&str> = done.iter().map(|s| s.as_str()).collect();
+            for (id, json) in &batch {
+                if !done_set.contains(id.as_str()) {
+                    stuck_this_pass.entry(id.clone()).or_insert_with(|| json.clone());
+                }
+            }
+        }
         if done.len() < batch.len() {
             tracing::warn!(
                 "netsync push: server did not apply {} of {} event(s) — still queued, will retry",
@@ -331,6 +355,61 @@ pub async fn push_pending() -> Result<usize> {
         // one un-appliable event can't stall everything queued behind it.
         if done.is_empty() || (batch.len() as i64) < PUSH_BATCH {
             break;
+        }
+    }
+    // Once per pass: bump the retry count of every event the server saw but didn't account
+    // for, and dead-letter any that have now exhausted their budget so a poison event can't
+    // wedge the queue forever. A dead-letter is never a silent drop — the payload is saved
+    // in sync_dead_letters and the underlying local row is untouched, so Repair/Restore can
+    // recover it. This is the push-side mirror of the pull loop's MAX_STUCK_RETRIES guard.
+    if !stuck_this_pass.is_empty() {
+        const MAX_PUSH_RETRIES: i64 = 10;
+        if let Ok(conn) = pool().get() {
+            for (id, json) in &stuck_this_pass {
+                // The event may have been acked in a LATER batch this pass; UPDATE changes a
+                // row only if it's still queued. 0 rows changed = already gone, so skip it —
+                // this is what keeps a transiently-failed-then-succeeded event from counting.
+                let changed = conn
+                    .execute(
+                        "UPDATE netsync_outbound SET attempts = attempts + 1 WHERE event_id=?1",
+                        [id],
+                    )
+                    .unwrap_or(0);
+                if changed == 0 {
+                    continue;
+                }
+                let attempts: i64 = conn
+                    .query_row(
+                        "SELECT attempts FROM netsync_outbound WHERE event_id=?1",
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                if attempts >= MAX_PUSH_RETRIES {
+                    match sync::dead_letter_outbound(
+                        id,
+                        json,
+                        "push: server accepted the request but never applied or rejected this event",
+                    ) {
+                        Ok(()) => {
+                            let _ = conn
+                                .execute("DELETE FROM netsync_outbound WHERE event_id=?1", [id]);
+                            tracing::error!(
+                                "netsync push: dead-lettered event {} after {} failed push attempts — \
+                                 payload saved to sync_dead_letters and the local row is intact; \
+                                 run Repair/Restore if the server is missing this write",
+                                id,
+                                attempts
+                            );
+                        }
+                        // Couldn't record it durably → we haven't earned the right to drop it.
+                        // Leave it queued (attempts stays bumped) and try again next pass.
+                        Err(e) => {
+                            tracing::error!("netsync push: could not dead-letter {}: {}", id, e)
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(total)
