@@ -937,10 +937,23 @@ export interface InvoiceHighlight {
   total: number;
 }
 
+export interface MonthStat {
+  month: string;       // "YYYY-MM"
+  count: number;
+  revenue: number;
+  net_profit: number;  // refund-aware
+  margin_pct: number;
+}
+
 export interface WeeklyBrief {
   generated_at: string;
   week_start: string;
   week_end: string;
+  avg_margin_this_month: number;
+  avg_margin_all_time: number;
+  revenue_this_month: number;
+  revenue_all_time: number;
+  monthly_breakdown: MonthStat[];
   revenue_this_week: number;
   revenue_last_week: number;
   revenue_change_pct: number;

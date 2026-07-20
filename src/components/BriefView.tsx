@@ -263,6 +263,31 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 </div>
               )}
 
+              {/* Explicit margin breakdown + all-time month history (per Jack) */}
+              <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-[12px] text-muted pt-3"
+                style={{ borderTop: "1px solid var(--t-b1)" }}>
+                <span className="font-medium text-ink-2">Margin</span>
+                <span>This month <span className="font-semibold text-ink-2">{(+brief.avg_margin_this_month || 0).toFixed(1)}%</span></span>
+                <span>All-time <span className="font-semibold text-ink-2">{(+brief.avg_margin_all_time || 0).toFixed(1)}%</span></span>
+              </div>
+
+              {brief.monthly_breakdown?.length > 0 && (
+                <div className="pt-3" style={{ borderTop: "1px solid var(--t-b1)" }}>
+                  <div className="text-[12px] font-medium text-ink-2 mb-2">Every month you've closed deals</div>
+                  <div className="space-y-1">
+                    {[...brief.monthly_breakdown].reverse().map((m) => (
+                      <div key={m.month} className="flex items-center gap-3 text-[12px]">
+                        <span className="w-24 text-ink-2 font-medium">{new Date(m.month + "-01").toLocaleString("en-US", { month: "short", year: "numeric" })}</span>
+                        <span className="text-muted w-16 tabular-nums">{m.count} deal{m.count !== 1 ? "s" : ""}</span>
+                        <span className="text-muted tabular-nums flex-1">{fmtAmount(m.revenue)}</span>
+                        <span className={`tabular-nums font-medium ${m.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(m.net_profit)}</span>
+                        <span className="text-muted tabular-nums w-14 text-right">{(+m.margin_pct || 0).toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Loss warning */}
               {brief.loss_deals_this_week > 0 && (
                 <div className="flex items-center gap-2 bg-warning-bg border border-warning rounded-lg px-4 py-2.5">

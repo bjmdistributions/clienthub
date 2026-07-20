@@ -9043,10 +9043,27 @@ pub struct PayoutTotal {
 }
 
 #[derive(Serialize, Debug, Clone)]
+pub struct MonthStat {
+    pub month: String,       // "YYYY-MM"
+    pub count: u32,
+    pub revenue: f64,
+    pub net_profit: f64,     // refund-aware
+    pub margin_pct: f64,
+}
+
+#[derive(Serialize, Debug, Clone)]
 pub struct WeeklyBrief {
     pub generated_at: String,
     pub week_start: String,
     pub week_end: String,
+    /// Explicit margins per bucket (weighted, refund-aware): current period / calendar
+    /// month / all-time. `revenue_*` are their denominators for context.
+    pub avg_margin_this_month: f64,
+    pub avg_margin_all_time: f64,
+    pub revenue_this_month: f64,
+    pub revenue_all_time: f64,
+    /// All-time per-calendar-month history (every month you closed deals).
+    pub monthly_breakdown: Vec<MonthStat>,
     pub revenue_this_week: f64,
     pub revenue_last_week: f64,
     pub revenue_change_pct: f64,
@@ -9114,10 +9131,30 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         .filter(|d| *d >= 1)
         .unwrap_or(7);
 
-    let week_start = format!("{}", (now_date - chrono::Duration::days(period_days - 1)).format("%Y-%m-%d"));
-    let week_end = format!("{}", now_date.format("%Y-%m-%d")); // inclusive last day (for display)
-    let end_excl = format!("{}", (now_date + chrono::Duration::days(1)).format("%Y-%m-%d")); // exclusive upper bound for queries
-    let last_week_start = format!("{}", (now_date - chrono::Duration::days(2 * period_days - 1)).format("%Y-%m-%d"));
+    // Calendar-aligned windows (per Jack): weeks are Monday–Sunday, months 1st–last.
+    // period_days>=28 → the current CALENDAR MONTH; otherwise N whole calendar weeks
+    // (7 → this week Mon–Sun, 14 → this + previous week). "Last period" is the equal-
+    // length window immediately before. Upper bounds are exclusive (start of next).
+    use chrono::Datelike;
+    let (ws_date, end_excl_date, lws_date) = if period_days >= 28 {
+        let first = now_date.with_day(1).unwrap_or(now_date);
+        let next_first = (if first.month() == 12 { chrono::NaiveDate::from_ymd_opt(first.year() + 1, 1, 1) }
+                          else { chrono::NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1) }).unwrap_or(first);
+        let prev_first = (if first.month() == 1 { chrono::NaiveDate::from_ymd_opt(first.year() - 1, 12, 1) }
+                          else { chrono::NaiveDate::from_ymd_opt(first.year(), first.month() - 1, 1) }).unwrap_or(first);
+        (first, next_first, prev_first)
+    } else {
+        let weeks = (period_days / 7).max(1);
+        let this_monday = now_date - chrono::Duration::days(now_date.weekday().num_days_from_monday() as i64);
+        let start = this_monday - chrono::Duration::days(7 * (weeks - 1));
+        let end_excl = this_monday + chrono::Duration::days(7);
+        let last_start = start - chrono::Duration::days(7 * weeks);
+        (start, end_excl, last_start)
+    };
+    let week_start = ws_date.format("%Y-%m-%d").to_string();
+    let end_excl = end_excl_date.format("%Y-%m-%d").to_string();
+    let week_end = (end_excl_date - chrono::Duration::days(1)).format("%Y-%m-%d").to_string(); // inclusive last day (display)
+    let last_week_start = lws_date.format("%Y-%m-%d").to_string();
     let last_week_end = week_start.clone();
     let _ = &last_week_end;
 
@@ -9148,12 +9185,40 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         &format!("SELECT COALESCE(SUM({np}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&last_week_start, &week_start], |r| r.get(0)
     ).unwrap_or(0.0);
+    // Weighted, refund-aware margin (SUM(np)/SUM(revenue)) — consistent with the
+    // best/worst-margin cards, unlike the old unweighted AVG(net/rev).
+    let margin_q = |from: &str| -> String {
+        format!("SELECT COALESCE(SUM({np}) / NULLIF(SUM(gross_revenue),0) * 100, 0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{from}{rep_filter}")
+    };
+    let rev_q = |from: &str| -> String {
+        format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{from}{rep_filter}")
+    };
     let avg_margin_this_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(AVG(CASE WHEN gross_revenue>0 THEN (net_profit/gross_revenue)*100 END),0) FROM deal_flows df WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2"),
-        [&week_start, &end_excl], |r| r.get(0)
+        &margin_q(" AND df.completed_at >= ?1 AND df.completed_at < ?2"), [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let month_start = format!("{}-01", now.format("%Y-%m"));
+
+    // Explicit margins per bucket (Jack's ask): calendar month + all-time.
+    let avg_margin_this_month: f64 = conn.query_row(&margin_q(" AND df.completed_at >= ?1"), [&month_start], |r| r.get(0)).unwrap_or(0.0);
+    let avg_margin_all_time: f64  = conn.query_row(&margin_q(""), [], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_this_month: f64   = conn.query_row(&rev_q(" AND df.completed_at >= ?1"), [&month_start], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_all_time: f64     = conn.query_row(&rev_q(""), [], |r| r.get(0)).unwrap_or(0.0);
+
+    // All-time per-calendar-month history — fixes the Brief only ever showing the
+    // two rolling windows. Every month with a completed deal appears.
+    let monthly_breakdown: Vec<MonthStat> = {
+        let sql = format!(
+            "SELECT strftime('%Y-%m', df.completed_at) AS m, COUNT(*), COALESCE(SUM(gross_revenue),0), COALESCE(SUM({np}),0) \
+             FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter} GROUP BY m ORDER BY m");
+        conn.prepare(&sql).ok().and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let rev: f64 = r.get(2)?; let net: f64 = r.get(3)?;
+                Ok(MonthStat { month: r.get(0)?, count: r.get::<_, i64>(1)? as u32, revenue: rev, net_profit: net,
+                    margin_pct: if rev > 0.0 { net / rev * 100.0 } else { 0.0 } })
+            }).map(|rows| rows.filter_map(|r| r.ok()).collect()).ok()
+        }).unwrap_or_default()
+    };
 
     struct DfProfit { count: u32, net_profit: f64, jack: f64, ben: f64, business: f64, loss_count: u32, loss_total: f64 }
     let df_this_week: DfProfit = conn.query_row(
@@ -9328,6 +9393,11 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         generated_at: now.to_rfc3339(),
         week_start: week_start.clone(),
         week_end,
+        avg_margin_this_month,
+        avg_margin_all_time,
+        revenue_this_month,
+        revenue_all_time,
+        monthly_breakdown,
         revenue_this_week,
         revenue_last_week,
         revenue_change_pct: if revenue_last_week > 0.0 { ((revenue_this_week - revenue_last_week) / revenue_last_week) * 100.0 } else { 0.0 },

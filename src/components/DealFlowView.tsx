@@ -478,7 +478,7 @@ function DealFlowCard({
   const done: Record<SectionKey, boolean> = {
     supplier: supplierDone,
     money:    moneyDone,
-    link:     reconLinked,
+    link:     reconLinked || isComplete,
     profit:   reconLinked || isComplete,
     complete: isComplete,
   };
@@ -589,6 +589,15 @@ function DealFlowCard({
                 <span className={`text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
                   title="Projected profit — revenue minus supplier costs entered so far">
                   {fmtAmount(proj)} <span className="text-[8px] text-muted uppercase">proj</span>
+                </span>
+              );
+            })()}
+            {isComplete && (() => {
+              const mgn = flow.gross_revenue > 0 ? (flow.net_profit / flow.gross_revenue) * 100 : 0;
+              return (
+                <span className={`text-[11px] font-semibold tabular-nums ${flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}
+                  title="Recorded profit · margin (net profit ÷ revenue)">
+                  {fmtAmount(flow.net_profit)} <span className="text-[8px] text-muted uppercase">{mgn.toFixed(0)}% mgn</span>
                 </span>
               );
             })()}
@@ -1486,7 +1495,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         <div className="grid grid-cols-3 gap-2">
           <RecCell label="Revenue" value={fmtAmount(recRev)}  sub={isComplete ? undefined : (revFromBank ? "from bank" : "entered")} />
           <RecCell label="Cost"    value={fmtAmount(recCost)} sub={isComplete ? undefined : (costFromBank ? "from bank" : "entered")} />
-          <RecCell label={recNet >= 0 ? "Profit" : "Loss"} value={fmtAmount(recNet)} clr={recNet >= 0 ? "text-success-ink" : "text-danger-ink"} big />
+          <RecCell label={recNet >= 0 ? "Profit" : "Loss"} value={fmtAmount(recNet)} sub={`${recRev > 0 ? ((recNet / recRev) * 100).toFixed(1) : "0.0"}% margin`} clr={recNet >= 0 ? "text-success-ink" : "text-danger-ink"} big />
         </div>
         {refundTotal > 0.005 && (
           <div className="mt-2.5 text-[11px] text-muted">Refunds of {fmtAmount(refundTotal)} are tracked separately and reduce profit in reports.</div>
