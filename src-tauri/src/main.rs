@@ -663,6 +663,7 @@ fn main() {
             remove_supplier_payment,
             mark_supplier_payment_paid,
             unmark_supplier_payment_paid,
+            set_supplier_payment_kept,
             complete_deal_flow,
             recalc_deal_from_bank,
             cleanup_orphan_allocations,

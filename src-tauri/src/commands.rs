@@ -3449,6 +3449,12 @@ pub struct SupplierPayment {
     /// Cost type so net_profit can be broken down: supplier (default) | freight | wire_in | wire_out | other.
     #[serde(default)]
     pub category: Option<String>,
+    /// "Didn't pay — kept it": you're keeping this supplier's cut rather than paying
+    /// it, so it is NOT a real cost. Excluded from total_supplier_cost (and therefore
+    /// from profit and from Free Cash payables). Distinct from `paid` (a cash-flow
+    /// status for money you still owe).
+    #[serde(default)]
+    pub kept: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3569,7 +3575,8 @@ fn get_or_create_deal_flow_for_invoice(invoice_id: &str) -> Result<String, Strin
 
 fn write_sp(deal_flow_id: &str, payments: &[SupplierPayment], invoice_id: &str) -> Result<(), String> {
     let sp_json = serde_json::to_string(payments).map_err(|e| e.to_string())?;
-    let total: f64 = payments.iter().map(|p| p.amount).sum();
+    // "kept" payments (you didn't pay — you're keeping the cut) are NOT a real cost.
+    let total: f64 = payments.iter().filter(|p| !p.kept).map(|p| p.amount).sum();
     let now = Utc::now().to_rfc3339();
 
     let mut cols = Map::new();
@@ -3587,9 +3594,30 @@ fn write_sp(deal_flow_id: &str, payments: &[SupplierPayment], invoice_id: &str) 
     Ok(())
 }
 
+/// Mark a supplier payment as "kept" (you didn't pay it — you're keeping the cut),
+/// or clear it. A kept payment stops counting as a cost, so the deal's profit is what
+/// you actually kept. `kept` implies not-paid. On an already-completed deal the
+/// recorded profit is re-derived (bank-truth, with the kept amount excluded).
+#[tauri::command]
+pub async fn set_supplier_payment_kept(id: String, payment_id: String, kept: bool) -> Result<(), String> {
+    let df = read_df(&id)?;
+    let mut payments = df.supplier_payments.clone();
+    {
+        let p = payments.iter_mut().find(|p| p.id == payment_id).ok_or("Payment not found")?;
+        p.kept = kept;
+        if kept { p.paid = false; p.paid_at = None; }
+    }
+    write_sp(&id, &payments, &df.invoice_id)?;
+    if df.stage == "complete" {
+        resync_completed_deal(&id)?;
+    }
+    Ok(())
+}
+
 fn recalc_completed_deal_flow(id: &str, gross: f64, payments: &[SupplierPayment]) -> Result<(), String> {
     let split = read_profit_split()?;
-    let total_cost: f64 = payments.iter().map(|p| p.amount).sum();
+    // "kept" supplier payments aren't a real cost — exclude from the recalc.
+    let total_cost: f64 = payments.iter().filter(|p| !p.kept).map(|p| p.amount).sum();
     let net = gross - total_cost;
     let is_loss = net < 0.0;
 
@@ -3950,6 +3978,7 @@ pub async fn add_supplier_payment(id: String, input: SupplierPaymentInput) -> Re
         paid: false,
         paid_at: None,
         category: input.category,
+        kept: false,
     });
 
     write_sp(&id, &payments, &df.invoice_id)?;

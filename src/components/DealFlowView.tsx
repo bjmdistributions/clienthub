@@ -470,7 +470,7 @@ function DealFlowCard({
   const payments      = flow.supplier_payments || [];
   const hasSuppliers  = payments.length > 0;
   const received      = si(flow.stage) >= si("payment_received");
-  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid) : true; // nothing to send → satisfied
+  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid || p.kept) : true; // nothing to send → satisfied
   const moneyDone     = received && suppliersPaid;
   const isComplete    = flow.stage === "complete";
   const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced") || received;
@@ -1064,7 +1064,7 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
   const payments      = flow.supplier_payments || [];
   const hasSuppliers  = payments.length > 0;
   const received      = si(flow.stage) >= si("payment_received");
-  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid) : true;
+  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid || p.kept) : true;
   const [saving, setSaving] = useState(false);
   const [receivedAmount, setReceivedAmount] = useState<string>(flow.invoice_total ? flow.invoice_total.toFixed(2) : "");
   useEffect(() => { setReceivedAmount(flow.invoice_total ? flow.invoice_total.toFixed(2) : ""); }, [flow.invoice_total]);
@@ -1099,6 +1099,13 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
   const unmarkAllPaid = async () => {
     setSaving(true);
     try { await Promise.all(payments.filter((p) => p.paid).map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  // "Didn't pay — kept it": drop this supplier's amount from the deal's cost.
+  const toggleKept = async (paymentId: string, kept: boolean) => {
+    setSaving(true);
+    try { await api.setSupplierPaymentKept(flow.id, paymentId, kept); onReload(); }
     catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
@@ -1190,8 +1197,15 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
                       )}
                     </div>
                     {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
+                    {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept — didn't pay, not counted as a cost</div>}
+                    {!locked && !p.paid && (
+                      <button onClick={() => toggleKept(p.id, !p.kept)} disabled={saving}
+                        className="text-[10.5px] text-muted hover:text-ink-2 mt-0.5 disabled:opacity-40">
+                        {p.kept ? "Undo — I did pay this" : "Didn't pay — keep it"}
+                      </button>
+                    )}
                   </div>
-                  <div className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(p.amount)}</div>
+                  <div className={`text-[13px] font-semibold tabular-nums ${p.kept ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
                 </div>
               ))}
             </div>

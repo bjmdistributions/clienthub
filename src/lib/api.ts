@@ -569,6 +569,8 @@ export interface SupplierPayment {
   paid_at?: string | null;
   /** Cost type: supplier (default) | freight | wire_in | wire_out | other. */
   category?: string | null;
+  /** "Didn't pay — kept it": excluded from cost/profit. Distinct from `paid`. */
+  kept?: boolean;
 }
 
 export interface SupplierPaymentInput {
@@ -1820,6 +1822,8 @@ export const api = {
     invoke<void>("mark_supplier_payment_paid", { id, paymentId }),
   unmarkSupplierPaymentPaid: (id: string, paymentId: string) =>
     invoke<void>("unmark_supplier_payment_paid", { id, paymentId }),
+  setSupplierPaymentKept: (id: string, paymentId: string, kept: boolean) =>
+    invoke<void>("set_supplier_payment_kept", { id, paymentId, kept }),
   completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean) =>
     invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
