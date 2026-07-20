@@ -7,8 +7,9 @@ import { toast } from "./Toast";
 // ─── Payments & reconciliation ────────────────────────────────────────────
 // Pair real bank transactions to a completed deal's money legs (buyer payment,
 // supplier payment, wire fees), show actual-vs-expected profit, and surface a
-// "fully reconciled" state. Links are exclusive: the picker only ever shows
-// transactions not yet allocated to any other deal.
+// "fully reconciled" state. A transaction can be SPLIT across deals: the picker
+// shows what's still free to allocate (original − everything already claimed),
+// so a $40k cash receipt put $20k on one deal still offers $20k on the next.
 
 const fmtShortDate = (s?: string | null) => {
   if (!s) return "";
@@ -84,11 +85,15 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
     }
   };
 
-  const pair = async (t: UnallocatedTxn, leg: Leg) => {
+  const pair = async (t: UnallocatedTxn, leg: Leg, amount?: number) => {
     if (busy) return;
+    const amt = Math.min(amount ?? t.unallocated, t.unallocated);
+    if (!(amt > 0.005)) { toast("Enter an amount to allocate.", "error"); return; }
     setBusy(true);
     try {
-      await api.allocateBankTxn(t.id, flow.id, t.unallocated, leg.role, "");
+      // allow_split=true: part of this transaction can already be on another deal
+      // (e.g. a $40k cash receipt split across two deals) — take only this deal's slice.
+      await api.allocateBankTxn(t.id, flow.id, amt, leg.role, "", true);
       setPicker(null);
       setCands(null);
       await load();
@@ -305,7 +310,7 @@ function LegBlock({
   flow: DealFlow;
   onOpen: (leg: Leg) => void;
   onClose: () => void;
-  onPair: (t: UnallocatedTxn, leg: Leg) => void;
+  onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
   onUnpair: (id: string) => void;
   pairLabel: string;
 }) {
@@ -338,7 +343,16 @@ function LegBlock({
         </div>
       )}
 
-      {open && <Picker leg={leg} cands={cands} busy={busy} flow={flow} onPair={onPair} />}
+      {open && (
+        <Picker
+          leg={leg}
+          cands={cands}
+          busy={busy}
+          flow={flow}
+          onPair={onPair}
+          capTo={leg.target > 0 ? Math.max(0, leg.target - sum) : undefined}
+        />
+      )}
     </div>
   );
 }
@@ -393,12 +407,13 @@ function PairButton({ active, label, onOpen, onClose }: { active: boolean; label
 }
 
 // ── Candidate picker: unallocated txns of the right direction, matches ranked first ──
-function Picker({ leg, cands, busy, flow, onPair }: {
+function Picker({ leg, cands, busy, flow, onPair, capTo }: {
   leg: Leg;
   cands: UnallocatedTxn[] | null;
   busy: boolean;
   flow: DealFlow;
-  onPair: (t: UnallocatedTxn, leg: Leg) => void;
+  onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
+  capTo?: number; // sensible default allocation (what this leg still needs)
 }) {
   const [q, setQ] = useState("");
   const query = q.trim().toLowerCase();
@@ -442,35 +457,85 @@ function Picker({ leg, cands, busy, flow, onPair }: {
               {query ? "No transactions match your search." : `No transactions near ${fmtAmount(leg.target)} — type to search all.`}
             </div>
           ) : (
-            <div className="max-h-64 overflow-y-auto divide-y divide-line-2">
-              {shown.map((t) => {
-                const isMatch = matches(t, leg, flow);
-                const payer = t.counterparty_name?.trim() || t.description?.trim() || "Bank transaction";
-                const clr = t.direction === "out" ? "text-danger-ink" : "text-success-ink";
-                const sign = t.direction === "out" ? "−" : "";
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onPair(t, leg)}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
-                        <span className="truncate">{payer}</span>
-                        {isMatch && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
-                      </div>
-                      <div className="text-[11px] text-muted">{fmtShortDate(t.posted_at)}</div>
-                    </div>
-                    <span className={`text-[12px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(t.unallocated)}</span>
-                  </button>
-                );
-              })}
+            <div className="max-h-72 overflow-y-auto divide-y divide-line-2">
+              {shown.map((t) => (
+                <PickerRow key={t.id} t={t} leg={leg} flow={flow} busy={busy} capTo={capTo} onPair={onPair} />
+              ))}
             </div>
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ── One candidate row: shows the amount still free to allocate (across all deals),
+// the original total when part is already spent elsewhere, and an editable amount so
+// you can put just a slice of one transaction on this deal ($20k of a $40k receipt). ──
+function PickerRow({ t, leg, flow, busy, capTo, onPair }: {
+  t: UnallocatedTxn;
+  leg: Leg;
+  flow: DealFlow;
+  busy: boolean;
+  capTo?: number;
+  onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
+}) {
+  const remaining = t.unallocated;
+  const original = t.original ?? t.amount;
+  const elsewhere = Math.max(0, (t.allocated ?? 0) - (t.mine ?? 0));
+  const splitOff = elsewhere > 0.005 || (t.mine ?? 0) > 0.005;
+  // Default to what this leg still needs, capped by what's free on the transaction.
+  const smart = capTo && capTo > 0.005 ? Math.min(remaining, capTo) : remaining;
+  const [amt, setAmt] = useState<string>(smart.toFixed(2));
+  const isMatch = matches(t, leg, flow);
+  const payer = t.counterparty_name?.trim() || t.description?.trim() || "Bank transaction";
+  const clr = t.direction === "out" ? "text-danger-ink" : "text-success-ink";
+  const sign = t.direction === "out" ? "−" : "";
+  const val = parseFloat(amt);
+  const invalid = !(val > 0.005) || val > remaining + 0.005;
+
+  return (
+    <div className="px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
+            <span className="truncate">{payer}</span>
+            {isMatch && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
+          </div>
+          <div className="text-[11px] text-muted tabular-nums">
+            {fmtShortDate(t.posted_at)}
+            {splitOff && (
+              <span> · {fmtAmount(remaining)} left of {fmtAmount(original)}</span>
+            )}
+          </div>
+        </div>
+        <span className={`text-[12px] font-semibold tabular-nums ${clr} flex-shrink-0`}>{sign}{fmtAmount(remaining)}</span>
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        <div className="flex items-center gap-1 flex-1 min-w-0">
+          <span className="text-[11px] text-muted flex-shrink-0">Allocate</span>
+          <div className="flex items-center h-7 px-2 rounded-lg border border-line bg-surface-2 flex-1 min-w-0 max-w-[160px]">
+            <span className="text-[12px] text-muted">$</span>
+            <input
+              value={amt}
+              onChange={(e) => setAmt(e.target.value.replace(/[^0-9.]/g, ""))}
+              inputMode="decimal"
+              className="w-full bg-transparent text-[12px] text-ink tabular-nums focus:outline-none ml-0.5"
+            />
+          </div>
+          {remaining - val > 0.005 && !invalid && (
+            <span className="text-[11px] text-muted tabular-nums flex-shrink-0">{fmtAmount(remaining - val)} left after</span>
+          )}
+        </div>
+        <button
+          type="button"
+          disabled={busy || invalid}
+          onClick={() => onPair(t, leg, val)}
+          className="h-7 px-3 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12px] font-semibold disabled:opacity-40 transition-colors flex-shrink-0"
+        >
+          <Plus size={12} /> Add
+        </button>
+      </div>
     </div>
   );
 }

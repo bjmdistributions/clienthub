@@ -10467,18 +10467,25 @@ pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value
         "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description,
                 bt.counterparty_name, bt.wire_ref, bt.rail, bt.category,
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a
-                          WHERE a.bank_txn_id = bt.id AND a.deal_flow_id = ?1), 0) AS mine
+                          WHERE a.bank_txn_id = bt.id AND a.deal_flow_id = ?1), 0) AS mine,
+                -- SUM over ALL allocations, exactly as allocate_bank_txn measures
+                -- 'remaining', so the picker never offers money the allocator rejects.
+                COALESCE((SELECT SUM(a.amount) FROM bank_allocation a
+                          WHERE a.bank_txn_id = bt.id), 0) AS total_alloc
          FROM bank_txn bt
          WHERE bt.category != 'internal_transfer'
-           AND NOT EXISTS (SELECT 1 FROM bank_allocation a
-                           JOIN deal_flows d ON d.id = a.deal_flow_id
-                           WHERE a.bank_txn_id = bt.id AND a.deal_flow_id != ?1
-                             AND COALESCE(d.archived,0)=0)
+           -- Show a transaction as long as it still has money left to allocate — even
+           -- if part of it is already on OTHER deals (so a $40k cash receipt split $20k
+           -- to deal A still shows $20k remaining when you open deal B).
+           AND (bt.amount - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a
+                          WHERE a.bank_txn_id = bt.id), 0)) > 0.005
          ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows: Vec<Value> = stmt.query_map([&this], |r| {
         let amount: f64 = r.get(2)?;
         let mine: f64 = r.get(9)?;
+        let total_alloc: f64 = r.get(10)?;
+        let round2 = |v: f64| (v * 100.0).round() / 100.0;
         Ok(json!({
             "id":                r.get::<_, String>(0)?,
             "posted_at":         r.get::<_, String>(1)?,
@@ -10489,14 +10496,78 @@ pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value
             "wire_ref":          r.get::<_, String>(6)?,
             "rail":              r.get::<_, String>(7)?,
             "category":          r.get::<_, String>(8)?,
-            // remaining pairable on THIS deal (0 unless a prior same-deal leg exists)
-            "unallocated":       ((amount - mine) * 100.0).round() / 100.0,
+            // original transaction amount (never changes)
+            "original":          round2(amount),
+            // already allocated to THIS deal
+            "mine":              round2(mine),
+            // total claimed across all deals (matches allocate_bank_txn's remaining)
+            "allocated":         round2(total_alloc),
+            // money still free to allocate anywhere (original − allocated everywhere)
+            "unallocated":       round2(amount - total_alloc),
         }))
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     let (money_in, money_out): (Vec<_>, Vec<_>) =
         rows.into_iter().partition(|t| t["direction"] == "in");
     Ok(json!({ "money_in": money_in, "money_out": money_out }))
+}
+
+/// Record a manual CASH transaction (cash you took in or paid out, outside the bank
+/// feed) so it can be allocated across deals just like a bank transaction. It lands
+/// as a normal bank_txn (source_format 'manual_cash'), so the existing allocation
+/// engine handles the split + remaining ("only X left unallocated") + original amount.
+#[tauri::command]
+pub async fn add_cash_transaction(
+    amount: f64,
+    direction: String,
+    posted_at: String,
+    counterparty: Option<String>,
+    note: Option<String>,
+) -> Result<String, String> {
+    if !(amount > 0.0) {
+        return Err("Enter a cash amount greater than zero".into());
+    }
+    let dir = if direction == "out" { "out" } else { "in" };
+    let date = if posted_at.trim().is_empty() {
+        Utc::now().format("%Y-%m-%d").to_string()
+    } else {
+        posted_at
+    };
+    let cp = counterparty.unwrap_or_default();
+    let note = note.unwrap_or_default();
+    let desc = if note.trim().is_empty() {
+        format!("Cash {}", if dir == "out" { "paid out" } else { "received" })
+    } else {
+        note
+    };
+    let cat = if dir == "out" { "cash_out" } else { "cash_in" };
+    let id = format!("btc_{}", Uuid::new_v4());
+    let now = Utc::now().to_rfc3339();
+
+    let s = |v: &str| Value::String(v.to_string());
+    let mut cols = Map::new();
+    cols.insert("account_id".into(), s("Cash"));
+    cols.insert("posted_at".into(), s(&date));
+    cols.insert("amount".into(), json!(amount));
+    cols.insert("direction".into(), s(dir));
+    cols.insert("description".into(), s(&desc));
+    cols.insert("memo_raw".into(), s(&desc));
+    cols.insert("category".into(), s(cat));
+    cols.insert("counterparty_name".into(), s(&cp));
+    cols.insert("source_format".into(), s("manual_cash"));
+    cols.insert("reviewed".into(), json!(1));
+    cols.insert("imported_at".into(), s(&now));
+    cols.insert("created_at".into(), s(&now));
+    cols.insert("updated_at".into(), s(&now));
+    sync::record_upsert("bank_txn", &id, cols).map_err(|e| e.to_string())?;
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, reviewed, imported_at, created_at, updated_at)
+         VALUES (?1,'Cash',?2,?3,?4,?5,?5,?6,?7,'manual_cash',1,?8,?8,?8)",
+        rusqlite::params![id, date, amount, dir, desc, cat, cp, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 /// Reconciliation rollup for one deal: expected profit (from the deal flow) vs.

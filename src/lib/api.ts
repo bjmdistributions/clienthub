@@ -1448,7 +1448,10 @@ export interface UnallocatedTxn {
   wire_ref: string;
   rail: string;
   category: string;
-  unallocated: number;
+  original: number;    // full transaction amount (never changes)
+  mine: number;        // already allocated to THIS deal
+  allocated: number;   // total claimed across all deals
+  unallocated: number; // money still free to allocate anywhere (original − allocated)
 }
 export interface UnallocatedBankTxns {
   money_in: UnallocatedTxn[];
@@ -2204,6 +2207,8 @@ export const api = {
     invoke<number>("heal_overallocated_txns"),
   unallocatedBankTxns: (dealFlowId?: string) =>
     invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
+  addCashTransaction: (amount: number, direction: "in" | "out", postedAt: string, counterparty?: string, note?: string) =>
+    invoke<string>("add_cash_transaction", { amount, direction, postedAt, counterparty: counterparty ?? null, note: note ?? null }),
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>

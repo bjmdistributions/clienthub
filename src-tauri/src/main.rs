@@ -903,6 +903,7 @@ fn main() {
             pull_now,
             set_note_editing,
             unallocated_bank_txns,
+            add_cash_transaction,
             deal_reconciliation,
             reconciliation_status_all,
             refund_status_all,

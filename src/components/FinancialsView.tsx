@@ -179,6 +179,14 @@ export default function FinancialsView() {
   const [tab, setTab]         = useState<"overview" | "transactions" | "loans">("transactions");
   const [aiBusy, setAiBusy]   = useState(false);
   const [newDealBusy, setNewDealBusy] = useState(false);
+  // Record-cash modal (a manual cash txn that then allocates across deals).
+  const [cashOpen, setCashOpen]     = useState(false);
+  const [cashAmount, setCashAmount] = useState("");
+  const [cashDir, setCashDir]       = useState<"in" | "out">("in");
+  const [cashDate, setCashDate]     = useState("");
+  const [cashCp, setCashCp]         = useState("");
+  const [cashNote, setCashNote]     = useState("");
+  const [cashSaving, setCashSaving] = useState(false);
 
   // Import — default to the last account used on this device (generic fallback).
   const [accountId, setAccountId]     = useState(() => localStorage.getItem("fin_last_account") || "business");
@@ -349,6 +357,19 @@ export default function FinancialsView() {
       const nt = t.find((x) => x.id === openId);
       setAmountStr(nt ? String(nt.unallocated) : "");
     }
+  };
+
+  const recordCash = async () => {
+    const amt = Number(cashAmount);
+    if (!(amt > 0)) { toast("Enter a cash amount greater than zero", "error"); return; }
+    setCashSaving(true);
+    try {
+      await api.addCashTransaction(amt, cashDir, cashDate || new Date().toISOString().slice(0, 10), cashCp.trim() || undefined, cashNote.trim() || undefined);
+      setCashOpen(false); setCashAmount(""); setCashCp(""); setCashNote("");
+      await refreshAll(false);
+      toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded — allocate it to deals below`);
+    } catch (e: any) { toast(String(e?.message || e), "error"); }
+    finally { setCashSaving(false); }
   };
 
   const savePlaidKeys = async () => {
@@ -1320,7 +1341,60 @@ export default function FinancialsView() {
           >
             {aiExtracting || bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Smart import (AI)
           </button>
+          <button
+            onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
+            className="flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
+          >
+            <Plus size={14} /> Record cash
+          </button>
         </div>
+
+        {cashOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setCashOpen(false)}>
+            <div className="bg-surface border border-line rounded-2xl w-full max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <div className="px-5 py-4 border-b border-line flex items-center justify-between">
+                <div className="text-[15px] font-semibold text-ink">Record a cash transaction</div>
+                <button onClick={() => setCashOpen(false)} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2"><X size={16} /></button>
+              </div>
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <div className="flex gap-2">
+                  <button onClick={() => setCashDir("in")} className={`flex-1 h-9 rounded-lg text-[13px] font-medium border transition-colors ${cashDir === "in" ? "bg-success-bg border-success text-success-ink" : "border-line text-muted hover:bg-surface-2"}`}>Cash received</button>
+                  <button onClick={() => setCashDir("out")} className={`flex-1 h-9 rounded-lg text-[13px] font-medium border transition-colors ${cashDir === "out" ? "bg-warning-bg border-warning text-warning-ink" : "border-line text-muted hover:bg-surface-2"}`}>Cash paid out</button>
+                </div>
+                <label className="block">
+                  <span className="block text-[12px] font-medium text-ink-2 mb-1">Amount</span>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
+                    <input inputMode="decimal" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} placeholder="0"
+                      className="w-full bg-surface-2 border border-line rounded-lg h-9 pl-6 pr-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                  </div>
+                </label>
+                <label className="block">
+                  <span className="block text-[12px] font-medium text-ink-2 mb-1">Date</span>
+                  <input type="date" value={cashDate} onChange={(e) => setCashDate(e.target.value)}
+                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                </label>
+                <label className="block">
+                  <span className="block text-[12px] font-medium text-ink-2 mb-1">Who (optional)</span>
+                  <input value={cashCp} onChange={(e) => setCashCp(e.target.value)} placeholder="Buyer / supplier name"
+                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                </label>
+                <label className="block">
+                  <span className="block text-[12px] font-medium text-ink-2 mb-1">Note (optional)</span>
+                  <input value={cashNote} onChange={(e) => setCashNote(e.target.value)} placeholder="e.g. cash pickup"
+                    className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                </label>
+                <p className="text-[11px] text-muted">Saved as a cash transaction — then allocate it across deals below. It tracks how much is left of the original.</p>
+              </div>
+              <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
+                <button onClick={() => setCashOpen(false)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
+                <button onClick={recordCash} disabled={cashSaving} className="px-5 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-medium disabled:opacity-50">
+                  {cashSaving ? "Saving…" : "Record"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <p className="text-[11px] text-muted text-right leading-relaxed">
           Smart import reads any statement with AI — for credit cards and other banks. Set a distinct account per card
           (e.g. chase-card, amex) so each groups and dedupes separately. Selecting several files imports them all to the
