@@ -1498,17 +1498,33 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         <div className="rounded-lg border border-line bg-surface px-3 py-2.5">
           <div className="text-[12px] font-medium text-muted mb-1.5">Linked transactions saved with this deal</div>
           <div className="space-y-1">
-            {snapshot.map((s: any, i: number) => (
-              <div key={i} className="flex items-center gap-2 text-[12px]">
-                <span className="text-ink-2 flex-1 truncate">
-                  {roleLabel(s.role)} · {s.counterparty || "—"}
-                  {s.posted_at ? ` · ${new Date(s.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
-                </span>
-                <span className={`tabular-nums font-medium ${s.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
-                  {s.direction === "out" ? "−" : ""}{fmtAmount(s.amount)}
-                </span>
-              </div>
-            ))}
+            {snapshot.map((s: any, i: number) => {
+              const clickable = !!s.txn_id;
+              const openInFinancials = () => {
+                if (!clickable) return;
+                // Hand the target transaction to Financials, then switch to it.
+                // FinancialsView reads this on mount and opens the txn's detail.
+                (window as any).__pendingBankTxn = s.txn_id;
+                window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" }));
+              };
+              return (
+                <div
+                  key={i}
+                  onClick={openInFinancials}
+                  title={clickable ? "View this transaction in Financials" : undefined}
+                  className={`flex items-center gap-2 text-[12px] ${clickable ? "cursor-pointer hover:bg-surface-2 -mx-1.5 px-1.5 py-0.5 rounded-md transition-colors" : ""}`}
+                >
+                  <span className="text-ink-2 flex-1 truncate">
+                    {roleLabel(s.role)} · {s.counterparty || "—"}
+                    {s.posted_at ? ` · ${new Date(s.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+                  </span>
+                  <span className={`tabular-nums font-medium ${s.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
+                    {s.direction === "out" ? "−" : ""}{fmtAmount(s.amount)}
+                  </span>
+                  {clickable && <ChevronRight size={13} className="text-muted shrink-0" />}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

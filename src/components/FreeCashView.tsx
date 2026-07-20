@@ -196,7 +196,14 @@ export default function FreeCashView() {
               <p className="text-[11px] text-muted mt-0.5">Bank balance, minus everything that isn't yours to spend</p>
               <div className="mt-3 border-t border-line-2">
                 <div className="flex items-center gap-3 py-2.5 min-w-0 border-b border-line-2">
-                  <span className="min-w-0 flex-1 text-[13px] text-ink">Bank balance</span>
+                  <span className="min-w-0 flex-1 text-[13px] text-ink">
+                    Bank balance
+                    {ov.balance_source === "synced" && (
+                      <span className="block text-[10.5px] text-muted mt-0.5">
+                        Synced from your connected device{ov.balance_as_of ? ` · as of ${new Date(ov.balance_as_of).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
+                      </span>
+                    )}
+                  </span>
                   <span className="text-[13px] tabular-nums text-ink w-28 text-right flex-shrink-0">
                     {fmtAmount(ov.bank_balance)}
                   </span>
@@ -291,19 +298,19 @@ export default function FreeCashView() {
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto">
               <NumField
                 label="Current bank balance"
-                hint={ov?.has_plaid ? "Live from your connected bank — managed automatically." : "Enter from your latest statement — this figure is maintained by you."}
+                hint={ov?.has_plaid ? "Live from your connected bank — managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device — change it on the device that has the bank linked." : "Enter from your latest statement — this figure is maintained by you."}
                 prefix="$"
-                value={ov?.has_plaid ? String(ov.bank_balance) : bankStr}
+                value={ov?.has_plaid || ov?.balance_source === "synced" ? String(ov?.bank_balance ?? 0) : bankStr}
                 onChange={setBankStr}
-                disabled={!!ov?.has_plaid}
+                disabled={!!ov?.has_plaid || ov?.balance_source === "synced"}
               />
               <NumField
                 label="Credit card balance owed"
-                hint={ov?.has_plaid ? "Live from your connected card — managed automatically." : "Total owed across your business credit cards — enter from your latest statements."}
+                hint={ov?.has_plaid ? "Live from your connected card — managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device — change it on the device that has the bank linked." : "Total owed across your business credit cards — enter from your latest statements."}
                 prefix="$"
-                value={ov?.has_plaid ? String(ov.credit_card_balance) : cardStr}
+                value={ov?.has_plaid || ov?.balance_source === "synced" ? String(ov?.credit_card_balance ?? 0) : cardStr}
                 onChange={setCardStr}
-                disabled={!!ov?.has_plaid}
+                disabled={!!ov?.has_plaid || ov?.balance_source === "synced"}
               />
               <NumField
                 label="Cash floor"

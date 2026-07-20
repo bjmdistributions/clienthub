@@ -11140,8 +11140,27 @@ pub async fn financials_overview() -> Result<Value, String> {
     // Prefer live balances from connected banks (Plaid); fall back to the manual
     // figures only when no bank is linked. Makes Free Cash real automatically.
     let (plaid_bank, plaid_card, has_plaid) = plaid_balances(&conn);
-    let bank_balance = if has_plaid { plaid_bank } else { read_setting_f64(&conn, "money_bank_balance", 0.0) };
-    let credit_card_balance = if has_plaid { plaid_card.max(0.0) } else { read_setting_f64(&conn, "money_credit_card_balance", 0.0).max(0.0) };
+    // Balance sharing: a device WITH the Plaid link publishes its fresh balance so
+    // devices without it (Mac, mobile) can show it; a device WITHOUT the link reads
+    // that last-known balance, falling back to the manual figure. The Plaid token
+    // never leaves the connected device — only these numbers travel.
+    let mut balance_source = "manual";
+    let mut balance_as_of: Option<String> = None;
+    let (bank_balance, credit_card_balance) = if has_plaid {
+        let (b, c) = (plaid_bank, plaid_card.max(0.0));
+        balance_source = "live";
+        tokio::spawn(async move { crate::netsync::publish_bank_balance(b, c).await; });
+        (b, c)
+    } else if let Some((b, c, at)) = crate::netsync::fetch_published_bank_balance().await {
+        balance_source = "synced";
+        balance_as_of = Some(at);
+        (b, c.max(0.0))
+    } else {
+        (
+            read_setting_f64(&conn, "money_bank_balance", 0.0),
+            read_setting_f64(&conn, "money_credit_card_balance", 0.0).max(0.0),
+        )
+    };
     let cash_floor = read_setting_f64(&conn, "money_cash_floor", 0.0);
 
     // Supplier payables: unpaid supplier cost on deals where the buyer HAS paid but
@@ -11258,6 +11277,10 @@ pub async fn financials_overview() -> Result<Value, String> {
         // True when a bank is connected via Plaid — the bank/card balances are then
         // live from the feed, so the manual Adjust fields are display-only.
         "has_plaid": has_plaid,
+        // "live" = Plaid on this device; "synced" = last-known balance from the
+        // connected device (balance_as_of set); "manual" = the entered figure.
+        "balance_source": balance_source,
+        "balance_as_of": balance_as_of,
         "status": status,
         "runway_months": if runway.is_finite() { round2(runway) } else { -1.0 },
         "alerts": { "refund_deals": refund_deals, "stale_unallocated_in": stale_unallocated },

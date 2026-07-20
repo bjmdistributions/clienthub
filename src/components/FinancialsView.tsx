@@ -256,6 +256,28 @@ export default function FinancialsView() {
   const [openId, setOpenId]           = useState<string | null>(null);
   const [allocs, setAllocs]           = useState<BankAllocation[]>([]);
   const [allocLoading, setAllocLoading] = useState(false);
+
+  // A linked transaction clicked from the Deal Flow section hands off its id via
+  // window.__pendingBankTxn, then navigates here. Pick it up on mount, then (once the
+  // txn list has loaded) open its detail via the same toggleRow the row click uses and
+  // scroll it into view — so the click lands you right on that transaction.
+  const pendingOpenRef = useRef<string | null>(null);
+  useEffect(() => {
+    const pending = (window as any).__pendingBankTxn;
+    if (pending) { pendingOpenRef.current = pending; (window as any).__pendingBankTxn = null; }
+  }, []);
+  useEffect(() => {
+    const id = pendingOpenRef.current;
+    if (!id) return;
+    const t = txns.find((x) => x.id === id);
+    if (!t) return;
+    pendingOpenRef.current = null;
+    if (openId !== id) toggleRow(t);
+    setTimeout(() => {
+      document.querySelector(`[data-txn-id="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txns]);
   const [targetType, setTargetType]   = useState<"deal" | "loan" | "expense">("deal");
   const [dealQuery, setDealQuery]     = useState("");
   const [selectedDeal, setSelectedDeal] = useState<DealFlow | null>(null);
@@ -1071,6 +1093,7 @@ export default function FinancialsView() {
                 return (
                 <Fragment key={t.id}>
                   <tr
+                    data-txn-id={t.id}
                     onClick={() => toggleRow(t)}
                     className={`border-b border-line-2 cursor-pointer transition-colors ${
                       selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"

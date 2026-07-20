@@ -181,6 +181,43 @@ fn http() -> reqwest::Client {
         .unwrap_or_default()
 }
 
+/// Publish this device's last-fetched bank/card balance to the server so devices
+/// WITHOUT the Plaid link (Mac, mobile) can display it. Best-effort — the Plaid
+/// token stays local; only these two numbers travel. A failure just leaves the
+/// other devices showing their previous value.
+pub async fn publish_bank_balance(bank: f64, card: f64) {
+    let cfg = match config() { Some(c) => c, None => return };
+    let base = cfg.url.trim_end_matches('/').to_string();
+    let url = format!("{}/api/bank-balance", base);
+    let _ = http()
+        .post(&url)
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "bank_balance": bank, "card_balance": card }))
+        .send()
+        .await;
+}
+
+/// The last-known bank/card balance a connected device published for this org, if
+/// any: (bank, card, as_of_rfc3339). None when nothing's been published or the
+/// server is unreachable — the caller then falls back to its own manual figure.
+pub async fn fetch_published_bank_balance() -> Option<(f64, f64, String)> {
+    let cfg = config()?;
+    let base = cfg.url.trim_end_matches('/').to_string();
+    let url = format!("{}/api/bank-balance", base);
+    let resp = http().get(&url).bearer_auth(&cfg.token).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    if !v.get("connected").and_then(|x| x.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    let bank = v.get("bank_balance").and_then(|x| x.as_f64())?;
+    let card = v.get("card_balance").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let at = v.get("as_of").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    Some((bank, card, at))
+}
+
 // ---------- local → server (push) ----------
 
 /// Queue a locally-recorded event for push. Called from `sync::record_*`.
