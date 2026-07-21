@@ -37,11 +37,21 @@ export default function QuotesView({ onNavigate }: Props) {
   const [editing, setEditing] = useState<Quote | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [sendModal, setSendModal] = useState<{ quote: Quote; thread: boolean } | null>(null);
 
   const load = async () => { setQuotes(await api.listQuotes()); };
   useEffect(() => { load(); api.listClients().then(setClients).catch(() => {}); }, []);
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "—";
+  const clientEmail = (id: string) => clients.find((c) => c.id === id)?.email ?? "";
+  // The most recent inbound email captured from this client — the conversation a quote
+  // can reply into. Returns its subject (may be "") when a thread exists, else null.
+  const clientThread = (id: string): { subject: string } | null => {
+    const m = clients.find((c) => c.id === id)?.metadata as Record<string, any> | null | undefined;
+    const mid = m?.src_message_id;
+    if (typeof mid !== "string" || !mid.trim()) return null;
+    return { subject: typeof m?.src_subject === "string" ? m.src_subject : "" };
+  };
 
   const term = search.trim().toLowerCase();
   const filtered = quotes.filter((q) => {
@@ -61,11 +71,23 @@ export default function QuotesView({ onNavigate }: Props) {
     try { await api.generateQuotePdf(id); toast("PDF saved — check your quotes folder"); load(); }
     catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
   };
-  const handleSend = async (id: string) => {
-    if (!confirm("Email this quote to the client?")) return;
-    setBusy(id);
-    try { await api.sendQuote(id); toast("Quote sent"); load(); }
-    catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
+  // Open the send dialog (lets you choose to reply into the customer's email thread).
+  const handleSend = (id: string) => {
+    const q = quotes.find((x) => x.id === id);
+    if (!q) return;
+    setSendModal({ quote: q, thread: !!clientThread(q.client_id) });
+  };
+  const confirmSend = async () => {
+    if (!sendModal) return;
+    const { quote, thread } = sendModal;
+    const threaded = thread && !!clientThread(quote.client_id);
+    setBusy(quote.id);
+    try {
+      await api.sendQuote(quote.id, threaded);
+      toast(threaded ? "Quote sent into the email thread" : "Quote sent");
+      setSendModal(null);
+      load();
+    } catch (e: any) { toast(String(e), "error"); } finally { setBusy(null); }
   };
   const setStatus = async (id: string, status: string) => {
     try { await api.setQuoteStatus(id, status); load(); } catch (e: any) { toast(String(e), "error"); }
@@ -220,6 +242,45 @@ export default function QuotesView({ onNavigate }: Props) {
           onClose={() => { setShowForm(false); setEditing(null); load(); }}
         />
       )}
+
+      {sendModal && (() => {
+        const q = sendModal.quote;
+        const email = clientEmail(q.client_id);
+        const thread = clientThread(q.client_id);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setSendModal(null)}>
+            <div className="bg-surface border border-line rounded-2xl w-full max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <div className="px-5 py-4 border-b border-line flex items-center justify-between">
+                <div className="text-[15px] font-semibold text-ink">Email quote {q.number}</div>
+                <button onClick={() => setSendModal(null)} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2"><X size={16} /></button>
+              </div>
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <div className="text-[13px] text-ink-2">
+                  To <span className="font-medium text-ink">{clientName(q.client_id)}</span>
+                  {email ? <span className="text-muted"> · {email}</span> : <span className="text-danger-ink"> · no email on file</span>}
+                </div>
+                {thread ? (
+                  <label className="flex items-start gap-2.5 rounded-lg border border-line bg-surface-2 px-3 py-2.5 cursor-pointer">
+                    <input type="checkbox" checked={sendModal.thread} onChange={(e) => setSendModal({ quote: q, thread: e.target.checked })} className="accent-accent mt-0.5" />
+                    <span className="text-[12.5px] text-ink-2">
+                      <span className="font-medium text-ink">Reply into their email thread</span>
+                      <span className="block text-[11px] text-muted mt-0.5">{thread.subject ? `Threads under “${thread.subject}”` : "Lands in your last conversation with them"}</span>
+                    </span>
+                  </label>
+                ) : (
+                  <div className="text-[11.5px] text-muted rounded-lg border border-line bg-surface-2 px-3 py-2.5">No prior email from this customer to reply to — this sends as a new email.</div>
+                )}
+              </div>
+              <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
+                <button onClick={() => setSendModal(null)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>
+                <button onClick={confirmSend} disabled={!email || busy === q.id} className="px-5 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-medium disabled:opacity-50">
+                  {busy === q.id ? "Sending…" : "Send quote"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

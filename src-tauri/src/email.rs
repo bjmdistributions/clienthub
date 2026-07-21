@@ -303,16 +303,34 @@ pub async fn test_smtp() -> Result<()> {
 }
 
 pub async fn send(to: &str, subject: &str, body: &str, attachment: Option<&str>) -> Result<()> {
+    send_threaded(to, subject, body, attachment, None).await
+}
+
+/// Like `send`, but if `in_reply_to` is a message-id, sets the `In-Reply-To` and
+/// `References` headers so the message lands inside the recipient's existing email
+/// thread (Gmail/Outlook group a conversation by these). The id is angle-bracket
+/// wrapped if it isn't already (RFC 5322 msg-id form).
+pub async fn send_threaded(
+    to: &str, subject: &str, body: &str, attachment: Option<&str>, in_reply_to: Option<&str>,
+) -> Result<()> {
     let settings = load_settings()?;
     let pass_or_token = match settings.auth_method {
         AuthMethod::Password => cred("smtp_pass")?,
         AuthMethod::Oauth2 => oauth2_access_token().await?,
     };
 
-    let builder = Message::builder()
+    let mut builder = Message::builder()
         .from(settings.user.parse()?)
         .to(to.parse()?)
         .subject(subject);
+
+    if let Some(mid) = in_reply_to.map(str::trim).filter(|m| !m.is_empty()) {
+        use lettre::message::header::{InReplyTo, References};
+        let v = if mid.starts_with('<') { mid.to_string() } else { format!("<{mid}>") };
+        builder = builder
+            .header(InReplyTo::from(v.clone()))
+            .header(References::from(v));
+    }
 
     let email = if let Some(path) = attachment {
         let bytes = tokio::fs::read(path).await?;
@@ -1264,10 +1282,12 @@ fn record_source_email(client_id: &str, email: &ParsedEmail) {
     let conn = match pool().get() { Ok(c) => c, Err(_) => return };
     // json_set the source keys; message_id is only written when present.
     let res = if let Some(mid) = email.message_id.as_deref() {
+        // Capture the subject alongside the id so a reply (e.g. a quote sent into this
+        // thread) can use a matching "Re: …" subject for reliable conversation grouping.
         conn.execute(
             "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), \
-                '$.src_inbox', ?2, '$.src_uid', ?3, '$.src_message_id', ?4) WHERE id=?1",
-            rusqlite::params![client_id, email.source, email.uid as i64, mid],
+                '$.src_inbox', ?2, '$.src_uid', ?3, '$.src_message_id', ?4, '$.src_subject', ?5) WHERE id=?1",
+            rusqlite::params![client_id, email.source, email.uid as i64, mid, email.subject],
         )
     } else {
         conn.execute(

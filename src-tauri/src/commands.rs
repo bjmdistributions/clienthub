@@ -2354,8 +2354,8 @@ pub async fn generate_quote_pdf(quote_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn send_quote(quote_id: String) -> Result<(), String> {
-    crate::invoice::send_quote(&quote_id).await.map_err(|e| e.to_string())
+pub async fn send_quote(quote_id: String, thread: Option<bool>) -> Result<(), String> {
+    crate::invoice::send_quote(&quote_id, thread.unwrap_or(false)).await.map_err(|e| e.to_string())
 }
 
 /// Mark a quote accepted and link it to the invoice it was converted into.

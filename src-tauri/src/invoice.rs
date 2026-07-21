@@ -1101,19 +1101,22 @@ pub async fn generate_quote_pdf(quote_id: &str) -> Result<String> {
     Ok(pdf_path.to_string_lossy().to_string())
 }
 
-pub async fn send_quote(quote_id: &str) -> Result<()> {
-    let (number, total, pdf_path, cname, cemail) = {
+pub async fn send_quote(quote_id: &str, thread: bool) -> Result<()> {
+    let (number, total, pdf_path, cname, cemail, src_mid, src_subject, was_draft) = {
         let conn = pool().get()?;
-        let q: (String, String, f64, Option<String>) = conn.query_row(
-            "SELECT number,client_id,total,pdf_path FROM quotes WHERE id=?1",
+        let q: (String, String, f64, Option<String>, String) = conn.query_row(
+            "SELECT number,client_id,total,pdf_path,status FROM quotes WHERE id=?1",
             [quote_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )?;
-        let cli: (String, Option<String>) = conn.query_row(
-            "SELECT name,email FROM clients WHERE id=?1", [&q.1],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+        let cli: (String, Option<String>, String) = conn.query_row(
+            "SELECT name,email,COALESCE(metadata,'') FROM clients WHERE id=?1", [&q.1],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        (q.0, q.2, q.3, cli.0, cli.1)
+        // The last inbound email we captured from this client — the thread to reply into.
+        let meta: serde_json::Value = serde_json::from_str(&cli.2).unwrap_or(serde_json::Value::Null);
+        let str_meta = |k: &str| meta.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        (q.0, q.2, q.3, cli.0, cli.1, str_meta("src_message_id"), str_meta("src_subject"), q.4 == "draft")
     };
 
     let pdf = match pdf_path {
@@ -1122,7 +1125,26 @@ pub async fn send_quote(quote_id: &str) -> Result<()> {
     };
 
     let to = cemail.context("client has no email")?;
-    let subject = format!("Quote {}", number);
+
+    // When threading into the customer's conversation, use a matching "Re: …" subject
+    // (from their last email) so Gmail/Outlook group it; fall back to the plain quote
+    // subject when we have the thread id but no stored subject, or aren't threading.
+    let (subject, in_reply_to) = if thread {
+        match src_mid {
+            Some(mid) => {
+                let subj = match src_subject {
+                    Some(s) if s.to_lowercase().starts_with("re:") => s,
+                    Some(s) => format!("Re: {s}"),
+                    None => format!("Quote {number}"),
+                };
+                (subj, Some(mid))
+            }
+            None => (format!("Quote {number}"), None),
+        }
+    } else {
+        (format!("Quote {number}"), None)
+    };
+
     let body = format!(
         "Hi {},\n\nPlease find attached our quote {} for {}.\n\n\
          This quotation is valid until the date shown in the document. \
@@ -1130,15 +1152,23 @@ pub async fn send_quote(quote_id: &str) -> Result<()> {
         cname.split_whitespace().next().unwrap_or(&cname), number, fmt_dollar(total),
     );
 
-    crate::email::send(&to, &subject, &body, Some(&pdf)).await?;
+    crate::email::send_threaded(&to, &subject, &body, Some(&pdf), in_reply_to.as_deref()).await?;
 
     let now = Utc::now().to_rfc3339();
     let mut cols = serde_json::Map::new();
-    cols.insert("status".into(), serde_json::Value::String("sent".into()));
+    // Only a draft is promoted to "sent" — re-emailing an accepted/converted quote
+    // (the Email button is always available) must not revert its status, locally or
+    // across synced devices. Mirrors send_invoice.
+    if was_draft {
+        cols.insert("status".into(), serde_json::Value::String("sent".into()));
+    }
     cols.insert("sent_at".into(), serde_json::Value::String(now.clone()));
     crate::sync::record_upsert("quotes", quote_id, cols)?;
     let conn = pool().get()?;
-    conn.execute("UPDATE quotes SET status='sent', sent_at=?1 WHERE id=?2", rusqlite::params![now, quote_id])?;
+    conn.execute(
+        "UPDATE quotes SET status = CASE WHEN status='draft' THEN 'sent' ELSE status END, sent_at=?1 WHERE id=?2",
+        rusqlite::params![now, quote_id],
+    )?;
     Ok(())
 }
 
