@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Quote, Client, LineItem } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban } from "lucide-react";
+import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban, Search } from "lucide-react";
 import { toast } from "./Toast";
 
 interface Props { onNavigate?: (t: any) => void; }
@@ -32,6 +32,7 @@ export default function QuotesView({ onNavigate }: Props) {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Quote | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -42,7 +43,13 @@ export default function QuotesView({ onNavigate }: Props) {
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? "—";
 
-  const filtered = quotes.filter((q) => filter === "all" || displayStatus(q) === filter);
+  const term = search.trim().toLowerCase();
+  const filtered = quotes.filter((q) => {
+    if (filter !== "all" && displayStatus(q) !== filter) return false;
+    if (!term) return true;
+    // Match on customer name or quote number.
+    return clientName(q.client_id).toLowerCase().includes(term) || (q.number || "").toLowerCase().includes(term);
+  });
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: quotes.length };
     for (const s of STATUSES) if (s !== "all") c[s] = quotes.filter((q) => displayStatus(q) === s).length;
@@ -101,13 +108,24 @@ export default function QuotesView({ onNavigate }: Props) {
         </button>
       </div>
 
-      <div className="flex gap-1.5 mb-4 flex-wrap">
-        {STATUSES.map((s) => (
-          <button key={s} onClick={() => setFilter(s)}
-            className={`px-3 h-8 rounded-lg text-[12px] font-medium capitalize transition-colors ${filter === s ? "bg-accent/10 text-accent-hover" : "text-muted hover:bg-surface-2"}`}>
-            {s} <span className="text-muted">{counts[s] ?? 0}</span>
-          </button>
-        ))}
+      <div className="flex gap-3 mb-4 items-center flex-wrap">
+        <div className="flex gap-1.5 flex-wrap">
+          {STATUSES.map((s) => (
+            <button key={s} onClick={() => setFilter(s)}
+              className={`px-3 h-8 rounded-lg text-[12px] font-medium capitalize transition-colors ${filter === s ? "bg-accent/10 text-accent-hover" : "text-muted hover:bg-surface-2"}`}>
+              {s} <span className="text-muted">{counts[s] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+        <div className="relative ml-auto">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search customer or quote #"
+            className="border border-line bg-surface text-ink placeholder-muted pl-8 pr-3 h-8 rounded-lg text-[13px] w-60 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+          />
+        </div>
       </div>
 
       <div className="bg-surface border border-line-2 rounded-xl overflow-x-auto">
@@ -162,8 +180,14 @@ export default function QuotesView({ onNavigate }: Props) {
             {filtered.length === 0 && (
               <tr><td colSpan={7} className="text-center py-14">
                 <FileText size={24} className="mx-auto mb-2 text-faint" />
-                <p className="text-[13px] text-muted">No quotes yet</p>
-                <button onClick={() => { setEditing(null); setShowForm(true); }} className="mt-2 text-[12px] font-medium text-accent">Create your first quote →</button>
+                {term || filter !== "all" ? (
+                  <p className="text-[13px] text-muted">No quotes match{term ? ` “${search.trim()}”` : ""}.</p>
+                ) : (
+                  <>
+                    <p className="text-[13px] text-muted">No quotes yet</p>
+                    <button onClick={() => { setEditing(null); setShowForm(true); }} className="mt-2 text-[12px] font-medium text-accent">Create your first quote →</button>
+                  </>
+                )}
               </td></tr>
             )}
           </tbody>

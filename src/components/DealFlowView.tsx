@@ -478,7 +478,11 @@ function DealFlowCard({
   const done: Record<SectionKey, boolean> = {
     supplier: supplierDone,
     money:    moneyDone,
-    link:     reconLinked || isComplete,
+    // The link dot fills only when there's nothing left to link — every money leg
+    // that's owed is either paired to the bank or explicitly marked "no record"
+    // (reconStatus.needs_review === false). Being complete is NOT enough on its own:
+    // you can complete now and reconcile later, and the dot must stay empty until you do.
+    link:     isComplete ? (!!reconStatus && !reconStatus.needs_review) : reconLinked,
     profit:   reconLinked || isComplete,
     complete: isComplete,
   };
