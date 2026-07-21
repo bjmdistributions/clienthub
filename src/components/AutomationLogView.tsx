@@ -96,7 +96,7 @@ export default function AutomationLogView() {
       </div>
 
       {/* Dashboard tiles */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <StatCard icon={Bell} tint="bg-accent/10 text-accent-hover"
           label="Follow-up rules" value={`${fu.active}`}
           sub={`${fu.active} active of ${fu.total} · e.g. email a client after 30 quiet days`}

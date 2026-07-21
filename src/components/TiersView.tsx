@@ -121,7 +121,7 @@ export default function TiersView() {
 
       {/* Table */}
       <div className="bg-surface border border-line rounded-xl overflow-x-auto">
-        <table className="min-w-full text-sm">
+        <table className="w-full min-w-[900px] text-sm">
           <thead>
             <tr className="border-b border-line-2">
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Client</th>

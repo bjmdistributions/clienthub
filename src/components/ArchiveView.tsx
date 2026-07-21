@@ -87,7 +87,7 @@ export default function ArchiveView() {
 
   return (
     <div className="p-6 space-y-4 max-w-[1000px]">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-[18px] font-bold text-ink">Archive</h2>
           <p className="text-[12px] text-muted mt-0.5">
