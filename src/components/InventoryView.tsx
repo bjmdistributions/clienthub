@@ -1136,6 +1136,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   // Shopify-style variants: option types (Color/Size) + a row per combination.
   const [options, setOptions] = useState<LotOption[]>(details0.options ?? []);
   const [variants, setVariants] = useState<LotVariant[]>(details0.variants ?? []);
+  // Sizes/variants are power-user extras — collapse them by default so a new lot
+  // reads clean; auto-open when the lot being edited already has them.
+  const [showAdvanced, setShowAdvanced] = useState((details0.size_run?.length ?? 0) > 0 || (details0.options?.length ?? 0) > 0);
   // Every combination of option values (the cartesian product) — the variant grid.
   // Variants are stored sparsely (only rows the seller filled in); the grid looks
   // each combo up by its values, so adding/removing options never orphans data.
@@ -1299,48 +1302,63 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
   return (
     <>
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/25 backdrop-blur-[3px]">
-      <div className="bg-surface rounded-2xl shadow-xl w-[440px] max-w-[92vw] max-h-[82vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-[14px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
-          <button onClick={requestClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-black/30 backdrop-blur-[3px]">
+      <div className="bg-surface rounded-2xl shadow-xl w-[560px] max-w-[94vw] max-h-[86vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start gap-3 px-6 py-4 border-b border-line flex-shrink-0">
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
+            <p className="text-[11.5px] text-muted mt-0.5">{initial ? "Update this inventory lot." : "Add a lot to your inventory — only a name is required."}</p>
+          </div>
+          <button onClick={requestClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><X size={16} /></button>
         </div>
-        <div className="space-y-3">
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Name *</label>
-            <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="Lot name" />
-          </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Category</label>
-            <CategoryCombobox value={category} onChange={setCategory} options={categories} />
-          </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Description</label>
-            <input className={inp} value={desc} onChange={(e) => setDesc(e.target.value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+
+          <div className="space-y-3">
             <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Quantity (units)</label>
-              <input className={inp} type="number" value={qty} onChange={(e) => setQty(parseInt(e.target.value) || 0)} />
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Name</label>
+              <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Nike overstock — mixed sneakers" autoFocus />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Category</label>
+                <CategoryCombobox value={category} onChange={setCategory} options={categories} />
+              </div>
+              <div>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location</label>
+                <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A" />
+              </div>
             </div>
             <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Pallets</label>
-              <input className={inp} type="number" value={pallets || ""} onChange={(e) => setPallets(parseInt(e.target.value) || 0)} placeholder="0" />
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Description</label>
+              <input className={inp} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="A short summary buyers will see" />
             </div>
           </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Location</label>
-            <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A, Shelf 3" />
-          </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">MSRP (total retail)</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-              <input className={inp + " pl-6"} type="number" step="0.01" value={msrp || ""} onChange={(e) => setMsrp(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+
+          <div className="pt-5 border-t border-line-2 space-y-3">
+            <div className="text-[12px] font-semibold text-ink">Stock</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Quantity (units)</label>
+                <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={qty || ""} onChange={(e) => setQty(parseInt(e.target.value) || 0)} placeholder="0" />
+              </div>
+              <div>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Pallets</label>
+                <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={pallets || ""} onChange={(e) => setPallets(parseInt(e.target.value) || 0)} placeholder="0" />
+              </div>
             </div>
           </div>
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Selling price</label>
+
+          <div className="pt-5 border-t border-line-2 space-y-3">
+            <div className="text-[12px] font-semibold text-ink">Pricing</div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">MSRP (total retail)</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                <input className={inp + " pl-6 tabular-nums"} type="number" step="0.01" value={msrp || ""} onChange={(e) => setMsrp(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+              </div>
+            </div>
+            <div>
+            <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Selling price</label>
             <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5 mb-2">
               {(["per_unit", "total", "custom"] as const).map(pt => (
                 <button key={pt} onClick={() => setPriceType(pt)}
@@ -1359,10 +1377,20 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               </div>
             )}
           </div>
+          </div>
+
+          <div className="pt-5 border-t border-line-2">
+            <button type="button" onClick={() => setShowAdvanced((v) => !v)}
+              className="w-full flex items-center justify-between text-left">
+              <span className="text-[12px] font-semibold text-ink">Sizes &amp; variants <span className="font-normal text-muted">— optional</span></span>
+              <ChevronDown size={15} className={`text-muted transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
+            </button>
+            {showAdvanced && (
+            <div className="space-y-4 mt-3">
 
           {/* Size run editor */}
           <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Size run (size → quantity)</label>
+            <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Size run (size → quantity)</label>
             <div className="space-y-1.5">
               {sizeRun.map((r, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -1433,19 +1461,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               </div>
             )}
           </div>
-
-          <div className="flex items-center gap-5 pt-0.5">
-            <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-accent" checked={sentWa} onChange={(e) => setSentWa(e.target.checked)} />
-              <MessageCircle size={13} className="text-success-ink" /> Sent on WhatsApp
-            </label>
-            <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
-              <input type="checkbox" className="accent-accent" checked={sentEmail} onChange={(e) => setSentEmail(e.target.checked)} />
-              <Mail size={13} className="text-info-ink" /> Emailed
-            </label>
+            </div>
+            )}
           </div>
+
+          <div className="pt-5 border-t border-line-2 space-y-3">
+            <div className="text-[12px] font-semibold text-ink">Photos &amp; files</div>
           <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Photos</label>
+            <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Photos</label>
             {photos.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2">
                 {photos.map((p, i) => (
@@ -1488,9 +1511,24 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             )}
           </div>
 
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Notes</label>
-            <input className={inp} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Authentic, sealed, minor box damage" />
+          </div>
+
+          <div className="pt-5 border-t border-line-2 space-y-3">
+            <div className="text-[12px] font-semibold text-ink">Notes &amp; status</div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Notes</label>
+              <input className={inp} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Authentic, sealed, minor box damage" />
+            </div>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-0.5">
+              <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
+                <input type="checkbox" className="accent-accent" checked={sentWa} onChange={(e) => setSentWa(e.target.checked)} />
+                <MessageCircle size={13} className="text-success-ink" /> Sent on WhatsApp
+              </label>
+              <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer select-none">
+                <input type="checkbox" className="accent-accent" checked={sentEmail} onChange={(e) => setSentEmail(e.target.checked)} />
+                <Mail size={13} className="text-info-ink" /> Emailed
+              </label>
+            </div>
           </div>
 
           {/* Internal — never shown to buyers. Supplier, your cost, and MOQ stay private. */}
@@ -1521,10 +1559,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           </div>
 
         </div>
-        <div className="flex justify-end gap-2 mt-5">
-          <button onClick={requestClose} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2">Cancel</button>
-          <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">
-            {saving ? "Saving…" : initial ? "Save" : "Create lot"}
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-line flex-shrink-0">
+          <button onClick={requestClose} className="px-4 h-9 text-[13px] text-ink-2 border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+          <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+            {saving ? "Saving…" : initial ? "Save changes" : "Create lot"}
           </button>
         </div>
       </div>
