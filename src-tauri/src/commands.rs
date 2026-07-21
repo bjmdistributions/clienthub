@@ -7290,41 +7290,133 @@ pub async fn backfill_inventory_photos() -> Result<u32, String> {
     Ok(n)
 }
 
-/// Run the photo backfill once per install, guarded by a local marker so it doesn't
-/// re-upload everything each launch. A retryable failure (offline / signed out) leaves
-/// the marker unset so it runs again next time. New photos upload at save time.
-pub async fn startup_backfill_inventory_photos() {
-    if read_setting("inv_photo_backfill_v1").is_some() { return; }
-    match backfill_inventory_photos().await {
-        Ok(n) => {
-            tracing::info!("storefront photo backfill: uploaded {}", n);
-            let _ = write_setting("inv_photo_backfill_v1", "done");
+#[derive(Serialize)]
+pub struct MediaReconcile {
+    pub downloaded: u32,
+    pub uploaded: u32,
+}
+
+/// Two-way reconcile of inventory media (photos + manifest files) against the server so
+/// every device AND the public storefront converge on the same files. Photo/manifest
+/// BYTES don't ride the DB sync oplog — only the path text does — so a device can hold a
+/// lot's row while missing its images, and the storefront can list a photo the server
+/// never received. This closes both gaps:
+///   • DOWNLOAD — any photos_json / manifest_path entry whose local file is missing is
+///     fetched from the server (fixes "lot shows but images are blank" on a 2nd device).
+///   • UPLOAD — any local file the server doesn't have yet is pushed (fixes storefront
+///     404s and the dropped best-effort upload on the newest lot).
+/// Idempotent and cheap once converged: only missing-file downloads and HEAD-negative
+/// uploads do any network I/O. Returns how many files moved each way.
+#[tauri::command]
+pub async fn reconcile_inventory_media() -> Result<MediaReconcile, String> {
+    if crate::netsync::config().is_none() {
+        return Ok(MediaReconcile { downloaded: 0, uploaded: 0 });
+    }
+    // Snapshot the rows up front so the DB connection isn't held across await points.
+    let rows: Vec<(String, String, Option<String>)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, COALESCE(photos_json,'[]'), manifest_path FROM inventory")
+            .map_err(|e| e.to_string())?;
+        let r = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        r
+    };
+    let base = crate::db::app_data_dir().join("sync");
+    let mut downloaded = 0u32;
+
+    // DOWNLOAD pass — pull any referenced file this device doesn't have locally.
+    for (_id, photos_json, manifest) in &rows {
+        let mut rels: Vec<String> = serde_json::from_str::<Vec<String>>(photos_json)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.starts_with("media/") || p.starts_with("media\\"))
+            .collect();
+        if let Some(m) = manifest {
+            if m.starts_with("media/") || m.starts_with("media\\") {
+                rels.push(m.clone());
+            }
         }
-        Err(e) => tracing::warn!("photo backfill deferred: {}", e),
+        for rel in rels {
+            let rel = rel.replace('\\', "/");
+            if !base.join(&rel).exists() {
+                if crate::netsync::download_media(&rel).await.is_ok() {
+                    downloaded += 1;
+                }
+            }
+        }
     }
+
+    // UPLOAD pass — push any local file the server is missing.
+    let mut uploaded = 0u32;
+    let inv_dir = base.join("media").join("inventory");
+    if let Ok(lots) = std::fs::read_dir(&inv_dir) {
+        for lot in lots.flatten() {
+            if !lot.path().is_dir() {
+                continue;
+            }
+            let lot_id = lot.file_name().to_string_lossy().to_string();
+            // Photos live under <lot>/photos/.
+            if let Ok(photos) = std::fs::read_dir(lot.path().join("photos")) {
+                for ph in photos.flatten() {
+                    if !ph.path().is_file() {
+                        continue;
+                    }
+                    let fname = ph.file_name().to_string_lossy().to_string();
+                    let rel = format!("media/inventory/{}/photos/{}", lot_id, fname);
+                    if !crate::netsync::server_has_media(&rel).await
+                        && crate::netsync::upload_inventory_photo(&lot_id, &rel).await.is_ok()
+                    {
+                        uploaded += 1;
+                    }
+                }
+            }
+            // The manifest file sits at the lot root as manifest.<ext>.
+            if let Ok(entries) = std::fs::read_dir(lot.path()) {
+                for e in entries.flatten() {
+                    if !e.path().is_file() {
+                        continue;
+                    }
+                    let fname = e.file_name().to_string_lossy().to_string();
+                    if fname.starts_with("manifest.") {
+                        let rel = format!("media/inventory/{}/{}", lot_id, fname);
+                        if !crate::netsync::server_has_media(&rel).await
+                            && crate::netsync::upload_inventory_manifest(&lot_id, &rel).await.is_ok()
+                        {
+                            uploaded += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(MediaReconcile { downloaded, uploaded })
 }
 
-/// Backfill manifests — mirrors photo backfill for manifest files
-pub async fn startup_backfill_inventory_manifests() {
-    if read_setting("inv_manifest_backfill_v1").is_some() { return; }
-    let _ = write_setting("inv_manifest_backfill_v1", "done");
-    match backfill_inventory_manifests().await {
-        Ok(n) => tracing::info!("storefront manifest backfill: uploaded {}", n),
-        Err(e) => tracing::warn!("manifest backfill deferred: {}", e),
-    }
-}
-
+/// Backfill manifests — uploads every locally-present manifest file the server lacks.
+/// Kept as a standalone command; the startup reconcile ([`reconcile_inventory_media`])
+/// now covers this bidirectionally on every launch.
 #[tauri::command]
 pub async fn backfill_inventory_manifests() -> Result<u32, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, manifest_path FROM inventory WHERE manifest_path IS NOT NULL AND manifest_path != ''").map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let rows: Vec<(String, String)> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id, manifest_path FROM inventory WHERE manifest_path IS NOT NULL AND manifest_path != ''").map_err(|e| e.to_string())?;
+        let r = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        r
+    };
     let mut n = 0u32;
     for (lot_id, path) in rows {
         let full = crate::db::app_data_dir().join("sync").join(&path);
-        if full.exists() {
-            let _ = crate::netsync::upload_inventory_manifest(&lot_id, &path);
+        // Was a fire-and-forget bug here (the future was dropped un-awaited), so pre-existing
+        // manifests never actually uploaded and the storefront's "View manifest" link 404'd.
+        if full.exists() && crate::netsync::upload_inventory_manifest(&lot_id, &path).await.is_ok() {
             n += 1;
         }
     }
@@ -7607,6 +7699,13 @@ pub fn whatsapp_web_reachable() -> bool {
     false
 }
 
+/// WhatsApp Web refuses to load in the embedded webview and shows "WhatsApp
+/// works with Safari 15+" because the OS webview (WKWebView on macOS, WebView2
+/// on Windows) reports a User-Agent WhatsApp considers too old. Presenting a
+/// current desktop-Chrome UA makes WhatsApp treat the embed as a supported
+/// browser. WhatsApp only checks the version, so one string works cross-platform.
+const WA_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
 /// Open WhatsApp Web in a dedicated Tauri webview window (WebviewUrl::External).
 /// A real browser engine — required because web.whatsapp.com refuses to be
 /// embedded in an iframe (frame-ancestors). No script injection, no automation;
@@ -7623,6 +7722,7 @@ pub async fn open_whatsapp_window(app: tauri::AppHandle) -> Result<(), String> {
     tauri::WebviewWindowBuilder::new(&app, "whatsapp", tauri::WebviewUrl::External(url))
         .title("WhatsApp Web — ClientHub")
         .inner_size(1100.0, 820.0)
+        .user_agent(WA_USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -7671,6 +7771,7 @@ pub async fn whatsapp_embed_show(
     // never reaches WhatsApp's web page. Disabling it lets the drop fall through
     // to WhatsApp's own "drop to attach" handler.
     let builder = tauri::webview::WebviewBuilder::new("whatsapp", tauri::WebviewUrl::External(url))
+        .user_agent(WA_USER_AGENT)
         .disable_drag_drop_handler();
     window
         .add_child(builder, pos, size)

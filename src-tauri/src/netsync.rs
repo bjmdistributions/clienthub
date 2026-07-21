@@ -669,6 +669,17 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                     // Remote changes landed locally — nudge the front-end to re-read
                     // (bell counts, approvals list, client list) from post-sync state.
                     let _ = app.emit("netsync-applied", n);
+                    // Rows that just arrived may reference photos/manifests whose bytes
+                    // don't ride the oplog. Pull the missing files so a device isn't left
+                    // with blank images. Fire-and-forget so the poll loop isn't blocked.
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Ok(r) = crate::commands::reconcile_inventory_media().await {
+                            if r.downloaded > 0 {
+                                let _ = app2.emit("netsync-applied", r.downloaded);
+                            }
+                        }
+                    });
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("netsync pull: {}", e),
@@ -1716,6 +1727,55 @@ pub async fn upload_inventory_manifest(lot_id: &str, rel: &str) -> Result<(), St
     if !resp.status().is_success() {
         return Err(format!("server returned {}", resp.status()));
     }
+    Ok(())
+}
+
+/// Does the server already hold this media file? HEADs the public `/media` mount
+/// (the same path the storefront serves from). Lets the reconcile skip re-uploading
+/// bytes the server already has. Any error / non-2xx counts as "not present" so we
+/// err toward re-uploading rather than assuming.
+pub async fn server_has_media(rel: &str) -> bool {
+    let cfg = match config() { Some(c) => c, None => return false };
+    let base = cfg.url.trim_end_matches('/');
+    let rel = rel.replace('\\', "/");
+    if !rel.starts_with("media/") || rel.contains("..") { return false; }
+    match http().head(format!("{}/{}", base, rel)).bearer_auth(&cfg.token).send().await {
+        Ok(r) => r.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+/// Download one media file (photo or manifest) FROM the server into the local synced
+/// folder. Photo/manifest bytes don't ride the DB oplog — only the path text does — so
+/// a device that synced a lot's row but never had the files needs this to actually show
+/// the images. `rel` is the stored relative path, e.g.
+/// "media/inventory/<lot>/photos/photo_001.jpg". Reads from the public `/media` mount.
+pub async fn download_media(rel: &str) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let base = cfg.url.trim_end_matches('/');
+    let rel = rel.replace('\\', "/");
+    let name = rel.rsplit('/').next().unwrap_or("");
+    if name.is_empty() || rel.contains("..") || !rel.starts_with("media/") {
+        return Err("bad media path".into());
+    }
+    let resp = http()
+        .get(format!("{}/{}", base, rel))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("empty file".into());
+    }
+    let local = crate::db::app_data_dir().join("sync").join(&rel);
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&local, &bytes).map_err(|e| e.to_string())?;
     Ok(())
 }
 

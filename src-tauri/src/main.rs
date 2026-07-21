@@ -8,6 +8,7 @@ mod csv_import;
 mod db;
 mod email;
 mod employees;
+mod facebook;
 mod form_parser;
 mod geocode;
 mod google_contacts;
@@ -395,11 +396,19 @@ fn main() {
                     _ => {}
                 }
 
-                // 2c. Once per install, push all local inventory photos to the server so
-                // the hosted storefront can show photos added on any device (photo files
-                // don't ride the DB sync oplog). New photos upload at save time.
-                commands::startup_backfill_inventory_photos().await;
-                commands::startup_backfill_inventory_manifests().await;
+                // 2c. Reconcile inventory media with the server every launch: download any
+                // photos/manifests this device is missing and upload any the server lacks.
+                // Photo/manifest files don't ride the DB sync oplog (only the path text
+                // does), so this is what actually converges images across devices and the
+                // hosted storefront. Runs each launch (not once-per-install) and only moves
+                // missing files, so it's cheap once converged.
+                match commands::reconcile_inventory_media().await {
+                    Ok(r) if r.downloaded > 0 || r.uploaded > 0 => {
+                        tracing::info!("inventory media reconcile: {} down, {} up", r.downloaded, r.uploaded);
+                    }
+                    Err(e) => tracing::warn!("inventory media reconcile deferred: {}", e),
+                    _ => {}
+                }
 
                 // 3. Fire a system notification if follow-ups are due today.
                 match due_followups().await {
@@ -832,6 +841,7 @@ fn main() {
             import_lot_photos,
             backfill_inventory_photos,
             backfill_inventory_manifests,
+            reconcile_inventory_media,
             cleanup_inventory_photos,
             remove_lot_photo,
             attach_lot_manifest,
@@ -851,6 +861,13 @@ fn main() {
             close_whatsapp_window,
             whatsapp_embed_show,
             whatsapp_embed_close,
+            // Facebook Page auto-post
+            facebook::fb_status,
+            facebook::fb_set_app,
+            facebook::fb_connect,
+            facebook::fb_select_page,
+            facebook::fb_disconnect,
+            facebook::fb_post_lot,
             // Follow-up rules
             list_followup_rules,
             create_followup_rule,

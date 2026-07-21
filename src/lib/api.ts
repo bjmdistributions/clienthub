@@ -1181,6 +1181,28 @@ export interface LotDetails {
   // one variant row per combination the seller stocks, with its own qty + price.
   options?: LotOption[] | null;
   variants?: LotVariant[] | null;
+  // Public manifest summary saved from the analyzer — the storefront renders a
+  // "what's inside" panel from it. Internal pricing (retail/margin/bid) is NOT kept here.
+  manifest?: LotManifestSummary | null;
+}
+/** Public-safe manifest summary persisted on a lot and shown on the storefront. */
+export interface LotManifestSummary {
+  units: number;        // total unit count (sum of the quantity column)
+  lines: number;        // number of product-line rows
+  categories: { name: string; quantity: number }[];  // per-category unit counts, desc
+}
+
+/** Facebook Page connection status for the Settings UI (never carries tokens). */
+export interface FbStatus {
+  has_app: boolean;          // App ID + secret saved
+  connected: boolean;        // a Page is connected and postable
+  page_name: string | null;  // the connected Page's name
+  redirect_uri: string;      // exact URI to register in the Meta app
+}
+/** A Facebook Page the user manages, returned during connect for selection. */
+export interface FbPageLite {
+  id: string;
+  name: string;
 }
 export interface Offer {
   id: string;
@@ -2401,6 +2423,9 @@ export const api = {
   setOfferStatus: (id: string, status: string) => invoke<void>("set_offer_status", { id, status }),
   deleteOffer: (id: string) => invoke<void>("delete_offer", { id }),
   resyncInventory: () => invoke<number>("resync_inventory"),
+  // Two-way media reconcile: download photos/manifests this device is missing and
+  // upload any the server lacks. Returns how many files moved each way.
+  reconcileInventoryMedia: () => invoke<{ downloaded: number; uploaded: number }>("reconcile_inventory_media"),
   importLotPhotos: (lotId: string, paths: string[]) => invoke<string[]>("import_lot_photos", { lotId, paths }),
   removeLotPhoto: (lotId: string, photoPath: string) => invoke<string[]>("remove_lot_photo", { lotId, photoPath }),
   attachLotManifest: (lotId: string, filePath: string) => invoke<string>("attach_lot_manifest", { lotId, filePath }),
@@ -2422,6 +2447,13 @@ export const api = {
   whatsappEmbedShow: (x: number, y: number, width: number, height: number) =>
     invoke<void>("whatsapp_embed_show", { x, y, width, height }),
   whatsappEmbedClose: () => invoke<void>("whatsapp_embed_close"),
+  // Facebook Page auto-post. Meta blocks app-posting to groups, so this targets a Page.
+  fbStatus: () => invoke<FbStatus>("fb_status"),
+  fbSetApp: (appId: string, appSecret: string) => invoke<void>("fb_set_app", { appId, appSecret }),
+  fbConnect: () => invoke<FbPageLite[]>("fb_connect"),
+  fbSelectPage: (pageId: string) => invoke<string>("fb_select_page", { pageId }),
+  fbDisconnect: () => invoke<void>("fb_disconnect"),
+  fbPostLot: (message: string, photoRels: string[]) => invoke<string>("fb_post_lot", { message, photoRels }),
   archiveLot: (id: string) => invoke<void>("archive_lot", { id }),
   linkLotToDeal: (lotId: string, dealId: string) => invoke<void>("link_lot_to_deal", { lotId, dealId }),
 

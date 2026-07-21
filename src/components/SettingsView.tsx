@@ -32,6 +32,8 @@ import {
   CapturedCustomer,
   FormCapturePreview,
   StorefrontConfig,
+  FbStatus,
+  FbPageLite,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { isAdmin } from "../lib/permissions";
@@ -64,6 +66,7 @@ import {
   CreditCard,
   Receipt,
   ShoppingBag,
+  Facebook,
   Globe,
   Split,
   Database,
@@ -165,7 +168,7 @@ const inpSm = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:o
 type SettingsTab =
   | "account" | "appearance" | "company" | "invoice" | "quote" | "storefront" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
-  | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "webforms"
+  | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "facebook" | "webforms"
   | "sync" | "splits" | "backup" | "team";
 
 const SETTINGS_GROUPS: {
@@ -203,6 +206,7 @@ const SETTINGS_GROUPS: {
       { id: "import",   label: "Import",        icon: Download,   desc: "CSV & Google Contacts" },
       { id: "billing",  label: "Billing",       icon: Receipt,    desc: "Stripe configuration" },
       { id: "shopify",  label: "Shopify",       icon: ShoppingBag, desc: "Sync new customers as leads" },
+      { id: "facebook", label: "Facebook",      icon: Facebook,    desc: "Post inventory to a Facebook Page" },
       { id: "webforms", label: "Web forms",     icon: Globe,       desc: "Custom sites & forms → pending leads" },
     ],
   },
@@ -350,6 +354,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "team"        && <TeamTab />}
           {tab === "billing"     && <BillingTab />}
           {tab === "shopify"     && <ShopifyTab />}
+          {tab === "facebook"    && <FacebookTab />}
           {tab === "webforms"    && <IntakeTab />}
           {tab === "customfields"&& <CustomFieldsTab />}
         </div>
@@ -3069,6 +3074,126 @@ function IntakeTab() {
       </div>
       {sources.length === 0 && <div className="text-[13px] text-muted">No intake links yet — create one above.</div>}
       {sources.map((s) => <IntakeSourceCard key={s.id} source={s} fields={fields} onChange={load} />)}
+    </div>
+  );
+}
+
+function FacebookTab() {
+  const [st, setSt] = useState<FbStatus | null>(null);
+  const [appId, setAppId] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+  const [savingApp, setSavingApp] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [pages, setPages] = useState<FbPageLite[] | null>(null);
+  const load = () => api.fbStatus().then(setSt).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const saveApp = async () => {
+    if (!appId.trim() || !appSecret.trim()) return;
+    setSavingApp(true);
+    try { await api.fbSetApp(appId.trim(), appSecret.trim()); setAppSecret(""); toast("Facebook app saved"); await load(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSavingApp(false);
+  };
+  const pick = async (id: string) => {
+    try { const name = await api.fbSelectPage(id); setPages(null); toast(`Connected ${name}`); await load(); }
+    catch (e: any) { toast(String(e), "error"); }
+  };
+  const connect = async () => {
+    setConnecting(true);
+    try {
+      const ps = await api.fbConnect();
+      if (ps.length === 1) await pick(ps[0].id);
+      else setPages(ps);
+    } catch (e: any) { toast(String(e), "error"); }
+    setConnecting(false);
+  };
+  const disconnect = async () => {
+    try { await api.fbDisconnect(); setPages(null); toast("Facebook Page disconnected"); await load(); }
+    catch (e: any) { toast(String(e), "error"); }
+  };
+  const redirect = st?.redirect_uri || "http://localhost:8712/callback";
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div>
+        <SectionLabel>Facebook Page posting</SectionLabel>
+        <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          Post an inventory lot — photos and caption — straight to a Facebook <strong>Page</strong> you manage.
+          Meta doesn’t let apps post into groups, so this targets a Page. Connect once; then use
+          <strong> Post to Facebook</strong> on any lot.
+        </p>
+      </div>
+
+      <div className="bg-surface border border-line rounded-xl p-4 space-y-3.5">
+        <div className="text-[12px] font-medium">
+          Status: {st?.connected
+            ? <span className="text-success-ink">Connected · {st.page_name}</span>
+            : st?.has_app ? <span className="text-muted">App saved — connect a Page</span>
+            : <span className="text-muted">Not set up yet</span>}
+        </div>
+
+        {st?.connected ? (
+          <button onClick={disconnect} className="px-3 h-9 border border-line rounded-lg text-[12.5px] hover:bg-surface-2 transition-colors">Disconnect Page</button>
+        ) : (
+          <>
+            <div>
+              <div className="text-[12.5px] font-medium text-muted mb-1.5">App ID</div>
+              <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="From your Meta app"
+                className="w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+            </div>
+            <div>
+              <div className="text-[12.5px] font-medium text-muted mb-1.5">App secret</div>
+              <div className="flex items-center gap-2">
+                <input type="password" value={appSecret} onChange={(e) => setAppSecret(e.target.value)}
+                  placeholder={st?.has_app ? "•••••••  (saved — paste to replace)" : "From your Meta app"}
+                  className="flex-1 bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink" />
+                <button onClick={saveApp} disabled={savingApp || !appId.trim() || !appSecret.trim()}
+                  className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+                  {savingApp ? "Saving…" : "Save app"}
+                </button>
+              </div>
+            </div>
+            <div className="pt-1">
+              <button onClick={connect} disabled={!st?.has_app || connecting}
+                className="flex items-center gap-1.5 px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+                <Facebook size={14} /> {connecting ? "Waiting for Facebook…" : "Connect Facebook Page"}
+              </button>
+              {!st?.has_app && <p className="text-[11.5px] text-muted mt-1.5">Save your App ID and secret first.</p>}
+            </div>
+          </>
+        )}
+
+        {pages && pages.length > 0 && (
+          <div className="pt-1">
+            <div className="text-[12.5px] font-medium text-muted mb-1.5">Choose the Page to post to</div>
+            <div className="rounded-lg border border-line divide-y divide-line-2">
+              {pages.map((p) => (
+                <button key={p.id} onClick={() => pick(p.id)}
+                  className="w-full text-left px-3 py-2.5 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center justify-between transition-colors">
+                  <span>{p.name}</span><span className="text-[11px] text-accent">Select</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-surface border border-line rounded-xl p-4">
+        <div className="text-[12px] font-semibold text-ink mb-2.5">Set it up in Meta (one time)</div>
+        <ol className="text-[12.5px] text-muted space-y-2 list-decimal pl-4 leading-relaxed marker:text-muted">
+          <li>Go to <strong className="text-ink-2">developers.facebook.com</strong> → <strong className="text-ink-2">My Apps → Create App</strong> → type <strong className="text-ink-2">Business</strong>.</li>
+          <li>Add the <strong className="text-ink-2">Facebook Login</strong> product. Under its settings, add this exact <strong className="text-ink-2">Valid OAuth Redirect URI</strong>:
+            <div className="flex items-center gap-2 mt-1.5">
+              <input readOnly value={redirect} className="flex-1 bg-surface-2 border border-line rounded-lg h-8 px-2.5 text-[12px] text-ink" />
+              <button onClick={() => { navigator.clipboard?.writeText(redirect); toast("Copied"); }} className="px-3 h-8 border border-line rounded-lg text-[12px] hover:bg-surface-2 transition-colors">Copy</button>
+            </div>
+          </li>
+          <li>In <strong className="text-ink-2">App settings → Basic</strong>, copy the <strong className="text-ink-2">App ID</strong> and <strong className="text-ink-2">App secret</strong> into the fields above and save.</li>
+          <li>Make sure you’re an admin of the app (you are, as its creator) — while the app is in <strong className="text-ink-2">Development</strong> mode you can post to Pages you manage without Meta app review.</li>
+          <li>Click <strong className="text-ink-2">Connect Facebook Page</strong>, approve in the Facebook window, and pick your Page.</li>
+        </ol>
+      </div>
     </div>
   );
 }

@@ -25,6 +25,7 @@ import {
   Bell,
   MessageSquarePlus,
   ClipboardCheck,
+  ClipboardList,
   Building2,
   ShieldAlert,
   Wallet,
@@ -45,6 +46,7 @@ import DashboardView from "./components/DashboardView";
 import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
 import InventoryView from "./components/InventoryView";
+import ManifestView from "./components/ManifestView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import HealthView from "./components/HealthView";
@@ -75,7 +77,7 @@ import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { can, canViewTab, isAdmin } from "./lib/permissions";
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
@@ -401,6 +403,9 @@ export default function App() {
   // still maps to a real view in paneContent — nothing was dropped, only regrouped.
   type NavKid = { id: Tab; label: string; icon: any };
   type NavNode = NavKid & { children?: NavKid[] };
+  // Ordered by daily flow: overview → who you deal with → what you stock/analyze →
+  // pipeline → the documents that close a deal → money → outreach → insight. Dashboard
+  // stays pinned on top; Quote sits directly under Invoice.
   const NAV: NavNode[] = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "clients", label: "Clients", icon: Users, children: [
@@ -412,14 +417,15 @@ export default function App() {
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
-    { id: "quotes", label: "Quote", icon: FileSignature, children: [
-      { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
-    ] },
+    { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
     { id: "dealflow", label: "Deal Flow", icon: GitBranch },
     { id: "invoices", label: "Invoice", icon: FileText, children: [
       { id: "deals",      label: "Completed",  icon: Briefcase },
       { id: "receivables", label: "Receivables", icon: Wallet },
       { id: "payables",   label: "Payables",   icon: Banknote },
+    ] },
+    { id: "quotes", label: "Quote", icon: FileSignature, children: [
+      { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
     ] },
     { id: "financials", label: "Financials", icon: Landmark },
     { id: "email", label: "Newsletter", icon: Mail },
@@ -449,6 +455,7 @@ export default function App() {
 
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
+    : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : canViewTab(me, id as any);
 
   // Flat list of every visible destination (mains + sub-items + utility) — used by
@@ -518,6 +525,7 @@ export default function App() {
           {t === "dealflow"   && <DealFlowView />}
           {t === "suppliers"  && <SuppliersView />}
           {t === "inventory"  && <InventoryView />}
+          {t === "manifest"   && <ManifestView onNavigate={setTab} />}
           {t === "sheetcopy"  && <SheetCopyView />}
           {t === "financials" && <FinancialsView />}
           {t === "deals"      && <CloseoutView />}

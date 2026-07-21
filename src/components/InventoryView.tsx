@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer } from "../lib/api";
+import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -162,9 +162,6 @@ export default function InventoryView() {
   const [linkModal, setLinkModal] = useState<string | null>(null);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
-  const [manifest, setManifest] = useState<ManifestAnalysis | null>(null);
-  const [manifestBusy, setManifestBusy] = useState(false);
-  const [showManifest, setShowManifest] = useState(false); // manifest analyzer slide-over
 
   // Toolbar state
   const [search, setSearch] = useState("");
@@ -214,6 +211,25 @@ export default function InventoryView() {
     api.getStorefrontConfig().then(setStorefront).catch(() => {});
     api.listDeals().then(setDeals).catch(() => {});
     api.listClients().then(setClients).catch(() => {});
+  }, []);
+  // The standalone Manifest analyzer (its own tab) sends a lot here via this event: open
+  // a new lot form prefilled with the manifest's numbers, carrying the manifest summary in
+  // details_json so it persists to the lot and shows on the storefront.
+  useEffect(() => {
+    const onPrefill = (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      setEditing(null);
+      setPrefill({
+        quantity: d.quantity ?? 1,
+        total_cost: d.total_cost ?? 0,
+        price_type: d.price_type ?? "total",
+        details_json: d.manifest ? JSON.stringify({ manifest: d.manifest }) : undefined,
+      } as Partial<Lot>);
+      setPrefillSeq((s) => s + 1);
+      setShowForm(true);
+    };
+    window.addEventListener("inventory-prefill-lot", onPrefill as EventListener);
+    return () => window.removeEventListener("inventory-prefill-lot", onPrefill as EventListener);
   }, []);
   // Live storefront link (null unless the storefront is on) — powers the header bar
   // and the per-lot "copy storefront link" actions.
@@ -294,6 +310,19 @@ export default function InventoryView() {
   const resync = async () => {
     try { const n = await api.resyncInventory(); toast(`Re-synced ${n} lot${n !== 1 ? "s" : ""} to your devices`); }
     catch (e: any) { toast(String(e), "error"); }
+  };
+  const [photoSyncBusy, setPhotoSyncBusy] = useState(false);
+  const syncPhotos = async () => {
+    setPhotoSyncBusy(true);
+    try {
+      const r = await api.reconcileInventoryMedia();
+      const parts = [];
+      if (r.downloaded) parts.push(`pulled ${r.downloaded}`);
+      if (r.uploaded) parts.push(`uploaded ${r.uploaded}`);
+      toast(parts.length ? `Photos synced — ${parts.join(", ")}` : "Photos already in sync");
+      if (r.downloaded) load();
+    } catch (e: any) { toast(String(e), "error"); }
+    setPhotoSyncBusy(false);
   };
   // In select mode the card click selects instead of opening detail.
   const onCardOpen = (id: string) => { if (selectMode) toggleSelect(id); else setDetailId(id); };
@@ -390,11 +419,10 @@ export default function InventoryView() {
                 {overflowOpen && (
                   <div className="absolute right-0 mt-1 z-30 w-52 bg-surface border border-line rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.10)] py-1 inv-fade">
                     <button onClick={() => { setOverflowOpen(false); resync(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><RefreshCw size={13} className="text-muted" /> Sync to devices</button>
+                    <button onClick={() => { setOverflowOpen(false); syncPhotos(); }} disabled={photoSyncBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Image size={13} className="text-muted" /> {photoSyncBusy ? "Syncing photos…" : "Sync photos now"}</button>
                     <button onClick={() => { setOverflowOpen(false); checkStaleLots(); }} disabled={staleBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Trash2 size={13} className="text-muted" /> Clean up removed lots</button>
                     <button onClick={() => { setOverflowOpen(false); setSelectMode(true); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><CheckSquare size={13} className="text-muted" /> Select</button>
                     <button onClick={() => { setOverflowOpen(false); handleExportInventory(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><FileDown size={13} className="text-muted" /> Export CSV</button>
-                    <div className="my-1 border-t border-line" />
-                    <button onClick={() => { setOverflowOpen(false); setShowManifest(true); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><BarChart3 size={13} className="text-muted" /> Analyze manifest</button>
                   </div>
                 )}
               </div>
@@ -569,30 +597,6 @@ export default function InventoryView() {
           </div>
         )}
       </div>
-
-      {/* Manifest analyzer — right slide-over */}
-      {showManifest && (
-        <ManifestSlideOver
-          manifest={manifest} busy={manifestBusy}
-          onClose={() => setShowManifest(false)}
-          onUpload={async () => {
-            const f = await openDialog({ multiple: false, filters: [{ name: "CSV", extensions: ["csv"] }] });
-            if (typeof f !== "string") return;
-            setManifestBusy(true);
-            try { setManifest(await api.analyzeManifest(f)); } catch (e: any) { toast(String(e), "error"); }
-            setManifestBusy(false);
-          }}
-          onClear={() => setManifest(null)}
-          onCreateLot={() => {
-            // Bridge the analyzer into inventory: prefill a new lot with the manifest's numbers.
-            if (!manifest) return;
-            setShowManifest(false);
-            setEditing(null);
-            setPrefill({ quantity: Math.round(manifest.total_quantity) || manifest.total_items || 1, total_cost: manifest.suggested_bid || 0, price_type: "total" });
-            setShowForm(true);
-          }}
-        />
-      )}
 
       {showForm && <LotForm key={editing ? editing.id : `pf-${prefillSeq}`} initial={editing} prefill={prefill}
         onClose={() => {
@@ -842,113 +846,6 @@ function LotCard({
             </button>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-// ── Manifest analyzer — right slide-over ────────────────────────────────────
-function ManifestSlideOver({ manifest, busy, onClose, onUpload, onClear, onCreateLot }: {
-  manifest: ManifestAnalysis | null; busy: boolean;
-  onClose: () => void; onUpload: () => void; onClear: () => void; onCreateLot: () => void;
-}) {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { const r = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(r); }, []);
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()}
-        className={`inv-slideover w-[520px] max-w-[94vw] h-full bg-surface border-l border-line overflow-y-auto ${mounted ? "translate-x-0" : "translate-x-full"}`}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-line sticky top-0 bg-surface z-10">
-          <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><BarChart3 size={15} className="text-accent" /> Manifest analyzer</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
-        </div>
-        <div className="p-5">
-          <p className="text-[12px] text-muted mb-4">Upload a manifest CSV to break down items &amp; retail by the manifest's own categories and brands, estimate margins, and calculate a suggested bid.</p>
-          {!manifest && (
-            <button onClick={onUpload} disabled={busy} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
-              <Upload size={13} /> {busy ? "Analyzing…" : "Upload CSV"}
-            </button>
-          )}
-          {manifest && (
-            <div>
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                {[
-                  { label: "Total units", value: Math.round(manifest.total_quantity || 0).toLocaleString() },
-                  { label: "Total retail", value: fmtAmount(manifest.total_retail) },
-                  { label: "Avg margin", value: `${manifest.overall_margin_pct.toFixed(0)}%` },
-                  { label: "Suggested bid", value: fmtAmount(manifest.suggested_bid) },
-                ].map((s) => (
-                  <div key={s.label} className="bg-surface-2 rounded-lg px-3 py-2.5">
-                    <p className="text-[11.5px] font-medium text-muted">{s.label}</p>
-                    <p className="text-[15px] font-bold text-ink tabular-nums">{s.value}</p>
-                  </div>
-                ))}
-              </div>
-              <p className="text-[11px] text-muted mb-3">
-                <span className="tabular-nums font-medium text-ink-2">{Math.round(manifest.total_quantity || 0).toLocaleString()}</span> units across{" "}
-                <span className="tabular-nums font-medium text-ink-2">{manifest.total_items.toLocaleString()}</span> product line{manifest.total_items !== 1 ? "s" : ""}
-                {manifest.skipped_rows > 0 ? ` · ${manifest.skipped_rows.toLocaleString()} skipped (no price)` : ""}.
-              </p>
-              <p className="text-[10px] text-muted mb-3 bg-warning-bg border border-warning px-3 py-2 rounded-lg">{manifest.formula}</p>
-              <div className="flex items-center justify-between mb-1.5">
-                <p className="text-[11px] font-semibold text-ink-2">By category</p>
-                <span className="text-[9.5px] text-muted">{manifest.categories_from_manifest ? "from manifest" : "estimated — no category column found"}</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-[12px] mb-4">
-                  <thead className="bg-surface-2">
-                    <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Lines</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Units</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
-                  </thead>
-                  <tbody>
-                    {manifest.categories.map((c) => (
-                      <tr key={c.name} className="border-t border-line">
-                        <td className="px-3 py-2 font-medium text-ink-2">{c.name}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted">{c.items.toLocaleString()}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-ink-2">{Math.round(c.quantity || 0).toLocaleString()}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(c.total_retail)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {manifest.brands.length > 0 && (
-                <>
-                  <p className="text-[11px] font-semibold text-ink-2 mb-1.5">By brand <span className="text-[9.5px] font-normal text-muted">from manifest</span></p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[12px] mb-3">
-                      <thead className="bg-surface-2">
-                        <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Brand</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Lines</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Units</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
-                      </thead>
-                      <tbody>
-                        {manifest.brands.map((b) => (
-                          <tr key={b.name} className="border-t border-line">
-                            <td className="px-3 py-2 font-medium text-ink-2">{b.name}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-muted">{b.items.toLocaleString()}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-ink-2">{Math.round(b.quantity || 0).toLocaleString()}</td>
-                            <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(b.total_retail)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => navigator.clipboard.writeText(manifest.suggested_bid.toString()).then(() => toast("Suggested bid copied — paste into your deal."))}
-                  className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-8 rounded-lg text-[11px] font-medium flex items-center gap-1.5">
-                  <Clipboard size={11} /> Copy bid
-                </button>
-                <button onClick={onClear} className="text-[11px] text-muted hover:text-ink-2 px-3 h-8 rounded-lg hover:bg-surface-2">Clear</button>
-              </div>
-              <div className="mt-4 pt-4 border-t border-line">
-                <button onClick={onCreateLot}
-                  className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
-                  <Plus size={13} /> Create lot from this manifest
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -1353,7 +1250,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       if (priceTextClean) detailsObj.price_text = priceTextClean;
       if (openToOffers) detailsObj.open_to_offers = true;
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers;
+      // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
+      // rebuilds detailsObj from fields, so it would otherwise be dropped.
+      if (details0.manifest) detailsObj.manifest = details0.manifest;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
@@ -1673,6 +1573,85 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   );
 }
 
+// Compose + post a lot to the connected Facebook Page. Meta blocks app-posting to
+// groups, so this targets a Page. The caption is prefilled from the lot's numbers.
+function FbPostModal({ lot, photos, onClose }: { lot: Lot; photos: string[]; onClose: () => void }) {
+  const [status, setStatus] = useState<FbStatus | null | undefined>(undefined);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.fbStatus().then(setStatus).catch(() => setStatus(null));
+    const qty = lot.quantity || 0;
+    const isTotal = lot.price_type === "total";
+    const isCustom = lot.price_type === "custom";
+    const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+    const perUnit = isTotal && qty > 0 ? lot.asking_price / qty : lot.asking_price;
+    const total = lot.price_type === "per_unit" ? lot.asking_price * qty : lot.asking_price;
+    const bits: string[] = [];
+    if (qty) bits.push(`${qty.toLocaleString()} units`);
+    if (isCustom && priceText) bits.push(priceText);
+    else if (lot.asking_price > 0) { bits.push(`${fmtAmount(perUnit)}/unit`); bits.push(`${fmtAmount(total)} total`); }
+    if (lot.category) bits.push(lot.category);
+    const lines = [lot.name || "New lot"];
+    if (bits.length) lines.push(bits.join(" · "));
+    if (lot.description) { lines.push(""); lines.push(lot.description); }
+    setMessage(lines.join("\n"));
+  }, [lot]);
+
+  const post = async () => {
+    setBusy(true);
+    try { setDone(await api.fbPostLot(message, photos)); toast("Posted to Facebook"); }
+    catch (e: any) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-[3px] p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-[440px] max-w-full bg-surface border border-line rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.18)] overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Facebook size={15} className="text-accent" /> Post to Facebook</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
+        </div>
+        <div className="p-5">
+          {status === undefined ? (
+            <p className="text-[13px] text-muted">Checking your Facebook connection…</p>
+          ) : !status || !status.connected ? (
+            <div className="text-[13px] text-ink-2 space-y-2">
+              <p>No Facebook Page is connected yet.</p>
+              <p className="text-muted">Open <span className="font-medium text-ink-2">Settings → Facebook</span> to connect a Page you manage, then post from here. Facebook doesn’t allow apps to post into groups, so this posts to a Page.</p>
+            </div>
+          ) : done ? (
+            <div className="text-[13px] text-ink-2 space-y-3">
+              <p>Posted to <span className="font-medium text-ink">{status.page_name}</span>.</p>
+              <div className="flex gap-2">
+                <button onClick={() => api.openExternal(`https://www.facebook.com/${done}`).catch(() => {})} className="flex items-center gap-1.5 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><ExternalLink size={13} /> View post</button>
+                <button onClick={onClose} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[12px] font-medium">Done</button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={7}
+                className="w-full text-[13px] bg-surface-2 border border-line rounded-lg px-3 py-2.5 text-ink resize-y focus:outline-none focus:border-accent" placeholder="Write a caption…" />
+              <p className="text-[11.5px] text-muted">
+                {photos.length > 0 ? `${photos.length} photo${photos.length !== 1 ? "s" : ""} attached · ` : "No photos · "}
+                posting to <span className="font-medium text-ink-2">{status.page_name}</span>
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <button onClick={onClose} className="text-[12px] text-muted hover:text-ink-2 px-3 h-9 rounded-lg hover:bg-surface-2">Cancel</button>
+                <button onClick={post} disabled={busy || !message.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+                  {busy ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />} {busy ? "Posting…" : "Post to Page"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
   lot: Lot; deals: Deal[]; mediaBase: string; offers: Offer[]; onOffersChanged: () => void; onClose: () => void; onEdit: () => void;
   onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
@@ -1682,6 +1661,7 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
   const [big, setBig] = useState(0);
   const [zoom, setZoom] = useState(false);
   const [mBusy, setMBusy] = useState(false);
+  const [fbOpen, setFbOpen] = useState(false);
   // If the photo set shrinks (sync/edit elsewhere) while the detail is open, keep
   // the selected index in range so photos[big] never becomes undefined.
   useEffect(() => { if (big > photos.length - 1) setBig(0); }, [photos.length, big]);
@@ -1892,6 +1872,9 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
               <button onClick={onCopyStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Copy product link</button>
             </div>
           )}
+          {lot.status !== "archived" && (
+            <button onClick={() => setFbOpen(true)} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Facebook size={13} /> Post to Facebook</button>
+          )}
           {lot.status !== "sold" && lot.status !== "archived" && (
             <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to deal</button>
           )}
@@ -1916,6 +1899,7 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
         <img src={convertFileSrc(resolvePhoto(photos[big], mediaBase))} alt="" className="max-w-[92vw] max-h-[92vh] object-contain" onClick={(e) => e.stopPropagation()} />
       </div>
     )}
+    {fbOpen && <FbPostModal lot={lot} photos={photos} onClose={() => setFbOpen(false)} />}
     </>
   );
 }
