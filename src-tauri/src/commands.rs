@@ -13799,6 +13799,8 @@ pub struct Note {
     pub h: f64,
     pub editing_by: String,
     pub editing_at: String,
+    pub urgency: String,
+    pub reviewed_at: String,
 }
 
 fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
@@ -13816,10 +13818,12 @@ fn row_to_note(r: &rusqlite::Row) -> rusqlite::Result<Note> {
         h: r.get(10)?,
         editing_by: r.get(11)?,
         editing_at: r.get(12)?,
+        urgency: r.get(13)?,
+        reviewed_at: r.get(14)?,
     })
 }
 
-const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0), COALESCE(w,226), COALESCE(h,190), COALESCE(editing_by,''), COALESCE(editing_at,'')";
+const NOTE_COLS: &str = "id, body, color, pinned, author, created_at, updated_at, COALESCE(x,0), COALESCE(y,0), COALESCE(w,226), COALESCE(h,190), COALESCE(editing_by,''), COALESCE(editing_at,''), COALESCE(urgency,'normal'), COALESCE(reviewed_at, created_at)";
 
 /// Pull remote sync events on demand (in addition to the background 20s loop) so a
 /// live board — e.g. the shared notes board — reflects the other user's changes in
@@ -13858,7 +13862,7 @@ pub async fn create_note(body: String, color: Option<String>, x: Option<f64>, y:
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO notes (id, body, color, pinned, author, x, y, w, h, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?5,?6,?7,?8,?9,?9)",
+            "INSERT INTO notes (id, body, color, pinned, author, x, y, w, h, created_at, updated_at, urgency, reviewed_at) VALUES (?1,?2,?3,0,?4,?5,?6,?7,?8,?9,?9,'normal',?9)",
             rusqlite::params![id, body, color, author, x, y, w, h, now],
         )
         .map_err(|e| e.to_string())?;
@@ -13874,10 +13878,12 @@ pub async fn create_note(body: String, color: Option<String>, x: Option<f64>, y:
     cols.insert("h".into(), json!(h));
     cols.insert("created_at".into(), json!(now));
     cols.insert("updated_at".into(), json!(now));
+    cols.insert("urgency".into(), json!("normal"));
+    cols.insert("reviewed_at".into(), json!(now));
     sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
     crate::netsync::push_now(); // reach the other device promptly, not on the next poll
-    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now, x, y, w, h,
-              editing_by: String::new(), editing_at: String::new() })
+    Ok(Note { id, body, color, pinned: false, author, created_at: now.clone(), updated_at: now.clone(), x, y, w, h,
+              editing_by: String::new(), editing_at: String::new(), urgency: "normal".into(), reviewed_at: now })
 }
 
 /// Acquire or release the advisory edit-lock on a note. Acquire stamps the current
@@ -13912,12 +13918,16 @@ pub async fn set_note_editing(id: String, editing: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn update_note(id: String, body: Option<String>, color: Option<String>, pinned: Option<bool>, x: Option<f64>, y: Option<f64>, w: Option<f64>, h: Option<f64>) -> Result<(), String> {
+pub async fn update_note(id: String, body: Option<String>, color: Option<String>, pinned: Option<bool>, x: Option<f64>, y: Option<f64>, w: Option<f64>, h: Option<f64>, urgency: Option<String>) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     let mut cols = Map::new();
     cols.insert("updated_at".into(), json!(now));
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
+        if let Some(u) = &urgency {
+            cols.insert("urgency".into(), json!(u));
+            conn.execute("UPDATE notes SET urgency=?1 WHERE id=?2", rusqlite::params![u, id]).map_err(|e| e.to_string())?;
+        }
         if let Some(b) = &body {
             cols.insert("body".into(), json!(b));
             conn.execute("UPDATE notes SET body=?1 WHERE id=?2", rusqlite::params![b, id]).map_err(|e| e.to_string())?;
@@ -13950,6 +13960,25 @@ pub async fn update_note(id: String, body: Option<String>, color: Option<String>
     }
     sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
     crate::netsync::push_now(); // live-share the change to the other device now
+    Ok(())
+}
+
+/// "Still needed" confirmation — the keep-active check on a note that's been up a while.
+/// Stamps reviewed_at = now, which resets its staleness clock (and bumps updated_at so
+/// the sync merge keeps it). Synced + pushed so the other device stops flagging it too.
+#[tauri::command]
+pub async fn keep_note(id: String) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE notes SET reviewed_at=?1, updated_at=?1 WHERE id=?2", rusqlite::params![now, id])
+            .map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("reviewed_at".into(), json!(now));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("notes", &id, cols).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 

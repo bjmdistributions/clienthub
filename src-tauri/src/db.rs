@@ -1487,4 +1487,16 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE notes ADD COLUMN editing_at TEXT NOT NULL DEFAULT '';
         "#,
     ),
+    (
+        70,
+        // Urgency + review tracking for notes. `urgency` ('normal'|'high'|'urgent')
+        // drives how prominently a note surfaces and how quickly it's considered
+        // "posted too long"; `reviewed_at` is the last time someone confirmed the note
+        // is still needed (the "keep active" check) — staleness is measured from it
+        // (falling back to created_at). Synced so attention travels between devices.
+        r#"
+        ALTER TABLE notes ADD COLUMN urgency TEXT NOT NULL DEFAULT 'normal';
+        ALTER TABLE notes ADD COLUMN reviewed_at TEXT;
+        "#,
+    ),
 ];

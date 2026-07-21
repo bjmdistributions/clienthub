@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, Note } from "../lib/api";
-import { Plus, Pin, Trash2, StickyNote, GripVertical, Lock } from "lucide-react";
+import { Plus, Pin, Trash2, StickyNote, GripVertical, Lock, Flag, Check, Clock } from "lucide-react";
 
 const COLORS: { key: string; fill: string; accent: string }[] = [
   { key: "yellow", fill: "rgba(250,204,21,0.18)",  accent: "#FACC15" },
@@ -38,6 +38,23 @@ function relTime(iso: string): string {
 }
 const exactTime = (iso: string) => { const t = new Date(iso); return isNaN(+t) ? "" : t.toLocaleString(); };
 
+// Urgency drives how prominently a note reads AND how quickly it counts as "posted too
+// long" (its staleness window). Order matters for cycling + sorting the attention list.
+const URGENCY: Record<string, { label: string; color: string; staleDays: number; rank: number }> = {
+  normal: { label: "Normal", color: "var(--t-tx4)", staleDays: 14, rank: 0 },
+  high:   { label: "High",   color: "#FB923C",      staleDays: 5,  rank: 1 },
+  urgent: { label: "Urgent", color: "#F43F5E",      staleDays: 2,  rank: 2 },
+};
+const urg = (n: Note) => URGENCY[n.urgency] || URGENCY.normal;
+const NEXT_URGENCY: Record<string, string> = { normal: "high", high: "urgent", urgent: "normal" };
+// Staleness is measured from the last "still needed" confirmation (reviewed_at), falling
+// back to when it was created. A note is stale once it passes its urgency's window.
+const ageDays = (iso: string) => { const t = new Date(iso).getTime(); return t ? (Date.now() - t) / 86_400_000 : 0; };
+const noteAge = (n: Note) => ageDays(n.reviewed_at || n.created_at);
+const isStale = (n: Note) => noteAge(n) >= urg(n).staleDays;
+const staleLabel = (n: Note) => { const d = Math.floor(noteAge(n)); return d <= 0 ? "today" : d === 1 ? "1 day" : `${d} days`; };
+const notePreview = (n: Note) => { const t = (n.body || "").trim().replace(/\s+/g, " "); return t ? (t.length > 40 ? t.slice(0, 40) + "…" : t) : "Empty note"; };
+
 // A lock older than this is treated as stale (the editor left without releasing) —
 // well above the 5s pull cadence + ~30s renew, so an active editor never flickers.
 const LOCK_TTL_MS = 75000;
@@ -46,6 +63,7 @@ export default function NotesView({ me }: { me: string }) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [, tick] = useState(0);
+  const [highlightId, setHighlightId] = useState<string | null>(null); // pulsed when jumped to from the attention strip
   const boardRef = useRef<HTMLDivElement>(null);
   const notesRef = useRef<Note[]>([]);
   notesRef.current = notes;
@@ -256,7 +274,32 @@ export default function NotesView({ me }: { me: string }) {
     api.deleteNote(id).catch(() => {});
   };
 
+  // Cycle urgency normal → high → urgent → normal.
+  const cycleUrgency = (id: string) => {
+    const cur = notesRef.current.find((n) => n.id === id);
+    const next = NEXT_URGENCY[cur?.urgency || "normal"] || "normal";
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, urgency: next, updated_at: now() } : n)));
+    api.updateNote(id, { urgency: next }).catch(() => {});
+  };
+  // "Still needed" — the keep-active check. Resets the staleness clock (reviewed_at=now).
+  const keep = (id: string) => {
+    const iso = now();
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, reviewed_at: iso, updated_at: iso } : n)));
+    api.keepNote(id).catch(() => {});
+  };
+  // Jump from the attention strip to a note on the board and pulse it briefly.
+  const focusNote = (id: string) => {
+    const el = document.getElementById(`note-${id}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightId(id);
+    setTimeout(() => setHighlightId((h) => (h === id ? null : h)), 1600);
+  };
+
   const boardH = Math.max(520, ...notes.map((n) => n.y + hOf(n) + 24), 0);
+  // What needs a look: notes past their staleness window, most-urgent + longest-up first.
+  const attention = notes
+    .filter(isStale)
+    .sort((a, b) => (urg(b).rank - urg(a).rank) || (noteAge(b) - noteAge(a)));
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--t-bg)" }}>
@@ -274,6 +317,40 @@ export default function NotesView({ me }: { me: string }) {
           <Plus size={14} /> New note
         </button>
       </div>
+
+      {attention.length > 0 && (
+        <div className="px-6 py-3 flex-shrink-0" style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)" }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Clock size={13} style={{ color: "#FB923C" }} />
+            <span className="text-[12px] font-medium" style={{ color: "var(--t-tx2)" }}>
+              {attention.length} note{attention.length > 1 ? "s" : ""} up for a while — still needed?
+            </span>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {attention.map((n) => {
+              const u = urg(n);
+              return (
+                <div key={n.id}
+                  className="flex items-center gap-2 flex-shrink-0 rounded-lg pl-2.5 pr-1.5 py-1.5"
+                  style={{ background: "var(--t-s2)", border: "1px solid var(--t-b1)", borderLeft: `3px solid ${u.color}` }}>
+                  <button onClick={() => focusNote(n.id)} className="text-left max-w-[190px]" title="Show on board">
+                    <div className="text-[12px] truncate" style={{ color: "var(--t-tx1)" }}>{notePreview(n)}</div>
+                    <div className="text-[10.5px]" style={{ color: "var(--t-tx4)" }}>
+                      up {staleLabel(n)}{n.urgency !== "normal" ? ` · ${u.label.toLowerCase()}` : ""}
+                    </div>
+                  </button>
+                  <button onClick={() => keep(n.id)} title="Keep — still needed"
+                    className="w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0"
+                    style={{ color: "#34D399" }}><Check size={14} /></button>
+                  <button onClick={() => remove(n.id)} title="Delete"
+                    className="w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0"
+                    style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-auto">
         {loading ? (
@@ -297,14 +374,25 @@ export default function NotesView({ me }: { me: string }) {
             {notes.map((n) => {
               const c = colorOf(n.color);
               const locker = lockedBy(n);
+              const u = urg(n);
+              const stale = isStale(n);
+              const hot = highlightId === n.id;
+              const emphasize = stale || n.urgency !== "normal";
               return (
-                <div key={n.id} className="sticky-note"
-                  style={{ left: n.x, top: n.y, width: wOf(n), height: hOf(n), minHeight: 0, zIndex: n.pinned ? 5 : 1,
-                    transform: `rotate(${stableRot(n.id)}deg)`,
+                <div key={n.id} id={`note-${n.id}`} className="sticky-note"
+                  style={{ left: n.x, top: n.y, width: wOf(n), height: hOf(n), minHeight: 0, zIndex: n.pinned || hot ? 6 : 1,
+                    transform: `rotate(${stableRot(n.id)}deg)`, transition: "box-shadow 160ms ease",
                     background: `linear-gradient(162deg, ${c.fill}, transparent 78%), var(--t-s1)`,
-                    borderColor: locker ? `${c.accent}` : `${c.accent}55` }}>
+                    borderColor: locker ? `${c.accent}` : stale ? "#FB923C" : (n.urgency !== "normal" ? u.color : `${c.accent}55`),
+                    borderWidth: emphasize ? 2 : undefined,
+                    boxShadow: hot ? `0 0 0 3px ${u.color}, 0 8px 24px rgba(0,0,0,0.16)` : undefined }}>
                   <div className="sn-grip" onPointerDown={(e) => startDrag(e, n.id)} title="Drag to move">
                     <GripVertical size={13} style={{ color: c.accent, opacity: 0.8 }} />
+                    {!locker && n.urgency !== "normal" && (
+                      <span className="flex items-center gap-1 text-[10px] font-medium" style={{ color: u.color }} title={`${u.label} urgency`}>
+                        <Flag size={9} /> {u.label}
+                      </span>
+                    )}
                     <span className="sn-grip-fill" />
                     {locker && (
                       <span className="flex items-center gap-1 text-[10px] font-medium truncate"
@@ -328,12 +416,25 @@ export default function NotesView({ me }: { me: string }) {
                       ))}
                     </div>
                     <div className="sn-actions">
+                      <button title={`Urgency: ${u.label} — click to change`} onClick={() => cycleUrgency(n.id)}
+                        style={{ color: n.urgency === "normal" ? "var(--t-tx4)" : u.color }}><Flag size={13} /></button>
                       <button title={n.pinned ? "Unpin" : "Pin"} onClick={() => togglePin(n.id, !n.pinned)} style={{ color: n.pinned ? c.accent : "var(--t-tx4)" }}><Pin size={13} /></button>
                       {!locker && <button title="Delete" onClick={() => remove(n.id)} className="sn-del" style={{ color: "var(--t-tx4)" }}><Trash2 size={13} /></button>}
                     </div>
                   </div>
-                  <div className="sn-time" title={exactTime(n.updated_at)}>
-                    {relTime(n.updated_at)}{n.author ? ` · ${n.author}` : ""}
+                  <div className="sn-time" title={exactTime(n.updated_at)}
+                    style={stale ? { color: "#FB923C", display: "flex", alignItems: "center", gap: 5 } : undefined}>
+                    {stale ? (
+                      <>
+                        <Clock size={10} /> up {staleLabel(n)}
+                        <button onClick={() => keep(n.id)} title="Still needed — keep it (resets the clock)"
+                          className="flex items-center gap-0.5 rounded px-1" style={{ color: "#34D399", fontWeight: 600, marginLeft: 2 }}>
+                          <Check size={11} /> Keep
+                        </button>
+                      </>
+                    ) : (
+                      <>{relTime(n.updated_at)}{n.author ? ` · ${n.author}` : ""}</>
+                    )}
                   </div>
                   <div
                     onPointerDown={(e) => startResize(e, n.id)}

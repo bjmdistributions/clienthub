@@ -526,6 +526,7 @@ fn main() {
             list_notes,
             create_note,
             update_note,
+            keep_note,
             delete_note,
             // Clients
             list_clients,

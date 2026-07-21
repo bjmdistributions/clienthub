@@ -15,6 +15,8 @@ export interface Note {
   h: number;
   editing_by: string;
   editing_at: string;
+  urgency: string;      // 'normal' | 'high' | 'urgent'
+  reviewed_at: string;  // last "still needed" confirmation; staleness measured from here
 }
 export interface Client {
   id: string;
@@ -2128,8 +2130,9 @@ export const api = {
   setNoteEditing: (id: string, editing: boolean) => invoke<void>("set_note_editing", { id, editing }),
   listNotes: () => invoke<Note[]>("list_notes"),
   createNote: (body: string, color?: string, x?: number, y?: number) => invoke<Note>("create_note", { body, color, x, y }),
-  updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean; x?: number; y?: number; w?: number; h?: number }) =>
+  updateNote: (id: string, patch: { body?: string; color?: string; pinned?: boolean; x?: number; y?: number; w?: number; h?: number; urgency?: string }) =>
     invoke<void>("update_note", { id, ...patch }),
+  keepNote: (id: string) => invoke<void>("keep_note", { id }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
 
   // Dashboard
