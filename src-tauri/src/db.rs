@@ -1514,4 +1514,25 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE inventory RENAME COLUMN price_type_tmp TO price_type;
         "#,
     ),
+    (
+        72,
+        // Buyer offers submitted from the public storefront ("Make an offer"). Written
+        // server-side by the public endpoint and synced down; the desktop reads them on
+        // the lot. status: new | accepted | declined | archived.
+        r#"
+        CREATE TABLE IF NOT EXISTS offers (
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            lot_id TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            amount REAL,
+            message TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'new',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_offers_lot ON offers(lot_id);
+        "#,
+    ),
 ];

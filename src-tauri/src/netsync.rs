@@ -40,7 +40,7 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "supplier_price_history", "quotes", "inventory", "payment_methods", "payments",
     "scheduled_sends", "newsletter_schedules", "messages", "categories", "notes",
     "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds",
-    "client_credits", "rep_payouts", "intake_sources", "deal_reps", "staff_accounts",
+    "client_credits", "rep_payouts", "intake_sources", "deal_reps", "staff_accounts", "offers",
     "settings",
     // Financial engine tables — the server already snapshots these; without them a
     // device that missed events (or a fresh install) could never heal its ledger via

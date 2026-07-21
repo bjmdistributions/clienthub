@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig } from "../lib/api";
+import { api, Lot, Deal, ManifestAnalysis, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, BarChart3, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -146,6 +146,7 @@ function CategoryCombobox({ value, onChange, options, placeholder }: {
 
 export default function InventoryView() {
   const [lots, setLots] = useState<Lot[]>([]);
+  const [offers, setOffers] = useState<Offer[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Lot | null>(null);
@@ -181,7 +182,8 @@ export default function InventoryView() {
   const [mediaBase, setMediaBase] = useState("");
   const [detailId, setDetailId] = useState<string | null>(null);
   const [storefront, setStorefront] = useState<StorefrontConfig | null>(null);
-  const load = async () => { const l = await api.listInventory(); setLots(l); };
+  const loadOffers = () => api.listOffers().then(setOffers).catch(() => {});
+  const load = async () => { const l = await api.listInventory(); setLots(l); loadOffers(); };
   useEffect(() => {
     load();
     api.listSuppliers().then((s) => setSuppliers(s.map((x) => x.name).filter(Boolean))).catch(() => {});
@@ -575,6 +577,8 @@ export default function InventoryView() {
             lot={detail}
             deals={deals}
             mediaBase={mediaBase}
+            offers={offers.filter((o) => o.lot_id === detail.id)}
+            onOffersChanged={loadOffers}
             onClose={() => setDetailId(null)}
             onEdit={() => { setEditing(detail); setShowForm(true); setDetailId(null); }}
             onStatus={(s) => setStatus(detail, s)}
@@ -1580,8 +1584,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   );
 }
 
-function LotDetail({ lot, deals, mediaBase, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
-  lot: Lot; deals: Deal[]; mediaBase: string; onClose: () => void; onEdit: () => void;
+function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
+  lot: Lot; deals: Deal[]; mediaBase: string; offers: Offer[]; onOffersChanged: () => void; onClose: () => void; onEdit: () => void;
   onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void; onOpenStoreLink: () => void;
 }) {
@@ -1747,6 +1751,39 @@ function LotDetail({ lot, deals, mediaBase, onClose, onEdit, onStatus, onToggleS
                 className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors disabled:opacity-50">
                 {mBusy ? <RefreshCw size={13} className="animate-spin" /> : <Plus size={13} />} Add manifest (PDF / CSV)
               </button>
+            )}
+          </div>
+
+          {/* Offers — buyer submissions from the public storefront listing */}
+          <div>
+            <p className="text-[12.5px] font-medium text-muted mb-1.5">Offers{offers.length > 0 ? ` · ${offers.length}` : ""}</p>
+            {offers.length === 0 ? (
+              <p className="text-[12px] text-muted">No offers yet. Buyers can send one from your storefront listing.</p>
+            ) : (
+              <div className="space-y-2">
+                {offers.map((o) => (
+                  <div key={o.id} className={`rounded-lg border px-3 py-2.5 ${o.status === "accepted" ? "border-success/40 bg-success-bg/40" : o.status === "declined" ? "border-line bg-surface-2/40 opacity-70" : "border-line bg-surface-2"}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap text-[13px]">
+                          <span className="font-medium text-ink truncate">{o.name || "Anonymous"}</span>
+                          {o.amount != null && <span className="font-semibold text-accent tabular-nums">{fmtAmount(o.amount)}</span>}
+                          {o.status === "accepted" && <span className="text-[10px] font-bold uppercase tracking-wide text-success-ink">Accepted</span>}
+                          {o.status === "declined" && <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Declined</span>}
+                        </div>
+                        <a href={`mailto:${o.email}`} className="text-[11.5px] text-muted hover:text-accent break-all">{o.email}</a>
+                        {o.message && <p className="text-[12px] text-ink-2 whitespace-pre-wrap mt-1">{o.message}</p>}
+                        <div className="text-[10.5px] text-faint mt-1">{new Date(o.created_at).toLocaleString()}</div>
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {o.status !== "accepted" && <button onClick={() => api.setOfferStatus(o.id, "accepted").then(onOffersChanged).catch((e) => toast(String(e), "error"))} title="Mark accepted" className="w-7 h-7 flex items-center justify-center rounded-md text-success-ink hover:bg-success-bg transition-colors"><Check size={14} /></button>}
+                        {o.status !== "declined" && <button onClick={() => api.setOfferStatus(o.id, "declined").then(onOffersChanged).catch((e) => toast(String(e), "error"))} title="Decline" className="w-7 h-7 flex items-center justify-center rounded-md text-muted hover:text-danger-ink hover:bg-danger-bg transition-colors"><Ban size={13} /></button>}
+                        <button onClick={() => { if (confirm("Delete this offer?")) api.deleteOffer(o.id).then(onOffersChanged).catch((e) => toast(String(e), "error")); }} title="Delete" className="w-7 h-7 flex items-center justify-center rounded-md text-faint hover:text-danger-ink hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 

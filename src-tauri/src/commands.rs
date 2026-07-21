@@ -7702,6 +7702,60 @@ pub async fn delete_lots(ids: Vec<String>) -> Result<u32, String> {
     Ok(n)
 }
 
+#[derive(serde::Serialize)]
+pub struct Offer {
+    pub id: String,
+    pub lot_id: String,
+    pub name: String,
+    pub email: String,
+    pub amount: Option<f64>,
+    pub message: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+/// Buyer offers submitted from the public storefront ("Make an offer"), newest first.
+/// Written server-side and synced down; the inventory view groups them per lot.
+#[tauri::command]
+pub async fn list_offers() -> Result<Vec<Offer>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, lot_id, name, email, amount, message, status, created_at FROM offers ORDER BY created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok(Offer {
+        id: r.get(0)?, lot_id: r.get(1)?, name: r.get(2)?, email: r.get(3)?,
+        amount: r.get(4)?, message: r.get(5)?, status: r.get(6)?, created_at: r.get(7)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Mark an offer new | accepted | declined (synced so it reflects on every device).
+#[tauri::command]
+pub async fn set_offer_status(id: String, status: String) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("UPDATE offers SET status=?1, updated_at=?2 WHERE id=?3", rusqlite::params![status, now, id]).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("status".into(), json!(status));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("offers", &id, cols).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_offer(id: String) -> Result<(), String> {
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM offers WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    }
+    sync::record_delete("offers", &id).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
 /// Re-record every inventory row as a sync upsert. Fixes lots that aren't
 /// propagating to other devices (e.g. created before inventory was synced, or
 /// before a device joined). Safe to run repeatedly — last-writer-wins resolves.

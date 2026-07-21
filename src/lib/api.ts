@@ -1181,6 +1181,16 @@ export interface LotDetails {
   options?: LotOption[] | null;
   variants?: LotVariant[] | null;
 }
+export interface Offer {
+  id: string;
+  lot_id: string;
+  name: string;
+  email: string;
+  amount: number | null;
+  message: string;
+  status: string;   // new | accepted | declined
+  created_at: string;
+}
 export interface LotOption { name: string; values: string[] }
 export interface LotVariant {
   values: string[];              // one value per option, aligned to options order (e.g. ["Red","M"])
@@ -2382,6 +2392,9 @@ export const api = {
   setLotStatus: (id: string, status: string) => invoke<void>("set_lot_status", { id, status }),
   deleteLot: (id: string) => invoke<void>("delete_lot", { id }),
   deleteLots: (ids: string[]) => invoke<number>("delete_lots", { ids }),
+  listOffers: () => invoke<Offer[]>("list_offers"),
+  setOfferStatus: (id: string, status: string) => invoke<void>("set_offer_status", { id, status }),
+  deleteOffer: (id: string) => invoke<void>("delete_offer", { id }),
   resyncInventory: () => invoke<number>("resync_inventory"),
   importLotPhotos: (lotId: string, paths: string[]) => invoke<string[]>("import_lot_photos", { lotId, paths }),
   removeLotPhoto: (lotId: string, photoPath: string) => invoke<string[]>("remove_lot_photo", { lotId, photoPath }),
