@@ -1499,4 +1499,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE notes ADD COLUMN reviewed_at TEXT;
         "#,
     ),
+    (
+        71,
+        // inventory.price_type was created with CHECK(price_type IN ('per_unit','total')),
+        // but the app supports a third value 'custom' — a lot priced by descriptive text
+        // ("Send offer" / "Best offer"). Saving a custom lot silently hit the CHECK and
+        // failed ("won't let me put custom text"). Rebuild the column WITHOUT the CHECK,
+        // preserving values. SQLite 3.46 (rusqlite 0.32 bundled) supports DROP/RENAME
+        // COLUMN; a duplicate-column error on re-run is benign and skipped.
+        r#"
+        ALTER TABLE inventory ADD COLUMN price_type_tmp TEXT NOT NULL DEFAULT 'per_unit';
+        UPDATE inventory SET price_type_tmp = COALESCE(price_type,'per_unit');
+        ALTER TABLE inventory DROP COLUMN price_type;
+        ALTER TABLE inventory RENAME COLUMN price_type_tmp TO price_type;
+        "#,
+    ),
 ];
