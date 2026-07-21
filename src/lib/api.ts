@@ -1688,6 +1688,8 @@ export const api = {
     invoke<{ credit_limit: number; exposure: number; available: number; over: boolean }>("get_client_credit_status", { id }),
   getNewsletterIncludeRanked: () => invoke<boolean>("get_newsletter_include_ranked"),
   setNewsletterIncludeRanked: (value: boolean) => invoke<void>("set_newsletter_include_ranked", { value }),
+  getNewsletterUnsubscribeEnabled: () => invoke<boolean>("get_newsletter_unsubscribe_enabled"),
+  setNewsletterUnsubscribeEnabled: (value: boolean) => invoke<void>("set_newsletter_unsubscribe_enabled", { value }),
   approveClient: (id: string) =>
     invoke<void>("approve_client", { id }),
   rejectClient: (id: string) =>

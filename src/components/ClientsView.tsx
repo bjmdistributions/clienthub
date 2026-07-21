@@ -731,11 +731,12 @@ export default function ClientsView() {
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
                       <span className="truncate">{c.name}</span>
                     </div>
-                    {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.first_contact || c.approval_status === "pending" || !c.email || !c.phone || !c.street_address || !c.category) && (
+                    {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.metadata?.unsubscribed || c.first_contact || c.approval_status === "pending" || !c.email || !c.phone || !c.street_address || !c.category) && (
                       <div className="flex flex-wrap items-center gap-1 mt-1">
                         {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Blacklisted — excluded from all sends">Blacklisted</span>}
                         {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide" title="High-Value — one of your best buyers (label only)">High value</span>}
-                        {!c.is_blacklisted && c.metadata?.exclusive && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
+                        {!c.is_blacklisted && c.metadata?.unsubscribed && <span className="text-[9px] font-bold text-ink-2 bg-surface-3 border border-line px-1.5 py-0.5 rounded uppercase tracking-wide" title="Unsubscribed — opted out via an email link; kept off all sends">Unsubscribed</span>}
+                        {!c.is_blacklisted && c.metadata?.exclusive && !c.metadata?.unsubscribed && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
                         {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Never been sent an email — introduce yourself">No contact yet</span>}
                         {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide">Pending</span>}
                         {(!c.email || !c.phone || !c.street_address || !c.category) && (

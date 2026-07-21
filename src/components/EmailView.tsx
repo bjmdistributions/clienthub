@@ -102,7 +102,7 @@ export default function EmailView() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
             {/* Email list */}
             <div className="bg-surface border border-line rounded-lg overflow-hidden min-w-0">
               <div className="px-4 py-3 border-b border-line text-[13px] font-semibold text-ink-2">
@@ -522,9 +522,11 @@ function NewsletterTab() {
   const [tiers, setTiers] = useState<BuyerTier[]>([]);
   const [tierFilter, setTierFilter] = useState<"all" | "ranked" | "first_contact" | string[]>("all");
   const [includeRanked, setIncludeRanked] = useState(true);
+  const [unsubEnabled, setUnsubEnabled] = useState(true);
   useEffect(() => {
     api.buyerTiers().then(setTiers).catch(() => {});
     api.getNewsletterIncludeRanked().then(setIncludeRanked).catch(() => {});
+    api.getNewsletterUnsubscribeEnabled().then(setUnsubEnabled).catch(() => {});
   }, []);
   const [showFilters, setShowFilters] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -818,9 +820,9 @@ function NewsletterTab() {
   const charCount = body.length;
 
   return (
-    <div className="nl-cols flex flex-col lg:flex-row gap-4" style={{ minHeight: 500 }}>
+    <div className="nl-cols flex flex-col xl:flex-row gap-4" style={{ minHeight: 500 }}>
       {/* Panel A: Recipients */}
-      <div className="nl-pane w-full lg:w-[300px] lg:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col">
+      <div className="nl-pane w-full xl:w-[300px] xl:flex-shrink-0 bg-surface border border-line rounded-lg flex flex-col">
         <div className="px-4 py-3 border-b border-line flex items-center justify-between">
           <span className="flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">1</span>
@@ -911,6 +913,19 @@ function NewsletterTab() {
           <div className="text-[10px] text-muted mt-2 leading-snug">
             Blacklisted &amp; do-not-bulk clients are always excluded.{excludedByFilter > 0 ? ` ${excludedByFilter} more filtered out.` : ""}
           </div>
+          <label className={`flex items-start gap-2 text-[11px] cursor-pointer mt-2 rounded-lg px-2.5 py-2 border transition-colors ${unsubEnabled ? "border-line bg-surface-2/50 text-ink-2" : "border-warning-ink/40 bg-warning-bg text-warning-ink"}`}>
+            <input type="checkbox" checked={unsubEnabled}
+              onChange={(e) => { setUnsubEnabled(e.target.checked); api.setNewsletterUnsubscribeEnabled(e.target.checked).catch(() => {}); }}
+              className="accent-accent mt-0.5 flex-shrink-0" />
+            <span className="min-w-0">
+              <span className="font-medium">Include an unsubscribe link</span>
+              <span className="block text-[10px] mt-0.5 opacity-80">
+                {unsubEnabled
+                  ? "Added automatically to every send — required by anti-spam law (CAN-SPAM)."
+                  : "Off — sending marketing email without an opt-out can be illegal. Turn this back on."}
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="flex-1 overflow-y-auto" style={{ maxHeight: 200, minHeight: 120 }}>
@@ -995,7 +1010,7 @@ function NewsletterTab() {
       </div>
 
       {/* Panel B: Compose */}
-      <div className="nl-pane w-full lg:flex-1 flex flex-col gap-3 min-w-0">
+      <div className="nl-pane w-full xl:flex-1 flex flex-col gap-3 min-w-0">
         <div className="bg-surface border border-line rounded-lg flex flex-col flex-1">
           <div className="px-4 py-3 border-b border-line flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">2</span>
@@ -1133,7 +1148,7 @@ function NewsletterTab() {
       </div>
 
       {/* Panel C: Preview & Send */}
-      <div className="nl-pane w-full lg:w-[320px] lg:flex-shrink-0 flex flex-col gap-3">
+      <div className="nl-pane w-full xl:w-[320px] xl:flex-shrink-0 flex flex-col gap-3">
         <div className="bg-surface border border-line rounded-lg flex-1 flex flex-col">
           <div className="px-4 py-3 border-b border-line flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-accent/10 text-accent text-[11px] font-bold flex items-center justify-center flex-shrink-0">3</span>

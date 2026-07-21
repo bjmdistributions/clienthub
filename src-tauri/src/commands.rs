@@ -555,6 +555,26 @@ pub async fn set_newsletter_include_ranked(value: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether newsletters include the CAN-SPAM unsubscribe footer. Defaults ON — a missing
+/// key reads as enabled so a fresh install is compliant out of the box.
+#[tauri::command]
+pub async fn get_newsletter_unsubscribe_enabled() -> Result<bool, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let v: String = conn.query_row("SELECT value FROM settings WHERE key='newsletter_unsubscribe_enabled'", [], |r| r.get(0)).unwrap_or_else(|_| "1".into());
+    Ok(v != "0" && !v.eq_ignore_ascii_case("false"))
+}
+
+#[tauri::command]
+pub async fn set_newsletter_unsubscribe_enabled(value: bool) -> Result<(), String> {
+    let v = if value { "1" } else { "0" };
+    { let conn = pool().get().map_err(|e| e.to_string())?;
+      conn.execute("INSERT INTO settings (key,value) VALUES ('newsletter_unsubscribe_enabled',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [v]).map_err(|e| e.to_string())?; }
+    let mut cols = Map::new();
+    cols.insert("value".into(), Value::String(v.to_string()));
+    sync::record_upsert("settings", "newsletter_unsubscribe_enabled", cols).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn approve_client(id: String) -> Result<(), String> {
     {
@@ -12205,6 +12225,17 @@ pub async fn delete_newsletter(id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Append the CAN-SPAM opt-out footer to a marketing email. Prefers the server-signed
+/// one-click link; falls back to a reply-to-unsubscribe line so every email carries an
+/// opt-out even if the link couldn't be minted (offline).
+fn append_unsub_footer(body: &str, business: &str, url: Option<&str>) -> String {
+    let who = { let b = business.trim(); if b.is_empty() { "us".to_string() } else { b.to_string() } };
+    match url {
+        Some(u) => format!("{body}\n\n—\nYou're receiving this from {who} because you asked us to send you deals.\nTo unsubscribe: {u}"),
+        None => format!("{body}\n\n—\nYou're receiving this from {who} because you asked us to send you deals.\nTo stop receiving these, reply to this email with \"unsubscribe\"."),
+    }
+}
+
 #[tauri::command]
 pub async fn send_newsletter(
     app: tauri::AppHandle,
@@ -12235,6 +12266,36 @@ pub async fn send_newsletter(
     // (not just in the composer) — you can close out and watch it finish.
     let _ = conn.execute("UPDATE newsletters SET status='sending', recipient_count=?1, sent_count=0 WHERE id=?2", rusqlite::params![total, &newsletter_id]);
 
+    // Compliance: every marketing email gets an opt-out footer (CAN-SPAM), unless the
+    // user explicitly turned it off in the newsletter settings (default ON). The one-
+    // click link is server-signed, so collect the sendable recipients' emails and mint
+    // the URLs in one batch up front; a reply-to-unsubscribe line is the offline fallback.
+    let unsub_enabled: bool = conn
+        .query_row("SELECT value FROM settings WHERE key='newsletter_unsubscribe_enabled'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true);
+    let business_name: String = conn
+        .query_row("SELECT value FROM settings WHERE key='business_name'", [], |r| r.get::<_, String>(0))
+        .unwrap_or_default();
+    let unsub_urls: std::collections::HashMap<String, String> = if unsub_enabled {
+        let mut emails: Vec<String> = Vec::new();
+        for cid in &client_ids {
+            if let Ok(Some(email)) = conn.query_row(
+                "SELECT email FROM clients WHERE id=?1 \
+                   AND (is_blacklisted IS NULL OR is_blacklisted = 0) \
+                   AND COALESCE(exclusive,0) = 0 \
+                   AND COALESCE(json_extract(metadata,'$.exclusive'),0) NOT IN (1,'true')",
+                [cid], |r| r.get::<_, Option<String>>(0),
+            ) {
+                if !email.trim().is_empty() { emails.push(email); }
+            }
+        }
+        crate::netsync::fetch_unsubscribe_urls(emails).await
+    } else {
+        std::collections::HashMap::new()
+    };
+
     for cid in &client_ids {
         let sid = Uuid::new_v4().to_string();
         // Final line of defense: never mass-email a blacklisted or "No bulk email"
@@ -12260,7 +12321,12 @@ pub async fn send_newsletter(
 
         match &email {
             Some(addr) if !addr.is_empty() => {
-                match crate::email::send(addr, &subj, &body, attachment_path.as_deref()).await {
+                let body_out = if unsub_enabled {
+                    append_unsub_footer(&body, &business_name, unsub_urls.get(addr).map(|s| s.as_str()))
+                } else {
+                    body.clone()
+                };
+                match crate::email::send(addr, &subj, &body_out, attachment_path.as_deref()).await {
                     Ok(()) => {
                         sent += 1;
                         let _ = conn.execute(

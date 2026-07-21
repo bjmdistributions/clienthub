@@ -543,6 +543,8 @@ fn main() {
             get_client_credit_status,
             get_newsletter_include_ranked,
             set_newsletter_include_ranked,
+            get_newsletter_unsubscribe_enabled,
+            set_newsletter_unsubscribe_enabled,
             approve_client,
             reject_client,
             archive_client_source_email,

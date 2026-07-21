@@ -259,7 +259,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
           <div className="h-[76px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
           <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-line-2">
+            <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-line-2">
               {([
                 { label: "Clients", value: totalClients, icon: Users, tab: "clients" },
                 { label: "Open deals", value: openDeals, icon: GitBranch, tab: "dealflow" },
@@ -499,7 +499,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
 
         {/* ── Quick actions — secondary panel, quieter than the cards ── */}
         <div className="bg-surface-2/60 border border-line-2 rounded-2xl overflow-hidden">
-          <div className={`grid grid-cols-1 divide-y md:divide-y-0 md:divide-x divide-line-2 ${showMoney ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+          <div className={`grid grid-cols-1 divide-y lg:divide-y-0 lg:divide-x divide-line-2 ${showMoney ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
             {[
               { label: "Add client",  sub: "Create a new client profile",  icon: Users,    tab: "clients"  },
               // Only surface the invoice action to users who can see the money.

@@ -218,6 +218,29 @@ pub async fn fetch_published_bank_balance() -> Option<(f64, f64, String)> {
     Some((bank, card, at))
 }
 
+/// Ask the server to sign one-click unsubscribe URLs for a batch of recipient emails
+/// (the desktop can't sign the server's tokens itself). Returns email→url, scoped to
+/// this device's org. Empty when offline/unauthed — the caller then falls back to a
+/// reply-to-unsubscribe line so every email still carries an opt-out.
+pub async fn fetch_unsubscribe_urls(emails: Vec<String>) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    if emails.is_empty() { return out; }
+    let cfg = match config() { Some(c) => c, None => return out };
+    let base = cfg.url.trim_end_matches('/').to_string();
+    let url = format!("{}/api/unsubscribe/mint", base);
+    let resp = match http().post(&url).bearer_auth(&cfg.token).json(&serde_json::json!({ "emails": emails })).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return out,
+    };
+    let v: serde_json::Value = match resp.json().await { Ok(v) => v, Err(_) => return out };
+    if let Some(map) = v.get("urls").and_then(|u| u.as_object()) {
+        for (k, val) in map {
+            if let Some(s) = val.as_str() { out.insert(k.clone(), s.to_string()); }
+        }
+    }
+    out
+}
+
 // ---------- local → server (push) ----------
 
 /// Queue a locally-recorded event for push. Called from `sync::record_*`.

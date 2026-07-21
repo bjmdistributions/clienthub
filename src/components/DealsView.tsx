@@ -168,7 +168,7 @@ export default function DealsView() {
       {showLostReason && selectedDeal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => { setShowLostReason(false); setSelectedDeal(null); }}>
           <div className="absolute inset-0 bg-black/40" />
-          <div className="relative bg-surface rounded-xl p-6 shadow-xl w-[400px]" onClick={(e) => e.stopPropagation()}>
+          <div className="relative bg-surface rounded-xl p-6 shadow-xl w-[400px] max-w-[92vw]" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-[16px] font-semibold text-ink mb-1">Lost deal</h3>
             <p className="text-[13px] text-muted mb-4">Why was "{selectedDeal?.title}" lost?</p>
             <textarea

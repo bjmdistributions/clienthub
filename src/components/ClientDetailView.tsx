@@ -341,6 +341,12 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 const val = await api.toggleClientBlacklist(client.id);
                 setClient((c) => c ? { ...c, is_blacklisted: val } : c);
               }} />
+            {client.metadata?.unsubscribed && (
+              <span className="inline-flex items-center text-[10px] font-bold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg uppercase tracking-wide"
+                title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""} — kept off all sends`}>
+                Unsubscribed
+              </span>
+            )}
           </div>
         </div>
 
@@ -420,7 +426,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
       {/* Metadata cards */}
       {client.metadata && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
           <MetadataCard title="Contact Info" icon={<User size={14} />}>
             {client.metadata.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
             {client.metadata.street_address && <MetaRow label="Address" value={client.metadata.street_address} />}
@@ -528,7 +534,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           </div>
 
           {/* Two-column: interactions + invoices */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Interactions */}
             <div className="bg-surface border border-line rounded-lg min-w-0">
               <div className="flex items-center justify-between px-4 py-3.5 border-b border-line">

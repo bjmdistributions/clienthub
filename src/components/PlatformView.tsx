@@ -21,7 +21,7 @@ function relTime(s?: string | null): string {
 }
 
 const PLANS = ["free", "pro", "business", "unlimited", "founder"];
-const COLS = "grid grid-cols-[1.4fr_1.7fr_1fr_0.9fr_0.55fr_0.55fr_0.8fr_36px] gap-2";
+const COLS = "grid grid-cols-[1.4fr_1.7fr_1fr_0.9fr_0.55fr_0.55fr_0.8fr_36px] gap-2 min-w-[820px]";
 
 type Tab = "orgs" | "users" | "broadcast" | "waitlist" | "feedback" | "onboarding";
 
@@ -97,7 +97,7 @@ export default function PlatformView() {
         <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-5">
             <Stat icon={Building2} label="Signups" value={orgs.length} />
             <Stat icon={UserCircle} label="Total members" value={totalMembers} />
             <Stat icon={Users} label="Total clients" value={totalClients} />
@@ -113,7 +113,7 @@ export default function PlatformView() {
           </div>
 
           {tab === "orgs" && (
-            <div className="bg-surface border border-line rounded-xl overflow-hidden">
+            <div className="bg-surface border border-line rounded-xl overflow-x-auto">
               <div className={`${COLS} px-4 py-2.5 text-[12.5px] font-medium text-muted border-b border-line`}>
                 <div>Workspace</div><div>Owner</div><div>Plan</div><div>Signed up</div><div>Members</div><div>Clients</div><div>Last active</div><div></div>
               </div>
@@ -488,7 +488,7 @@ function Waitlist() {
   if (err) return <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>;
 
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+    <div className="bg-surface border border-line rounded-xl overflow-x-auto">
       <div className="px-4 py-2.5 border-b border-line flex items-center gap-2 text-[12.5px] text-muted">
         <ClipboardList size={13} /> <span className="font-medium text-ink-2">{rows.length}</span> waitlist signup{rows.length === 1 ? "" : "s"}
       </div>
@@ -525,7 +525,7 @@ function Feedback() {
   if (err) return <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>;
 
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+    <div className="bg-surface border border-line rounded-xl overflow-x-auto">
       <div className="px-4 py-2.5 border-b border-line flex items-center gap-2 text-[12.5px] text-muted">
         <MessageSquare size={13} /> <span className="font-medium text-ink-2">{rows.length}</span> report{rows.length === 1 ? "" : "s"}
       </div>
@@ -572,9 +572,9 @@ function Onboarding() {
 
   if (err) return <div className="text-[13px] text-muted bg-surface border border-line rounded-xl p-8 text-center">{err}</div>;
 
-  const cols = "grid grid-cols-[1.6fr_0.7fr_0.5fr_0.7fr_0.7fr_0.8fr_0.8fr] gap-2";
+  const cols = "grid grid-cols-[1.6fr_0.7fr_0.5fr_0.7fr_0.7fr_0.8fr_0.8fr] gap-2 min-w-[620px]";
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+    <div className="bg-surface border border-line rounded-xl overflow-x-auto">
       <div className={`${cols} px-4 py-2.5 text-[12px] font-medium text-muted border-b border-line`}>
         <div>Workspace</div><div>Plan</div><div>Members</div><div>Client</div><div>Invoice</div><div>Inventory</div><div>Email</div>
       </div>
@@ -624,9 +624,9 @@ function PlatformUsers() {
         (u.org_name || "").toLowerCase().includes(term))
     : rows;
 
-  const cols = "grid grid-cols-[2fr_1.3fr_0.8fr_0.8fr_0.7fr_0.8fr_0.9fr] gap-2";
+  const cols = "grid grid-cols-[2fr_1.3fr_0.8fr_0.8fr_0.7fr_0.8fr_0.9fr] gap-2 min-w-[760px]";
   return (
-    <div className="bg-surface border border-line rounded-xl overflow-hidden">
+    <div className="bg-surface border border-line rounded-xl overflow-x-auto">
       <div className="px-4 py-2.5 border-b border-line flex items-center gap-3">
         <div className="flex items-center gap-2 text-[12.5px] text-muted shrink-0">
           <Users size={13} /> <span className="font-medium text-ink-2 tabular-nums">{filtered.length}</span> of <span className="tabular-nums">{rows.length}</span> user{rows.length === 1 ? "" : "s"}

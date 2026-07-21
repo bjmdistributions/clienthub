@@ -29,7 +29,7 @@ export default function HealthView() {
         </button>
       </div>
 
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         {["all", "healthy", "watch", "at_risk", "critical"].map((f) => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-3 h-8 rounded-full text-[12px] font-medium transition-colors border ${
