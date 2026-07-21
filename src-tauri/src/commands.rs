@@ -7420,15 +7420,36 @@ pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, S
     let mut lot_list = String::new();
     let mut idx = 1;
     for lid in &lot_ids {
-        let (name, qty, ask, cat): (String, i64, f64, Option<String>) = conn.query_row(
-            "SELECT name, quantity, asking_price, category FROM inventory WHERE id=?1",
-            [lid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        let (name, qty, ask, cat, price_type, details): (String, i64, f64, Option<String>, String, Option<String>) = conn.query_row(
+            "SELECT name, quantity, asking_price, category, COALESCE(price_type,'per_unit'), details_json FROM inventory WHERE id=?1",
+            [lid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
         .map_err(|e| e.to_string())?;
+        // Per-unit vs full-lot price, derived from how the lot is priced.
+        let per_unit = if price_type == "total" && qty > 0 { ask / qty as f64 } else { ask };
+        let total    = if price_type == "per_unit" { ask * qty as f64 } else { ask };
+        // Extras from details_json: pallets + the free-text price for "custom" lots.
+        let (pallets, price_text) = details.as_deref()
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .map(|v| (
+                v.get("pallets").and_then(|x| x.as_i64()).filter(|p| *p > 0).map(|p| p.to_string()).unwrap_or_default(),
+                v.get("price_text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            ))
+            .unwrap_or_default();
+        // Custom-priced lots have no numeric price — every price variable shows the text.
+        let is_custom = price_type == "custom";
+        let asking_s   = if is_custom { price_text.clone() } else { fmt_money(ask) };
+        let per_unit_s = if is_custom { price_text.clone() } else { fmt_money(per_unit) };
+        let total_s    = if is_custom { price_text.clone() } else { fmt_money(total) };
         let entry = lot_format
             .replace("{number}", &idx.to_string())
             .replace("{lot_name}", &name)
             .replace("{quantity}", &qty.to_string())
-            .replace("{asking_price}", &fmt_money(ask))
+            .replace("{units}", &qty.to_string())
+            .replace("{pallets}", &pallets)
+            .replace("{asking_price}", &asking_s)
+            .replace("{price_per_unit}", &per_unit_s)
+            .replace("{total_price}", &total_s)
+            .replace("{price_text}", &price_text)
             .replace("{category}", cat.as_deref().unwrap_or(""));
         lot_list.push_str(&entry);
         lot_list.push('\n');
@@ -7445,7 +7466,7 @@ pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, S
 }
 
 const DEFAULT_WA_TEMPLATE: &str = "*{business_name}*\n\n{lot_list}\n{footer}";
-const DEFAULT_WA_LOT_FORMAT: &str = "{number}\u{fe0f}\u{20e3} *{lot_name}*\n   {quantity} units · Asking: {asking_price} · {category}";
+const DEFAULT_WA_LOT_FORMAT: &str = "{number}\u{fe0f}\u{20e3} *{lot_name}*\n   {units} units · {price_per_unit}/unit · Total {total_price} · {category}";
 const DEFAULT_WA_FOOTER: &str = "Reply to claim or for more info";
 
 fn wa_setting(conn: &rusqlite::Connection, key: &str, default: &str) -> String {

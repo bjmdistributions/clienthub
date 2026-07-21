@@ -623,8 +623,8 @@ function waFormat(text: string): React.ReactNode {
 }
 
 const WA_SAMPLE_LOTS = [
-  { name: "Mixed Electronics Pallet", qty: 48, ask: "$1,200.00", cat: "Electronics" },
-  { name: "Designer Sneakers Lot", qty: 120, ask: "$3,400.00", cat: "Shoes" },
+  { name: "Mixed Electronics Pallet", qty: 48, perUnit: "$25.00", total: "$1,200.00", pallets: "2", cat: "Electronics" },
+  { name: "Designer Sneakers Lot", qty: 120, perUnit: "$28.33", total: "$3,400.00", pallets: "5", cat: "Shoes" },
 ];
 
 function WhatsAppTab() {
@@ -642,12 +642,26 @@ function WhatsAppTab() {
   const save = async () => { await api.saveWhatsappSettings(s); };
   useAutosave(s, save, loaded);
 
+  const templateRef = useRef<HTMLTextAreaElement>(null);
+  const lotRef = useRef<HTMLTextAreaElement>(null);
+  // Insert a variable at the cursor (or append) in the target textarea.
+  const insertVar = (field: "template" | "lot_format", token: string) => {
+    const el = field === "template" ? templateRef.current : lotRef.current;
+    const cur = s[field] || "";
+    const start = el?.selectionStart ?? cur.length;
+    const end = el?.selectionEnd ?? cur.length;
+    const next = cur.slice(0, start) + token + cur.slice(end);
+    set(field, next);
+    requestAnimationFrame(() => { el?.focus(); const p = start + token.length; el?.setSelectionRange(p, p); });
+  };
+
   // Live preview — substitutes sample lots client-side (same logic as the backend).
   const sub = (str: string, map: Record<string, string>) =>
     Object.entries(map).reduce((acc, [k, v]) => acc.split(k).join(v), str);
   const lotList = WA_SAMPLE_LOTS.map((l, i) => sub(s.lot_format, {
-    "{number}": String(i + 1), "{lot_name}": l.name, "{quantity}": String(l.qty),
-    "{asking_price}": l.ask, "{category}": l.cat,
+    "{number}": String(i + 1), "{lot_name}": l.name, "{quantity}": String(l.qty), "{units}": String(l.qty),
+    "{pallets}": l.pallets, "{price_per_unit}": l.perUnit, "{total_price}": l.total, "{asking_price}": l.total,
+    "{price_text}": "Best offer", "{category}": l.cat,
   })).join("\n");
   const preview = sub(s.template, {
     "{business_name}": companyName || "Your Business",
@@ -656,15 +670,16 @@ function WhatsAppTab() {
     "{phone}": s.phone,
   });
 
-  const VarHint = ({ vars }: { vars: string[] }) => (
-    <p className="text-[11px] text-muted mt-1.5">
-      Variables:{" "}
-      {vars.map((v, i) => (
-        <span key={v}>
-          <code className="font-mono text-muted">{v}</code>{i < vars.length - 1 ? " · " : ""}
-        </span>
+  const VarHint = ({ field, vars }: { field: "template" | "lot_format"; vars: string[] }) => (
+    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+      <span className="text-[11px] text-muted">Tap to insert:</span>
+      {vars.map((v) => (
+        <button key={v} type="button" onClick={() => insertVar(field, v)}
+          className="font-mono text-[11px] text-ink-2 bg-surface-2 border border-line-2 hover:border-accent hover:text-accent px-1.5 py-0.5 rounded transition-colors">
+          {v}
+        </button>
       ))}
-    </p>
+    </div>
   );
 
   const ta = "border border-line px-3 py-2.5 rounded-lg text-[13px] w-full font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors resize-y";
@@ -676,15 +691,15 @@ function WhatsAppTab() {
       </p>
 
       <Field label="Message Template">
-        <textarea className={ta} rows={10} value={s.template} onChange={(e) => set("template", e.target.value)} spellCheck={false} />
+        <textarea ref={templateRef} className={ta} rows={10} value={s.template} onChange={(e) => set("template", e.target.value)} spellCheck={false} />
       </Field>
-      <VarHint vars={["{business_name}", "{lot_list}", "{footer}", "{phone}"]} />
+      <VarHint field="template" vars={["{business_name}", "{lot_list}", "{footer}", "{phone}"]} />
 
       <div className="mt-5">
         <Field label="Lot Format (per item)">
-          <textarea className={ta} rows={3} value={s.lot_format} onChange={(e) => set("lot_format", e.target.value)} spellCheck={false} />
+          <textarea ref={lotRef} className={ta} rows={3} value={s.lot_format} onChange={(e) => set("lot_format", e.target.value)} spellCheck={false} />
         </Field>
-        <VarHint vars={["{number}", "{lot_name}", "{quantity}", "{asking_price}", "{category}"]} />
+        <VarHint field="lot_format" vars={["{number}", "{lot_name}", "{units}", "{price_per_unit}", "{total_price}", "{pallets}", "{asking_price}", "{category}"]} />
       </div>
 
       <div className="grid grid-cols-2 gap-4 mt-5">
