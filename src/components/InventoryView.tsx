@@ -1215,7 +1215,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [variants, setVariants] = useState<LotVariant[]>(details0.variants ?? []);
   // Sizes/variants are power-user extras — collapse them by default so a new lot
   // reads clean; auto-open when the lot being edited already has them.
-  const [showAdvanced, setShowAdvanced] = useState((details0.size_run?.length ?? 0) > 0 || (details0.options?.length ?? 0) > 0);
+   const [showAdvanced, setShowAdvanced] = useState(true); // always show size/variants for new lots
   // Every combination of option values (the cartesian product) — the variant grid.
   // Variants are stored sparsely (only rows the seller filled in); the grid looks
   // each combo up by its values, so adding/removing options never orphans data.
@@ -1624,10 +1624,17 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Supplier</label>
-              <input className={inp} list="lot-supplier-options" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Type or pick a supplier" />
-              <datalist id="lot-supplier-options">
-                {suppliers.map((s) => <option key={s} value={s} />)}
-              </datalist>
+              <div className="relative" id="lot-supplier-dropdown">
+                <input className={inp} value={supplier} onChange={(e) => setSupplier(e.target.value)} onFocus={(e) => { const dd = document.querySelector("#lot-supplier-opt") as HTMLElement; if (dd) dd.style.display = "block"; }} onBlur={() => setTimeout(() => { const dd = document.querySelector("#lot-supplier-opt") as HTMLElement; if (dd) dd.style.display = "none"; }, 150)}
+                  placeholder="Type or pick a supplier" autoComplete="off" />
+                <div id="lot-supplier-opt" className="absolute left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg z-[60] max-h-[200px] overflow-y-auto hidden">
+                  {suppliers.filter(s => s.toLowerCase().includes(supplier.toLowerCase())).slice(0, 20).map(s => (
+                    <button key={s} type="button" className="w-full text-left px-3 py-2 text-[13px] hover:bg-surface-2 text-ink" onMouseDown={(e) => { e.preventDefault(); setSupplier(s); }}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

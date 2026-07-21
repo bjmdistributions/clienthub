@@ -273,10 +273,17 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                   <WifiOff size={22} className="text-danger-ink" />
                 </div>
                 <p className="text-[15px] font-semibold mb-1" style={{ color: "var(--t-tx1)" }}>Unable to load WhatsApp Web</p>
-                <p className="text-[13px] mb-4" style={{ color: "var(--t-tx3)" }}>Check your internet connection and try again.</p>
-                <button onClick={openWhatsApp} className="flex items-center gap-1.5 mx-auto text-[12px] font-medium px-4 h-9 rounded-lg text-on-accent bg-accent hover:bg-accent-hover transition-colors">
-                  <RefreshCw size={13} /> Retry
-                </button>
+                <p className="text-[13px] mb-4" style={{ color: "var(--t-tx3)" }}>WhatsApp Web requires a modern browser on macOS. Try opening it directly.</p>
+                <div className="flex items-center gap-2 justify-center">
+                  <button onClick={() => { window.open("https://web.whatsapp.com", "_blank"); }}
+                    className="flex items-center gap-1.5 text-[12px] font-medium px-4 h-9 rounded-lg bg-accent hover:bg-accent-hover text-on-accent transition-colors">
+                    <MessageCircle size={13} /> Open in Browser
+                  </button>
+                  <button onClick={openWhatsApp}
+                    className="flex items-center gap-1.5 text-[12px] font-medium px-4 h-9 rounded-lg border transition-colors" style={{ borderColor: "var(--t-b2)", color: "var(--t-tx2)" }}>
+                    <RefreshCw size={13} /> Retry
+                  </button>
+                </div>
               </div>
             </div>
           )}
