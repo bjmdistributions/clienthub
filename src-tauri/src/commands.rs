@@ -7304,6 +7304,71 @@ pub async fn startup_backfill_inventory_photos() {
     }
 }
 
+/// Backfill manifests — mirrors photo backfill for manifest files
+pub async fn startup_backfill_inventory_manifests() {
+    if read_setting("inv_manifest_backfill_v1").is_some() { return; }
+    let _ = write_setting("inv_manifest_backfill_v1", "done");
+    match backfill_inventory_manifests().await {
+        Ok(n) => tracing::info!("storefront manifest backfill: uploaded {}", n),
+        Err(e) => tracing::warn!("manifest backfill deferred: {}", e),
+    }
+}
+
+#[tauri::command]
+pub async fn backfill_inventory_manifests() -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, manifest_path FROM inventory WHERE manifest_path IS NOT NULL AND manifest_path != ''").map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let mut n = 0u32;
+    for (lot_id, path) in rows {
+        let full = crate::db::app_data_dir().join("sync").join(&path);
+        if full.exists() {
+            let _ = crate::netsync::upload_inventory_manifest(&lot_id, &path);
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub async fn cleanup_inventory_photos() -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, photos_json FROM inventory WHERE photos_json LIKE '%\"C:%' OR photos_json LIKE '%\"/Users/%' OR photos_json LIKE '%\"\\\\\\\\%'").map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let mut n = 0u32;
+    for (lot_id, photos_str) in rows {
+        let paths: Vec<String> = serde_json::from_str(&photos_str).unwrap_or_default();
+        let mut cleaned: Vec<String> = Vec::new();
+        let mut changed = false;
+        let dir = crate::db::app_data_dir().join("sync").join("media").join("inventory").join(&lot_id).join("photos");
+        let _ = std::fs::create_dir_all(&dir);
+        for p in paths {
+            if (p.contains(":\\") || p.contains("C:\\")) || (p.starts_with("/Users/") && !p.starts_with("media/")) {
+                let src = std::path::Path::new(&p);
+                if src.exists() {
+                    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("img");
+                    let fname = format!("photo_{:03}.{}", cleaned.len() + 1, ext);
+                    let dest = dir.join(&fname);
+                    if std::fs::copy(src, &dest).is_ok() {
+                        cleaned.push(format!("media/inventory/{}/photos/{}", lot_id, fname));
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+            cleaned.push(p);
+        }
+        if changed {
+            let new_json = serde_json::to_string(&cleaned).map_err(|e| e.to_string())?;
+            conn.execute("UPDATE inventory SET photos_json=?1 WHERE id=?2", rusqlite::params![new_json, lot_id]).map_err(|e| e.to_string())?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// Remove a single photo — deletes the file from disk and returns updated photo list path.
 #[tauri::command]
 pub async fn remove_lot_photo(lot_id: String, photo_path: String) -> Result<Vec<String>, String> {
@@ -7415,6 +7480,7 @@ pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, S
     let lot_format = wa_setting(&conn, "whatsapp_lot_format",       DEFAULT_WA_LOT_FORMAT);
     let footer     = wa_setting(&conn, "whatsapp_footer",           DEFAULT_WA_FOOTER);
     let phone      = wa_setting(&conn, "whatsapp_phone",            "");
+    let description = wa_setting(&conn, "whatsapp_description",     "");
 
     // Build the lot list by substituting each lot into the lot-format template.
     let mut lot_list = String::new();
@@ -7457,7 +7523,9 @@ pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, S
     }
     let lot_list = lot_list.trim_end().to_string();
 
+    let desc_block = if description.is_empty() { String::new() } else { format!("{}\n\n", description) };
     let msg = template
+        .replace("{description}", &desc_block)
         .replace("{business_name}", &business_name)
         .replace("{lot_list}", &lot_list)
         .replace("{footer}", &footer)
@@ -7465,7 +7533,7 @@ pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, S
     Ok(msg)
 }
 
-const DEFAULT_WA_TEMPLATE: &str = "*{business_name}*\n\n{lot_list}\n{footer}";
+const DEFAULT_WA_TEMPLATE: &str = "{description}*{business_name}*\n\n{lot_list}\n{footer}";
 const DEFAULT_WA_LOT_FORMAT: &str = "{number}\u{fe0f}\u{20e3} *{lot_name}*\n   {units} units · {price_per_unit}/unit · Total {total_price} · {category}";
 const DEFAULT_WA_FOOTER: &str = "Reply to claim or for more info";
 
@@ -7681,6 +7749,22 @@ pub async fn get_whatsapp_footer() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn save_whatsapp_description(description: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO settings (key, value) VALUES ('whatsapp_description', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&description])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_whatsapp_description() -> Result<String, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let val: String = conn.query_row("SELECT value FROM settings WHERE key='whatsapp_description'", [], |r| r.get(0))
+        .unwrap_or_default();
+    Ok(val)
+}
+
+#[tauri::command]
 pub async fn set_lot_status(id: String, status: String) -> Result<(), String> {
     if !["available", "reserved", "sold", "archived"].contains(&status.as_str()) {
         return Err("Invalid status".into());
@@ -7818,7 +7902,7 @@ pub async fn delete_offer(id: String) -> Result<(), String> {
 pub async fn resync_inventory() -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location FROM inventory"
+        "SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,notes,sent_whatsapp,sent_email,supplier,location,COALESCE(manifest_path,''),COALESCE(price_type,'per_unit'),COALESCE(details_json,'{}') FROM inventory"
     ).map_err(|e| e.to_string())?;
     let rows: Vec<serde_json::Map<String, serde_json::Value>> = stmt.query_map([], |r| {
         let mut c = serde_json::Map::new();
@@ -7839,6 +7923,9 @@ pub async fn resync_inventory() -> Result<u32, String> {
         c.insert("sent_email".into(), serde_json::json!(r.get::<_, i64>(14)?));
         c.insert("supplier".into(), serde_json::json!(r.get::<_, Option<String>>(15)?));
         c.insert("location".into(), serde_json::json!(r.get::<_, Option<String>>(16)?));
+        c.insert("manifest_path".into(), serde_json::json!(r.get::<_, String>(17)?));
+        c.insert("price_type".into(), serde_json::json!(r.get::<_, String>(18)?));
+        c.insert("details_json".into(), serde_json::json!(r.get::<_, String>(19)?));
         Ok(c)
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 

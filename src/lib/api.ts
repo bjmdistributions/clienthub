@@ -2410,6 +2410,8 @@ export const api = {
   getLotMediaFiles: (lotIds: string[]) => invoke<LotMediaFiles>("get_lot_media_files", { lotIds }),
   saveWhatsappFooter: (footer: string) => invoke<void>("save_whatsapp_footer", { footer }),
   getWhatsappFooter: () => invoke<string>("get_whatsapp_footer"),
+  saveWhatsappDescription: (description: string) => invoke<void>("save_whatsapp_description", { description }),
+  getWhatsappDescription: () => invoke<string>("get_whatsapp_description"),
   getWhatsappSettings: () => invoke<WhatsappSettings>("get_whatsapp_settings"),
   saveWhatsappSettings: (s: WhatsappSettings) =>
     invoke<void>("save_whatsapp_settings", { template: s.template, lotFormat: s.lot_format, footer: s.footer, phone: s.phone }),

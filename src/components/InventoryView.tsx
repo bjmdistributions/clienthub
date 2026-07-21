@@ -1209,9 +1209,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [pallets, setPallets] = useState<number>(details0.pallets ?? 0);
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
   const [moq, setMoq] = useState<number>(details0.moq ?? 0);
-  const [sizeRun, setSizeRun] = useState<{ size: string; qty: number }[]>(details0.size_run ?? []);
+  const [sizeRun, setSizeRun] = useState<any[]>(() => (details0.size_run ?? []).map((r: any) => ({ ...r, _key: r._key || crypto.randomUUID() })));
   // Shopify-style variants: option types (Color/Size) + a row per combination.
-  const [options, setOptions] = useState<LotOption[]>(details0.options ?? []);
+  const [options, setOptions] = useState<LotOption[]>(() => (details0.options ?? []).map((o: any) => ({ ...o, _key: o._key || crypto.randomUUID() })));
   const [variants, setVariants] = useState<LotVariant[]>(details0.variants ?? []);
   // Sizes/variants are power-user extras — collapse them by default so a new lot
   // reads clean; auto-open when the lot being edited already has them.
@@ -1478,17 +1478,17 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           <div>
             <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Size run (size → quantity)</label>
             <div className="space-y-1.5">
-              {sizeRun.map((r, i) => (
-                <div key={i} className="flex items-center gap-2">
+              {sizeRun.map((r) => (
+                <div key={r._key || (r as any)._key} className="flex items-center gap-2">
                   <input className={inp + " flex-1"} value={r.size} placeholder='Size (e.g. "10.5")'
-                    onChange={(e) => setSizeRun(sizeRun.map((row, idx) => idx === i ? { ...row, size: e.target.value } : row))} />
+                    onChange={(e) => setSizeRun(sizeRun.map((row) => (row as any)._key === (r as any)._key ? { ...row, size: e.target.value } : row))} />
                   <input className={inp + " w-24 tabular-nums"} type="number" value={r.qty || ""} placeholder="Qty"
-                    onChange={(e) => setSizeRun(sizeRun.map((row, idx) => idx === i ? { ...row, qty: parseInt(e.target.value) || 0 } : row))} />
-                  <button onClick={() => setSizeRun(sizeRun.filter((_, idx) => idx !== i))} title="Remove size"
+                    onChange={(e) => setSizeRun(sizeRun.map((row) => (row as any)._key === (r as any)._key ? { ...row, qty: parseInt(e.target.value) || 0 } : row))} />
+                  <button onClick={() => setSizeRun(sizeRun.filter((row) => (row as any)._key !== (r as any)._key))} title="Remove size"
                     className="w-8 h-9 flex items-center justify-center text-muted hover:text-danger-ink transition-colors flex-shrink-0"><X size={14} /></button>
                 </div>
               ))}
-              <button onClick={() => setSizeRun([...sizeRun, { size: "", qty: 0 }])}
+              <button onClick={() => setSizeRun([...sizeRun, { size: "", qty: 0, _key: crypto.randomUUID() }])}
                 className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
                 <Plus size={13} /> Add size
               </button>
@@ -1500,18 +1500,18 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           <div>
             <label className="block text-[12.5px] font-medium text-muted mb-1">Variants (colors, sizes, per-option pricing)</label>
             <div className="space-y-1.5">
-              {options.map((o, oi) => (
-                <div key={oi} className="flex items-center gap-2">
+              {options.map((o) => (
+                <div key={(o as any)._key} className="flex items-center gap-2">
                   <input className={inp + " w-32"} value={o.name} placeholder="Option (e.g. Color)"
-                    onChange={(e) => setOptions(options.map((x, i) => i === oi ? { ...x, name: e.target.value } : x))} />
+                    onChange={(e) => setOptions(options.map((x) => (x as any)._key === (o as any)._key ? { ...x, name: e.target.value } : x))} />
                   <input className={inp + " flex-1"} value={o.values.join(", ")} placeholder="Values, comma-separated — Red, Blue, Green"
-                    onChange={(e) => setOptions(options.map((x, i) => i === oi ? { ...x, values: e.target.value.split(",").map((s) => s.trim()).filter((v, idx, a) => v && a.indexOf(v) === idx) } : x))} />
-                  <button onClick={() => setOptions(options.filter((_, i) => i !== oi))} title="Remove option"
+                    onChange={(e) => setOptions(options.map((x) => (x as any)._key === (o as any)._key ? { ...x, values: e.target.value.split(",").map((s: string) => s.trim()).filter((v: string, idx: number, a: string[]) => v && a.indexOf(v) === idx) } : x))} />
+                  <button onClick={() => setOptions(options.filter((x) => (x as any)._key !== (o as any)._key))} title="Remove option"
                     className="w-8 h-9 flex items-center justify-center text-muted hover:text-danger-ink transition-colors flex-shrink-0"><X size={14} /></button>
                 </div>
               ))}
               {options.length < 3 && (
-                <button onClick={() => setOptions([...options, { name: "", values: [] }])}
+                <button onClick={() => setOptions([...options, { name: "", values: [], _key: crypto.randomUUID() } as any])}
                   className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
                   <Plus size={13} /> Add option
                 </button>

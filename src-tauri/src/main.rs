@@ -399,6 +399,7 @@ fn main() {
                 // the hosted storefront can show photos added on any device (photo files
                 // don't ride the DB sync oplog). New photos upload at save time.
                 commands::startup_backfill_inventory_photos().await;
+                commands::startup_backfill_inventory_manifests().await;
 
                 // 3. Fire a system notification if follow-ups are due today.
                 match due_followups().await {
@@ -830,6 +831,8 @@ fn main() {
             resync_inventory,
             import_lot_photos,
             backfill_inventory_photos,
+            backfill_inventory_manifests,
+            cleanup_inventory_photos,
             remove_lot_photo,
             attach_lot_manifest,
             remove_lot_manifest,
@@ -838,6 +841,8 @@ fn main() {
             get_lot_media_files,
             save_whatsapp_footer,
             get_whatsapp_footer,
+            save_whatsapp_description,
+            get_whatsapp_description,
             get_whatsapp_settings,
             save_whatsapp_settings,
             open_lot_folder,

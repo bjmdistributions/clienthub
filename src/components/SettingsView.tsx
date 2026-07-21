@@ -1394,6 +1394,27 @@ function WhatsAppFooterField() {
         </button>
       </div>
       <p className="text-[10px] text-muted mt-1">Appended to every WhatsApp share message.</p>
+      <WhatsAppDescriptionField />
+    </div>
+  );
+}
+
+function WhatsAppDescriptionField() {
+  const [desc, setDesc] = useState("");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { api.getWhatsappDescription().then(setDesc).catch(() => {}); }, []);
+  const save = async () => { await api.saveWhatsappDescription(desc); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+  return (
+    <div className="mt-3">
+      <label className="block text-[12px] font-medium text-muted mb-1.5">WhatsApp Description</label>
+      <textarea className={inp + " h-20 resize-none"} value={desc} onChange={e => setDesc(e.target.value)}
+        placeholder="A description that preloads into your WhatsApp share message. Include key details about your inventory, business, or terms." />
+      <div className="flex justify-between items-center mt-1.5">
+        <p className="text-[10px] text-muted">Appears at the top of every WhatsApp share message before the lot listing.</p>
+        <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium flex-shrink-0">
+          {saved ? "Saved" : "Save"}
+        </button>
+      </div>
     </div>
   );
 }
