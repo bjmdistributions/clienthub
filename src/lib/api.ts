@@ -1176,6 +1176,7 @@ export interface LotDetails {
   moq?: number | null;
   size_run?: { size: string; qty: number }[] | null;
   price_text?: string | null;   // free-text price shown verbatim when price_type === "custom"
+  open_to_offers?: boolean | null;  // storefront shows a "Make an offer" form when true
   // Shopify-style variants: option TYPES (Color, Size…) each with their values, and
   // one variant row per combination the seller stocks, with its own qty + price.
   options?: LotOption[] | null;
@@ -1188,7 +1189,8 @@ export interface Offer {
   email: string;
   amount: number | null;
   message: string;
-  status: string;   // new | accepted | declined
+  status: string;      // new | accepted | declined
+  offer_type: string;  // per_unit | lot
   created_at: string;
 }
 export interface LotOption { name: string; values: string[] }

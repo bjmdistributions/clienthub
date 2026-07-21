@@ -292,6 +292,8 @@ export default function InventoryView() {
   const visibleUnderAll = lots.filter(l => (l.status === "sold" || l.status === "archived") ? includeDone : true).length;
   const counts = { all: visibleUnderAll, available: lots.filter(l => l.status === "available").length, reserved: lots.filter(l => l.status === "reserved").length, sold: lots.filter(l => l.status === "sold").length, archived: lots.filter(l => l.status === "archived").length };
   const totalUnits = lots.reduce((sum, l) => sum + (l.quantity || 0), 0);
+  const newOffers = offers.filter((o) => o.status === "new");
+  const newOfferByLot = newOffers.reduce((m, o) => { m[o.lot_id] = (m[o.lot_id] || 0) + 1; return m; }, {} as Record<string, number>);
   const totalValue = lots.reduce((sum, l) => sum + totalAsk(l), 0); // Σ total ask across all lots
   const staleCount = lots.filter(isStale).length;
 
@@ -417,6 +419,23 @@ export default function InventoryView() {
           }} disabled={!selected.size} className="text-[12px] text-success-ink bg-success-bg border border-success px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
         </div>
       )}
+
+      {/* New buyer offers — surfaced so you don't miss them */}
+      {newOffers.length > 0 && (() => {
+        const names = Object.keys(newOfferByLot).map((id) => lots.find((l) => l.id === id)?.name).filter(Boolean) as string[];
+        const first = names[0] || "a lot";
+        return (
+          <button
+            onClick={() => { const id = Object.keys(newOfferByLot)[0]; if (id) setDetailId(id); }}
+            className="w-full flex items-center gap-2.5 mb-4 rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 text-left hover:bg-accent/15 transition-colors">
+            <DollarSign size={16} className="text-accent flex-shrink-0" />
+            <span className="text-[13px] text-ink min-w-0">
+              <span className="font-semibold">{newOffers.length} new offer{newOffers.length !== 1 ? "s" : ""}</span>
+              <span className="text-muted"> · {first}{names.length > 1 ? ` +${names.length - 1} more` : ""} — review {newOffers.length !== 1 ? "them" : "it"} on the lot</span>
+            </span>
+          </button>
+        );
+      })()}
 
       {/* Band B — toolbar */}
       {!selectMode && (
@@ -1167,6 +1186,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   };
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
+  const [openToOffers, setOpenToOffers] = useState<boolean>(details0.open_to_offers ?? false);
   const [dragActive, setDragActive] = useState(false); // dropzone highlight while dragging files
 
   const pickManifest = async () => {
@@ -1238,7 +1258,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
   // Confirm before discarding an edited form — a stray backdrop click can't close it.
   const initialSnapshot = useRef({
-    name, desc, category, qty, cost, ask, priceType, priceText,
+    name, desc, category, qty, cost, ask, priceType, priceText, openToOffers,
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
@@ -1246,7 +1266,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
     qty !== initialSnapshot.qty || cost !== initialSnapshot.cost || ask !== initialSnapshot.ask ||
-    priceType !== initialSnapshot.priceType || priceText !== initialSnapshot.priceText ||
+    priceType !== initialSnapshot.priceType || priceText !== initialSnapshot.priceText || openToOffers !== initialSnapshot.openToOffers ||
     supplier !== initialSnapshot.supplier || location !== initialSnapshot.location || notes !== initialSnapshot.notes ||
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
     photos.length !== initialSnapshot.photos || pallets !== initialSnapshot.pallets || msrp !== initialSnapshot.msrp ||
@@ -1283,8 +1303,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       const hasVariants = cleanOptions.length > 0 && cleanVariants.length > 0;
       const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun };
       if (priceTextClean) detailsObj.price_text = priceTextClean;
+      if (openToOffers) detailsObj.open_to_offers = true;
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
@@ -1386,7 +1407,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} placeholder="0.00" />
               </div>
             )}
-          </div>
+            </div>
+            <label className="flex items-start gap-2.5 cursor-pointer mt-1 rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
+              <input type="checkbox" className="accent-accent mt-0.5 flex-shrink-0" checked={openToOffers} onChange={(e) => setOpenToOffers(e.target.checked)} />
+              <span className="min-w-0">
+                <span className="text-[12.5px] font-medium text-ink">Open to offers</span>
+                <span className="block text-[11px] text-muted mt-0.5">Shows a “Make an offer” form on your storefront so buyers can send you a price.</span>
+              </span>
+            </label>
           </div>
 
           <div className="pt-5 border-t border-line-2">
@@ -1773,7 +1801,7 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap text-[13px]">
                           <span className="font-medium text-ink truncate">{o.name || "Anonymous"}</span>
-                          {o.amount != null && <span className="font-semibold text-accent tabular-nums">{fmtAmount(o.amount)}</span>}
+                          {o.amount != null && <span className="font-semibold text-accent tabular-nums">{fmtAmount(o.amount)}<span className="text-[10px] font-normal text-muted ml-0.5">{o.offer_type === "per_unit" ? "/unit" : " for the lot"}</span></span>}
                           {o.status === "accepted" && <span className="text-[10px] font-bold uppercase tracking-wide text-success-ink">Accepted</span>}
                           {o.status === "declined" && <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Declined</span>}
                         </div>

@@ -1535,4 +1535,11 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_offers_lot ON offers(lot_id);
         "#,
     ),
+    (
+        73,
+        // A buyer's offer can be priced PER UNIT or for the FULL LOT — store which.
+        r#"
+        ALTER TABLE offers ADD COLUMN offer_type TEXT NOT NULL DEFAULT 'lot';
+        "#,
+    ),
 ];

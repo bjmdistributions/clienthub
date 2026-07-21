@@ -7711,6 +7711,7 @@ pub struct Offer {
     pub amount: Option<f64>,
     pub message: String,
     pub status: String,
+    pub offer_type: String,
     pub created_at: String,
 }
 
@@ -7720,11 +7721,11 @@ pub struct Offer {
 pub async fn list_offers() -> Result<Vec<Offer>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, lot_id, name, email, amount, message, status, created_at FROM offers ORDER BY created_at DESC"
+        "SELECT id, lot_id, name, email, amount, message, status, COALESCE(offer_type,'lot'), created_at FROM offers ORDER BY created_at DESC"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok(Offer {
         id: r.get(0)?, lot_id: r.get(1)?, name: r.get(2)?, email: r.get(3)?,
-        amount: r.get(4)?, message: r.get(5)?, status: r.get(6)?, created_at: r.get(7)?,
+        amount: r.get(4)?, message: r.get(5)?, status: r.get(6)?, offer_type: r.get(7)?, created_at: r.get(8)?,
     })).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
