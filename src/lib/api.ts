@@ -2397,6 +2397,7 @@ export const api = {
   deleteLot: (id: string) => invoke<void>("delete_lot", { id }),
   deleteLots: (ids: string[]) => invoke<number>("delete_lots", { ids }),
   listOffers: () => invoke<Offer[]>("list_offers"),
+  listStaleServerLots: () => invoke<{ id: string; name: string; status: string }[]>("list_stale_server_lots"),
   setOfferStatus: (id: string, status: string) => invoke<void>("set_offer_status", { id, status }),
   deleteOffer: (id: string) => invoke<void>("delete_offer", { id }),
   resyncInventory: () => invoke<number>("resync_inventory"),

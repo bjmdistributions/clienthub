@@ -826,6 +826,7 @@ fn main() {
             list_offers,
             set_offer_status,
             delete_offer,
+            list_stale_server_lots,
             resync_inventory,
             import_lot_photos,
             backfill_inventory_photos,

@@ -7746,6 +7746,39 @@ pub async fn set_offer_status(id: String, status: String) -> Result<(), String> 
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct StaleLot {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+}
+
+/// Lots that exist on the SERVER but not on THIS device — i.e. deleted here while sync
+/// was down, so the delete never cleared the server (mobile/storefront still show them).
+/// The UI lists these to confirm, then `delete_lots` re-issues fresh tombstones to prune
+/// them everywhere. Read-only; does not delete anything itself.
+#[tauri::command]
+pub async fn list_stale_server_lots() -> Result<Vec<StaleLot>, String> {
+    let server = crate::netsync::fetch_server_inventory().await?;
+    let local: std::collections::HashSet<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id FROM inventory").map_err(|e| e.to_string())?;
+        let ids: std::collections::HashSet<String> = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok()).collect();
+        ids
+    };
+    let stale = server.into_iter().filter_map(|v| {
+        let id = v.get("id")?.as_str()?.to_string();
+        if local.contains(&id) { return None; }
+        Some(StaleLot {
+            id,
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or("Untitled lot").to_string(),
+            status: v.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        })
+    }).collect();
+    Ok(stale)
+}
+
 #[tauri::command]
 pub async fn delete_offer(id: String) -> Result<(), String> {
     {

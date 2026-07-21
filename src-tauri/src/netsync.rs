@@ -218,6 +218,19 @@ pub async fn fetch_published_bank_balance() -> Option<(f64, f64, String)> {
     Some((bank, card, at))
 }
 
+/// The server's current inventory (id, name, status) for this device's org. Used to
+/// reconcile lots that were deleted here but never cleared the server (a sync gap left
+/// a stale tombstone or the delete was dropped) — the desktop diffs this against local.
+pub async fn fetch_server_inventory() -> Result<Vec<serde_json::Value>, String> {
+    let cfg = config().ok_or("Not connected to the server")?;
+    let url = format!("{}/api/inventory", cfg.url.trim_end_matches('/'));
+    let resp = http().get(&url).bearer_auth(&cfg.token).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
 /// Ask the server to sign one-click unsubscribe URLs for a batch of recipient emails
 /// (the desktop can't sign the server's tokens itself). Returns email→url, scoped to
 /// this device's org. Empty when offline/unauthed — the caller then falls back to a

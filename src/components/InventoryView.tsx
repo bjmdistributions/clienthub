@@ -147,6 +147,8 @@ function CategoryCombobox({ value, onChange, options, placeholder }: {
 export default function InventoryView() {
   const [lots, setLots] = useState<Lot[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
+  const [staleModal, setStaleModal] = useState<{ id: string; name: string; status: string }[] | null>(null);
+  const [staleBusy, setStaleBusy] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Lot | null>(null);
@@ -184,6 +186,26 @@ export default function InventoryView() {
   const [storefront, setStorefront] = useState<StorefrontConfig | null>(null);
   const loadOffers = () => api.listOffers().then(setOffers).catch(() => {});
   const load = async () => { const l = await api.listInventory(); setLots(l); loadOffers(); };
+  const checkStaleLots = async () => {
+    setStaleBusy(true);
+    try {
+      const stale = await api.listStaleServerLots();
+      if (stale.length === 0) toast("Everything's in sync — no removed lots to clean up.");
+      else setStaleModal(stale);
+    } catch (e: any) { toast(String(e), "error"); }
+    setStaleBusy(false);
+  };
+  const pruneStale = async () => {
+    if (!staleModal) return;
+    setStaleBusy(true);
+    try {
+      const n = await api.deleteLots(staleModal.map((s) => s.id));
+      toast(`Cleaned up ${n} removed lot${n !== 1 ? "s" : ""} — they'll drop off mobile shortly.`);
+      setStaleModal(null);
+      load();
+    } catch (e: any) { toast(String(e), "error"); }
+    setStaleBusy(false);
+  };
   useEffect(() => {
     load();
     api.listSuppliers().then((s) => setSuppliers(s.map((x) => x.name).filter(Boolean))).catch(() => {});
@@ -368,6 +390,7 @@ export default function InventoryView() {
                 {overflowOpen && (
                   <div className="absolute right-0 mt-1 z-30 w-52 bg-surface border border-line rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.10)] py-1 inv-fade">
                     <button onClick={() => { setOverflowOpen(false); resync(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><RefreshCw size={13} className="text-muted" /> Sync to devices</button>
+                    <button onClick={() => { setOverflowOpen(false); checkStaleLots(); }} disabled={staleBusy} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors disabled:opacity-50"><Trash2 size={13} className="text-muted" /> Clean up removed lots</button>
                     <button onClick={() => { setOverflowOpen(false); setSelectMode(true); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><CheckSquare size={13} className="text-muted" /> Select</button>
                     <button onClick={() => { setOverflowOpen(false); handleExportInventory(); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2 flex items-center gap-2 transition-colors"><FileDown size={13} className="text-muted" /> Export CSV</button>
                     <div className="my-1 border-t border-line" />
@@ -587,6 +610,31 @@ export default function InventoryView() {
       />}
 
       {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
+
+      {staleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !staleBusy && setStaleModal(null)}>
+          <div className="bg-surface border border-line rounded-2xl w-full max-w-md shadow-xl flex flex-col max-h-[82vh]" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-line">
+              <h3 className="text-[15px] font-semibold text-ink">Clean up removed lots</h3>
+              <p className="text-[12px] text-muted mt-0.5">These {staleModal.length} lot{staleModal.length !== 1 ? "s are" : " is"} on the server (so they still show on mobile &amp; your storefront) but no longer on this computer. Removing them clears them everywhere.</p>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-3 divide-y divide-line-2">
+              {staleModal.map((s) => (
+                <div key={s.id} className="flex items-center justify-between gap-2 py-2">
+                  <span className="text-[13px] text-ink truncate">{s.name}</span>
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-muted flex-shrink-0">{s.status}</span>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
+              <button onClick={() => setStaleModal(null)} disabled={staleBusy} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2 disabled:opacity-50">Cancel</button>
+              <button onClick={pruneStale} disabled={staleBusy} className="px-5 h-9 rounded-lg bg-danger hover:opacity-90 text-white text-[13px] font-medium disabled:opacity-50">
+                {staleBusy ? "Removing…" : `Remove ${staleModal.length}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {detailId && (() => {
         const detail = lots.find((l) => l.id === detailId);
