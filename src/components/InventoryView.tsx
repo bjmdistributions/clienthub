@@ -546,7 +546,7 @@ export default function InventoryView() {
             if (!manifest) return;
             setShowManifest(false);
             setEditing(null);
-            setPrefill({ quantity: manifest.total_items || 1, total_cost: manifest.suggested_bid || 0, price_type: "total" });
+            setPrefill({ quantity: Math.round(manifest.total_quantity) || manifest.total_items || 1, total_cost: manifest.suggested_bid || 0, price_type: "total" });
             setShowForm(true);
           }}
         />
@@ -806,7 +806,7 @@ function ManifestSlideOver({ manifest, busy, onClose, onUpload, onClear, onCreat
             <div>
               <div className="grid grid-cols-2 gap-3 mb-4">
                 {[
-                  { label: "Total items", value: manifest.total_items },
+                  { label: "Total units", value: Math.round(manifest.total_quantity || 0).toLocaleString() },
                   { label: "Total retail", value: fmtAmount(manifest.total_retail) },
                   { label: "Avg margin", value: `${manifest.overall_margin_pct.toFixed(0)}%` },
                   { label: "Suggested bid", value: fmtAmount(manifest.suggested_bid) },
@@ -817,8 +817,12 @@ function ManifestSlideOver({ manifest, busy, onClose, onUpload, onClear, onCreat
                   </div>
                 ))}
               </div>
+              <p className="text-[11px] text-muted mb-3">
+                <span className="tabular-nums font-medium text-ink-2">{Math.round(manifest.total_quantity || 0).toLocaleString()}</span> units across{" "}
+                <span className="tabular-nums font-medium text-ink-2">{manifest.total_items.toLocaleString()}</span> product line{manifest.total_items !== 1 ? "s" : ""}
+                {manifest.skipped_rows > 0 ? ` · ${manifest.skipped_rows.toLocaleString()} skipped (no price)` : ""}.
+              </p>
               <p className="text-[10px] text-muted mb-3 bg-warning-bg border border-warning px-3 py-2 rounded-lg">{manifest.formula}</p>
-              {manifest.skipped_rows > 0 && <p className="text-[11px] text-warning-ink mb-3">{manifest.skipped_rows} rows skipped (missing price).</p>}
               <div className="flex items-center justify-between mb-1.5">
                 <p className="text-[11px] font-semibold text-ink-2">By category</p>
                 <span className="text-[9.5px] text-muted">{manifest.categories_from_manifest ? "from manifest" : "estimated — no category column found"}</span>
@@ -826,13 +830,14 @@ function ManifestSlideOver({ manifest, busy, onClose, onUpload, onClear, onCreat
               <div className="overflow-x-auto">
                 <table className="w-full text-[12px] mb-4">
                   <thead className="bg-surface-2">
-                    <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Items</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
+                    <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Category</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Lines</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Units</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
                   </thead>
                   <tbody>
                     {manifest.categories.map((c) => (
                       <tr key={c.name} className="border-t border-line">
                         <td className="px-3 py-2 font-medium text-ink-2">{c.name}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted">{c.items}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted">{c.items.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-ink-2">{Math.round(c.quantity || 0).toLocaleString()}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(c.total_retail)}</td>
                       </tr>
                     ))}
@@ -845,13 +850,14 @@ function ManifestSlideOver({ manifest, busy, onClose, onUpload, onClear, onCreat
                   <div className="overflow-x-auto">
                     <table className="w-full text-[12px] mb-3">
                       <thead className="bg-surface-2">
-                        <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Brand</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Items</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
+                        <tr><th className="text-left px-3 py-2 text-[12px] font-medium text-muted rounded-l-lg">Brand</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Lines</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted">Units</th><th className="text-right px-3 py-2 text-[12px] font-medium text-muted rounded-r-lg">Retail</th></tr>
                       </thead>
                       <tbody>
                         {manifest.brands.map((b) => (
                           <tr key={b.name} className="border-t border-line">
                             <td className="px-3 py-2 font-medium text-ink-2">{b.name}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-muted">{b.items}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted">{b.items.toLocaleString()}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-ink-2">{Math.round(b.quantity || 0).toLocaleString()}</td>
                             <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtAmount(b.total_retail)}</td>
                           </tr>
                         ))}

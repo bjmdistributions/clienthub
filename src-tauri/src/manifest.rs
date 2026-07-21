@@ -6,7 +6,8 @@ use std::collections::HashMap;
 #[derive(Debug, Serialize)]
 pub struct ManifestGroup {
     pub name: String,
-    pub items: usize,
+    pub items: usize,       // number of manifest LINE ROWS in this group
+    pub quantity: f64,      // sum of the quantity column across those rows (units)
     pub total_retail: f64,
 }
 
@@ -24,7 +25,10 @@ pub struct ManifestAnalysis {
     pub suggested_bid: f64,
     pub total_retail: f64,
     pub overall_margin_pct: f64,
+    /// Number of manifest LINE ROWS analyzed (one per product line).
     pub total_items: usize,
+    /// Sum of the quantity column across all rows — the real unit count.
+    pub total_quantity: f64,
     pub skipped_rows: usize,
     pub formula: String,
 }
@@ -146,6 +150,7 @@ pub fn analyze(path: &str) -> Result<ManifestAnalysis> {
     let mut cat_data: HashMap<String, ManifestGroup> = HashMap::new();
     let mut brand_data: HashMap<String, ManifestGroup> = HashMap::new();
     let mut total_items = 0usize;
+    let mut total_quantity = 0.0f64;
     let mut total_retail = 0.0f64;
     let mut skipped_rows = 0usize;
 
@@ -185,20 +190,23 @@ pub fn analyze(path: &str) -> Result<ManifestAnalysis> {
             }
             c
         };
-        let entry = cat_data.entry(cat.clone()).or_insert_with(|| ManifestGroup { name: cat, items: 0, total_retail: 0.0 });
+        let entry = cat_data.entry(cat.clone()).or_insert_with(|| ManifestGroup { name: cat, items: 0, quantity: 0.0, total_retail: 0.0 });
         entry.items += 1;
+        entry.quantity += qty;
         entry.total_retail += retail;
 
         // Brand: only when the manifest actually has a brand column.
         if let Some(bi) = brand_idx {
             let v = record.get(bi).map(|s| s.trim()).unwrap_or("");
             let bname = if v.is_empty() { "Unbranded".to_string() } else { v.to_string() };
-            let e = brand_data.entry(bname.clone()).or_insert_with(|| ManifestGroup { name: bname, items: 0, total_retail: 0.0 });
+            let e = brand_data.entry(bname.clone()).or_insert_with(|| ManifestGroup { name: bname, items: 0, quantity: 0.0, total_retail: 0.0 });
             e.items += 1;
+            e.quantity += qty;
             e.total_retail += retail;
         }
 
         total_items += 1;
+        total_quantity += qty;
         total_retail += retail;
     }
 
@@ -224,6 +232,6 @@ pub fn analyze(path: &str) -> Result<ManifestAnalysis> {
 
     Ok(ManifestAnalysis {
         categories, brands, categories_from_manifest, suggested_bid, total_retail,
-        overall_margin_pct, total_items, skipped_rows, formula,
+        overall_margin_pct, total_items, total_quantity, skipped_rows, formula,
     })
 }

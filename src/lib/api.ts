@@ -1221,7 +1221,8 @@ export interface FollowUpLogEntry {
 
 export interface ManifestGroup {
   name: string;
-  items: number;
+  items: number;       // number of line rows in this group
+  quantity: number;    // sum of the quantity column (units) in this group
   total_retail: number;
 }
 
@@ -1232,7 +1233,8 @@ export interface ManifestAnalysis {
   suggested_bid: number;
   total_retail: number;
   overall_margin_pct: number;
-  total_items: number;
+  total_items: number;      // number of product line rows analyzed
+  total_quantity: number;   // sum of the quantity column — the real unit count
   skipped_rows: number;
   formula: string;
 }
