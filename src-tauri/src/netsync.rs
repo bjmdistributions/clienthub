@@ -1917,6 +1917,7 @@ const SHARED_SETTINGS_KEYS: &[&str] = &[
     "invoice_template", "quote_template", "invoice_prefix", "invoice_padding",
     "quote_prefix", "quote_padding",
     "newsletter_include_ranked", "newsletter_unsubscribe_enabled",
+    "newsletter_product_intro", "newsletter_product_outro", "newsletter_product_lot_format",
     "checkup_visibility", "require_client_add_approval", "require_client_delete_approval",
     "profit_split_json",
     "rep_payouts_enabled", "rep_payout_period", "rep_payout_anchor", "rep_payout_custom_days",

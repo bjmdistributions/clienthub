@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { normalizeLocation } from "../lib/location";
+import { buildNewsletterBody, LotBlockInput } from "../lib/newsletter";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -135,6 +136,8 @@ export default function InventoryView() {
   const [debounced, setDebounced] = useState("");
   const [sort, setSort] = useState<SortKey>("newest");
   const [renewOnly, setRenewOnly] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [sentFilter, setSentFilter] = useState<"any" | "email" | "whatsapp" | "none">("any");
   const [sortOpen, setSortOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false); // header overflow menu
   const overflowRef = useRef<HTMLDivElement>(null);
@@ -211,7 +214,9 @@ export default function InventoryView() {
     let active = true;
     const subs: Array<() => void> = [];
     (async () => {
-      const a = await listen("netsync-applied", () => load());
+      // Bump the media cache-buster on any applied sync too — covers legacy lots whose
+      // photo was replaced under the same filename before uploads used unique names.
+      const a = await listen("netsync-applied", () => { mediaBust++; load(); });
       const b = await listen("inventory-media-updated", () => { mediaBust++; load(); });
       if (!active) { a(); b(); return; }
       subs.push(a, b);
@@ -294,6 +299,48 @@ export default function InventoryView() {
     const arg = channel === "whatsapp" ? "sentWhatsapp" : "sentEmail";
     try { for (const id of selected) await api.updateLot(id, { [arg]: val }); exitSelect(); load(); } catch (e: any) { toast(String(e), "error"); }
   };
+  // Build a per-lot newsletter block input from a lot: per-unit price (per_unit lots, or
+  // computed for total lots), a fixed/custom price line only when listed, and the exact
+  // storefront product URL.
+  const lotToBlockInput = (l: Lot): LotBlockInput => {
+    const qty = l.quantity || 0;
+    const isTotal = l.price_type === "total";
+    const isCustom = l.price_type === "custom";
+    const priceText = isCustom ? (() => { try { return (JSON.parse(l.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+    const perUnit = isCustom ? 0 : (isTotal && qty > 0 ? l.asking_price / qty : l.asking_price);
+    let price = "";
+    if (isCustom) price = priceText;
+    else if (isTotal && l.asking_price > 0) price = `${fmtAmount(l.asking_price)} for the lot`;
+    return {
+      title: l.name,
+      units: qty,
+      pricePerUnit: perUnit > 0 ? `${fmtAmount(perUnit)}/unit` : "",
+      price,
+      link: storeUrl ? `${storeUrl}?lot=${l.id}` : "",
+    };
+  };
+  // "Send to newsletter": build the body from the editable template + selected lots,
+  // preselect buyers in those categories, and drop the user into the Newsletter screen
+  // with everything preloaded (mirrors the Clients-view "Email" bulk action).
+  const sendSelectedToNewsletter = async () => {
+    const chosen = lots.filter((l) => selected.has(l.id));
+    if (!chosen.length) return;
+    try {
+      const tmpl = await api.getNewsletterProductTemplate();
+      const body = buildNewsletterBody(tmpl, chosen.map(lotToBlockInput));
+      const subject = `New inventory — ${chosen.length} lot${chosen.length !== 1 ? "s" : ""}`;
+      // Recipients: eligible buyers whose category matches the selected lots' categories.
+      const catSet = new Set(chosen.map((l) => (l.category || "").trim().toLowerCase()).filter(Boolean));
+      const recipientIds = clients
+        .filter((c) => !c.is_blacklisted && !(c as any).exclusive && !(c.metadata as any)?.exclusive && (c.email || "").trim())
+        .filter((c) => catSet.size === 0 || catSet.has((c.category || "").trim().toLowerCase()))
+        .map((c) => c.id);
+      sessionStorage.setItem("email_preselect_ids", JSON.stringify(recipientIds));
+      sessionStorage.setItem("newsletter_prefill_content", JSON.stringify({ subject, body }));
+      exitSelect();
+      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "email" }));
+    } catch (e: any) { toast(String(e), "error"); }
+  };
   const resync = async () => {
     try { const n = await api.resyncInventory(); toast(`Re-synced ${n} lot${n !== 1 ? "s" : ""} to your devices`); }
     catch (e: any) { toast(String(e), "error"); }
@@ -348,6 +395,10 @@ export default function InventoryView() {
       if (filter === "all" && (l.status === "sold" || l.status === "archived") && !includeDone) return false;
       if (renewOnly && !isStale(l)) return false;
       if (attentionOnly && lotWarnings(l, mediaIssues[l.id]).length === 0) return false;
+      if (categoryFilter !== "all" && (l.category || "").trim() !== categoryFilter) return false;
+      if (sentFilter === "email" && !l.sent_email) return false;
+      if (sentFilter === "whatsapp" && !l.sent_whatsapp) return false;
+      if (sentFilter === "none" && (l.sent_email || l.sent_whatsapp)) return false;
       return matchesSearch(l);
     })
     .sort((a, b) => {
@@ -368,7 +419,7 @@ export default function InventoryView() {
   };
 
   const startAdd = () => { setEditing(null); setPrefill(null); setShowForm(true); };
-  const clearFilters = () => { setSearch(""); setFilter("all"); setRenewOnly(false); };
+  const clearFilters = () => { setSearch(""); setFilter("all"); setRenewOnly(false); setCategoryFilter("all"); setSentFilter("any"); };
 
   return (
     <div>
@@ -458,6 +509,7 @@ export default function InventoryView() {
           <button onClick={() => {
             window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: Array.from(selected) }));
           }} disabled={!selected.size} className="text-[12px] text-success-ink bg-success-bg border border-success px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Send size={12} /> Share WA</button>
+          <button onClick={sendSelectedToNewsletter} disabled={!selected.size} className="text-[12px] text-on-accent bg-accent border border-accent px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Send to newsletter</button>
         </div>
       )}
 
@@ -510,6 +562,22 @@ export default function InventoryView() {
               <RefreshCw size={12} /> <span className="tabular-nums">{staleCount}</span> need renewing
             </button>
           )}
+
+          {/* Category filter */}
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}
+            className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent max-w-[160px]">
+            <option value="all">All categories</option>
+            {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          {/* Sent status filter */}
+          <select value={sentFilter} onChange={(e) => setSentFilter(e.target.value as any)}
+            className="h-9 px-2.5 rounded-lg text-[12px] text-ink-2 border border-line-3 bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:border-accent">
+            <option value="any">Any send status</option>
+            <option value="email">Emailed</option>
+            <option value="whatsapp">Sent on WhatsApp</option>
+            <option value="none">Not sent yet</option>
+          </select>
 
           {/* Sort */}
           <div className="relative" ref={sortRef}>
@@ -716,6 +784,9 @@ function LotCard({
   const sold = lot.status === "sold";
   const archived = lot.status === "archived";
   const reserved = lot.status === "reserved";
+  // Price-reduction: the prior (higher) asking, shown in the same "total" terms as loadPrice.
+  const prevAsk = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.prev_price ?? null; } catch { return null; } })();
+  const prevTotal = prevAsk != null && prevAsk > lot.asking_price ? (lot.price_type === "per_unit" ? prevAsk * lot.quantity : prevAsk) : null;
   // Stagger cap 8, +20ms each — enter feedback, not decoration.
   const delay = `${Math.min(index, 8) * 20}ms`;
 
@@ -813,8 +884,19 @@ function LotCard({
             <div className={`text-[19px] font-semibold leading-snug line-clamp-2 ${sold ? "text-muted" : "text-ink"}`}>{priceText || "—"}</div>
           ) : (
             <>
-              <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : "text-ink"}`}>{fmtAmount(loadPrice)}</div>
-              <div className="text-[11px] text-muted tabular-nums mt-1">{fmtAmount(unitAsk)} / unit</div>
+              <div className="flex items-center gap-1.5">
+                <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : "text-ink"}`}>{fmtAmount(loadPrice)}</div>
+                {prevTotal != null && !sold && !archived && (
+                  <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
+                )}
+              </div>
+              {prevTotal != null ? (
+                <div className="text-[11px] text-muted tabular-nums mt-1">
+                  <span className="line-through">{fmtAmount(prevTotal)}</span> · {fmtAmount(unitAsk)} / unit
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted tabular-nums mt-1">{fmtAmount(unitAsk)} / unit</div>
+              )}
               {unitCost > 0 && (
                 <div className="text-[11px] text-muted tabular-nums mt-1.5">
                   Profit {fmtAmount(profit)} · {marginStr}
@@ -1430,10 +1512,24 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
       if (cleanCats.length) detailsObj.categories = cleanCats;
       if (conditionClean) detailsObj.condition = conditionClean;
+      // Price-reduction: when editing and the asking price DROPS, remember the prior (higher)
+      // price so the card/detail/storefront can show "reduced from X". Keep the original
+      // "was" across repeated drops; clear it once the price climbs back to/above it.
+      let prevPrice: number | null = details0.prev_price ?? null;
+      if (initial && !isCustom) {
+        const oldAsk = initial.asking_price;
+        if (effAsk > 0 && oldAsk > 0 && effAsk < oldAsk) {
+          prevPrice = prevPrice != null ? Math.max(prevPrice, oldAsk) : oldAsk;
+        } else if (prevPrice != null && effAsk >= prevPrice) {
+          prevPrice = null;
+        }
+      }
+      const showPrev = !!(prevPrice != null && prevPrice > effAsk && effAsk > 0);
+      if (showPrev) detailsObj.prev_price = prevPrice;
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       const locClean = normalizeLocation(location);
       if (initial) {
@@ -1820,6 +1916,8 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
   const allCats = Array.from(new Set([...(det.categories ?? []), ...(lot.category ? [lot.category] : [])].map((c) => c.trim()).filter(Boolean)));
   const condition = (det.condition || "").trim();
   const variantRows = (det.variants ?? []).filter((v) => v && (v.qty > 0 || (v.price != null && v.price > 0)));
+  const prevTotalAll = det.prev_price != null && det.prev_price > lot.asking_price
+    ? (lot.price_type === "per_unit" ? det.prev_price * lot.quantity : det.prev_price) : null;
   // Resolve the linked deal (if any) so the link is visible, not just stored.
   const linkedDeal = lot.linked_deal_id ? deals.find((d) => d.id === lot.linked_deal_id) : null;
 
@@ -1924,7 +2022,15 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             ) : (
               <>
                 <p className="text-[12px] font-medium text-muted">Load price</p>
-                <p className="text-[26px] font-semibold text-ink tabular-nums leading-none mt-1">{fmtAmount(totalAskAll)}</p>
+                <div className="flex items-center gap-2.5 mt-1">
+                  <p className="text-[26px] font-semibold text-ink tabular-nums leading-none">{fmtAmount(totalAskAll)}</p>
+                  {prevTotalAll != null && (
+                    <span className="flex items-center gap-1.5 text-[11px]">
+                      <span className="text-muted line-through tabular-nums">{fmtAmount(prevTotalAll)}</span>
+                      <span className="font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
+                    </span>
+                  )}
+                </div>
                 <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{fmtAmount(uAsk)} / unit · {lot.quantity.toLocaleString()} units</p>
                 {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
                 {uCost > 0 && (

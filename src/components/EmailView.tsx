@@ -562,7 +562,13 @@ function NewsletterTab() {
     api.listCategories().then(setAllCategories);
     api.listNewsletters().then(setTemplates);
     api.listScheduledSends().then(setScheduledSends);
-    if (!subject && !body) { setSubject(defaultSubject); setBody(defaultBody); }
+    // Body/subject preloaded from Inventory → "Send to newsletter" (the product list is
+    // already composed there). Falls back to the default greeting otherwise.
+    const prefill = sessionStorage.getItem("newsletter_prefill_content");
+    if (prefill) {
+      sessionStorage.removeItem("newsletter_prefill_content");
+      try { const p = JSON.parse(prefill); if (p.subject) setSubject(p.subject); if (p.body) setBody(p.body); } catch { /* ignore */ }
+    } else if (!subject && !body) { setSubject(defaultSubject); setBody(defaultBody); }
   }, []);
 
   useEffect(() => {

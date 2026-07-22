@@ -7219,29 +7219,21 @@ pub async fn import_lot_photos(lot_id: String, paths: Vec<String>) -> Result<Vec
     let photo_dir = dir.join("photos");
     std::fs::create_dir_all(&photo_dir).map_err(|e| e.to_string())?;
 
-    let mut max_n: u32 = 0;
-    if let Ok(entries) = std::fs::read_dir(&photo_dir) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("photo_") && name.ends_with(".jpg") {
-                if let Some(num_str) = name.strip_prefix("photo_").and_then(|s| s.strip_suffix(".jpg")) {
-                    if let Ok(n) = num_str.parse::<u32>() { max_n = max_n.max(n); }
-                }
-            }
-        }
-    }
-    if max_n == 0 { max_n = 1; } else { max_n += 1; }
-
     let mut out = Vec::new();
-    for (i, p) in paths.iter().enumerate() {
+    for p in paths.iter() {
         if p.starts_with("media/") || p.starts_with("media\\") {
             out.push(p.replace('\\', "/"));
             continue;
         }
         let src = std::path::Path::new(p);
         let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("img").to_lowercase();
-        let num = max_n + i as u32;
-        let fname = format!("photo_{:03}.{}", num, ext);
+        // Unique, never-reused filename. The old scheme numbered photo_001, photo_002… from
+        // the folder's current contents and RESET to photo_001 once every photo was deleted —
+        // so a replacement photo was written back to photo_001.jpg, a different image at the
+        // SAME URL. The WebView, the browser, and the storefront CDN all kept serving the
+        // CACHED old image (the "heading image shows the deleted photo" bug). A fresh name
+        // means a fresh URL, so nothing can ever serve stale bytes.
+        let fname = format!("photo_{}.{}", uuid::Uuid::new_v4().simple(), ext);
         let dest = photo_dir.join(&fname);
         std::fs::copy(src, &dest).map_err(|e| format!("Couldn't copy photo: {}", e))?;
         out.push(format!("media/inventory/{}/photos/{}", lot_id, fname));
@@ -7732,6 +7724,48 @@ pub async fn save_whatsapp_settings(template: String, lot_format: String, footer
         ("whatsapp_lot_format",       &lot_format),
         ("whatsapp_footer",           &footer),
         ("whatsapp_phone",            &phone),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![k, v],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ── Inventory newsletter template ───────────────────────────────────────────
+// The intro/outro wrap the list; the per-lot block is `lot_format` with tokens
+// {title} {units} {price_per_unit} {price} {link}. The frontend substitutes per lot and
+// drops any line whose token resolved empty, so "price per unit if available" and
+// "fixed/custom price only if listed" fall away cleanly.
+const DEFAULT_NL_INTRO: &str = "Hi {first_name},\n\nHere are some fresh loads that just came in:";
+const DEFAULT_NL_OUTRO: &str = "Reply to this email to claim any of these or to ask for the manifest.\n\nThanks!";
+const DEFAULT_NL_LOT_FORMAT: &str = "{title}\n\nUnits: {units}\nPrice per unit: {price_per_unit}\n{price}\n\nLink to product: {link}";
+
+#[derive(serde::Serialize)]
+pub struct NewsletterProductTemplate {
+    pub intro: String,
+    pub outro: String,
+    pub lot_format: String,
+}
+
+#[tauri::command]
+pub async fn get_newsletter_product_template() -> Result<NewsletterProductTemplate, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(NewsletterProductTemplate {
+        intro:      wa_setting(&conn, "newsletter_product_intro",      DEFAULT_NL_INTRO),
+        outro:      wa_setting(&conn, "newsletter_product_outro",      DEFAULT_NL_OUTRO),
+        lot_format: wa_setting(&conn, "newsletter_product_lot_format", DEFAULT_NL_LOT_FORMAT),
+    })
+}
+
+#[tauri::command]
+pub async fn save_newsletter_product_template(intro: String, outro: String, lot_format: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (k, v) in [
+        ("newsletter_product_intro",      &intro),
+        ("newsletter_product_outro",      &outro),
+        ("newsletter_product_lot_format", &lot_format),
     ] {
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

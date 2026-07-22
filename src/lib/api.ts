@@ -1187,6 +1187,9 @@ export interface LotDetails {
   categories?: string[] | null;
   // Free-form / picked condition of the goods (New, Customer returns, Shelf pulls…).
   condition?: string | null;
+  // The prior asking price, stamped when the price is DROPPED — powers the "reduced from
+  // X" indicator on the card, detail, and storefront. Cleared when the price rises back.
+  prev_price?: number | null;
   // Public manifest summary saved from the analyzer — the storefront renders a
   // "what's inside" panel from it. Internal pricing (retail/margin/bid) is NOT kept here.
   manifest?: LotManifestSummary | null;
@@ -1362,6 +1365,12 @@ export interface WhatsappSettings {
   lot_format: string;
   footer: string;
   phone: string;
+}
+
+export interface NewsletterProductTemplate {
+  intro: string;      // wraps the top of the list (supports {first_name})
+  outro: string;      // wraps the bottom
+  lot_format: string; // per-product block: {title} {units} {price_per_unit} {price} {link}
 }
 
 export interface GoogleContact {
@@ -2448,6 +2457,11 @@ export const api = {
   getWhatsappSettings: () => invoke<WhatsappSettings>("get_whatsapp_settings"),
   saveWhatsappSettings: (s: WhatsappSettings) =>
     invoke<void>("save_whatsapp_settings", { template: s.template, lotFormat: s.lot_format, footer: s.footer, phone: s.phone }),
+  // Editable inventory-newsletter template: intro/outro wrap the list, lot_format is the
+  // per-product block ({title} {units} {price_per_unit} {price} {link}).
+  getNewsletterProductTemplate: () => invoke<NewsletterProductTemplate>("get_newsletter_product_template"),
+  saveNewsletterProductTemplate: (t: NewsletterProductTemplate) =>
+    invoke<void>("save_newsletter_product_template", { intro: t.intro, outro: t.outro, lotFormat: t.lot_format }),
   openLotFolder: (lotId: string) => invoke<void>("open_lot_folder", { lotId }),
   whatsappWebReachable: () => invoke<boolean>("whatsapp_web_reachable"),
   openWhatsappWindow: () => invoke<void>("open_whatsapp_window"),

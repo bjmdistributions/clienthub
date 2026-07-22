@@ -34,7 +34,9 @@ import {
   StorefrontConfig,
   FbStatus,
   FbPageLite,
+  NewsletterProductTemplate,
 } from "../lib/api";
+import { buildNewsletterBody } from "../lib/newsletter";
 import { fmtAmount } from "../lib/format";
 import { isAdmin } from "../lib/permissions";
 import {
@@ -1378,8 +1380,59 @@ function EmailTab() {
   return (
     <div className="max-w-2xl space-y-4">
       <SendingCard />
+      <NewsletterTemplateCard />
       <InboxCard />
       <CaptureCard />
+    </div>
+  );
+}
+
+// Editable template behind Inventory → "Send to newsletter": intro + a per-product block
+// + outro, with a live preview so it's ready-to-send.
+function NewsletterTemplateCard() {
+  const [t, setT] = useState<NewsletterProductTemplate>({ intro: "", outro: "", lot_format: "" });
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.getNewsletterProductTemplate().then(setT).catch(() => {}); }, []);
+  const save = async () => {
+    setBusy(true);
+    try { await api.saveNewsletterProductTemplate(t); setSaved(true); setTimeout(() => setSaved(false), 2500); }
+    catch (e: any) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+  const ta = "w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink resize-y focus:outline-none focus:border-accent";
+  const preview = buildNewsletterBody(t, [
+    { title: "Nike overstock — mixed sneakers", units: 250, pricePerUnit: "$4.50", price: "", link: "https://ecliptr.app/i/abc123?lot=lot_001" },
+    { title: "Assorted apparel pallet", units: 40, pricePerUnit: "", price: "$1,200 for the lot", link: "https://ecliptr.app/i/abc123?lot=lot_002" },
+  ]).replace(/\{first_name\}/g, "Alex");
+  return (
+    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
+      <div>
+        <SectionLabel>Inventory newsletter</SectionLabel>
+        <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          The template behind “Send to newsletter” in Inventory. Your selected products drop between the intro and outro.
+          Per-product tokens: <code className="text-ink-2 text-[12px]">{"{title} {units} {price_per_unit} {price} {link}"}</code> — any line whose value is blank is removed automatically.
+        </p>
+      </div>
+      <div>
+        <div className="text-[12.5px] font-medium text-muted mb-1.5">Intro <span className="font-normal">(supports {"{first_name}"})</span></div>
+        <textarea value={t.intro} onChange={(e) => setT({ ...t, intro: e.target.value })} rows={3} className={ta} />
+      </div>
+      <div>
+        <div className="text-[12.5px] font-medium text-muted mb-1.5">Per-product block</div>
+        <textarea value={t.lot_format} onChange={(e) => setT({ ...t, lot_format: e.target.value })} rows={6} className={ta + " font-mono"} />
+      </div>
+      <div>
+        <div className="text-[12.5px] font-medium text-muted mb-1.5">Outro</div>
+        <textarea value={t.outro} onChange={(e) => setT({ ...t, outro: e.target.value })} rows={3} className={ta} />
+      </div>
+      <div>
+        <div className="text-[12.5px] font-medium text-muted mb-1.5">Preview (two sample products)</div>
+        <pre className="bg-surface-2 border border-line rounded-lg px-3 py-2.5 text-[12px] text-ink-2 whitespace-pre-wrap max-h-72 overflow-y-auto">{preview}</pre>
+      </div>
+      <button onClick={save} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+        {saved ? "Saved" : busy ? "Saving…" : "Save template"}
+      </button>
     </div>
   );
 }
