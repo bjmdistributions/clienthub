@@ -4,6 +4,7 @@ import { fmtAmount } from "../lib/format";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
 
@@ -59,6 +60,18 @@ const isAbsPath = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("/") 
 const resolvePhoto = (p: string, base: string) => {
   if (!p) return "";
   return (isAbsPath(p) || !base) ? p.replace(/\\/g, "/") : `${base.replace(/\\/g, "/")}/${p}`;
+};
+
+// A background media download writes the byte to disk but a re-render with the SAME
+// <img src> won't re-request a URL that already 404'd this session. Bumping this
+// module-level counter (on an `inventory-media-updated` event) and appending it as a
+// cache-buster forces every photo to re-fetch, so newly-arrived images appear live
+// instead of staying blank until the tab is reopened. It's a plain module var read at
+// render time, so no prop-threading through LotCard/LotDetail/LotForm is needed.
+let mediaBust = 0;
+const photoSrc = (p: string, base: string): string => {
+  const u = convertFileSrc(resolvePhoto(p, base));
+  return mediaBust ? `${u}${u.includes("?") ? "&" : "?"}mv=${mediaBust}` : u;
 };
 
 // Close a popover when clicking outside its container or pressing Escape.
@@ -231,6 +244,21 @@ export default function InventoryView() {
     window.addEventListener("inventory-prefill-lot", onPrefill as EventListener);
     return () => window.removeEventListener("inventory-prefill-lot", onPrefill as EventListener);
   }, []);
+  // Re-read inventory when a background sync lands so remote row edits AND freshly
+  // downloaded photos appear live in the open view (previously they only showed after
+  // reopening the tab). `inventory-media-updated` fires when the reconcile pulls image
+  // bytes — bump the cache-buster so already-blank <img> elements actually re-fetch.
+  useEffect(() => {
+    let active = true;
+    const subs: Array<() => void> = [];
+    (async () => {
+      const a = await listen("netsync-applied", () => load());
+      const b = await listen("inventory-media-updated", () => { mediaBust++; load(); });
+      if (!active) { a(); b(); return; }
+      subs.push(a, b);
+    })();
+    return () => { active = false; subs.forEach((u) => u()); };
+  }, []);
   // Live storefront link (null unless the storefront is on) — powers the header bar
   // and the per-lot "copy storefront link" actions.
   const storeUrl = storefront?.enabled ? (storefront.url ?? null) : null;
@@ -320,7 +348,7 @@ export default function InventoryView() {
       if (r.downloaded) parts.push(`pulled ${r.downloaded}`);
       if (r.uploaded) parts.push(`uploaded ${r.uploaded}`);
       toast(parts.length ? `Photos synced — ${parts.join(", ")}` : "Photos already in sync");
-      if (r.downloaded) load();
+      if (r.downloaded) { mediaBust++; load(); }
     } catch (e: any) { toast(String(e), "error"); }
     setPhotoSyncBusy(false);
   };
@@ -724,7 +752,7 @@ function LotCard({
       {/* Media */}
       <div className="relative w-full h-36 bg-surface-2 flex items-center justify-center overflow-hidden">
         {photos.length > 0 && !imgErr ? (
-          <img src={convertFileSrc(resolvePhoto(photos[0], mediaBase))} alt=""
+          <img src={photoSrc(photos[0], mediaBase)} alt=""
             className={`w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03] inv-photo-zoom ${sold ? "opacity-70" : archived ? "opacity-60 grayscale-[0.3]" : ""}`}
             onError={() => setImgErr(true)} />
         ) : (
@@ -1459,7 +1487,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               <div className="flex flex-wrap gap-2 mb-2">
                 {photos.map((p, i) => (
                   <div key={i} className="relative group" draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const from = parseInt(e.dataTransfer.getData("text/plain")); const to = i; if (from !== to) { const copy = [...photos]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); setPhotos(copy); } }}>
-                    <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-line cursor-pointer hover:border-accent transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
+                    <img src={photoSrc(p, mediaBase)} alt="" className="w-[72px] h-[72px] object-cover rounded-lg border border-line cursor-pointer hover:border-accent transition-colors" onClick={() => setLightbox({ photos, index: i })} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect fill='%23f3f4f6' width='72' height='72'/%3E%3Ctext x='36' y='36' text-anchor='middle' dy='.3em' fill='%239ca3af' font-size='10'%3E?%3C/text%3E%3C/svg%3E"; }} />
                      <button onClick={async () => {
                        if (initial) {
                          try { await api.removeLotPhoto(initial.id, p); } catch (e: any) { toast(String(e), "error"); }
@@ -1565,7 +1593,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
         <button onClick={() => setLightbox(null)} className="absolute top-4 right-4 text-white/70 hover:text-white p-2"><X size={24} /></button>
         <button onClick={() => setLightbox((prev) => prev && prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev)} className="absolute left-4 top-1/2 -translate-y-1/2 text-white/70 hover:text-white disabled:opacity-30 p-2" disabled={lightbox.index === 0}><ChevronLeft size={32} /></button>
         <button onClick={() => setLightbox((prev) => prev && prev.index < prev.photos.length - 1 ? { ...prev, index: prev.index + 1 } : prev)} className="absolute right-4 top-1/2 -translate-y-1/2 text-white/70 hover:text-white disabled:opacity-30 p-2" disabled={lightbox.index === lightbox.photos.length - 1}><ChevronRight size={32} /></button>
-        <img src={convertFileSrc(resolvePhoto(lightbox.photos[lightbox.index], mediaBase))} alt="" className="max-w-[90vw] max-h-[90vh] object-contain" onClick={(e) => e.stopPropagation()} />
+        <img src={photoSrc(lightbox.photos[lightbox.index], mediaBase)} alt="" className="max-w-[90vw] max-h-[90vh] object-contain" onClick={(e) => e.stopPropagation()} />
         <div className="absolute bottom-4 text-white/60 text-[13px]">{lightbox.index + 1} / {lightbox.photos.length}</div>
       </div>
     )}
@@ -1733,12 +1761,12 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
           {photos.length > 0 ? (
             <div>
               <div className="w-full h-64 bg-surface-2 rounded-xl overflow-hidden flex items-center justify-center cursor-zoom-in" onClick={() => setZoom(true)}>
-                <img src={convertFileSrc(resolvePhoto(photos[big], mediaBase))} alt="" className="w-full h-full object-contain" onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.2"; }} />
+                <img src={photoSrc(photos[big], mediaBase)} alt="" className="w-full h-full object-contain" onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.2"; }} />
               </div>
               {photos.length > 1 && (
                 <div className="flex gap-2 mt-2 flex-wrap">
                   {photos.map((p, i) => (
-                    <img key={i} src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" onClick={() => setBig(i)}
+                    <img key={i} src={photoSrc(p, mediaBase)} alt="" onClick={() => setBig(i)}
                       onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.2"; }}
                       className={`w-14 h-14 object-cover rounded-lg border cursor-pointer transition-colors ${i === big ? "border-accent ring-2 ring-accent/20" : "border-line hover:border-line-3"}`} />
                   ))}
@@ -1896,7 +1924,7 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
     {zoom && photos.length > 0 && (
       <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setZoom(false)}>
         <button onClick={() => setZoom(false)} className="absolute top-4 right-4 text-white/70 hover:text-white p-2"><X size={24} /></button>
-        <img src={convertFileSrc(resolvePhoto(photos[big], mediaBase))} alt="" className="max-w-[92vw] max-h-[92vh] object-contain" onClick={(e) => e.stopPropagation()} />
+        <img src={photoSrc(photos[big], mediaBase)} alt="" className="max-w-[92vw] max-h-[92vh] object-contain" onClick={(e) => e.stopPropagation()} />
       </div>
     )}
     {fbOpen && <FbPostModal lot={lot} photos={photos} onClose={() => setFbOpen(false)} />}
@@ -1926,7 +1954,7 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
   );
 
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
-  const thumb = photos[0] ? convertFileSrc(resolvePhoto(photos[0], mediaBase)) : "";
+  const thumb = photos[0] ? photoSrc(photos[0], mediaBase) : "";
   // Headline price for the identity row — custom lots show their free text verbatim.
   const isCustom = lot.price_type === "custom";
   const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";

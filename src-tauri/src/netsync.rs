@@ -68,6 +68,22 @@ pub fn ensure_tables() -> Result<()> {
         "ALTER TABLE netsync_outbound ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // Durable queue for photo/manifest BYTES (which don't ride the oplog). A best-effort
+    // inline upload can fail — offline, 5xx, or the app closing mid-flight — and without a
+    // record the bytes strand on the origin device forever, blank on every other device
+    // and the storefront. Keyed by the relative media path (one row per file), drained on
+    // every poll tick with retry-until-acked + dead-letter, exactly like netsync_outbound.
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS netsync_media_outbound (
+            rel        TEXT PRIMARY KEY,
+            lot_id     TEXT NOT NULL,
+            kind       TEXT NOT NULL,
+            attempts   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        "#,
+    )?;
     Ok(())
 }
 
@@ -664,6 +680,10 @@ pub fn spawn_loop(app: tauri::AppHandle) {
             if let Err(e) = push_pending().await {
                 tracing::warn!("netsync push: {}", e);
             }
+            // Drain the durable media queue every tick so photo/manifest bytes that failed
+            // their inline upload (offline, 5xx, app closed) keep retrying until the server
+            // confirms them — the byte equivalent of push_pending.
+            push_media_pending().await;
             match pull_apply().await {
                 Ok(n) if n > 0 => {
                     // Remote changes landed locally — nudge the front-end to re-read
@@ -676,13 +696,27 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                     tauri::async_runtime::spawn(async move {
                         if let Ok(r) = crate::commands::reconcile_inventory_media().await {
                             if r.downloaded > 0 {
-                                let _ = app2.emit("netsync-applied", r.downloaded);
+                                let _ = app2.emit("inventory-media-updated", r.downloaded);
                             }
                         }
                     });
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("netsync pull: {}", e),
+            }
+            // Periodic full media reconcile, independent of whether this tick applied new
+            // oplog events. Covers late-arriving bytes (a row synced before its file was
+            // uploaded) and files owed to a device that healed its rows via snapshot/Repair
+            // — neither of which produces an n>0 pull that would otherwise trigger a pull.
+            if ticks % CHECK_EVERY_TICKS == 0 {
+                let app3 = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(r) = crate::commands::reconcile_inventory_media().await {
+                        if r.downloaded > 0 {
+                            let _ = app3.emit("inventory-media-updated", r.downloaded);
+                        }
+                    }
+                });
             }
         }
     });
@@ -1174,6 +1208,12 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
         }
 
         applied.insert(table.clone(), serde_json::Value::from(count));
+    }
+    // Restore heals ROWS via the snapshot, but photo/manifest FILES don't ride it. Pull any
+    // files the freshly-restored inventory rows reference so images aren't blank until the
+    // next incidental sync — the reconcile only fetches what's missing, so it's cheap.
+    if let Ok(r) = crate::commands::reconcile_inventory_media().await {
+        applied.insert("media_downloaded".into(), serde_json::Value::from(r.downloaded));
     }
     Ok(serde_json::Value::Object(applied))
 }
@@ -1777,6 +1817,86 @@ pub async fn download_media(rel: &str) -> Result<(), String> {
     }
     std::fs::write(&local, &bytes).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Queue a photo/manifest file for durable upload. Called at import/attach time so a
+/// failed inline upload (offline, 5xx, or the app closing mid-flight) is retried until the
+/// server confirms it, instead of silently stranding the only copy on this device. `kind`
+/// is "photo" or "manifest"; keyed by the relative path so re-enqueuing is idempotent.
+pub fn media_enqueue(lot_id: &str, rel: &str, kind: &str) {
+    if let Ok(conn) = pool().get() {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO netsync_media_outbound (rel, lot_id, kind, created_at) VALUES (?1,?2,?3,?4)",
+            rusqlite::params![rel.replace('\\', "/"), lot_id, kind, chrono::Utc::now().to_rfc3339()],
+        );
+    }
+}
+
+fn media_dequeue(rel: &str) {
+    if let Ok(conn) = pool().get() {
+        let _ = conn.execute("DELETE FROM netsync_media_outbound WHERE rel=?1", [rel]);
+    }
+}
+
+/// Drain the durable media queue: upload each pending file, dequeue on success (or once the
+/// server already has it), bump attempts on a transient failure, and drop rows whose local
+/// file is gone or that have exhausted retries. Runs every poll tick. No-op when offline.
+pub async fn push_media_pending() {
+    if config().is_none() {
+        return;
+    }
+    const MAX_MEDIA_RETRIES: i64 = 12;
+    let rows: Vec<(String, String, String, i64)> = {
+        let conn = match pool().get() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut stmt = match conn
+            .prepare("SELECT rel, lot_id, kind, attempts FROM netsync_media_outbound ORDER BY created_at LIMIT 100")
+        {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mapped = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+        });
+        match mapped {
+            Ok(it) => it.filter_map(|x| x.ok()).collect(),
+            Err(_) => return,
+        }
+    };
+    for (rel, lot_id, kind, attempts) in rows {
+        // Nothing to upload if the local file is gone — drop it.
+        if !crate::db::app_data_dir().join("sync").join(&rel).exists() {
+            media_dequeue(&rel);
+            continue;
+        }
+        // Already on the server (e.g. the inline attempt landed) — dequeue without re-sending.
+        if server_has_media(&rel).await {
+            media_dequeue(&rel);
+            continue;
+        }
+        let result = if kind == "manifest" {
+            upload_inventory_manifest(&lot_id, &rel).await
+        } else {
+            upload_inventory_photo(&lot_id, &rel).await
+        };
+        match result {
+            Ok(()) => media_dequeue(&rel),
+            Err(e) => {
+                let next = attempts + 1;
+                if next >= MAX_MEDIA_RETRIES {
+                    tracing::error!("netsync: giving up on media upload {} after {} attempts: {}", rel, next, e);
+                    media_dequeue(&rel);
+                } else if let Ok(conn) = pool().get() {
+                    let _ = conn.execute(
+                        "UPDATE netsync_media_outbound SET attempts=?1 WHERE rel=?2",
+                        rusqlite::params![next, &rel],
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Platform-owner (superadmin) signups overview: every workspace with owner email,

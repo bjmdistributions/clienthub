@@ -7246,12 +7246,14 @@ pub async fn import_lot_photos(lot_id: String, paths: Vec<String>) -> Result<Vec
         std::fs::copy(src, &dest).map_err(|e| format!("Couldn't copy photo: {}", e))?;
         out.push(format!("media/inventory/{}/photos/{}", lot_id, fname));
     }
-    // Push each photo's bytes to the server so the hosted storefront can show it from
-    // ANY device (photo files don't ride the DB sync oplog). Best-effort: a network
-    // failure never fails the local import — the startup backfill re-uploads later.
+    // Push each photo's bytes to the server so the hosted storefront can show it from ANY
+    // device (photo files don't ride the DB sync oplog). Enqueue durably first, then drain
+    // once inline for an immediate upload when online — a failure is retried by the poll
+    // loop until the server confirms it, so the bytes are never stranded on this device.
     for rel in &out {
-        let _ = crate::netsync::upload_inventory_photo(&lot_id, rel).await;
+        crate::netsync::media_enqueue(&lot_id, rel, "photo");
     }
+    crate::netsync::push_media_pending().await;
     Ok(out)
 }
 
@@ -7513,10 +7515,11 @@ pub async fn attach_lot_manifest(lot_id: String, file_path: String) -> Result<St
     cols.insert("manifest_path".into(), json!(rel_path));
     cols.insert("updated_at".into(), json!(now));
     crate::sync::record_upsert("inventory", &lot_id, cols).map_err(|e| e.to_string())?;
-    // Push the FILE to the server (the oplog only carries the path text) so the
-    // public storefront can serve it. Best-effort — a failure here still keeps the
-    // local attach; a later Repair/re-attach re-uploads.
-    let _ = crate::netsync::upload_inventory_manifest(&lot_id, &rel_path).await;
+    // Push the FILE to the server (the oplog only carries the path text) so the public
+    // storefront can serve it. Durable queue + one inline drain — a failure is retried by
+    // the poll loop until the server has it, instead of stranding the manifest locally.
+    crate::netsync::media_enqueue(&lot_id, &rel_path, "manifest");
+    crate::netsync::push_media_pending().await;
     Ok(rel_path)
 }
 

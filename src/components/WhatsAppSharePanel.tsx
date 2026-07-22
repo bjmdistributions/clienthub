@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Lot } from "../lib/api";
+import { api, Lot, LotMediaFiles } from "../lib/api";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
+import { toast } from "./Toast";
 import {
   ArrowLeft, Copy, Check, FileText, RefreshCw, X,
   FolderOpen, Plus, AlertCircle, MessageCircle, WifiOff, GripVertical,
@@ -26,6 +28,11 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [busyLot, setBusyLot] = useState<string | null>(null);
   const [wa, setWa] = useState<"checking" | "open" | "offline">("checking");
+  // Which media files are actually present on THIS device (existence-checked by the
+  // backend). A file whose row synced but whose bytes haven't arrived yet can't be
+  // dragged — the OS drag needs the real file — so we gate the chips on this instead of
+  // dragging raw DB paths that silently fail.
+  const [mediaFiles, setMediaFiles] = useState<LotMediaFiles | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const waRef = useRef(wa);
   waRef.current = wa;
@@ -35,12 +42,14 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
   };
 
   const loadAll = async () => {
-    const [msg, all] = await Promise.all([
+    const [msg, all, media] = await Promise.all([
       api.generateWhatsappMessage(lotIds),
       api.listInventory(),
+      api.getLotMediaFiles(lotIds).catch(() => null),
     ]);
     setMessage(msg);
     setLots(all.filter((l) => lotIds.includes(l.id)));
+    setMediaFiles(media);
     return msg;
   };
 
@@ -69,7 +78,12 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
   useEffect(() => {
     loadAll().then((msg) => copy(msg));
     openWhatsApp();
-    return () => { api.whatsappEmbedClose().catch(() => {}); };
+    // When the durable media sync pulls files in, re-check which are now local so
+    // "syncing…" chips become draggable without reopening the panel.
+    const un = listen("inventory-media-updated", () => {
+      api.getLotMediaFiles(lotIds).then(setMediaFiles).catch(() => {});
+    });
+    return () => { api.whatsappEmbedClose().catch(() => {}); un.then((f) => f()).catch(() => {}); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -94,11 +108,27 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
 
   const regenerate = async () => { const msg = await loadAll(); copy(msg); };
 
-  // Start a native OS file-drag so the file can be dropped straight onto the
-  // embedded WhatsApp chat (which accepts file drops just like a browser).
+  // Which resolved absolute paths the device actually holds (the OS drag needs a real
+  // file; a not-yet-synced file silently aborts the drag). Normalized for Windows.
+  const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+  const localSet = new Set(
+    [...(mediaFiles?.photos ?? []), ...(mediaFiles?.manifests ?? [])].map((f) => norm(f.path))
+  );
+  const hasLocal = (rel: string) => { const abs = resolvePhoto(rel, mediaBase); return !!abs && localSet.has(norm(abs)); };
+  // A guaranteed-present photo to preview the manifest drag (a PDF/CSV isn't a valid drag
+  // image on macOS). Any local photo works.
+  const iconFallback = mediaFiles?.photos?.[0]?.path;
+
+  // Start a native OS file-drag so the file can be dropped straight onto the embedded
+  // WhatsApp chat (which accepts file drops just like a browser). Surfaces failures (a
+  // missing/not-yet-synced file, or an undecodable icon) instead of swallowing them.
   const dragFile = async (e: React.DragEvent, fsPath: string, iconPath?: string) => {
     e.preventDefault();
-    try { await startDrag({ item: [fsPath], icon: iconPath || fsPath }); } catch {}
+    try {
+      await startDrag({ item: [fsPath], icon: iconPath || fsPath });
+    } catch {
+      toast("Couldn't start the drag — that file may still be syncing to this device.", "error");
+    }
   };
 
   const addPhotos = async (lot: Lot) => {
@@ -185,7 +215,10 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                 const photos = parsePhotos(lot);
                 const hasManifest = !!lot.manifest_path;
                 const busy = busyLot === lot.id;
-                const firstAbs = photos.length ? resolvePhoto(photos[0], mediaBase) : undefined;
+                // The manifest's drag preview must be a real local image; use this lot's
+                // first synced photo, else any local photo.
+                const firstAbs = photos.map((p) => resolvePhoto(p, mediaBase)).find((abs) => localSet.has(norm(abs))) || iconFallback;
+                const manifestLocal = hasManifest && hasLocal(lot.manifest_path || "");
                 return (
                   <div key={lot.id} className="rounded-lg p-3" style={{ background: "var(--t-s2)", border: "1px solid var(--t-b1)" }}>
                     <div className="flex items-center justify-between gap-2 mb-2">
@@ -201,22 +234,32 @@ export default function WhatsAppSharePanel({ lotIds, onClose, mediaBase }: Props
                     {/* Thumbnails / files — draggable straight into the chat */}
                     {(photos.length > 0 || hasManifest) && (
                       <div className="flex flex-wrap gap-1.5 mb-2">
-                        {photos.map((p, i) => (
-                          <button key={i} onClick={() => setPreviewImage(p)} draggable
-                            onDragStart={(e) => dragFile(e, resolvePhoto(p, mediaBase))}
-                            className="w-11 h-11 rounded-md overflow-hidden flex-shrink-0 cursor-grab active:cursor-grabbing" style={{ border: "1px solid var(--t-b1)" }}
-                            title="Click to preview · drag into the chat to attach">
-                            <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-full h-full object-cover pointer-events-none" onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0.2")} />
-                          </button>
-                        ))}
-                        {hasManifest && (
+                        {photos.map((p, i) => {
+                          const local = hasLocal(p);
+                          return (
+                            <button key={i} onClick={() => setPreviewImage(p)} draggable={local}
+                              onDragStart={local ? (e) => dragFile(e, resolvePhoto(p, mediaBase)) : undefined}
+                              className={`w-11 h-11 rounded-md overflow-hidden flex-shrink-0 ${local ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
+                              style={{ border: "1px solid var(--t-b1)" }}
+                              title={local ? "Click to preview · drag into the chat to attach" : "Syncing to this device…"}>
+                              <img src={convertFileSrc(resolvePhoto(p, mediaBase))} alt="" className="w-full h-full object-cover pointer-events-none" style={local ? undefined : { opacity: 0.4 }} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0.2")} />
+                            </button>
+                          );
+                        })}
+                        {hasManifest && (manifestLocal ? (
                           <div draggable onDragStart={(e) => dragFile(e, resolvePhoto(lot.manifest_path || "", mediaBase), firstAbs)}
                             className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing" style={{ border: "1px solid var(--t-b1)", background: "var(--t-s1)" }}
                             title="Drag into the chat to attach">
                             <FileText size={13} style={{ color: "var(--t-tx3)" }} />
                             <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx3)" }}>{fileName(lot.manifest_path || "manifest")}</span>
                           </div>
-                        )}
+                        ) : (
+                          <div className="h-11 px-2 rounded-md flex items-center gap-1.5 flex-shrink-0" style={{ border: "1px dashed var(--t-b1)", background: "var(--t-s1)", opacity: 0.6 }}
+                            title="This manifest is still syncing to this device — it'll be draggable once it arrives.">
+                            <RefreshCw size={12} className="animate-spin" style={{ color: "var(--t-tx4)" }} />
+                            <span className="text-[11px] truncate max-w-[90px]" style={{ color: "var(--t-tx4)" }}>Manifest syncing…</span>
+                          </div>
+                        ))}
                       </div>
                     )}
 
