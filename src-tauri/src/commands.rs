@@ -7401,6 +7401,74 @@ pub async fn reconcile_inventory_media() -> Result<MediaReconcile, String> {
     Ok(MediaReconcile { downloaded, uploaded })
 }
 
+#[derive(Serialize)]
+pub struct LotMediaIssue {
+    pub lot_id: String,
+    pub missing_local: bool,   // a referenced photo/manifest isn't on THIS device yet
+    pub pending_upload: bool,  // a local file is still queued to reach the server
+}
+
+/// Lots whose media hasn't fully propagated: a referenced photo/manifest file is missing
+/// on this device (never downloaded) or is still queued for upload to the server. Powers
+/// the "needs attention / hasn't synced" warnings in Inventory. Pure local check — no
+/// network — so it's cheap to poll.
+#[tauri::command]
+pub async fn list_media_sync_issues() -> Result<Vec<LotMediaIssue>, String> {
+    let base = crate::db::app_data_dir().join("sync");
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // Files still queued to upload to the server.
+    let pending: std::collections::HashSet<String> = {
+        let mut set = std::collections::HashSet::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT rel FROM netsync_media_outbound") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for r in rows.flatten() {
+                    set.insert(r.replace('\\', "/"));
+                }
+            }
+        }
+        set
+    };
+    let rows: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, COALESCE(photos_json,'[]'), manifest_path FROM inventory WHERE COALESCE(status,'available') != 'archived'")
+            .map_err(|e| e.to_string())?;
+        let r = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        r
+    };
+    let mut out = Vec::new();
+    for (id, photos_json, manifest) in rows {
+        let mut rels: Vec<String> = serde_json::from_str::<Vec<String>>(&photos_json)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.starts_with("media/") || p.starts_with("media\\"))
+            .collect();
+        if let Some(m) = &manifest {
+            if m.starts_with("media/") || m.starts_with("media\\") {
+                rels.push(m.clone());
+            }
+        }
+        let mut missing_local = false;
+        let mut pending_upload = false;
+        for rel in rels {
+            let rel = rel.replace('\\', "/");
+            if !base.join(&rel).exists() {
+                missing_local = true;
+            }
+            if pending.contains(&rel) {
+                pending_upload = true;
+            }
+        }
+        if missing_local || pending_upload {
+            out.push(LotMediaIssue { lot_id: id, missing_local, pending_upload });
+        }
+    }
+    Ok(out)
+}
+
 /// Backfill manifests — uploads every locally-present manifest file the server lacks.
 /// Kept as a standalone command; the startup reconcile ([`reconcile_inventory_media`])
 /// now covers this bidirectionally on every launch.
@@ -13005,25 +13073,28 @@ pub async fn save_smtp_settings_for_pi(settings: serde_json::Value) -> Result<()
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
+            // Local-only write: the `settings` table is not in the server PUSHABLE
+            // list, so an oplog event here would be rejected server-side while still
+            // landing the plaintext smtp_password in netsync_outbound. Secrets and
+            // non-secret SMTP config both reach other admins via the authed bridge
+            // (push_email_secrets_to_server → PUT /api/settings/smtp) instead — never
+            // the oplog. So keep the row local; do NOT record_upsert.
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 rusqlite::params![key, val_str],
             ).map_err(|e| e.to_string())?;
-
-            let mut cols = serde_json::Map::new();
-            cols.insert("key".into(), serde_json::Value::String(key.to_string()));
-            cols.insert("value".into(), serde_json::Value::String(val_str));
-            crate::sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
 }
 
 /// Proper fix for "SMTP works on desktop but not the Pi": copy the desktop's
-/// working email login to the Syncthing-synced `settings` rows the Pi reads,
-/// pulling the password straight from the OS keychain so the user never has to
-/// re-type (or hardcode) it. The plaintext password is written to the DB (which
-/// the Pi needs for basic-auth SMTP) but is never returned to the frontend.
+/// working email login into the local `settings` rows the Pi reads, pulling the
+/// password straight from the OS keychain so the user never has to re-type (or
+/// hardcode) it. The plaintext password is written to this device's DB (which the
+/// Pi needs for basic-auth SMTP) but never enters the sync oplog and is never
+/// returned to the frontend. Org sharing of the password happens only via the
+/// authed secret bridge (push_email_secrets_to_server), not these rows.
 #[tauri::command]
 pub async fn push_desktop_smtp_to_pi(from_name: String) -> Result<bool, String> {
     // Load the desktop email settings (host / port / user).
@@ -13046,15 +13117,14 @@ pub async fn push_desktop_smtp_to_pi(from_name: String) -> Result<bool, String> 
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     for (key, val_str) in &pairs {
+        // Local-only write (no oplog): `settings` is not server-PUSHABLE, so a
+        // record_upsert here would be rejected while still spilling the plaintext
+        // smtp_password into netsync_outbound. Sharing happens via the authed secret
+        // bridge (push_email_secrets_to_server → PUT /api/settings/smtp), not sync.
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             rusqlite::params![key, val_str],
         ).map_err(|e| e.to_string())?;
-
-        let mut cols = serde_json::Map::new();
-        cols.insert("key".into(), serde_json::Value::String(key.to_string()));
-        cols.insert("value".into(), serde_json::Value::String(val_str.clone()));
-        crate::sync::record_upsert("settings", key, cols).map_err(|e| e.to_string())?;
     }
     Ok(true)
 }

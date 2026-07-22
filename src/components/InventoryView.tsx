@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import { normalizeLocation } from "../lib/location";
 import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -35,6 +36,30 @@ const dealStageColor = (s: string) => s === "negotiating" ? "bg-accent/10 text-a
 const dealStageLabel = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+// Grid-cell input WITHOUT w-full — for side-by-side boxes whose width comes from an
+// explicit class (the old form's w-full fought flex/fixed widths and collapsed boxes).
+const cellInp = "border border-line rounded-lg h-9 px-2.5 text-[13px] focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors";
+
+// A lot's "needs attention" list: missing info a buyer would expect, plus media that
+// hasn't fully synced (a photo missing on this device, or still uploading to the server).
+type MediaIssue = { missing_local: boolean; pending_upload: boolean };
+function lotWarnings(lot: Lot, issue?: MediaIssue): string[] {
+  const w: string[] = [];
+  let photos: string[] = [];
+  try { photos = JSON.parse(lot.photos_json || "[]") ?? []; } catch { photos = []; }
+  let details: any = {};
+  try { details = JSON.parse(lot.details_json || "{}") ?? {}; } catch { details = {}; }
+  if (photos.length === 0) w.push("No photos");
+  const hasPrice = lot.asking_price > 0 || (lot.price_type === "custom" && !!details.price_text)
+    || (Array.isArray(details.variants) && details.variants.some((v: any) => v && v.price > 0));
+  if (!hasPrice) w.push("No price set");
+  if (!(lot.category || "").trim()) w.push("No category");
+  if (issue?.missing_local) w.push("Photos haven’t synced to this device");
+  if (issue?.pending_upload) w.push("Photos still uploading to your devices");
+  return w;
+}
+// Common wholesale/liquidation conditions offered as quick-picks (free text still allowed).
+const CONDITIONS = ["New", "Open box", "Refurbished", "Customer returns", "Shelf pulls", "Overstock", "Salvage / damaged", "Mixed"];
 
 // ── Scoped motion (respects prefers-reduced-motion) ─────────────────────────
 // Kept local so it doesn't touch global CSS. Standard easing/durations only.
@@ -86,77 +111,6 @@ function useDismiss(ref: React.RefObject<HTMLElement>, open: boolean, close: () 
   }, [open, close, ref]);
 }
 
-// ── Category combobox ───────────────────────────────────────────────────────
-// Text input that filters `options` in a popover, arrow-key navigable, Enter to
-// pick, free-typed text becomes a new category on save. Replaces the old
-// <datalist>, which couldn't be keyboard-driven or show a "create new" affordance.
-function CategoryCombobox({ value, onChange, options, placeholder }: {
-  value: string; onChange: (v: string) => void; options: string[]; placeholder?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  const ref = useRef<HTMLDivElement>(null);
-  useDismiss(ref, open, () => setOpen(false));
-
-  const q = value.trim().toLowerCase();
-  const matches = useMemo(
-    () => options.filter((o) => o.toLowerCase().includes(q)),
-    [options, q]
-  );
-  // Offer "create" when the typed value isn't an exact existing option.
-  const exact = options.some((o) => o.toLowerCase() === q);
-  const showCreate = q.length > 0 && !exact;
-  const rows: { label: string; value: string; create?: boolean }[] = [
-    ...matches.map((m) => ({ label: m, value: m })),
-    ...(showCreate ? [{ label: `Create "${value.trim()}"`, value: value.trim(), create: true }] : []),
-  ];
-
-  useEffect(() => { setActive(0); }, [q, open]);
-
-  const pick = (v: string) => { onChange(v); setOpen(false); };
-  const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((a) => Math.min(a + 1, rows.length - 1)); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)); }
-    else if (e.key === "Enter") { if (open && rows[active]) { e.preventDefault(); pick(rows[active].value); } }
-    else if (e.key === "Escape") { if (open) { e.preventDefault(); setOpen(false); } }
-  };
-
-  return (
-    <div className="relative" ref={ref}>
-      <input
-        className={inp}
-        value={value}
-        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKey}
-        placeholder={placeholder ?? "Type or pick a category"}
-        role="combobox"
-        aria-expanded={open}
-        autoComplete="off"
-      />
-      {value && (
-        <button type="button" onClick={() => onChange("")} tabIndex={-1}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-ink-2 transition-colors" title="Clear category">
-          <X size={13} />
-        </button>
-      )}
-      {open && rows.length > 0 && (
-        <div className="absolute z-30 mt-1 w-full max-h-52 overflow-y-auto bg-surface border border-line rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.10)] py-1 inv-fade">
-          {rows.map((r, i) => (
-            <button key={`${r.value}-${r.create ? "new" : "opt"}`} type="button"
-              onMouseEnter={() => setActive(i)}
-              onClick={() => pick(r.value)}
-              className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors ${i === active ? "bg-accent/10 text-accent" : "text-ink-2 hover:bg-surface-2"}`}>
-              {r.create ? <Plus size={12} className="flex-shrink-0" /> : <span className="w-3 flex-shrink-0" />}
-              <span className="truncate">{r.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function InventoryView() {
   const [lots, setLots] = useState<Lot[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
@@ -194,8 +148,13 @@ export default function InventoryView() {
   const [mediaBase, setMediaBase] = useState("");
   const [detailId, setDetailId] = useState<string | null>(null);
   const [storefront, setStorefront] = useState<StorefrontConfig | null>(null);
+  const [mediaIssues, setMediaIssues] = useState<Record<string, MediaIssue>>({});
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const loadOffers = () => api.listOffers().then(setOffers).catch(() => {});
-  const load = async () => { const l = await api.listInventory(); setLots(l); loadOffers(); };
+  const loadIssues = () => api.listMediaSyncIssues()
+    .then((rows) => setMediaIssues(Object.fromEntries(rows.map((r) => [r.lot_id, { missing_local: r.missing_local, pending_upload: r.pending_upload }]))))
+    .catch(() => {});
+  const load = async () => { const l = await api.listInventory(); setLots(l); loadOffers(); loadIssues(); };
   const checkStaleLots = async () => {
     setStaleBusy(true);
     try {
@@ -381,11 +340,14 @@ export default function InventoryView() {
     return [l.name, l.supplier, l.category, l.location, l.notes]
       .some((f) => (f || "").toLowerCase().includes(debounced));
   };
+  // Lots with a "needs attention" flag (missing info or unsynced media) — powers the banner + filter.
+  const attentionCount = lots.filter((l) => l.status !== "archived" && lotWarnings(l, mediaIssues[l.id]).length > 0).length;
   const filtered = lots
     .filter(l => {
       if (filter !== "all" && l.status !== filter) return false;
       if (filter === "all" && (l.status === "sold" || l.status === "archived") && !includeDone) return false;
       if (renewOnly && !isStale(l)) return false;
+      if (attentionOnly && lotWarnings(l, mediaIssues[l.id]).length === 0) return false;
       return matchesSearch(l);
     })
     .sort((a, b) => {
@@ -578,6 +540,18 @@ export default function InventoryView() {
         </div>
       )}
 
+      {/* Needs-attention banner — missing info or media that hasn't fully synced */}
+      {attentionCount > 0 && (
+        <button type="button" onClick={() => setAttentionOnly((v) => !v)}
+          className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-left transition-colors mb-3 ${attentionOnly ? "border-warning bg-warning-bg" : "border-warning/40 bg-warning-bg/50 hover:bg-warning-bg"}`}>
+          <RefreshCw size={14} className="text-warning-ink flex-shrink-0" />
+          <span className="text-[12.5px] text-ink-2 flex-1 min-w-0">
+            <span className="font-semibold text-ink">{attentionCount} lot{attentionCount !== 1 ? "s" : ""}</span> need attention — missing photos, price, category, or media that hasn’t synced across devices.
+          </span>
+          <span className="text-[11.5px] font-medium text-warning-ink flex-shrink-0">{attentionOnly ? "Show all" : "Show these"}</span>
+        </button>
+      )}
+
       {/* Band C — content */}
       <div className="min-w-0 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3 content-start">
         {filtered.map((lot, i) => (
@@ -588,6 +562,7 @@ export default function InventoryView() {
             mediaBase={mediaBase}
             selectMode={selectMode}
             selected={selected.has(lot.id)}
+            warnings={lotWarnings(lot, mediaIssues[lot.id])}
             onOpen={() => onCardOpen(lot.id)}
             onToggleSent={(c) => toggleSent(lot, c)}
             onEdit={() => { setEditing(lot); setShowForm(true); }}
@@ -676,6 +651,7 @@ export default function InventoryView() {
             lot={detail}
             deals={deals}
             mediaBase={mediaBase}
+            warnings={lotWarnings(detail, mediaIssues[detail.id])}
             offers={offers.filter((o) => o.lot_id === detail.id)}
             onOffersChanged={loadOffers}
             onClose={() => setDetailId(null)}
@@ -717,11 +693,11 @@ export default function InventoryView() {
 // Calm card with progressive disclosure: numbers always visible, actions tuck
 // behind a hover bar + a MoreVertical menu so the grid reads quiet.
 function LotCard({
-  lot, index, mediaBase, selectMode, selected,
+  lot, index, mediaBase, selectMode, selected, warnings,
   onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, onRenew, storeUrl, onCopyStoreLink,
   unitCost, unitAsk, loadPrice, marginStr, profit,
 }: {
-  lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean;
+  lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean; warnings: string[];
   onOpen: () => void; onToggleSent: (c: "whatsapp" | "email") => void;
   onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void; onRenew: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void;
@@ -764,6 +740,13 @@ function LotCard({
           <span className={`w-1.5 h-1.5 rounded-full ${statusDot(lot.status)}`} />
           {lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}
         </span>
+
+        {/* Needs-attention chip — missing info or unsynced media (tooltip lists them) */}
+        {!archived && warnings.length > 0 && (
+          <span className="absolute bottom-2.5 left-2.5 text-[10px] font-semibold px-2 py-0.5 rounded-full flex items-center gap-1.5 bg-warning-bg/95 backdrop-blur-sm text-warning-ink border border-warning/40" title={warnings.join(" · ")}>
+            <span className="w-1.5 h-1.5 rounded-full bg-warning" /> {warnings.length} to fix
+          </span>
+        )}
 
         {/* Bottom-right meta chips */}
         <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
@@ -1106,6 +1089,163 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
   );
 }
 
+// Pick one or more categories: shows current picks as removable chips, and a type-to-add
+// box that both filters existing categories and offers to create a new one.
+function CategoryMultiSelect({ value, onChange, options }: { value: string[]; onChange: (v: string[]) => void; options: string[] }) {
+  const [draft, setDraft] = useState("");
+  const [open, setOpen] = useState(false);
+  const add = (c: string) => {
+    const v = c.trim();
+    setDraft("");
+    if (!v || value.some((x) => x.toLowerCase() === v.toLowerCase())) return;
+    onChange([...value, v]);
+  };
+  const remove = (c: string) => onChange(value.filter((x) => x !== c));
+  const matches = options.filter((o) => o && !value.some((v) => v.toLowerCase() === o.toLowerCase()) && o.toLowerCase().includes(draft.toLowerCase())).slice(0, 8);
+  const canCreate = draft.trim() && !options.some((o) => o.toLowerCase() === draft.trim().toLowerCase()) && !value.some((v) => v.toLowerCase() === draft.trim().toLowerCase());
+  return (
+    <div className="relative">
+      <div className="flex flex-wrap items-center gap-1.5 min-h-9 border border-line rounded-lg px-2 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40 transition-colors">
+        {value.map((c) => (
+          <span key={c} className="inline-flex items-center gap-1 pl-2.5 pr-1 h-[26px] rounded-full bg-accent/10 text-accent text-[12px] font-medium">
+            {c}<button type="button" onClick={() => remove(c)} className="w-[18px] h-[18px] flex items-center justify-center rounded-full hover:bg-accent/20"><X size={10} /></button>
+          </span>
+        ))}
+        <input className="flex-1 min-w-[110px] h-[26px] bg-transparent text-[13px] focus:outline-none"
+          value={draft} placeholder={value.length ? "Add another…" : "Type or pick categories"}
+          onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onChange={(e) => { setDraft(e.target.value); setOpen(true); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(draft); } if (e.key === "Backspace" && !draft && value.length) remove(value[value.length - 1]); }} />
+      </div>
+      {open && (canCreate || matches.length > 0) && (
+        <div className="absolute left-0 right-0 mt-1 bg-surface border border-line rounded-lg shadow-lg z-[70] max-h-56 overflow-y-auto py-1">
+          {canCreate && (
+            <button type="button" onMouseDown={(e) => { e.preventDefault(); add(draft); }} className="w-full text-left px-3 py-2 text-[13px] text-accent hover:bg-surface-2">Create “{draft.trim()}”</button>
+          )}
+          {matches.map((o) => (
+            <button key={o} type="button" onMouseDown={(e) => { e.preventDefault(); add(o); }} className="w-full text-left px-3 py-2 text-[13px] text-ink-2 hover:bg-surface-2">{o}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Condition quick-picks + free text. Clicking a pill sets the value; typing overrides it.
+function ConditionField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {CONDITIONS.map((c) => (
+          <button key={c} type="button" onClick={() => onChange(value === c ? "" : c)}
+            className={`px-3 h-8 rounded-full text-[12px] font-medium border transition-colors ${value === c ? "bg-accent text-on-accent border-accent" : "border-line text-ink-2 hover:border-accent hover:text-accent"}`}>{c}</button>
+        ))}
+      </div>
+      <input className={inp} value={value} onChange={(e) => onChange(e.target.value)} placeholder="Or type a condition (e.g. A/B grade, tested working)" />
+    </div>
+  );
+}
+
+// Split a lot's quantity by one or more attributes (Brand, Size, Color…). Add values as
+// chips; the grid of combinations gets a labeled Qty (+ optional Price) per row and the
+// total auto-sums. Every box is full-width and labeled — the fix for the old collapsed UI.
+function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
+  options: LotOption[]; variants: LotVariant[]; onOptions: (o: LotOption[]) => void; onVariants: (v: LotVariant[]) => void;
+}) {
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const kof = (o: any) => o._key as string;
+  const combos: string[][] = (() => {
+    const clean = options.map((o) => o.values.map((v) => v.trim()).filter(Boolean));
+    if (!clean.length || clean.some((vs) => vs.length === 0)) return [];
+    return clean.reduce<string[][]>((acc, vals) => acc.flatMap((c) => vals.map((v) => [...c, v])), [[]]);
+  })();
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const varFor = (c: string[]) => variants.find((v) => same(v.values, c));
+  const upsert = (c: string[], patch: Partial<LotVariant>) => {
+    const cur = variants.find((v) => same(v.values, c)) || { values: c, qty: 0, price: null };
+    onVariants([...variants.filter((v) => !same(v.values, c)), { ...cur, ...patch }]);
+  };
+  const total = combos.reduce((s, c) => s + (varFor(c)?.qty || 0), 0);
+  const addValue = (o: any, val: string) => {
+    const v = val.trim();
+    if (!v || o.values.some((x: string) => x.toLowerCase() === v.toLowerCase())) return;
+    onOptions(options.map((x: any) => kof(x) === kof(o) ? { ...x, values: [...x.values, v] } : x));
+  };
+  const removeValue = (o: any, val: string) => onOptions(options.map((x: any) => kof(x) === kof(o) ? { ...x, values: x.values.filter((y: string) => y !== val) } : x));
+
+  return (
+    <div className="space-y-3">
+      {options.map((o: any) => (
+        <div key={kof(o)} className="rounded-xl border border-line bg-surface-2/40 p-3 space-y-2.5">
+          <div className="flex items-center gap-2">
+            <label className="text-[11.5px] font-medium text-muted w-[70px] flex-shrink-0">Attribute</label>
+            <input list="variant-attr-names" className={cellInp + " flex-1"} value={o.name} placeholder="Brand, Size, Color…"
+              onChange={(e) => onOptions(options.map((x: any) => kof(x) === kof(o) ? { ...x, name: e.target.value } : x))} />
+            <button type="button" onClick={() => onOptions(options.filter((x: any) => kof(x) !== kof(o)))} title="Remove attribute"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-danger-ink hover:bg-danger-bg transition-colors flex-shrink-0"><X size={14} /></button>
+          </div>
+          <div className="flex items-start gap-2">
+            <label className="text-[11.5px] font-medium text-muted w-[70px] flex-shrink-0 pt-1.5">Values</label>
+            <div className="flex-1 flex flex-wrap items-center gap-1.5 min-h-9 border border-line rounded-lg px-2 py-1.5 bg-surface">
+              {o.values.map((v: string) => (
+                <span key={v} className="inline-flex items-center gap-1 pl-2.5 pr-1 h-[26px] rounded-full bg-accent/10 text-accent text-[12px] font-medium">
+                  {v}<button type="button" onClick={() => removeValue(o, v)} className="w-[18px] h-[18px] flex items-center justify-center rounded-full hover:bg-accent/20"><X size={10} /></button>
+                </span>
+              ))}
+              <input className="flex-1 min-w-[120px] h-[26px] bg-transparent text-[13px] focus:outline-none"
+                value={draft[kof(o)] ?? ""} placeholder={o.values.length ? "Add another…" : "Type a value, press Enter"}
+                onChange={(e) => setDraft((d) => ({ ...d, [kof(o)]: e.target.value }))}
+                onBlur={() => { if ((draft[kof(o)] ?? "").trim()) { addValue(o, draft[kof(o)]); setDraft((d) => ({ ...d, [kof(o)]: "" })); } }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); addValue(o, draft[kof(o)] ?? ""); setDraft((d) => ({ ...d, [kof(o)]: "" })); }
+                  if (e.key === "Backspace" && !(draft[kof(o)] ?? "") && o.values.length) removeValue(o, o.values[o.values.length - 1]);
+                }} />
+            </div>
+          </div>
+        </div>
+      ))}
+      {options.length < 3 && (
+        <button type="button" onClick={() => onOptions([...options, { name: "", values: [], _key: crypto.randomUUID() } as any])}
+          className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
+          <Plus size={13} /> {options.length ? "Add another attribute (nest, e.g. Brand × Size)" : "Split by an attribute"}
+        </button>
+      )}
+      <datalist id="variant-attr-names"><option value="Brand" /><option value="Size" /><option value="Color" /><option value="Style" /><option value="Model" /><option value="Condition" /></datalist>
+
+      {combos.length > 0 && (
+        <div className="border border-line rounded-xl overflow-hidden">
+          <div className="flex items-center gap-3 px-3 py-2 bg-surface-2 text-[11px] font-semibold text-muted">
+            <span className="flex-1 min-w-0 truncate">{options.map((o: any) => o.name || "Attribute").join(" / ")}</span>
+            <span className="w-24 text-right">Qty</span>
+            <span className="w-32 text-right">Price (optional)</span>
+          </div>
+          <div className="max-h-72 overflow-y-auto divide-y divide-line-2">
+            {combos.map((c, ci) => {
+              const v = varFor(c);
+              return (
+                <div key={ci} className="flex items-center gap-3 px-3 py-2">
+                  <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{c.join(" / ")}</span>
+                  <input className={cellInp + " w-24 text-right tabular-nums"} type="number" inputMode="numeric" value={v?.qty || ""} placeholder="0"
+                    onChange={(e) => upsert(c, { qty: parseInt(e.target.value) || 0 })} />
+                  <div className="relative w-32">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                    <input className={cellInp + " w-32 pl-6 text-right tabular-nums"} type="number" step="0.01" value={v?.price ?? ""} placeholder="—"
+                      onChange={(e) => upsert(c, { price: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between px-3 py-2 bg-surface-2/60 text-[12px]">
+            <span className="text-muted">{combos.length} variant{combos.length !== 1 ? "s" : ""} · blank price uses the lot's asking price</span>
+            <span className="font-semibold text-ink tabular-nums">Total: {total.toLocaleString()} units</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[] }) {
   const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
   const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
@@ -1131,16 +1271,21 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     catch { return {}; }
   };
   const [details0] = useState<LotDetails>(seedDetails);
+  // Multi-category: seed from details.categories, else the single legacy category column.
+  const [cats, setCats] = useState<string[]>(() => {
+    const list = details0.categories && details0.categories.length ? details0.categories : (category ? [category] : []);
+    return Array.from(new Set(list.map((c) => c.trim()).filter(Boolean)));
+  });
+  const [condition, setCondition] = useState<string>(details0.condition ?? (prefill as any)?.condition ?? "");
   const [pallets, setPallets] = useState<number>(details0.pallets ?? 0);
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
   const [moq, setMoq] = useState<number>(details0.moq ?? 0);
-  const [sizeRun, setSizeRun] = useState<any[]>(() => (details0.size_run ?? []).map((r: any) => ({ ...r, _key: r._key || crypto.randomUUID() })));
-  // Shopify-style variants: option types (Color/Size) + a row per combination.
+  // Legacy size_run is preserved on old lots (read-only now — the variant splitter below
+  // supersedes it), so editing a pre-existing lot never drops its sizes.
+  const [sizeRun] = useState<any[]>(() => (details0.size_run ?? []).map((r: any) => ({ ...r, _key: r._key || crypto.randomUUID() })));
+  // Shopify-style variants: attribute types (Brand/Size/Color) + a row per combination.
   const [options, setOptions] = useState<LotOption[]>(() => (details0.options ?? []).map((o: any) => ({ ...o, _key: o._key || crypto.randomUUID() })));
   const [variants, setVariants] = useState<LotVariant[]>(details0.variants ?? []);
-  // Sizes/variants are power-user extras — collapse them by default so a new lot
-  // reads clean; auto-open when the lot being edited already has them.
-   const [showAdvanced, setShowAdvanced] = useState(true); // always show size/variants for new lots
   // Every combination of option values (the cartesian product) — the variant grid.
   // Variants are stored sparsely (only rows the seller filled in); the grid looks
   // each combo up by its values, so adding/removing options never orphans data.
@@ -1151,12 +1296,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   })();
   const sameVals = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
   const variantFor = (combo: string[]) => variants.find((v) => sameVals(v.values, combo));
-  const upsertVariant = (combo: string[], patch: Partial<LotVariant>) => {
-    setVariants((prev) => {
-      const cur = prev.find((v) => sameVals(v.values, combo)) || { values: combo, qty: 0, price: null };
-      return [...prev.filter((v) => !sameVals(v.values, combo)), { ...cur, ...patch }];
-    });
-  };
+  // When the lot is split into variants, its total quantity IS the sum of the splits.
+  const variantTotal = variantCombos.reduce((s, c) => s + (variantFor(c)?.qty || 0), 0);
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
   const [openToOffers, setOpenToOffers] = useState<boolean>(details0.open_to_offers ?? false);
@@ -1235,6 +1376,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
+    cats: JSON.stringify(cats), condition,
   }).current;
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
@@ -1244,7 +1386,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
     photos.length !== initialSnapshot.photos || pallets !== initialSnapshot.pallets || msrp !== initialSnapshot.msrp ||
     moq !== initialSnapshot.moq || JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile ||
-    JSON.stringify({ options, variants }) !== initialSnapshot.variants;
+    JSON.stringify({ options, variants }) !== initialSnapshot.variants ||
+    JSON.stringify(cats) !== initialSnapshot.cats || condition !== initialSnapshot.condition;
   const requestClose = () => {
     if (isDirty() && !confirm("Discard this lot? Your changes will be lost.")) return;
     onClose();
@@ -1274,23 +1417,33 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                   .map((v) => ({ values: v.values, qty: v.qty || 0, price: v.price != null && v.price > 0 ? v.price : null }))
         : [];
       const hasVariants = cleanOptions.length > 0 && cleanVariants.length > 0;
+      // When the lot is split into variants, the total quantity IS the sum of the splits
+      // (Jack: "do variants then quantity"). Otherwise the plain Quantity box wins.
+      const variantQtyTotal = cleanVariants.reduce((s, v) => s + (v.qty || 0), 0);
+      const effQty = hasVariants ? variantQtyTotal : qty;
+      const cleanCats = Array.from(new Set(cats.map((c) => c.trim()).filter(Boolean)));
+      const primaryCat = cleanCats[0] || category.trim() || "";
+      const conditionClean = condition.trim();
       const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun };
       if (priceTextClean) detailsObj.price_text = priceTextClean;
       if (openToOffers) detailsObj.open_to_offers = true;
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
+      if (cleanCats.length) detailsObj.categories = cleanCats;
+      if (conditionClean) detailsObj.condition = conditionClean;
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
+      const locClean = normalizeLocation(location);
       if (initial) {
-        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: category || null, quantity: qty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: location.trim() || null, priceType, detailsJson });
+        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: primaryCat || null, quantity: effQty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: locClean || null, priceType, detailsJson });
       } else {
         // Duplicate guard: warn (don't block) if a still-listed lot already has this
         // name — a legitimate re-buy of the same product can recur.
         const dupe = lots.find((l) => (l.name || "").trim().toLowerCase() === name.trim().toLowerCase() && l.status !== "archived");
         if (dupe && !confirm(`A lot named "${dupe.name}" already exists (${dupe.status}). Add another anyway?`)) { setSaving(false); return; }
-        const lot = await api.createLot({ name: name.trim(), quantity: qty, totalCost: cost, askingPrice: effAsk, description: desc || undefined, category: category || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: location.trim() || undefined, priceType, detailsJson });
+        const lot = await api.createLot({ name: name.trim(), quantity: effQty, totalCost: cost, askingPrice: effAsk, description: desc || undefined, category: primaryCat || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: locClean || undefined, priceType, detailsJson });
         // Photos were picked as raw paths; copy them into the lot's synced media folder now that it has an id.
         if (photos.length > 0) {
           const rel = await api.importLotPhotos(lot.id, photos);
@@ -1299,9 +1452,9 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
         if (newManifestFile) await api.attachLotManifest(lot.id, newManifestFile);
         if (sentWa || sentEmail) await api.updateLot(lot.id, { sentWhatsapp: sentWa, sentEmail: sentEmail });
       }
-      // Persist a typed-in category so it's a reusable pick next time (idempotent —
+      // Persist every typed-in category so each is a reusable pick next time (idempotent —
       // create_category dedupes case-insensitively).
-      if (category.trim()) api.createCategory({ label: category.trim() }).catch(() => {});
+      cleanCats.forEach((c) => api.createCategory({ label: c }).catch(() => {}));
       onClose();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
@@ -1309,31 +1462,29 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
   return (
     <>
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-black/30 backdrop-blur-[3px]">
-      <div className="bg-surface rounded-2xl shadow-xl w-[560px] max-w-[94vw] max-h-[86vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-between items-start gap-3 px-6 py-4 border-b border-line flex-shrink-0">
-          <div className="min-w-0">
-            <h3 className="text-[15px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
-            <p className="text-[11.5px] text-muted mt-0.5">{initial ? "Update this inventory lot." : "Add a lot to your inventory — only a name is required."}</p>
+    <div className="fixed inset-0 z-50 bg-surface flex flex-col inv-form-in">
+      <div className="w-full h-full flex flex-col">
+        <div className="border-b border-line flex-shrink-0">
+          <div className="max-w-[860px] mx-auto w-full flex justify-between items-center gap-3 px-6 py-3.5">
+            <div className="min-w-0">
+              <h3 className="text-[15px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
+              <p className="text-[11.5px] text-muted mt-0.5">{initial ? "Update this inventory lot." : "Add a lot to your inventory — only a name is required."}</p>
+            </div>
+            <button onClick={requestClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><X size={16} /></button>
           </div>
-          <button onClick={requestClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><X size={16} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-[860px] mx-auto px-6 py-6 space-y-6">
 
           <div className="space-y-3">
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Name</label>
               <input className={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Nike overstock — mixed sneakers" autoFocus />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Category</label>
-                <CategoryCombobox value={category} onChange={setCategory} options={categories} />
-              </div>
-              <div>
-                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location</label>
-                <input className={inp} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A" />
-              </div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Categories</label>
+              <CategoryMultiSelect value={cats} onChange={setCats} options={categories} />
+              <p className="text-[10.5px] text-muted mt-1">Pick one or more — type to add a new category. The first is used for buyer segments.</p>
             </div>
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Description</label>
@@ -1342,16 +1493,46 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
           </div>
 
           <div className="pt-5 border-t border-line-2 space-y-3">
-            <div className="text-[12px] font-semibold text-ink">Stock</div>
+            <div className="text-[12px] font-semibold text-ink">Condition &amp; location</div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Condition <span className="font-normal text-muted">— optional</span></label>
+              <ConditionField value={condition} onChange={setCondition} />
+            </div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location</label>
+              <input className={inp} value={location} list="lot-location-options"
+                onChange={(e) => setLocation(e.target.value)}
+                onBlur={(e) => setLocation(normalizeLocation(e.target.value))}
+                placeholder="City, state (auto-formats) — or a warehouse name" />
+              <datalist id="lot-location-options">
+                {Array.from(new Set(lots.map((l) => (l.location || "").trim()).filter(Boolean))).slice(0, 30).map((l) => <option key={l} value={l} />)}
+              </datalist>
+              <p className="text-[10.5px] text-muted mt-1">Type a city/state (e.g. “los angeles ca”) and it becomes “Los Angeles, CA” for consistency.</p>
+            </div>
+          </div>
+
+          <div className="pt-5 border-t border-line-2 space-y-3">
+            <div className="text-[12px] font-semibold text-ink">Quantity &amp; variants</div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Quantity (units)</label>
-                <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={qty || ""} onChange={(e) => setQty(parseInt(e.target.value) || 0)} placeholder="0" />
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Total quantity (units)</label>
+                {variantTotal > 0 ? (
+                  <div className={inp + " tabular-nums bg-surface-2 text-ink flex items-center justify-between"}>
+                    <span>{variantTotal.toLocaleString()}</span>
+                    <span className="text-[10.5px] text-muted font-normal">auto from variants</span>
+                  </div>
+                ) : (
+                  <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={qty || ""} onChange={(e) => setQty(parseInt(e.target.value) || 0)} placeholder="0" />
+                )}
               </div>
               <div>
                 <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Pallets</label>
                 <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={pallets || ""} onChange={(e) => setPallets(parseInt(e.target.value) || 0)} placeholder="0" />
               </div>
+            </div>
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Split into variants <span className="font-normal text-muted">— optional (e.g. 2 brands in one deal)</span></label>
+              <VariantSplitEditor options={options} variants={variants} onOptions={setOptions} onVariants={setVariants} />
             </div>
           </div>
 
@@ -1391,92 +1572,6 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <span className="block text-[11px] text-muted mt-0.5">Shows a “Make an offer” form on your storefront so buyers can send you a price.</span>
               </span>
             </label>
-          </div>
-
-          <div className="pt-5 border-t border-line-2">
-            <button type="button" onClick={() => setShowAdvanced((v) => !v)}
-              className="w-full flex items-center justify-between text-left">
-              <span className="text-[12px] font-semibold text-ink">Sizes &amp; variants <span className="font-normal text-muted">— optional</span></span>
-              <ChevronDown size={15} className={`text-muted transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
-            </button>
-            {showAdvanced && (
-            <div className="space-y-4 mt-3">
-
-          {/* Size run editor */}
-          <div>
-            <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Size run (size → quantity)</label>
-            <div className="space-y-1.5">
-              {sizeRun.map((r) => (
-                <div key={r._key || (r as any)._key} className="flex items-center gap-2">
-                  <input className={inp + " flex-1"} value={r.size} placeholder='Size (e.g. "10.5")'
-                    onChange={(e) => setSizeRun(sizeRun.map((row) => (row as any)._key === (r as any)._key ? { ...row, size: e.target.value } : row))} />
-                  <input className={inp + " w-24 tabular-nums"} type="number" value={r.qty || ""} placeholder="Qty"
-                    onChange={(e) => setSizeRun(sizeRun.map((row) => (row as any)._key === (r as any)._key ? { ...row, qty: parseInt(e.target.value) || 0 } : row))} />
-                  <button onClick={() => setSizeRun(sizeRun.filter((row) => (row as any)._key !== (r as any)._key))} title="Remove size"
-                    className="w-8 h-9 flex items-center justify-center text-muted hover:text-danger-ink transition-colors flex-shrink-0"><X size={14} /></button>
-                </div>
-              ))}
-              <button onClick={() => setSizeRun([...sizeRun, { size: "", qty: 0, _key: crypto.randomUUID() }])}
-                className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
-                <Plus size={13} /> Add size
-              </button>
-            </div>
-          </div>
-
-          {/* Variants — Shopify-style option types (Color/Size) → a grid of every
-              combination, each with its own quantity and price. */}
-          <div>
-            <label className="block text-[12.5px] font-medium text-muted mb-1">Variants (colors, sizes, per-option pricing)</label>
-            <div className="space-y-1.5">
-              {options.map((o) => (
-                <div key={(o as any)._key} className="flex items-center gap-2">
-                  <input className={inp + " w-32"} value={o.name} placeholder="Option (e.g. Color)"
-                    onChange={(e) => setOptions(options.map((x) => (x as any)._key === (o as any)._key ? { ...x, name: e.target.value } : x))} />
-                  <input className={inp + " flex-1"} value={o.values.join(", ")} placeholder="Values, comma-separated — Red, Blue, Green"
-                    onChange={(e) => setOptions(options.map((x) => (x as any)._key === (o as any)._key ? { ...x, values: e.target.value.split(",").map((s: string) => s.trim()).filter((v: string, idx: number, a: string[]) => v && a.indexOf(v) === idx) } : x))} />
-                  <button onClick={() => setOptions(options.filter((x) => (x as any)._key !== (o as any)._key))} title="Remove option"
-                    className="w-8 h-9 flex items-center justify-center text-muted hover:text-danger-ink transition-colors flex-shrink-0"><X size={14} /></button>
-                </div>
-              ))}
-              {options.length < 3 && (
-                <button onClick={() => setOptions([...options, { name: "", values: [], _key: crypto.randomUUID() } as any])}
-                  className="flex items-center gap-1.5 text-[12px] text-ink-2 border border-dashed border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors">
-                  <Plus size={13} /> Add option
-                </button>
-              )}
-            </div>
-            {variantCombos.length > 0 && (
-              <div className="mt-2 border border-line rounded-lg overflow-hidden">
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 text-[11px] font-medium text-muted">
-                  <span className="flex-1 min-w-0 truncate">{options.map((o) => o.name || "Option").join(" / ")}</span>
-                  <span className="w-20 text-right">Qty</span>
-                  <span className="w-28 text-right">Price</span>
-                </div>
-                <div className="max-h-56 overflow-y-auto divide-y divide-line-2">
-                  {variantCombos.map((combo, ci) => {
-                    const v = variantFor(combo);
-                    return (
-                      <div key={ci} className="flex items-center gap-2 px-3 py-1.5">
-                        <span className="flex-1 min-w-0 text-[12.5px] text-ink truncate">{combo.join(" / ")}</span>
-                        <input className={inp + " w-20 tabular-nums text-right"} type="number" value={v?.qty || ""} placeholder="0"
-                          onChange={(e) => upsertVariant(combo, { qty: parseInt(e.target.value) || 0 })} />
-                        <div className="relative w-28">
-                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[11px]">$</span>
-                          <input className={inp + " w-28 pl-5 tabular-nums text-right"} type="number" step="0.01" value={v?.price ?? ""} placeholder="—"
-                            onChange={(e) => upsertVariant(combo, { price: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="px-3 py-1 text-[10.5px] text-muted bg-surface-2/50">
-                  {variantCombos.length} variant{variantCombos.length !== 1 ? "s" : ""} · a blank price uses the lot's asking price
-                </div>
-              </div>
-            )}
-          </div>
-            </div>
-            )}
           </div>
 
           <div className="pt-5 border-t border-line-2 space-y-3">
@@ -1579,12 +1674,15 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             </div>
           </div>
 
+          </div>
         </div>
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-line flex-shrink-0">
-          <button onClick={requestClose} className="px-4 h-9 text-[13px] text-ink-2 border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
-          <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
-            {saving ? "Saving…" : initial ? "Save changes" : "Create lot"}
-          </button>
+        <div className="border-t border-line flex-shrink-0">
+          <div className="max-w-[860px] mx-auto w-full flex justify-end gap-2 px-6 py-3.5">
+            <button onClick={requestClose} className="px-4 h-9 text-[13px] text-ink-2 border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+            <button onClick={submit} disabled={saving || !name.trim()} className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+              {saving ? "Saving…" : initial ? "Save changes" : "Create lot"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1680,8 +1778,8 @@ function FbPostModal({ lot, photos, onClose }: { lot: Lot; photos: string[]; onC
   );
 }
 
-function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
-  lot: Lot; deals: Deal[]; mediaBase: string; offers: Offer[]; onOffersChanged: () => void; onClose: () => void; onEdit: () => void;
+function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
+  lot: Lot; deals: Deal[]; mediaBase: string; warnings: string[]; offers: Offer[]; onOffersChanged: () => void; onClose: () => void; onEdit: () => void;
   onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void; onOpenStoreLink: () => void;
 }) {
@@ -1716,7 +1814,12 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
   const totalAskAll = lot.price_type === "per_unit" ? lot.asking_price * lot.quantity : lot.asking_price;
   // Custom-priced lots show a free-text price verbatim (no per-unit / profit math).
   const isCustom = lot.price_type === "custom";
-  const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+  const det: LotDetails = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
+  const priceText = isCustom ? (det.price_text || "") : "";
+  // All categories (multi) + condition + variant breakdown for display.
+  const allCats = Array.from(new Set([...(det.categories ?? []), ...(lot.category ? [lot.category] : [])].map((c) => c.trim()).filter(Boolean)));
+  const condition = (det.condition || "").trim();
+  const variantRows = (det.variants ?? []).filter((v) => v && (v.qty > 0 || (v.price != null && v.price > 0)));
   // Resolve the linked deal (if any) so the link is visible, not just stored.
   const linkedDeal = lot.linked_deal_id ? deals.find((d) => d.id === lot.linked_deal_id) : null;
 
@@ -1730,21 +1833,36 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
   return (
     <>
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-black/30 backdrop-blur-[3px] overflow-y-auto" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-xl w-[560px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[720px] max-w-[94vw] mb-10" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-start justify-between p-5 border-b border-line">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
               <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex items-center gap-1.5 ${statusColor(lot.status)}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${statusDot(lot.status)}`} />
                 {lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}
               </span>
-              {lot.category && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold">{lot.category}</span>}
+              {allCats.map((c) => <span key={c} className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold">{c}</span>)}
+              {condition && <span className="text-[10px] px-2 py-0.5 rounded-full bg-surface-3 text-ink-2 font-semibold border border-line">{condition}</span>}
             </div>
             <h3 className="text-[17px] font-semibold text-ink leading-tight">{lot.name}</h3>
           </div>
           <button onClick={onClose} className="text-muted hover:text-ink-2 flex-shrink-0"><X size={18} /></button>
         </div>
+
+        {/* Needs-attention checklist — what to fix before this lot is buyer-ready */}
+        {warnings.length > 0 && lot.status !== "archived" && (
+          <div className="px-5 py-3 bg-warning-bg/60 border-b border-warning/30">
+            <p className="text-[12px] font-semibold text-warning-ink mb-1.5">Needs attention</p>
+            <div className="flex flex-wrap gap-1.5">
+              {warnings.map((w) => (
+                <span key={w} className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-2 bg-surface border border-warning/30 rounded-full px-2.5 py-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-warning" /> {w}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Linked deal — surfaces the otherwise-invisible link, with the deal's stage. */}
         {linkedDeal && (
@@ -1833,6 +1951,22 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
             </div>
           )}
 
+          {/* Variant breakdown — how the units split (brands/sizes/…) */}
+          {variantRows.length > 0 && (
+            <div>
+              <p className="text-[12.5px] font-medium text-muted mb-1.5">Breakdown</p>
+              <div className="border border-line rounded-lg overflow-hidden divide-y divide-line-2">
+                {variantRows.map((v, i) => (
+                  <div key={i} className="flex items-center gap-3 px-3 py-2">
+                    <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{(v.values || []).join(" / ")}</span>
+                    <span className="text-[13px] text-ink-2 tabular-nums">{(v.qty || 0).toLocaleString()} units</span>
+                    {v.price != null && v.price > 0 && <span className="text-[13px] font-medium text-ink tabular-nums w-20 text-right">{fmtAmount(v.price)}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Manifest */}
           <div>
             <p className="text-[12.5px] font-medium text-muted mb-1.5">Manifest</p>
@@ -1899,6 +2033,9 @@ function LotDetail({ lot, deals, mediaBase, offers, onOffersChanged, onClose, on
               <button onClick={onOpenStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><ExternalLink size={13} /> Open listing</button>
               <button onClick={onCopyStoreLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Copy product link</button>
             </div>
+          )}
+          {lot.status !== "archived" && (
+            <button onClick={() => window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: [lot.id] }))} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><MessageCircle size={13} /> Send to WhatsApp</button>
           )}
           {lot.status !== "archived" && (
             <button onClick={() => setFbOpen(true)} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Facebook size={13} /> Post to Facebook</button>

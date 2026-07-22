@@ -842,6 +842,7 @@ fn main() {
             backfill_inventory_photos,
             backfill_inventory_manifests,
             reconcile_inventory_media,
+            list_media_sync_issues,
             cleanup_inventory_photos,
             remove_lot_photo,
             attach_lot_manifest,

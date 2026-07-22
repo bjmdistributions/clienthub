@@ -1181,6 +1181,12 @@ export interface LotDetails {
   // one variant row per combination the seller stocks, with its own qty + price.
   options?: LotOption[] | null;
   variants?: LotVariant[] | null;
+  // Extra categories beyond the primary `category` column (multi-category lots). The
+  // primary stays in the column for existing segment/newsletter matching; the full set
+  // lives here and shows on the lot + storefront.
+  categories?: string[] | null;
+  // Free-form / picked condition of the goods (New, Customer returns, Shelf pulls…).
+  condition?: string | null;
   // Public manifest summary saved from the analyzer — the storefront renders a
   // "what's inside" panel from it. Internal pricing (retail/margin/bid) is NOT kept here.
   manifest?: LotManifestSummary | null;
@@ -2426,6 +2432,8 @@ export const api = {
   // Two-way media reconcile: download photos/manifests this device is missing and
   // upload any the server lacks. Returns how many files moved each way.
   reconcileInventoryMedia: () => invoke<{ downloaded: number; uploaded: number }>("reconcile_inventory_media"),
+  // Lots whose media hasn't fully synced (a file missing on this device, or still uploading).
+  listMediaSyncIssues: () => invoke<{ lot_id: string; missing_local: boolean; pending_upload: boolean }[]>("list_media_sync_issues"),
   importLotPhotos: (lotId: string, paths: string[]) => invoke<string[]>("import_lot_photos", { lotId, paths }),
   removeLotPhoto: (lotId: string, photoPath: string) => invoke<string[]>("remove_lot_photo", { lotId, photoPath }),
   attachLotManifest: (lotId: string, filePath: string) => invoke<string>("attach_lot_manifest", { lotId, filePath }),
