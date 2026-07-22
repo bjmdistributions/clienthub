@@ -704,6 +704,10 @@ pub fn spawn_loop(app: tauri::AppHandle) {
                 Ok(_) => {}
                 Err(e) => tracing::warn!("netsync pull: {}", e),
             }
+            // Push org-shared config AFTER pull, so the down-path has applied any sibling
+            // admin's change to our local settings first and we never push a staler value.
+            // Hash-gated, so it only hits the network when the config actually changed.
+            push_shared_settings().await;
             // Periodic full media reconcile, independent of whether this tick applied new
             // oplog events. Covers late-arriving bytes (a row synced before its file was
             // uploaded) and files owed to a device that healed its rows via snapshot/Repair
@@ -1895,6 +1899,71 @@ pub async fn push_media_pending() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// The org-shared, non-secret config keys this device pushes so sibling admins converge.
+/// MUST stay in sync with the server's SHARED_SETTINGS_WHITELIST (the server enforces it
+/// too). Deliberately excludes secrets/tokens, device-local state, server-assigned
+/// counters, the storefront token, and email/SMTP config (which has its own bridge).
+const SHARED_SETTINGS_KEYS: &[&str] = &[
+    "company_info",
+    "storefront_enabled", "storefront_show_prices", "storefront_show_logo",
+    "storefront_title", "storefront_subtitle", "storefront_contact_wa",
+    "storefront_contact_email", "storefront_accent", "storefront_bg",
+    "whatsapp_message_template", "whatsapp_lot_format", "whatsapp_footer",
+    "whatsapp_phone", "whatsapp_description",
+    "invoice_template", "quote_template", "invoice_prefix", "invoice_padding",
+    "quote_prefix", "quote_padding",
+    "newsletter_include_ranked", "newsletter_unsubscribe_enabled",
+    "checkup_visibility", "require_client_add_approval", "require_client_delete_approval",
+    "profit_split_json",
+    "rep_payouts_enabled", "rep_payout_period", "rep_payout_anchor", "rep_payout_custom_days",
+    "money_cash_floor", "money_tax_sweep_pct", "money_refund_reserve_pct", "money_war_chest",
+    "portal_base_url", "brief_frequency_days",
+];
+
+/// Push this device's org-shared config to the server so sibling admins converge (the
+/// device→server direction the oplog refuses to carry for `settings`). The server scopes
+/// each key by the caller's org and re-enforces the allowlist + secret guard. The reverse
+/// direction is automatic: the server's write records a settings upsert that every device
+/// pulls. Only pushes when the config actually changed since the last successful push
+/// (hash-gated) so it's cheap to call every tick; call it AFTER pull so we never push a
+/// value staler than what the down-path just delivered. No-op when offline.
+pub async fn push_shared_settings() {
+    let cfg = match config() { Some(c) => c, None => return };
+    // Snapshot the whitelisted keys' current local values (bare keys — single-org device).
+    let map = {
+        let conn = match pool().get() { Ok(c) => c, Err(_) => return };
+        let mut m = serde_json::Map::new();
+        for k in SHARED_SETTINGS_KEYS {
+            if let Ok(v) = conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0)) {
+                m.insert((*k).to_string(), serde_json::Value::String(v));
+            }
+        }
+        m
+    };
+    if map.is_empty() { return; }
+    let serialized = serde_json::Value::Object(map.clone()).to_string();
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serialized.hash(&mut h);
+        h.finish().to_string()
+    };
+    if state_get("shared_settings_hash").as_deref() == Some(hash.as_str()) {
+        return;
+    }
+    let resp = http()
+        .post(format!("{}/api/settings/shared", cfg.url.trim_end_matches('/')))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "settings": map }))
+        .send()
+        .await;
+    if let Ok(r) = resp {
+        if r.status().is_success() {
+            state_set("shared_settings_hash", &hash);
         }
     }
 }

@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "bjm-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/Websites/bjmdistributions", "run", "dev", "--", "-p", "3100"],
+      "port": 3100
     }
   ]
 }
