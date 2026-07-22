@@ -4,7 +4,7 @@ import PendingReviewModal from "./PendingReviewModal";
 import { UserPlus, Inbox, ChevronRight, X, Store } from "lucide-react";
 
 const kindLabel = (k: string) =>
-  k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k;
+  k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k === "unsubscribe" ? "Unsubscribed" : k;
 
 function sourceLabel(m: Record<string, any> | null | undefined): string {
   const s = String(m?.source || "");

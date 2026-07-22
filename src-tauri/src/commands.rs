@@ -1525,6 +1525,8 @@ pub struct ClientFilter {
     pub stale_days: Option<u32>,
     pub missing: Option<String>,
     pub needs_review: Option<bool>,
+    /// Filter to clients who unsubscribed from email (metadata.unsubscribed).
+    pub unsubscribed: Option<bool>,
     pub search: Option<String>,
     pub sort_by: Option<String>,
     /// Filter to clients whose lead_representative / source_rep matches this name.
@@ -1615,6 +1617,9 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     }
     if let Some(true) = filter.needs_review {
         conds.push("json_extract(c.metadata, '$.needs_review') = 1".into());
+    }
+    if let Some(true) = filter.unsubscribed {
+        conds.push("COALESCE(json_extract(c.metadata, '$.unsubscribed'),0) IN (1,'true')".into());
     }
     if let Some(ref s) = filter.rep {
         if !s.is_empty() {
@@ -11506,7 +11511,6 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
                     if tid.is_empty() { continue; }
                     let id = plaid_txn_id(tid);
-                    if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() { continue; }
                     let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let direction = if amt > 0.0 { "out" } else { "in" };
                     let amount = amt.abs();
@@ -11523,6 +11527,20 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
                     let cat = plaid_category(pfc, direction);
                     let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // DEDUP. Plaid's transaction_id is unique PER ITEM, not across links —
+                    // reconnecting Plaid mints a brand-new item and re-pulls ~2 years of
+                    // history under NEW transaction_ids, so an id-only check re-imports it all
+                    // as duplicates of already-booked rows. Skip a txn already present by its
+                    // exact id, OR by its account/date/amount/direction/memo fingerprint against
+                    // a PRE-EXISTING row (imported_at < now) — the `imported_at` guard means two
+                    // genuinely-identical transactions in the SAME sync still both import.
+                    if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() { continue; }
+                    if conn.query_row(
+                        "SELECT 1 FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
+                           AND direction=?4 AND LOWER(COALESCE(description,''))=?5 AND imported_at < ?6 LIMIT 1",
+                        rusqlite::params![label, date, amount, direction, desc.to_lowercase(), now],
+                        |_| Ok(()),
+                    ).is_ok() { continue; }
                     let s = |v: &str| Value::String(v.to_string());
                     let mut cols = Map::new();
                     cols.insert("account_id".into(), s(&label));
@@ -11765,7 +11783,8 @@ pub async fn financials_overview() -> Result<Value, String> {
                FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''),'[]')) sp
               WHERE COALESCE(json_extract(sp.value,'$.paid'),0) != 1)
             - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
-                 WHERE a.deal_flow_id=df.id AND a.role='supplier_payment')
+                 WHERE a.deal_flow_id=df.id AND a.role='supplier_payment'
+                   AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
          )),0)
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0 AND df.stage IN ('payment_received','supplier_paid')
@@ -11785,10 +11804,13 @@ pub async fn financials_overview() -> Result<Value, String> {
             df.refund_owed
             - (SELECT COALESCE(SUM(amount),0) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')='')
             - (SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
-                 WHERE a.deal_flow_id=df.id AND a.role='refund_out')
+                 WHERE a.deal_flow_id=df.id AND a.role='refund_out'
+                   AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id))
          )),0)
          FROM deal_flows df
-         WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01",
+         WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01
+           AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id
+                           AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))",
         [], |r| r.get(0)).unwrap_or(0.0);
 
     // Reserves: a slice of THIS YEAR's realized (completed-deal) NET PROFIT set aside
@@ -11804,7 +11826,11 @@ pub async fn financials_overview() -> Result<Value, String> {
         "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
          FROM deal_flows df WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
            AND NOT EXISTS (SELECT 1 FROM invoices iv WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1)) \
-           AND df.completed_at >= date('now','start of year')",
+           AND df.completed_at >= date('now','start of year') \
+           AND (COALESCE(df.invoice_id,'')='' OR df.id = ( \
+                SELECT df2.id FROM deal_flows df2 \
+                 WHERE df2.invoice_id=df.invoice_id AND df2.stage='complete' AND COALESCE(df2.archived,0)=0 \
+                 ORDER BY df2.completed_at DESC, df2.id DESC LIMIT 1))",
         [], |r| r.get::<_, f64>(0)).unwrap_or(0.0).max(0.0);
     let tax_reserve = (year_profit * tax_sweep_pct).max(0.0);
     // 30% of what we've actually netted this year — the target to park in a separate
@@ -11832,7 +11858,8 @@ pub async fn financials_overview() -> Result<Value, String> {
         "SELECT COUNT(*) FROM deal_flows df WHERE COALESCE(df.archived,0)=0 AND df.refund_owed > 0.01
            AND (df.refund_owed
                 - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0)
-                - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0)
+                - COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'
+                             AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)
                ) > 0.01",
         [], |r| r.get(0)).unwrap_or(0);
     let stale_unallocated: i64 = conn.query_row(
@@ -11849,7 +11876,8 @@ pub async fn financials_overview() -> Result<Value, String> {
     let alloc_role_sum = |role: &str| -> f64 {
         conn.query_row(
             "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a \
-             JOIN deal_flows d ON d.id=a.deal_flow_id WHERE a.role=?1 AND COALESCE(d.archived,0)=0",
+             JOIN deal_flows d ON d.id=a.deal_flow_id WHERE a.role=?1 AND COALESCE(d.archived,0)=0 \
+               AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
             [role], |r| r.get(0)).unwrap_or(0.0)
     };
 
@@ -12687,7 +12715,8 @@ pub async fn send_newsletter(
                 "SELECT email FROM clients WHERE id=?1 \
                    AND (is_blacklisted IS NULL OR is_blacklisted = 0) \
                    AND COALESCE(exclusive,0) = 0 \
-                   AND COALESCE(json_extract(metadata,'$.exclusive'),0) NOT IN (1,'true')",
+                   AND COALESCE(json_extract(metadata,'$.exclusive'),0) NOT IN (1,'true') \
+                   AND COALESCE(json_extract(metadata,'$.unsubscribed'),0) NOT IN (1,'true')",
                 [cid], |r| r.get::<_, Option<String>>(0),
             ) {
                 if !email.trim().is_empty() { emails.push(email); }
@@ -12710,7 +12739,8 @@ pub async fn send_newsletter(
             "SELECT name, email FROM clients WHERE id=?1 \
                AND (is_blacklisted IS NULL OR is_blacklisted = 0) \
                AND COALESCE(exclusive,0) = 0 \
-               AND COALESCE(json_extract(metadata,'$.exclusive'),0) NOT IN (1,'true')", [cid],
+               AND COALESCE(json_extract(metadata,'$.exclusive'),0) NOT IN (1,'true') \
+               AND COALESCE(json_extract(metadata,'$.unsubscribed'),0) NOT IN (1,'true')", [cid],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).ok();
         let (name, email) = match client_row {

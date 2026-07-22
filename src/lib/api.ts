@@ -78,6 +78,8 @@ export interface ClientFilter {
   stale_days?: number;
   missing?: string;
   needs_review?: boolean;
+  /** Only clients who unsubscribed from email. */
+  unsubscribed?: boolean;
   search?: string;
   sort_by?: string;
   /** Exact lead_status, or "active_not_dormant" for everyone who isn't dormant. */

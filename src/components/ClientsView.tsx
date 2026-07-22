@@ -78,7 +78,7 @@ export default function ClientsView() {
   }, []);
 
   const applyFilter = useCallback(async (f: ClientFilter) => {
-    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.rep;
+    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.unsubscribed || f.rep;
     if (hasFilter) setClients(await api.listClientsFiltered(f));
     else setClients(await api.listClients());
     loadActivity();
@@ -160,7 +160,7 @@ export default function ClientsView() {
 
   const clearAll = () => { setFilter({}); setSearchText(""); setFcOnly(false); applyFilter({}); };
 
-  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.rep;
+  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep;
 
   // Client-side sort by any column.
   const TIER_RANK: Record<string, number> = { S: 6, A: 5, B: 4, C: 3, D: 2, New: 1, Prospect: 0 };
@@ -199,6 +199,7 @@ export default function ClientsView() {
   if (filter.stale_days) chips.push({ label: `Last contact: ${filter.stale_days}+ days`, key: "stale_days" });
   if (filter.missing) chips.push({ label: `Missing: ${filter.missing}`, key: "missing" });
   if (filter.needs_review) chips.push({ label: "Needs review", key: "needs_review" });
+  if (filter.unsubscribed) chips.push({ label: "Unsubscribed", key: "unsubscribed" });
   if (filter.rep) chips.push({ label: `Rep: ${filter.rep}`, key: "rep" });
   if (filter.lead_status) {
     const statusLabels: Record<string, string> = { active_not_dormant: "Active (not dormant)", prospect: "Prospect", hot_lead: "Hot Lead", active_customer: "Active Customer", inactive: "Dormant" };
@@ -426,6 +427,7 @@ export default function ClientsView() {
                 { label: "Missing category", count: missingInfo.missing_category.length, icon: Tag,           missing: "category" },
                 { label: "Never contacted",  count: missingInfo.never_contacted.length,  icon: MessageSquare, missing: undefined },
                 { label: "Needs review",     count: missingInfo.needs_review.length,     icon: AlertCircle,   needs_review: true },
+                { label: "Unsubscribed",     count: clients.filter((c: any) => c.metadata?.unsubscribed).length, icon: Ban, unsubscribed: true },
               ].map((row: any) => (
                 <div key={row.label} className="flex items-center justify-between py-1">
                   <span className="flex items-center gap-2 text-[12px] text-ink-2">
@@ -439,6 +441,7 @@ export default function ClientsView() {
                       if (row.missing) patch.missing = row.missing;
                       if (row.label === "Never contacted") patch.stale_days = 9999;
                       if (row.needs_review) patch.needs_review = true;
+                      if (row.unsubscribed) patch.unsubscribed = true;
                       updateFilter(patch);
                     }}
                     className="text-[12px] font-medium text-accent hover:text-accent-hover px-2 py-1 rounded-lg hover:bg-accent/10 transition-colors"
