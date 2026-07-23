@@ -10399,7 +10399,7 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
                 bt.counterparty_name, bt.counterparty_type, bt.counterparty_id, bt.wire_ref, bt.reviewed, bt.account_id,
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
                 (SELECT COUNT(*) FROM bank_allocation a WHERE a.bank_txn_id=bt.id) AS alloc_count,
-                bt.balance, json_extract(bt.raw_json, '$.dt')
+                bt.balance, CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.dt') END
          FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -11351,7 +11351,7 @@ pub async fn dedupe_bank_txns(dry_run: bool) -> Result<Value, String> {
     let rows: Vec<Row> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, account_id, posted_at, amount, direction, COALESCE(description,''), COALESCE(imported_at,''), COALESCE(created_at,''), COALESCE(json_extract(raw_json,'$.pa'),'') FROM bank_txn"
+            "SELECT id, account_id, posted_at, amount, direction, COALESCE(description,''), COALESCE(imported_at,''), COALESCE(created_at,''), COALESCE(CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.pa') END,'') FROM bank_txn"
         ).map_err(|e| e.to_string())?;
         let it = stmt.query_map([], |r| Ok(Row {
             id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, dir: r.get(4)?,
