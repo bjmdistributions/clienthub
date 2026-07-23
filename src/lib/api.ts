@@ -2276,8 +2276,8 @@ export const api = {
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
-  dedupeBankTxns: (dryRun: boolean) =>
-    invoke<DedupeResult>("dedupe_bank_txns", { dryRun }),
+  dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
+    invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),
   getBankBackupSettings: () =>
     invoke<{ sheet_url: string; enabled: boolean; last_at: string; last_total: string }>("get_bank_backup_settings"),
   setBankBackupSettings: (sheetUrl: string, enabled: boolean) =>

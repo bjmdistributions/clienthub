@@ -11343,7 +11343,7 @@ fn bank_txn_fingerprint(account: &str, date: &str, amount: f64, dir: &str, desc:
 /// oplog tombstone (durable across sync) and every removed row is copied into a local
 /// recovery table first. Run from ONE device.
 #[tauri::command]
-pub async fn dedupe_bank_txns(dry_run: bool) -> Result<Value, String> {
+pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, String> {
     // Flush our own pending writes so we dedup against a converged view and our deletes
     // reach peers promptly (shrinks the concurrent-edit resurrection window).
     crate::netsync::push_now();
@@ -11437,12 +11437,14 @@ pub async fn dedupe_bank_txns(dry_run: bool) -> Result<Value, String> {
                 continue;
             }
 
-            // No connection signal (legacy rows) → conservative: round amounts / generic memos /
-            // 3+ copies could be a real repeat, so send them to review instead of deleting.
+            // No connection signal (legacy rows). In SAFE mode, round amounts / generic memos /
+            // 3+ copies could be a real repeat, so send them to review. In AGGRESSIVE mode the
+            // user has decided an exact match (same account/date/amount/direction/memo) IS a
+            // duplicate — delete the extras anyway (still never a booked row; still backed up).
             let whole_dollar = ((s.amount * 100.0).round() as i64) % 100 == 0;
             let dl = s.desc.to_lowercase();
             let generic = s.desc.trim().is_empty() || generic_terms.iter().any(|t| dl.contains(t));
-            if generic || whole_dollar || idxs.len() > 2 {
+            if !aggressive && (generic || whole_dollar || idxs.len() > 2) {
                 let mut g = base.clone();
                 g["reason"] = json!(if generic { "generic memo — could be a real repeat (re-pull to confirm by connection)" }
                                     else if whole_dollar { "round amount — could be a real repeat (re-pull to confirm by connection)" }

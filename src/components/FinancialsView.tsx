@@ -218,6 +218,7 @@ export default function FinancialsView() {
   const [dedupe, setDedupe]                 = useState<DedupeResult | null>(null); // preview/result modal
   const [dedupeRunning, setDedupeRunning]   = useState(false);
   const [dedupeDone, setDedupeDone]         = useState(false); // modal is showing the post-run report
+  const [dedupeAggressive, setDedupeAggressive] = useState(false); // remove every exact match, not just safe ones
   const [backupUrl, setBackupUrl]           = useState("");    // Google Sheet safety-log URL
   const [backupEnabled, setBackupEnabled]   = useState(false);
   const [backupLast, setBackupLast]         = useState<{ at: string; total: string }>({ at: "", total: "" });
@@ -593,11 +594,14 @@ export default function FinancialsView() {
   };
 
   // Duplicate cleanup: preview first (dry run), then the user confirms in the modal.
-  const previewDedupe = async () => {
+  // aggressive=true removes every exact match (same date/amount/memo), not just the
+  // clearly-safe ones — still never a booked row, and everything is backed up.
+  const previewDedupe = async (aggressive: boolean) => {
+    setDedupeAggressive(aggressive);
     setDedupeRunning(true);
     setDedupeDone(false);
     try {
-      const r = await api.dedupeBankTxns(true);
+      const r = await api.dedupeBankTxns(true, aggressive);
       setDedupe(r);
       if ((r.auto_remove || 0) === 0 && r.review_count === 0) {
         toast("No duplicate transactions found", "success");
@@ -610,11 +614,11 @@ export default function FinancialsView() {
   const executeDedupe = async () => {
     setDedupeRunning(true);
     try {
-      const r = await api.dedupeBankTxns(false);
+      const r = await api.dedupeBankTxns(false, dedupeAggressive);
       setDedupe(r);
       setDedupeDone(true);
       await refreshAll(false);
-      toast(`Removed ${r.removed || 0} duplicate${(r.removed || 0) === 1 ? "" : "s"}${r.review_count ? ` · ${r.review_count} flagged for review` : ""}`, "success");
+      toast(`Removed ${r.removed || 0} duplicate${(r.removed || 0) === 1 ? "" : "s"}${r.review_count ? ` · ${r.review_count} still need a look` : ""}`, "success");
     } catch (e: any) { toast(String(e), "error"); }
     finally { setDedupeRunning(false); }
   };
@@ -1450,8 +1454,22 @@ export default function FinancialsView() {
                         <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.review_count}</div>
                       </div>
                     </div>
+
+                    {/* Mode: clearly-safe only, or every exact match (same date/amount/memo). */}
+                    <div className="flex items-center gap-1 p-1 rounded-xl border border-line bg-surface-2/40">
+                      <button onClick={() => previewDedupe(false)} disabled={dedupeRunning}
+                        className={`flex-1 h-8 rounded-lg text-[12px] font-medium transition-colors ${!dedupeAggressive ? "bg-surface text-ink shadow-sm border border-line" : "text-muted hover:text-ink-2"}`}>
+                        Only clearly-safe
+                      </button>
+                      <button onClick={() => previewDedupe(true)} disabled={dedupeRunning}
+                        className={`flex-1 h-8 rounded-lg text-[12px] font-medium transition-colors ${dedupeAggressive ? "bg-surface text-ink shadow-sm border border-line" : "text-muted hover:text-ink-2"}`}>
+                        Every exact match
+                      </button>
+                    </div>
                     <p className="text-[12px] text-muted leading-relaxed">
-                      Extra copies of the same transaction will be removed. Anything reviewed or linked to a deal, loan or refund is never touched. Ambiguous ones (round amounts, generic memos like ATM/cash/transfer) are left for you to check below. Run this from one device.
+                      {dedupeAggressive
+                        ? "Removes every extra copy that matches on date, amount, direction and description — including round amounts and generic memos. Anything reviewed or linked to a deal, loan or refund is still never touched, and every removed row is backed up. Run this from one device."
+                        : "Removes only the clearly-safe extra copies. Round amounts and generic memos (like ATM / cash / transfer) are left for you below — switch to “Every exact match” to remove those too. Anything reviewed or linked to a deal is never touched. Run this from one device."}
                     </p>
                     {(dedupe.sample?.length || 0) > 0 && (
                       <div>
@@ -1723,7 +1741,7 @@ export default function FinancialsView() {
                     Re-pull all
                   </button>
                   <button
-                    onClick={previewDedupe}
+                    onClick={() => previewDedupe(false)}
                     disabled={plaidSyncing || dedupeRunning}
                     title="Find transactions imported more than once (e.g. the same bank linked on two devices) and safely remove the extra copies."
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
