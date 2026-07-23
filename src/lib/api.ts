@@ -2278,6 +2278,12 @@ export const api = {
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
   dedupeBankTxns: (dryRun: boolean) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun }),
+  getBankBackupSettings: () =>
+    invoke<{ sheet_url: string; enabled: boolean; last_at: string; last_total: string }>("get_bank_backup_settings"),
+  setBankBackupSettings: (sheetUrl: string, enabled: boolean) =>
+    invoke<void>("set_bank_backup_settings", { sheetUrl, enabled }),
+  backupBankTxnsNow: () =>
+    invoke<{ added: number; total: number; at: string }>("backup_bank_txns_now"),
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
   dealAllocations: (dealFlowId: string) =>

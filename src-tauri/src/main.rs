@@ -19,6 +19,7 @@ mod plaid;
 mod release_letter;
 mod sheet_clone;
 mod sheet_writeback;
+mod bank_backup;
 mod signup_rules;
 mod netsync;
 mod sync;
@@ -1016,6 +1017,9 @@ fn main() {
             save_sheet_sync_config,
             sheet_writeback_status,
             sheet_writeback::sync_all_clients_to_sheet,
+            bank_backup::backup_bank_txns_now,
+            bank_backup::get_bank_backup_settings,
+            bank_backup::set_bank_backup_settings,
             sync_from_sheet,
             get_sheet_sync_log,
             list_custom_fields,

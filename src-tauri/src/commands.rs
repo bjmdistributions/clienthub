@@ -11047,6 +11047,7 @@ pub async fn add_cash_transaction(
          VALUES (?1,'Cash',?2,?3,?4,?5,?5,?6,?7,'manual_cash',1,?8,?8,?8)",
         rusqlite::params![id, date, amount, dir, desc, cat, cp, now],
     ).map_err(|e| e.to_string())?;
+    crate::bank_backup::spawn_auto_backup(); // mirror the new booking to the safety-log sheet
     Ok(id)
 }
 
@@ -11926,6 +11927,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
             unlinked_removed.len(), unlinked_removed.join(", ")
         );
     }
+    if imported > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
     Ok(json!({ "imported": imported, "removed": removed, "unlinked": unlinked_removed.len(), "preparing": preparing, "results": results }))
 }
 

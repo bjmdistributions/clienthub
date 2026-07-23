@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
-  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil,
+  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -218,6 +218,10 @@ export default function FinancialsView() {
   const [dedupe, setDedupe]                 = useState<DedupeResult | null>(null); // preview/result modal
   const [dedupeRunning, setDedupeRunning]   = useState(false);
   const [dedupeDone, setDedupeDone]         = useState(false); // modal is showing the post-run report
+  const [backupUrl, setBackupUrl]           = useState("");    // Google Sheet safety-log URL
+  const [backupEnabled, setBackupEnabled]   = useState(false);
+  const [backupLast, setBackupLast]         = useState<{ at: string; total: string }>({ at: "", total: "" });
+  const [backupBusy, setBackupBusy]         = useState(false);
   const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
   const [plaidTesting, setPlaidTesting]     = useState(false);
   const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
@@ -613,6 +617,30 @@ export default function FinancialsView() {
       toast(`Removed ${r.removed || 0} duplicate${(r.removed || 0) === 1 ? "" : "s"}${r.review_count ? ` · ${r.review_count} flagged for review` : ""}`, "success");
     } catch (e: any) { toast(String(e), "error"); }
     finally { setDedupeRunning(false); }
+  };
+
+  // Google Sheet safety log for bank transactions.
+  useEffect(() => {
+    api.getBankBackupSettings().then((s) => {
+      setBackupUrl(s.sheet_url || "");
+      setBackupEnabled(!!s.enabled);
+      setBackupLast({ at: s.last_at || "", total: s.last_total || "" });
+    }).catch(() => {});
+  }, []);
+
+  const saveBackupSettings = async (url: string, enabled: boolean) => {
+    setBackupUrl(url); setBackupEnabled(enabled);
+    try { await api.setBankBackupSettings(url, enabled); } catch (e: any) { toast(String(e), "error"); }
+  };
+
+  const runBackupNow = async () => {
+    setBackupBusy(true);
+    try {
+      const r = await api.backupBankTxnsNow();
+      setBackupLast({ at: r.at, total: String(r.total) });
+      toast(r.added > 0 ? `Backed up ${r.added} transaction${r.added === 1 ? "" : "s"} to your sheet` : "Sheet is already up to date", "success");
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setBackupBusy(false); }
   };
 
   const disconnectBank = async (item: PlaidItem) => {
@@ -1721,6 +1749,43 @@ export default function FinancialsView() {
                 <span className="font-medium text-ink-2">pass_good</span>.</>
               )}
             </p>
+
+            {/* Safety backup — an independent, append-only copy of every bank transaction in
+                a Google Sheet you own, so you always have a readable record outside the app. */}
+            <div className="rounded-xl border border-line bg-surface-2/30 p-3.5 space-y-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-ink flex items-center gap-1.5"><ShieldCheck size={14} className="text-success-ink" /> Backup to Google Sheet</div>
+                  <p className="text-[11px] text-muted leading-relaxed mt-0.5">
+                    Keeps an append-only copy of every transaction in a sheet you own — a record that stays even if a transaction is removed here. Uses your connected Google account.
+                  </p>
+                </div>
+                <button
+                  onClick={runBackupNow}
+                  disabled={backupBusy || !backupUrl.trim()}
+                  title={backupUrl.trim() ? "Append any new transactions to the sheet now" : "Add your Google Sheet link first"}
+                  className="flex items-center gap-1.5 h-9 px-3 shrink-0 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                >
+                  {backupBusy ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />} Back up now
+                </button>
+              </div>
+              <input
+                value={backupUrl}
+                onChange={(e) => setBackupUrl(e.target.value)}
+                onBlur={() => saveBackupSettings(backupUrl, backupEnabled)}
+                placeholder="Paste a Google Sheet link (e.g. https://docs.google.com/spreadsheets/d/…)"
+                className={inp}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer">
+                  <input type="checkbox" checked={backupEnabled} onChange={(e) => saveBackupSettings(backupUrl, e.target.checked)} className="accent-[var(--accent)]" />
+                  Automatically back up after each sync
+                </label>
+                {backupLast.at && (
+                  <span className="text-[11px] text-muted">Last backed up {fmtShortDate(backupLast.at)}{backupLast.total ? ` · ${backupLast.total} transactions` : ""}</span>
+                )}
+              </div>
+            </div>
 
             {plaidConnecting && (
               <div className="flex items-center gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
