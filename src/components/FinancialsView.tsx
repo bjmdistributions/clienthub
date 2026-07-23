@@ -103,6 +103,14 @@ const fmtShortDate = (s?: string | null) => {
   return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 };
 
+// Time-of-day from a bank timestamp (Plaid datetime), e.g. "2:40 PM". Empty when the
+// bank didn't provide one or the string is date-only.
+const fmtTime = (s?: string | null) => {
+  if (!s || !s.includes("T")) return "";
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+};
+
 // Does this deal plausibly match a bank transaction — same buyer name, or same
 // amount as the invoice? Drives the "match" badge + surfacing the right deal.
 const dealMatchesTxn = (d: DealFlow, txn: { counterparty_name?: string | null; amount: number }) => {
@@ -1165,7 +1173,8 @@ export default function FinancialsView() {
                         : <ArrowUpRight size={15} className="text-danger-ink" strokeWidth={2} />}
                     </td>
                     <td className="py-3 pr-3 tabular-nums text-muted whitespace-nowrap align-top">
-                      {(t.posted_at || "").slice(0, 10)}
+                      <div>{(t.posted_at || "").slice(0, 10)}</div>
+                      {fmtTime(t.posted_dt) && <div className="text-[10px] text-faint">{fmtTime(t.posted_dt)}</div>}
                     </td>
                     <td className="py-3 pr-3 align-top max-w-[300px]">
                       <div className="flex items-center gap-1.5 min-w-0 group/pe">

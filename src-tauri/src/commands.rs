@@ -10398,7 +10398,8 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
         "SELECT bt.id, bt.posted_at, bt.amount, bt.direction, bt.description, bt.rail, bt.category,
                 bt.counterparty_name, bt.counterparty_type, bt.counterparty_id, bt.wire_ref, bt.reviewed, bt.account_id,
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
-                (SELECT COUNT(*) FROM bank_allocation a WHERE a.bank_txn_id=bt.id) AS alloc_count
+                (SELECT COUNT(*) FROM bank_allocation a WHERE a.bank_txn_id=bt.id) AS alloc_count,
+                bt.balance, json_extract(bt.raw_json, '$.dt')
          FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -10421,6 +10422,8 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
             "allocated": allocated,
             "alloc_count": r.get::<_, i64>(14)?,
             "unallocated": ((amount - allocated) * 100.0).round() / 100.0,
+            "balance": r.get::<_, Option<f64>>(15)?,
+            "posted_dt": r.get::<_, Option<String>>(16)?,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -11344,15 +11347,15 @@ pub async fn dedupe_bank_txns(dry_run: bool) -> Result<Value, String> {
     // reach peers promptly (shrinks the concurrent-edit resurrection window).
     crate::netsync::push_now();
 
-    struct Row { id: String, account: String, date: String, amount: f64, dir: String, desc: String, imported_at: String, created_at: String }
+    struct Row { id: String, account: String, date: String, amount: f64, dir: String, desc: String, imported_at: String, created_at: String, pa: String }
     let rows: Vec<Row> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, account_id, posted_at, amount, direction, COALESCE(description,''), COALESCE(imported_at,''), COALESCE(created_at,'') FROM bank_txn"
+            "SELECT id, account_id, posted_at, amount, direction, COALESCE(description,''), COALESCE(imported_at,''), COALESCE(created_at,''), COALESCE(json_extract(raw_json,'$.pa'),'') FROM bank_txn"
         ).map_err(|e| e.to_string())?;
         let it = stmt.query_map([], |r| Ok(Row {
             id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, dir: r.get(4)?,
-            desc: r.get(5)?, imported_at: r.get(6)?, created_at: r.get(7)?,
+            desc: r.get(5)?, imported_at: r.get(6)?, created_at: r.get(7)?, pa: r.get(8)?,
         })).map_err(|e| e.to_string())?;
         it.filter_map(|r| r.ok()).collect()
     };
@@ -11377,36 +11380,72 @@ pub async fn dedupe_bank_txns(dry_run: bool) -> Result<Value, String> {
         for idxs in buckets.values() {
             if idxs.len() < 2 { continue; }
             let referenced: Vec<usize> = idxs.iter().cloned().filter(|&i| bank_txn_is_referenced(&conn, &rows[i].id)).collect();
-            // Survivor: keep a booked copy if any; else the earliest imported/created; tie → smallest id.
-            let survivor = {
-                let mut cand: Vec<usize> = if referenced.is_empty() { idxs.clone() } else { referenced.clone() };
-                cand.sort_by(|&a, &b| rows[a].imported_at.cmp(&rows[b].imported_at)
+            // Members sorted so the KEEP set is deterministic: booked first, then earliest
+            // imported/created, then smallest id.
+            let mut ordered = idxs.clone();
+            ordered.sort_by(|&a, &b| {
+                let ra = referenced.contains(&a); let rb = referenced.contains(&b);
+                rb.cmp(&ra) // referenced first
+                    .then(rows[a].imported_at.cmp(&rows[b].imported_at))
                     .then(rows[a].created_at.cmp(&rows[b].created_at))
-                    .then(rows[a].id.cmp(&rows[b].id)));
-                cand[0]
-            };
-            let losers: Vec<usize> = idxs.iter().cloned().filter(|&i| i != survivor).collect();
-            let s = &rows[survivor];
+                    .then(rows[a].id.cmp(&rows[b].id))
+            });
+            let s = &rows[ordered[0]];
             let ids: Vec<String> = idxs.iter().map(|&i| rows[i].id.clone()).collect();
             let base = json!({
                 "account": s.account, "date": s.date, "amount": s.amount, "direction": s.dir,
                 "description": s.desc, "keep": s.id, "ids": ids, "count": idxs.len(),
             });
 
-            // Never auto-merge a group with more than one booked copy, or where a loser is
-            // booked — re-pointing would double-count or orphan. Human resolves.
-            if referenced.len() > 1 || losers.iter().any(|&i| referenced.contains(&i)) {
-                let mut g = base.clone(); g["reason"] = json!("more than one booked copy — resolve by hand"); review.push(g); continue;
+            // How many copies to KEEP. When every row carries its Plaid connection (`pa`), the
+            // true number of real transactions is the MOST any single connection reported —
+            // each connection sees each real txn exactly once, so a re-link/second-device
+            // duplicate shows up under a DIFFERENT connection while a genuine same-day repeat
+            // shows up TWICE under the SAME one. Absent that signal (legacy rows), fall back to
+            // the conservative rules.
+            let all_have_pa = idxs.iter().all(|&i| !rows[i].pa.is_empty());
+            let keep_n = if all_have_pa {
+                let mut per: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+                for &i in idxs { *per.entry(rows[i].pa.as_str()).or_default() += 1; }
+                per.values().cloned().max().unwrap_or(1)
+            } else {
+                1
+            };
+
+            // More booked copies than the bank actually shows → don't guess, human resolves.
+            if referenced.len() > keep_n {
+                let mut g = base.clone(); g["reason"] = json!("more booked copies than the bank shows — resolve by hand"); review.push(g); continue;
             }
-            // Conservative risk flags → review rather than auto-delete.
+            // keep_n == group size → not duplicates (e.g. two real identical same-day charges
+            // from one connection). Leave them all.
+            if keep_n >= idxs.len() { continue; }
+
+            let losers: Vec<usize> = ordered[keep_n..].to_vec();
+            // A loser must never be booked (survivors are the first keep_n, booked-first).
+            if losers.iter().any(|&i| referenced.contains(&i)) {
+                let mut g = base.clone(); g["reason"] = json!("a booked copy would be removed — resolve by hand"); review.push(g); continue;
+            }
+
+            if all_have_pa {
+                // Connection signal present → confident duplicate; safe to auto-remove even for
+                // round amounts / generic memos.
+                auto_groups.push(AutoGroup {
+                    keep: s.id.clone(), remove: losers.iter().map(|&i| rows[i].id.clone()).collect(),
+                    account: s.account.clone(), date: s.date.clone(), amount: s.amount, direction: s.dir.clone(), description: s.desc.clone(),
+                });
+                continue;
+            }
+
+            // No connection signal (legacy rows) → conservative: round amounts / generic memos /
+            // 3+ copies could be a real repeat, so send them to review instead of deleting.
             let whole_dollar = ((s.amount * 100.0).round() as i64) % 100 == 0;
             let dl = s.desc.to_lowercase();
             let generic = s.desc.trim().is_empty() || generic_terms.iter().any(|t| dl.contains(t));
             if generic || whole_dollar || idxs.len() > 2 {
                 let mut g = base.clone();
-                g["reason"] = json!(if generic { "generic memo — could be a real repeat charge" }
-                                    else if whole_dollar { "round amount — could be a real repeat charge" }
-                                    else { "more than two copies" });
+                g["reason"] = json!(if generic { "generic memo — could be a real repeat (re-pull to confirm by connection)" }
+                                    else if whole_dollar { "round amount — could be a real repeat (re-pull to confirm by connection)" }
+                                    else { "more than two copies — re-pull to confirm by connection" });
                 review.push(g); continue;
             }
             auto_groups.push(AutoGroup {
@@ -11744,6 +11783,17 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
                     let cat = plaid_category(pfc, direction);
                     let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // Provenance for safer de-duping (stored compactly in raw_json): the exact
+                    // timestamp when the bank has it, and Plaid's per-connection `account_id` — a
+                    // re-link / second-device link mints a NEW account_id, so two rows with the
+                    // same content but different `pa` are provably the same real txn seen through
+                    // two connections (vs two real same-day charges, which share one connection).
+                    let dt = t.get("datetime").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str()))
+                        .unwrap_or("").to_string();
+                    let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let rawj = json!({ "dt": dt, "pa": pacct, "tid": tid }).to_string();
                     // DEDUP. Plaid's transaction_id is unique PER ITEM, not across links —
                     // reconnecting Plaid mints a brand-new item and re-pulls ~2 years of
                     // history under NEW transaction_ids, so an id-only check re-imports it all
@@ -11752,12 +11802,23 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // a PRE-EXISTING row (imported_at < now) — the `imported_at` guard means two
                     // genuinely-identical transactions in the SAME sync still both import.
                     if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() { continue; }
-                    if conn.query_row(
-                        "SELECT 1 FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
+                    // Content match against a prior-run row → this is a duplicate, skip it. But
+                    // if that existing row predates provenance capture (empty raw_json), backfill
+                    // it now (synced) so a later cleanup can use the connection/timestamp signal.
+                    if let Ok((existing_id, rj_empty)) = conn.query_row(
+                        "SELECT id, COALESCE(raw_json,'')='' FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
                            AND direction=?4 AND LOWER(COALESCE(description,''))=?5 AND imported_at < ?6 LIMIT 1",
                         rusqlite::params![label, date, amount, direction, desc.to_lowercase(), now],
-                        |_| Ok(()),
-                    ).is_ok() { continue; }
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)),
+                    ) {
+                        if rj_empty {
+                            let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, existing_id]);
+                            let mut c = Map::new();
+                            c.insert("raw_json".into(), Value::String(rawj.clone()));
+                            let _ = sync::record_upsert("bank_txn", &existing_id, c);
+                        }
+                        continue;
+                    }
                     let s = |v: &str| Value::String(v.to_string());
                     let mut cols = Map::new();
                     cols.insert("account_id".into(), s(&label));
@@ -11772,11 +11833,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     cols.insert("imported_at".into(), s(&now));
                     cols.insert("created_at".into(), s(&now));
                     cols.insert("updated_at".into(), s(&now));
+                    cols.insert("raw_json".into(), s(&rawj));
                     if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
                     if let Err(e) = conn.execute(
-                        "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, imported_at, created_at, updated_at)
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
-                        rusqlite::params![id, label, date, amount, direction, desc, desc, cat, cp, "plaid", now],
+                        "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, imported_at, created_at, updated_at, raw_json)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11,?12)",
+                        rusqlite::params![id, label, date, amount, direction, desc, desc, cat, cp, "plaid", now, rawj],
                     ) {
                         // Surface an insert failure instead of counting a row that
                         // never landed (previously swallowed → "synced N" but empty).

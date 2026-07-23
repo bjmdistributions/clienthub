@@ -1438,6 +1438,8 @@ export interface BankTxn {
   allocated: number;
   alloc_count: number;
   unallocated: number;
+  balance?: number | null;      // running balance — populated for statement imports, not Plaid
+  posted_dt?: string | null;    // exact timestamp from the bank when available (Plaid datetime)
 }
 /// The fields a review save may change. Every one is optional because a save
 /// sends only what the user actually edited (see setBankTxnReview).
