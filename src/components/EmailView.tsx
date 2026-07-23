@@ -604,7 +604,7 @@ function NewsletterTab() {
 
   const tierMap: Record<string, string> = {};
   for (const t of tiers) tierMap[t.client_id] = t.tier;
-  const RANKED_TIERS = ["S", "A", "B", "C", "D"];
+  const RANKED_TIERS = ["P", "S", "A", "B", "C", "D"];
   const metadataFilteredClients = searchedClients.filter((c) => {
     if (c.is_blacklisted) return false;                         // never mass-send to blacklisted (bug fix)
     if (c.exclusive || c.metadata?.exclusive) return false;     // "No bulk email" stays off mass sends (flag lives in the column OR metadata)
@@ -877,7 +877,7 @@ function NewsletterTab() {
                 </button>
               );
             })()}
-            {([["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
+            {([["P", "Platinum"], ["S", "Diamond"], ["A", "Gold"], ["B", "Silver"], ["C", "Bronze"]] as [string, string][]).map(([code, label]) => {
               const active = Array.isArray(tierFilter) && tierFilter.includes(code);
               return (
                 <button key={code} onClick={() => {

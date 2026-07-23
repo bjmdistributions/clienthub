@@ -163,7 +163,7 @@ export default function ClientsView() {
   const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep;
 
   // Client-side sort by any column.
-  const TIER_RANK: Record<string, number> = { S: 6, A: 5, B: 4, C: 3, D: 2, New: 1, Prospect: 0 };
+  const TIER_RANK: Record<string, number> = { P: 7, S: 6, A: 5, B: 4, C: 3, D: 2, New: 1, Prospect: 0 };
   const sortVal = (c: Client, key: string): string | number => {
     switch (key) {
       case "company": return (c.company || "").toLowerCase();
@@ -191,7 +191,7 @@ export default function ClientsView() {
   const displayed = fcOnly ? sorted.filter((c) => c.first_contact) : sorted;
 
   const chips: { label: string; key: keyof ClientFilter }[] = [];
-  const tierLabels: Record<string, string> = { S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect" };
+  const tierLabels: Record<string, string> = { P: "Platinum", S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect" };
   if (filter.tiers && filter.tiers.length > 0) chips.push({ label: `Tiers: ${filter.tiers.map(t => tierLabels[t] || t).join(", ")}`, key: "tiers" });
   if (filter.category) chips.push({ label: `Category: ${filter.category === "__none__" ? "None" : filter.category}`, key: "category" });
   if (filter.tag) chips.push({ label: `Tag: ${filter.tag}`, key: "tag" });
@@ -547,7 +547,7 @@ export default function ClientsView() {
           </button>
           {showTiers && (
             <div className="absolute top-full mt-1 left-0 bg-surface border border-line rounded-lg shadow-lg z-20 p-1.5 min-w-[160px]">
-              {(["S","A","B","C","Prospect"] as const).map((t) => (
+              {(["P","S","A","B","C","Prospect"] as const).map((t) => (
                 <label key={t} className="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-2 rounded text-[13px] text-ink-2 cursor-pointer">
                   <input type="checkbox" className="accent-accent" checked={(filter.tiers ?? []).includes(t)}
                     onChange={() => {

@@ -835,6 +835,7 @@ export interface BuyerTier {
   avg_commission_pct: number;
   quotes_sent: number;
   quotes_won: number;
+  deals_landed: number;      // completed deals — now a tier factor
   reliability: string;       // "unrated" | "reliable" | "mixed" | "low"
   reliability_pct: number;
 }

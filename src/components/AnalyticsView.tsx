@@ -18,6 +18,7 @@ const rgbVar = (n: string) => `rgb(${cssVar(n)})`;
 
 // Refined, muted tier swatches — premium metallics, not neon.
 const TIER_CLR: Record<string, string> = {
+  P:        "#8B5CF6",   // Platinum — violet (top tier)
   S:        "#2563EB",   // Diamond — sapphire (fixed data-viz hue, not the accent)
   A:        "#C9A227",   // Gold (muted)
   B:        "#A6AEBC",   // Silver
@@ -26,14 +27,14 @@ const TIER_CLR: Record<string, string> = {
 };
 
 const TIER_NAME: Record<string, string> = {
-  S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect",
+  P: "Platinum", S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect",
 };
 
 // Designed series colors — fixed hues so charts stay vivid in light/dark/matte
 // instead of greying out with the theme accent. Revenue = indigo, profit = emerald.
 const C_REVENUE = "#6366F1";
 
-const TIER_ORDER = ["S", "A", "B", "C", "Prospect"];
+const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
 
 // Resolve brand tokens to concrete chart colors; re-render on light/dark flip.
 function usePalette() {

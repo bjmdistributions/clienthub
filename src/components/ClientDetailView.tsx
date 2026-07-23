@@ -233,8 +233,9 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     if (days < 365) return `${Math.floor(days / 30)}mo ago`;
     return `${Math.floor(days / 365)}y ago`;
   };
-  const tierLabel = tier ? (tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect") : null;
+  const tierLabel = tier ? (tier.tier === "P" ? "Platinum" : tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect") : null;
   const tierChipCls = tier ? (
+    tier.tier === "P" ? "bg-[#8B5CF6]/12 text-[#8B5CF6]" :
     tier.tier === "S" ? "bg-accent/10 text-accent-hover" :
     tier.tier === "A" ? "bg-success-bg text-success-ink" :
     tier.tier === "B" ? "bg-warning-bg text-warning-ink" : "bg-surface-3 text-muted"

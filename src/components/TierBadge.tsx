@@ -6,6 +6,7 @@ interface TierBadgeProps {
 // Flat tier tags — tier hue as a data color (dot + text) on a quiet tint.
 // Alpha tints sit correctly on both light and dark surfaces.
 const TIER_CONFIG: Record<string, { label: string; hue: string }> = {
+  P:        { label: "Platinum", hue: "139,92,246" },   // violet — the top tier, above Diamond
   S:        { label: "Diamond",  hue: "14,165,233" },   // sky
   A:        { label: "Gold",     hue: "202,138,4" },
   B:        { label: "Silver",   hue: "100,116,139" },

@@ -16,7 +16,7 @@ const SPEND_RANGES = [
   { label: "$50k+",         min: 50000, max: Infinity },
 ];
 
-const TIER_ORDER = ["S", "A", "B", "C", "Prospect"];
+const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
 
 export default function TiersView() {
   const [tiers, setTiers]     = useState<BuyerTier[]>([]);
@@ -64,7 +64,7 @@ export default function TiersView() {
       </div>
 
       {/* Tier summary cards */}
-      <div className="grid grid-cols-3 xl:grid-cols-5 gap-3 my-5">
+      <div className="grid grid-cols-3 xl:grid-cols-6 gap-3 my-5">
         {TIER_ORDER.map((t) => {
           const count = tierCount(t);
           return (

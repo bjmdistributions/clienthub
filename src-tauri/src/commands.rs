@@ -1744,12 +1744,15 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
 
 /// The ONE tier-threshold definition, shared by `buyer_tiers()` (display) and
 /// `build_client_tier_map()` (filter + automation) so the two can never drift.
-/// `net_paid` = paid invoices minus refunds; `invoices_sent` counts sent/overdue/paid.
-fn tier_for(effective_annual: f64, net_paid: f64, invoices_sent: i64, quotes_sent: i64) -> &'static str {
-    if effective_annual > 100000.0 || net_paid > 50000.0 { "S" }
-    else if effective_annual > 50000.0 || net_paid > 20000.0 || (net_paid > 5000.0 && invoices_sent >= 3) { "A" }
-    else if effective_annual > 10000.0 || net_paid > 5000.0 || (net_paid > 1000.0 && invoices_sent >= 1) { "B" }
-    // Quoting a client is active engagement: it lifts a bare prospect to C.
+/// `net_paid` = paid invoices minus refunds; `invoices_sent` counts sent/overdue/paid;
+/// `deals_landed` = completed deals (a client can climb on closed-deal count alone).
+/// Codes rank P > S > A > B > C > Prospect → Platinum/Diamond/Gold/Silver/Bronze/Prospect.
+fn tier_for(effective_annual: f64, net_paid: f64, invoices_sent: i64, quotes_sent: i64, deals_landed: i64) -> &'static str {
+    if net_paid > 150000.0 || effective_annual > 250000.0 || deals_landed >= 25 { "P" }
+    else if net_paid > 60000.0 || effective_annual > 120000.0 || deals_landed >= 12 { "S" }
+    else if net_paid > 25000.0 || effective_annual > 60000.0 || deals_landed >= 6 { "A" }
+    else if net_paid > 8000.0 || effective_annual > 20000.0 || deals_landed >= 3 { "B" }
+    // Any real engagement — an invoice, a payment, or even just a quote — earns Bronze.
     else if effective_annual > 0.0 || net_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
     else { "Prospect" }
 }
@@ -1770,6 +1773,25 @@ fn refunded_by_client(conn: &rusqlite::Connection) -> std::collections::HashMap<
          GROUP BY iv.client_id"
     ) {
         if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))) {
+            for row in rows.flatten() { m.insert(row.0, row.1); }
+        }
+    }
+    m
+}
+
+/// Deals landed per client = number of COMPLETED deals, counted DISTINCT by invoice so the
+/// known duplicate deal_flow rows (one invoice → two 'complete' rows) can't double-count.
+/// Only non-archived/non-voided invoices count. Shared by the tier map + `buyer_tiers`.
+fn completed_deals_by_client(conn: &rusqlite::Connection) -> std::collections::HashMap<String, i64> {
+    let mut m = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT iv.client_id, COUNT(DISTINCT df.invoice_id) \
+         FROM deal_flows df JOIN invoices iv ON iv.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(iv.archived,0)=0 AND COALESCE(iv.voided,0)=0 \
+         GROUP BY iv.client_id"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
             for row in rows.flatten() { m.insert(row.0, row.1); }
         }
     }
@@ -1814,10 +1836,15 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Deals landed per client = completed deals, counted DISTINCT by invoice so the known
+    // duplicate deal_flow rows (one invoice, two 'complete' rows) can't inflate a tier.
+    let deals_map = completed_deals_by_client(conn);
+
     for (client_id, meta_str) in &clients {
         let (actual_paid, invoices_sent) = invoice_map.get(client_id).copied().unwrap_or((0.0, 0));
         let net_paid = (actual_paid - refunded_map.get(client_id).copied().unwrap_or(0.0)).max(0.0);
         let quotes_sent = quotes_map.get(client_id).copied().unwrap_or(0);
+        let deals_landed = deals_map.get(client_id).copied().unwrap_or(0);
         let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
         let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
         let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
@@ -1827,7 +1854,7 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
             "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
         };
         let effective_annual = freq_mult * annual_spend;
-        let tier = tier_for(effective_annual, net_paid, invoices_sent, quotes_sent);
+        let tier = tier_for(effective_annual, net_paid, invoices_sent, quotes_sent, deals_landed);
         map.insert(client_id.clone(), tier.to_string());
     }
     Ok(map)
@@ -8344,7 +8371,7 @@ pub async fn process_followup_rules() -> Result<Vec<FollowUpLogEntry>, String> {
                 // Tiers are stored/compared as CODES (S/A/B/C), not labels — the old
                 // label match made every rank 0, so tier-drop never fired and
                 // tier_history stayed empty.
-                let tier_rank = |t: &str| -> i32 { match t { "S"=>4,"A"=>3,"B"=>2,"C"=>1,_=>0 } };
+                let tier_rank = |t: &str| -> i32 { match t { "P"=>5,"S"=>4,"A"=>3,"B"=>2,"C"=>1,_=>0 } };
                 let mut results = Vec::new();
                 let mut stmt_c = conn.prepare("SELECT id, name, email, metadata FROM clients").map_err(|e| e.to_string())?;
                 let clients: Vec<(String, Option<String>, Option<String>, Option<String>)> = stmt_c.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,Option<String>>(3)?)))
@@ -9389,12 +9416,13 @@ pub struct BuyerTier {
     pub avg_commission_pct: f64,
     pub quotes_sent: u32,
     pub quotes_won: u32,
+    pub deals_landed: u32,
     pub reliability: String,
     pub reliability_pct: f64,
 }
 
 fn tier_label(s: &str) -> &str {
-    match s { "S" => "Diamond", "A" => "Gold", "B" => "Silver", "C" => "Bronze", _ => "Prospect" }
+    match s { "P" => "Platinum", "S" => "Diamond", "A" => "Gold", "B" => "Silver", "C" => "Bronze", _ => "Prospect" }
 }
 
 #[tauri::command]
@@ -9458,6 +9486,9 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Deals landed per client (completed deals, distinct by invoice) — a tier input + shown.
+    let deals_map = completed_deals_by_client(&conn);
+
     let mut results = Vec::new();
     for (client_id, client_name, metadata_str) in &client_rows {
         let meta: Option<Value> = metadata_str.as_ref().and_then(|s| serde_json::from_str(s).ok());
@@ -9484,7 +9515,8 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             else if reliability_pct >= 25.0 { "mixed" }
             else { "low" };
 
-        let tier = tier_for(effective_annual, actual_paid, invoices_sent as i64, quotes_sent as i64);
+        let deals_landed = deals_map.get(client_id).copied().unwrap_or(0);
+        let tier = tier_for(effective_annual, actual_paid, invoices_sent as i64, quotes_sent as i64, deals_landed);
 
         let avg_commission_pct = commission_map.get(client_id).copied().unwrap_or(0.0);
         results.push(BuyerTier {
@@ -9495,12 +9527,13 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             avg_commission_pct,
             quotes_sent,
             quotes_won,
+            deals_landed: deals_landed.max(0) as u32,
             reliability: reliability.to_string(),
             reliability_pct,
         });
     }
     results.sort_by(|a, b| {
-        let tier_order = |t: &str| match t { "S" => 0, "A" => 1, "B" => 2, "C" => 3, _ => 4 };
+        let tier_order = |t: &str| match t { "P" => 0, "S" => 1, "A" => 2, "B" => 3, "C" => 4, _ => 5 };
         tier_order(&a.tier).cmp(&tier_order(&b.tier))
             .then_with(|| b.actual_paid.partial_cmp(&a.actual_paid).unwrap_or(std::cmp::Ordering::Equal))
             .then_with(|| b.invoices_sent.cmp(&a.invoices_sent))

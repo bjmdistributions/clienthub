@@ -27,6 +27,7 @@ fn first_name_of(name: &str) -> String {
 
 fn tier_label(s: &str) -> &str {
     match s {
+        "P" => "Platinum",
         "S" => "Diamond",
         "A" => "Gold",
         "B" => "Silver",
@@ -54,9 +55,19 @@ fn compute_tier(conn: &Connection, client_id: &str, metadata_str: Option<&str>) 
     };
     let effective_annual = freq_mult * annual_spend;
 
-    let tier = if effective_annual > 100000.0 || actual_paid > 50000.0 { "S" }
-    else if effective_annual > 50000.0 || actual_paid > 20000.0 || (actual_paid > 5000.0 && invoices_sent >= 3) { "A" }
-    else if effective_annual > 10000.0 || actual_paid > 5000.0 || (actual_paid > 1000.0 && invoices_sent >= 1) { "B" }
+    // Deals landed (completed deals, distinct by invoice) — a tier factor.
+    let deals_landed: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df JOIN invoices iv ON iv.id=df.invoice_id \
+         WHERE iv.client_id=?1 AND df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(iv.archived,0)=0 AND COALESCE(iv.voided,0)=0",
+        [client_id], |r| r.get(0),
+    ).unwrap_or(0);
+
+    // Keep in lockstep with commands.rs `tier_for` (Platinum > Diamond > Gold > Silver > Bronze).
+    let tier = if actual_paid > 150000.0 || effective_annual > 250000.0 || deals_landed >= 25 { "P" }
+    else if actual_paid > 60000.0 || effective_annual > 120000.0 || deals_landed >= 12 { "S" }
+    else if actual_paid > 25000.0 || effective_annual > 60000.0 || deals_landed >= 6 { "A" }
+    else if actual_paid > 8000.0 || effective_annual > 20000.0 || deals_landed >= 3 { "B" }
     else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 { "C" }
     else { "Prospect" };
 

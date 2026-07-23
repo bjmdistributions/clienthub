@@ -28,6 +28,7 @@ interface Point {
 // Dots mean something: tier drives color, size, and glow. S/A read brighter
 // and larger; prospects sit dim so the whales pop.
 const DOT_STYLE: Record<string, { c: string; size: number; glow: number; dim?: boolean }> = {
+  P:        { c: "167,139,250", size: 14, glow: 0.85 },  // Platinum — brightest violet (top tier)
   S:        { c: "56,189,248",  size: 13, glow: 0.70 },  // Diamond — bright sky
   A:        { c: "251,191,36",  size: 12, glow: 0.60 },  // Gold
   B:        { c: "199,210,224", size: 10, glow: 0.40 },  // Silver
@@ -36,7 +37,7 @@ const DOT_STYLE: Record<string, { c: string; size: number; glow: number; dim?: b
   New:      { c: "139,147,168", size: 7,  glow: 0.20, dim: true },
 };
 const dotStyle = (tier: string) => DOT_STYLE[tier] ?? DOT_STYLE.New;
-const RANKED = ["S", "A", "B", "C"];
+const RANKED = ["P", "S", "A", "B", "C"];
 
 type TierFilter = "all" | "ranked" | "high" | "prospect";
 const FILTERS: [TierFilter, string][] = [
@@ -375,13 +376,13 @@ export default function GlobeView() {
       {/* Legend — what dot color/size means */}
       {points.length > 0 && (
         <div className="globe-legend globe-glass">
-          {(["S", "A", "B", "C", "Prospect"] as const).map((t) => {
+          {(["P", "S", "A", "B", "C", "Prospect"] as const).map((t) => {
             const ds = dotStyle(t);
             return (
               <span key={t} className="inline-flex items-center gap-1.5">
                 <span className="rounded-full flex-shrink-0"
                   style={{ width: Math.max(5, ds.size - 4), height: Math.max(5, ds.size - 4), background: `rgb(${ds.c})`, opacity: ds.dim ? 0.7 : 1 }} />
-                {t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : "Prospect"}
+                {t === "P" ? "Platinum" : t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : "Prospect"}
               </span>
             );
           })}
@@ -577,7 +578,7 @@ function applyDots(globe: any, points: Point[], onClick: (d: Point) => void) {
 }
 
 function tierLabel(t: string): string {
-  return t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : t;
+  return t === "P" ? "Platinum" : t === "S" ? "Diamond" : t === "A" ? "Gold" : t === "B" ? "Silver" : t === "C" ? "Bronze" : t;
 }
 
 function escapeHtml(s: string): string {
