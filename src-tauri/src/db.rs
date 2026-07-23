@@ -1542,4 +1542,27 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE offers ADD COLUMN offer_type TEXT NOT NULL DEFAULT 'lot';
         "#,
     ),
+    (
+        74,
+        // Third share channel: mark a lot as posted to Facebook (like sent_whatsapp/email).
+        r#"
+        ALTER TABLE inventory ADD COLUMN sent_facebook INTEGER NOT NULL DEFAULT 0;
+        "#,
+    ),
+    (
+        75,
+        // Local-only recovery buffer for the duplicate-transaction cleanup. A removed row's
+        // full contents are copied here BEFORE the durable delete, so a wrongly-merged txn
+        // can be recovered. NOT synced (absent from ALLOWED_TABLES), so it stays on this
+        // device and never propagates.
+        r#"
+        CREATE TABLE IF NOT EXISTS bank_txn_deleted_backup (
+            id TEXT PRIMARY KEY,
+            row_json TEXT NOT NULL,
+            survivor_id TEXT,
+            reason TEXT,
+            deleted_at TEXT NOT NULL
+        );
+        "#,
+    ),
 ];

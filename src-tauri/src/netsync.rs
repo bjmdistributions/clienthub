@@ -1096,6 +1096,20 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
             if !cols.iter().any(|c| c.as_str() == pk) {
                 continue; // can't upsert without the key
             }
+            // Never resurrect a row the user deleted here. This raw-upsert path bypasses the
+            // tombstone guard that `apply_event` enforces, so without this check a "Restore
+            // from server" (or auto-heal) re-inserts every row the server still holds —
+            // silently undoing a durable delete such as the duplicate-transaction cleanup.
+            let pk_val = row.get(pk).and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            });
+            if let Some(ref id) = pk_val {
+                if sync::is_tombstoned(table, id) {
+                    continue;
+                }
+            }
             // Validate every column name as a plain identifier before it reaches the
             // SQL text (same guard as `apply_upsert`).
             let mut safe = true;

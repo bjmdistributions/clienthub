@@ -496,9 +496,57 @@ pub async fn toggle_client_blacklist(id: String) -> Result<bool, String> {
 /// "Exclusive" clients (e.g. VIPs) are kept off mass sends + auto-add — softer than a
 /// blacklist. Stored in the real `exclusive` column (so later metadata writes can't
 /// clobber it); metadata.exclusive is kept mirrored for server/mobile readers.
+///
+/// Guard: if this client opted out via an unsubscribe link (`metadata.unsubscribed`),
+/// turning "No bulk email" OFF on its own is misleading — the unsubscribed flag (and the
+/// server suppression row) still hold, so they'd stay off sends anyway. Refuse with the
+/// `UNSUBSCRIBED_CONFIRM` sentinel so the UI can offer a deliberate resubscribe instead.
 #[tauri::command]
 pub async fn toggle_client_exclusive(id: String) -> Result<bool, String> {
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let (cur, meta): (i64, String) = conn.query_row(
+            "SELECT COALESCE(exclusive,0), COALESCE(metadata,'{}') FROM clients WHERE id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|e| e.to_string())?;
+        let m: Option<Value> = serde_json::from_str(&meta).ok();
+        // turning OFF (cur is on) an opted-out client → require explicit resubscribe
+        if cur != 0 && meta_flag(&m, "unsubscribed") {
+            return Err("UNSUBSCRIBED_CONFIRM".into());
+        }
+    }
     toggle_client_flag(&id, "exclusive")
+}
+
+/// Deliberately resubscribe a client who had opted out via an unsubscribe link. Clears
+/// BOTH the No-bulk flag (`exclusive`) and the opt-out (`metadata.unsubscribed`), then
+/// syncs an EXPLICIT `unsubscribed=false` — which the server turns into an
+/// `email_suppression` delete so scheduled/mobile sends resume too. Only call after an
+/// explicit user confirm (see `toggle_client_exclusive`'s UNSUBSCRIBED_CONFIRM sentinel).
+#[tauri::command]
+pub async fn resubscribe_client(id: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let meta: String = conn.query_row(
+        "SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1",
+        [&id],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    let mut m: Value = serde_json::from_str(&meta).unwrap_or_else(|_| json!({}));
+    if let Some(o) = m.as_object_mut() {
+        o.insert("exclusive".into(), json!(false));
+        o.insert("unsubscribed".into(), json!(false));
+    }
+    let meta_str = serde_json::to_string(&m).unwrap_or_else(|_| "{}".into());
+    conn.execute(
+        "UPDATE clients SET exclusive=0, metadata=?1 WHERE id=?2",
+        rusqlite::params![meta_str, id],
+    ).map_err(|e| e.to_string())?;
+    let mut cols = Map::new();
+    cols.insert("exclusive".into(), json!(0));
+    cols.insert("metadata".into(), Value::String(meta_str));
+    sync::record_upsert("clients", &id, cols).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// A "High-Value" badge. Stored in the real `high_value` column; metadata mirror
@@ -7084,6 +7132,7 @@ pub struct InventoryLot {
     pub notes: Option<String>,
     pub sent_whatsapp: bool,
     pub sent_email: bool,
+    pub sent_facebook: bool,
     pub supplier: Option<String>,
     pub location: Option<String>,
     pub price_type: String,
@@ -7096,8 +7145,8 @@ pub struct InventoryLot {
 pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let (sql, params): (String, Vec<String>) = match &status {
-        Some(s) => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path,details_json FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
-        None => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path,details_json FROM inventory ORDER BY created_at DESC".into(), vec![]),
+        Some(s) => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path,details_json,COALESCE(sent_facebook,0)!=0 FROM inventory WHERE status = ?1 ORDER BY created_at DESC".into(), vec![s.clone()]),
+        None => ("SELECT id,name,description,category,quantity,total_cost,asking_price,status,linked_deal_id,photos_json,created_at,updated_at,COALESCE(notes,''),COALESCE(sent_whatsapp,0)!=0,COALESCE(sent_email,0)!=0,COALESCE(supplier,''),COALESCE(location,''),COALESCE(price_type,'per_unit'),manifest_path,details_json,COALESCE(sent_facebook,0)!=0 FROM inventory ORDER BY created_at DESC".into(), vec![]),
     };
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
@@ -7108,7 +7157,7 @@ pub async fn list_inventory(status: Option<String>) -> Result<Vec<InventoryLot>,
         created_at: r.get(10)?, updated_at: r.get(11)?, notes: r.get(12)?,
         sent_whatsapp: r.get(13)?, sent_email: r.get(14)?, supplier: r.get(15)?,
         location: r.get(16)?, price_type: r.get(17)?, manifest_path: r.get(18)?,
-        details_json: r.get(19)?,
+        details_json: r.get(19)?, sent_facebook: r.get(20)?,
     })).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -7146,11 +7195,11 @@ pub async fn create_lot(name: String, quantity: i64, total_cost: f64, asking_pri
     cols.insert("details_json".into(), serde_json::json!(details_json));
     crate::sync::record_upsert("inventory", &id, cols).map_err(|e| e.to_string())?;
 
-    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, supplier, location, price_type: pt, manifest_path: None, details_json })
+    Ok(InventoryLot { id, name, description, category, quantity, total_cost, asking_price, status: "available".into(), linked_deal_id: None, photos_json, created_at: now.clone(), updated_at: now, notes, sent_whatsapp: false, sent_email: false, sent_facebook: false, supplier, location, price_type: pt, manifest_path: None, details_json })
 }
 
 #[tauri::command]
-pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, supplier: Option<String>, location: Option<String>, price_type: Option<String>, details_json: Option<String>) -> Result<(), String> {
+pub async fn update_lot(id: String, name: Option<String>, description: Option<String>, category: Option<String>, quantity: Option<i64>, total_cost: Option<f64>, asking_price: Option<f64>, photos: Option<Vec<String>>, notes: Option<String>, sent_whatsapp: Option<bool>, sent_email: Option<bool>, sent_facebook: Option<bool>, supplier: Option<String>, location: Option<String>, price_type: Option<String>, details_json: Option<String>) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut sets = vec!["updated_at = ?1".to_string()];
@@ -7168,6 +7217,7 @@ pub async fn update_lot(id: String, name: Option<String>, description: Option<St
     if let Some(v) = notes { sets.push("notes = ?".to_string()); cols.insert("notes".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     if let Some(v) = sent_whatsapp { sets.push("sent_whatsapp = ?".to_string()); cols.insert("sent_whatsapp".into(), serde_json::json!(v as i64)); params.push(Box::new(v as i64)); }
     if let Some(v) = sent_email { sets.push("sent_email = ?".to_string()); cols.insert("sent_email".into(), serde_json::json!(v as i64)); params.push(Box::new(v as i64)); }
+    if let Some(v) = sent_facebook { sets.push("sent_facebook = ?".to_string()); cols.insert("sent_facebook".into(), serde_json::json!(v as i64)); params.push(Box::new(v as i64)); }
     if let Some(v) = supplier { sets.push("supplier = ?".to_string()); cols.insert("supplier".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     if let Some(v) = location { sets.push("location = ?".to_string()); cols.insert("location".into(), serde_json::json!(v)); params.push(Box::new(v)); }
     if let Some(v) = price_type { sets.push("price_type = ?".to_string()); cols.insert("price_type".into(), serde_json::json!(v)); params.push(Box::new(v)); }
@@ -11250,6 +11300,173 @@ pub async fn clear_bank_txns(scope: String, force: bool) -> Result<Value, String
         );
     }
     Ok(json!({ "deleted": deleted, "allocations_removed": alloc_removed, "kept": kept.len() }))
+}
+
+/// Referenced/booked: broader than `bank_txn_is_finished` (reviewed + allocation) — also
+/// checks refunds/loan/cash_purchase/business_expense so a loan- or refund-linked row is
+/// never treated as a deletable duplicate and orphaned. Fails SAFE (returns true) on any
+/// query error so uncertainty never authorises a delete.
+fn bank_txn_is_referenced(conn: &rusqlite::Connection, id: &str) -> bool {
+    conn.query_row(
+        "SELECT (SELECT COALESCE(reviewed,0) FROM bank_txn WHERE id=?1) = 1 \
+            OR EXISTS(SELECT 1 FROM bank_allocation WHERE bank_txn_id=?1) \
+            OR EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
+            OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1) \
+            OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
+            OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1)",
+        [id],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(1) != 0
+}
+
+/// Strict content fingerprint of a bank txn used for duplicate bucketing. Matches the
+/// import-time guard's comparison (account/date/amount-to-the-cent/direction/lowercased,
+/// whitespace-collapsed memo). Deliberately NOT loosened — two distinct memos must never
+/// collapse into one group (that would delete a real transaction).
+fn bank_txn_fingerprint(account: &str, date: &str, amount: f64, dir: &str, desc: &str) -> String {
+    let memo = desc.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    format!("{}|{}|{:.2}|{}|{}", account.trim().to_lowercase(), date, amount, dir, memo)
+}
+
+/// Find (and, unless `dry_run`, remove) duplicate bank transactions — the same real
+/// transaction stored under multiple ids (e.g. Plaid linked to one account on two devices,
+/// each minting its own transaction_ids; or a re-link re-pulling history under new ids).
+///
+/// CONSERVATIVE: only auto-removes an extra copy that is completely untouched (not reviewed,
+/// no allocation/loan/refund/expense link). Anything booked, or ambiguous (round amount,
+/// generic memo like ATM/cash/transfer, or 3+ copies where a real repeat is plausible) is
+/// left in place and returned in `review` for the user to resolve. Deletes go through the
+/// oplog tombstone (durable across sync) and every removed row is copied into a local
+/// recovery table first. Run from ONE device.
+#[tauri::command]
+pub async fn dedupe_bank_txns(dry_run: bool) -> Result<Value, String> {
+    // Flush our own pending writes so we dedup against a converged view and our deletes
+    // reach peers promptly (shrinks the concurrent-edit resurrection window).
+    crate::netsync::push_now();
+
+    struct Row { id: String, account: String, date: String, amount: f64, dir: String, desc: String, imported_at: String, created_at: String }
+    let rows: Vec<Row> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, posted_at, amount, direction, COALESCE(description,''), COALESCE(imported_at,''), COALESCE(created_at,'') FROM bank_txn"
+        ).map_err(|e| e.to_string())?;
+        let it = stmt.query_map([], |r| Ok(Row {
+            id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, dir: r.get(4)?,
+            desc: r.get(5)?, imported_at: r.get(6)?, created_at: r.get(7)?,
+        })).map_err(|e| e.to_string())?;
+        it.filter_map(|r| r.ok()).collect()
+    };
+
+    // Bucket by strict fingerprint.
+    let mut buckets: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        buckets.entry(bank_txn_fingerprint(&r.account, &r.date, r.amount, &r.dir, &r.desc)).or_default().push(i);
+    }
+
+    // Memos where an identical same-day/same-amount repeat is genuinely plausible — a
+    // content fingerprint can't tell those apart from a duplicate, so they go to review.
+    let generic_terms = ["atm", "cash", "withdrawal", "deposit", "transfer", "zelle", "venmo", "wire", "e-transfer", "check "];
+
+    #[derive(serde::Serialize)]
+    struct AutoGroup { keep: String, remove: Vec<String>, account: String, date: String, amount: f64, direction: String, description: String }
+    let mut auto_groups: Vec<AutoGroup> = Vec::new();
+    let mut review: Vec<Value> = Vec::new();
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        for idxs in buckets.values() {
+            if idxs.len() < 2 { continue; }
+            let referenced: Vec<usize> = idxs.iter().cloned().filter(|&i| bank_txn_is_referenced(&conn, &rows[i].id)).collect();
+            // Survivor: keep a booked copy if any; else the earliest imported/created; tie → smallest id.
+            let survivor = {
+                let mut cand: Vec<usize> = if referenced.is_empty() { idxs.clone() } else { referenced.clone() };
+                cand.sort_by(|&a, &b| rows[a].imported_at.cmp(&rows[b].imported_at)
+                    .then(rows[a].created_at.cmp(&rows[b].created_at))
+                    .then(rows[a].id.cmp(&rows[b].id)));
+                cand[0]
+            };
+            let losers: Vec<usize> = idxs.iter().cloned().filter(|&i| i != survivor).collect();
+            let s = &rows[survivor];
+            let ids: Vec<String> = idxs.iter().map(|&i| rows[i].id.clone()).collect();
+            let base = json!({
+                "account": s.account, "date": s.date, "amount": s.amount, "direction": s.dir,
+                "description": s.desc, "keep": s.id, "ids": ids, "count": idxs.len(),
+            });
+
+            // Never auto-merge a group with more than one booked copy, or where a loser is
+            // booked — re-pointing would double-count or orphan. Human resolves.
+            if referenced.len() > 1 || losers.iter().any(|&i| referenced.contains(&i)) {
+                let mut g = base.clone(); g["reason"] = json!("more than one booked copy — resolve by hand"); review.push(g); continue;
+            }
+            // Conservative risk flags → review rather than auto-delete.
+            let whole_dollar = ((s.amount * 100.0).round() as i64) % 100 == 0;
+            let dl = s.desc.to_lowercase();
+            let generic = s.desc.trim().is_empty() || generic_terms.iter().any(|t| dl.contains(t));
+            if generic || whole_dollar || idxs.len() > 2 {
+                let mut g = base.clone();
+                g["reason"] = json!(if generic { "generic memo — could be a real repeat charge" }
+                                    else if whole_dollar { "round amount — could be a real repeat charge" }
+                                    else { "more than two copies" });
+                review.push(g); continue;
+            }
+            auto_groups.push(AutoGroup {
+                keep: s.id.clone(), remove: losers.iter().map(|&i| rows[i].id.clone()).collect(),
+                account: s.account.clone(), date: s.date.clone(), amount: s.amount, direction: s.dir.clone(), description: s.desc.clone(),
+            });
+        }
+    }
+
+    let auto_remove: usize = auto_groups.iter().map(|g| g.remove.len()).sum();
+
+    if dry_run {
+        let sample: Vec<&AutoGroup> = auto_groups.iter().take(30).collect();
+        return Ok(json!({
+            "dry_run": true,
+            "total_transactions": rows.len(),
+            "auto_groups": auto_groups.len(),
+            "auto_remove": auto_remove,
+            "review": review,
+            "review_count": review.len(),
+            "sample": sample,
+        }));
+    }
+
+    // EXECUTE — per-loser TOCTOU re-check, recovery backup, then durable delete.
+    let now = Utc::now().to_rfc3339();
+    let mut removed = 0i64;
+    let mut skipped = 0i64;
+    for g in &auto_groups {
+        for lid in &g.remove {
+            {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                if bank_txn_is_referenced(&conn, lid) { skipped += 1; continue; } // linked since the scan
+                let row_json: Option<String> = conn.query_row(
+                    "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,'amount',amount,\
+                        'direction',direction,'description',description,'memo_raw',memo_raw,'category',category,\
+                        'counterparty_name',counterparty_name,'source_format',source_format,'reviewed',reviewed,\
+                        'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at) FROM bank_txn WHERE id=?1",
+                    [lid], |r| r.get(0)).ok();
+                if let Some(rj) = row_json {
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,?3,?4,?5)",
+                        rusqlite::params![lid, rj, g.keep, "duplicate", now]);
+                }
+            }
+            let _ = sync::record_delete("bank_txn", lid);
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            if conn.execute("DELETE FROM bank_txn WHERE id=?1", [lid]).unwrap_or(0) > 0 { removed += 1; }
+        }
+    }
+    if removed > 0 { crate::netsync::push_now(); }
+
+    Ok(json!({
+        "dry_run": false,
+        "removed": removed,
+        "skipped_now_referenced": skipped,
+        "review": review,
+        "review_count": review.len(),
+        "backup_table": "bank_txn_deleted_backup",
+    }))
 }
 
 // ── Plaid live bank/card feed ───────────────────────────────────────────────

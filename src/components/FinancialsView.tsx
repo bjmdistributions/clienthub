@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
-  Loan, TxnRule,
+  Loan, TxnRule, DedupeResult,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -207,6 +207,9 @@ export default function FinancialsView() {
   const [plaidSavingKeys, setPlaidSavingKeys] = useState(false);
   const [plaidConnecting, setPlaidConnecting] = useState(false);
   const [plaidSyncing, setPlaidSyncing]     = useState(false);
+  const [dedupe, setDedupe]                 = useState<DedupeResult | null>(null); // preview/result modal
+  const [dedupeRunning, setDedupeRunning]   = useState(false);
+  const [dedupeDone, setDedupeDone]         = useState(false); // modal is showing the post-run report
   const [plaidEnv, setPlaidEnv]             = useState<"sandbox" | "production">("sandbox");
   const [plaidTesting, setPlaidTesting]     = useState(false);
   const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
@@ -575,6 +578,33 @@ export default function FinancialsView() {
       await refreshAll(false);
     } catch (e: any) { toast(String(e), "error"); }
     finally { setPlaidSyncing(false); }
+  };
+
+  // Duplicate cleanup: preview first (dry run), then the user confirms in the modal.
+  const previewDedupe = async () => {
+    setDedupeRunning(true);
+    setDedupeDone(false);
+    try {
+      const r = await api.dedupeBankTxns(true);
+      setDedupe(r);
+      if ((r.auto_remove || 0) === 0 && r.review_count === 0) {
+        toast("No duplicate transactions found", "success");
+        setDedupe(null);
+      }
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setDedupeRunning(false); }
+  };
+
+  const executeDedupe = async () => {
+    setDedupeRunning(true);
+    try {
+      const r = await api.dedupeBankTxns(false);
+      setDedupe(r);
+      setDedupeDone(true);
+      await refreshAll(false);
+      toast(`Removed ${r.removed || 0} duplicate${(r.removed || 0) === 1 ? "" : "s"}${r.review_count ? ` · ${r.review_count} flagged for review` : ""}`, "success");
+    } catch (e: any) { toast(String(e), "error"); }
+    finally { setDedupeRunning(false); }
   };
 
   const disconnectBank = async (item: PlaidItem) => {
@@ -1349,6 +1379,101 @@ export default function FinancialsView() {
           </button>
         </div>
 
+        {dedupe && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => !dedupeRunning && setDedupe(null)}>
+            <div className="bg-surface border border-line rounded-2xl w-full max-w-lg max-h-[82vh] shadow-xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="px-5 py-4 border-b border-line flex items-center justify-between">
+                <div className="text-[15px] font-semibold text-ink">{dedupeDone ? "Duplicates cleaned up" : "Clean up duplicate transactions"}</div>
+                <button onClick={() => setDedupe(null)} disabled={dedupeRunning} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 disabled:opacity-40"><X size={16} /></button>
+              </div>
+
+              <div className="px-5 py-4 overflow-y-auto flex flex-col gap-4">
+                {dedupeDone ? (
+                  <div className="flex items-start gap-3 rounded-xl border border-success/40 bg-success-bg/50 px-4 py-3">
+                    <Check size={18} className="text-success-ink mt-0.5 shrink-0" />
+                    <div className="text-[13px] text-ink-2 leading-relaxed">
+                      Removed <span className="font-semibold text-ink">{dedupe.removed || 0}</span> duplicate transaction{(dedupe.removed || 0) === 1 ? "" : "s"}.
+                      {(dedupe.skipped_now_referenced || 0) > 0 && <> {dedupe.skipped_now_referenced} were skipped because they became linked to a deal while cleaning.</>}
+                      {" "}A copy of everything removed is kept locally, so nothing is truly lost.
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2.5">
+                        <div className="text-[11px] text-muted">Total</div>
+                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.total_transactions ?? "—"}</div>
+                      </div>
+                      <div className="rounded-xl border border-accent/30 bg-accent/5 px-3 py-2.5">
+                        <div className="text-[11px] text-muted">Auto-remove</div>
+                        <div className="text-[18px] font-semibold text-accent tabular-nums">{dedupe.auto_remove ?? 0}</div>
+                      </div>
+                      <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2.5">
+                        <div className="text-[11px] text-muted">To review</div>
+                        <div className="text-[18px] font-semibold text-ink tabular-nums">{dedupe.review_count}</div>
+                      </div>
+                    </div>
+                    <p className="text-[12px] text-muted leading-relaxed">
+                      Extra copies of the same transaction will be removed. Anything reviewed or linked to a deal, loan or refund is never touched. Ambiguous ones (round amounts, generic memos like ATM/cash/transfer) are left for you to check below. Run this from one device.
+                    </p>
+                    {(dedupe.sample?.length || 0) > 0 && (
+                      <div>
+                        <div className="text-[11px] font-medium text-muted uppercase tracking-wide mb-1.5">Will remove (sample)</div>
+                        <div className="rounded-xl border border-line divide-y divide-line max-h-40 overflow-y-auto">
+                          {dedupe.sample!.map((g, i) => (
+                            <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
+                              <div className="min-w-0">
+                                <div className="text-ink-2 truncate">{g.description || "(no memo)"}</div>
+                                <div className="text-muted text-[11px]">{g.date} · {g.account}</div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className={`tabular-nums font-medium ${g.direction === "in" ? "text-success-ink" : "text-ink-2"}`}>{g.direction === "in" ? "+" : "−"}${g.amount.toFixed(2)}</span>
+                                <span className="text-[10px] text-muted bg-surface-2 border border-line rounded px-1.5 py-0.5">−{(g.remove?.length || 1)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {dedupe.review.length > 0 && (
+                  <div>
+                    <div className="text-[11px] font-medium text-warning-ink uppercase tracking-wide mb-1.5">Needs your review — not removed</div>
+                    <div className="rounded-xl border border-warning/40 bg-warning-bg/30 divide-y divide-warning/20 max-h-48 overflow-y-auto">
+                      {dedupe.review.slice(0, 60).map((g, i) => (
+                        <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
+                          <div className="min-w-0">
+                            <div className="text-ink-2 truncate">{g.description || "(no memo)"}</div>
+                            <div className="text-muted text-[11px]">{g.date} · {g.account} · {g.count ?? 2} copies · {g.reason}</div>
+                          </div>
+                          <span className={`tabular-nums font-medium shrink-0 ${g.direction === "in" ? "text-success-ink" : "text-ink-2"}`}>{g.direction === "in" ? "+" : "−"}${g.amount.toFixed(2)}</span>
+                        </div>
+                      ))}
+                      {dedupe.review.length > 60 && <div className="px-3 py-2 text-[11px] text-muted">+ {dedupe.review.length - 60} more…</div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-4 border-t border-line flex items-center justify-end gap-2">
+                {dedupeDone ? (
+                  <button onClick={() => setDedupe(null)} className="h-9 px-4 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover transition-colors">Done</button>
+                ) : (
+                  <>
+                    <button onClick={() => setDedupe(null)} disabled={dedupeRunning} className="h-9 px-4 rounded-lg text-[13px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-40 transition-colors">Cancel</button>
+                    <button onClick={executeDedupe} disabled={dedupeRunning || (dedupe.auto_remove || 0) === 0}
+                      className="flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-40 transition-colors">
+                      {dedupeRunning ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Remove {dedupe.auto_remove || 0} duplicate{(dedupe.auto_remove || 0) === 1 ? "" : "s"}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {cashOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setCashOpen(false)}>
             <div className="bg-surface border border-line rounded-2xl w-full max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -1559,6 +1684,14 @@ export default function FinancialsView() {
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
                     Re-pull all
+                  </button>
+                  <button
+                    onClick={previewDedupe}
+                    disabled={plaidSyncing || dedupeRunning}
+                    title="Find transactions imported more than once (e.g. the same bank linked on two devices) and safely remove the extra copies."
+                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                  >
+                    {dedupeRunning && !dedupe ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Clean up duplicates
                   </button>
                   <button
                     onClick={clearAndRepull}

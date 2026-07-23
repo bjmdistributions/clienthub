@@ -1163,6 +1163,7 @@ export interface Lot {
   notes: string | null;
   sent_whatsapp: boolean;
   sent_email: boolean;
+  sent_facebook: boolean;
   supplier: string | null;
   location: string | null;
   manifest_path: string | null;
@@ -1452,6 +1453,30 @@ export interface BankTxnSummary {
   unallocated_out: number;
   unclassified: number;
 }
+export interface DedupeGroup {
+  keep: string;
+  ids?: string[];
+  remove?: string[];
+  account: string;
+  date: string;
+  amount: number;
+  direction: string;
+  description: string;
+  count?: number;
+  reason?: string;
+}
+export interface DedupeResult {
+  dry_run: boolean;
+  total_transactions?: number;
+  auto_groups?: number;
+  auto_remove?: number;
+  removed?: number;
+  skipped_now_referenced?: number;
+  review: DedupeGroup[];
+  review_count: number;
+  sample?: DedupeGroup[];
+  backup_table?: string;
+}
 export interface BankAllocation {
   id: string;
   deal_flow_id: string;
@@ -1734,6 +1759,8 @@ export const api = {
     invoke<boolean>("toggle_client_blacklist", { id }),
   toggleClientExclusive: (id: string) =>
     invoke<boolean>("toggle_client_exclusive", { id }),
+  resubscribeClient: (id: string) =>
+    invoke<void>("resubscribe_client", { id }),
   toggleClientHighValue: (id: string) =>
     invoke<boolean>("toggle_client_high_value", { id }),
   setClientCreditLimit: (id: string, limit: number) => invoke<void>("set_client_credit_limit", { id, limit }),
@@ -2247,6 +2274,8 @@ export const api = {
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),
   clearBankTxns: (scope: "statements" | "plaid" | "all", force = false) =>
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
+  dedupeBankTxns: (dryRun: boolean) =>
+    invoke<DedupeResult>("dedupe_bank_txns", { dryRun }),
   listBankAllocationsForTxn: (bankTxnId: string) =>
     invoke<BankAllocation[]>("list_bank_allocations_for_txn", { bankTxnId }),
   dealAllocations: (dealFlowId: string) =>

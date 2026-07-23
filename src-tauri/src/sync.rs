@@ -467,6 +467,17 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
     }
 }
 
+/// True if this row has a local tombstone (i.e. it was deleted here and the delete is
+/// durable). Used by `restore_snapshot` to avoid re-materializing a row the user already
+/// removed — a snapshot restore writes raw rows and otherwise bypasses the tombstone guard
+/// that `apply_event` enforces, so without this a "Restore from server" undoes deletions
+/// (e.g. a duplicate-transaction cleanup). Any tombstone counts: a snapshot row carries no
+/// HLC to compare, and a legitimately re-created id still arrives via the normal oplog path
+/// (which does the HLC comparison) rather than needing the snapshot.
+pub fn is_tombstoned(table: &str, row_id: &str) -> bool {
+    tombstone_clock(table, row_id).ok().flatten().is_some()
+}
+
 // ---------- Apply remote events ----------
 
 const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers"];

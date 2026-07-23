@@ -331,8 +331,22 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
               on={!!(client.exclusive || client.metadata?.exclusive)}
               title="Keeps this client off mass newsletters and auto-add — for people you don't want to bulk-email."
               onToggle={async () => {
-                const val = await api.toggleClientExclusive(client.id);
-                setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
+                try {
+                  const val = await api.toggleClientExclusive(client.id);
+                  setClient((c) => c ? { ...c, exclusive: val, metadata: { ...(c.metadata || {}), exclusive: val } } : c);
+                } catch (e: any) {
+                  // Opted-out client: turning No-bulk off alone won't resume their emails.
+                  // Offer a deliberate resubscribe that also clears their opt-out.
+                  if (String(e).includes("UNSUBSCRIBED_CONFIRM")) {
+                    const when = client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : "";
+                    if (confirm(`This client unsubscribed themselves${when}. Turning off "No bulk email" won't resume their emails unless you also resubscribe them.\n\nResubscribe ${client.name || "this client"} and resume emails?`)) {
+                      await api.resubscribeClient(client.id);
+                      setClient((c) => c ? { ...c, exclusive: false, metadata: { ...(c.metadata || {}), exclusive: false, unsubscribed: false } } : c);
+                    }
+                  } else {
+                    throw e;
+                  }
+                }
               }} />
             <FlagSwitch label="Blacklisted" tone="danger"
               on={!!client.is_blacklisted}

@@ -137,7 +137,7 @@ export default function InventoryView() {
   const [sort, setSort] = useState<SortKey>("newest");
   const [renewOnly, setRenewOnly] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
-  const [sentFilter, setSentFilter] = useState<"any" | "email" | "whatsapp" | "none">("any");
+  const [sentFilter, setSentFilter] = useState<"any" | "email" | "whatsapp" | "facebook" | "none">("any");
   const [sortOpen, setSortOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false); // header overflow menu
   const overflowRef = useRef<HTMLDivElement>(null);
@@ -153,6 +153,7 @@ export default function InventoryView() {
   const [storefront, setStorefront] = useState<StorefrontConfig | null>(null);
   const [mediaIssues, setMediaIssues] = useState<Record<string, MediaIssue>>({});
   const [attentionOnly, setAttentionOnly] = useState(false);
+  const [fbLot, setFbLot] = useState<Lot | null>(null); // lot whose "Post to Facebook" compose is open
   const loadOffers = () => api.listOffers().then(setOffers).catch(() => {});
   const loadIssues = () => api.listMediaSyncIssues()
     .then((rows) => setMediaIssues(Object.fromEntries(rows.map((r) => [r.lot_id, { missing_local: r.missing_local, pending_upload: r.pending_upload }]))))
@@ -259,9 +260,9 @@ export default function InventoryView() {
 
   // Toggle the "sent on WhatsApp / email" flags right from the card.
   // Optimistic update for snappy UX, then persist (and sync).
-  const toggleSent = async (lot: Lot, channel: "whatsapp" | "email") => {
-    const prop = channel === "whatsapp" ? "sent_whatsapp" : "sent_email";   // Lot property (snake)
-    const arg  = channel === "whatsapp" ? "sentWhatsapp" : "sentEmail";       // Tauri arg (camel)
+  const toggleSent = async (lot: Lot, channel: "whatsapp" | "email" | "facebook") => {
+    const prop = channel === "whatsapp" ? "sent_whatsapp" : channel === "email" ? "sent_email" : "sent_facebook"; // Lot property (snake)
+    const arg  = channel === "whatsapp" ? "sentWhatsapp" : channel === "email" ? "sentEmail" : "sentFacebook";    // Tauri arg (camel)
     const next = !lot[prop];
     setLots((prev) => prev.map((l) => (l.id === lot.id ? { ...l, [prop]: next } : l)));
     try { await api.updateLot(lot.id, { [arg]: next }); }
@@ -294,9 +295,9 @@ export default function InventoryView() {
     if (selected.size === 0) return;
     try { for (const id of selected) await api.setLotStatus(id, status); exitSelect(); load(); } catch (e: any) { toast(String(e), "error"); }
   };
-  const bulkSent = async (channel: "whatsapp" | "email", val: boolean) => {
+  const bulkSent = async (channel: "whatsapp" | "email" | "facebook", val: boolean) => {
     if (selected.size === 0) return;
-    const arg = channel === "whatsapp" ? "sentWhatsapp" : "sentEmail";
+    const arg = channel === "whatsapp" ? "sentWhatsapp" : channel === "email" ? "sentEmail" : "sentFacebook";
     try { for (const id of selected) await api.updateLot(id, { [arg]: val }); exitSelect(); load(); } catch (e: any) { toast(String(e), "error"); }
   };
   // Build a per-lot newsletter block input from a lot: per-unit price (per_unit lots, or
@@ -398,7 +399,8 @@ export default function InventoryView() {
       if (categoryFilter !== "all" && (l.category || "").trim() !== categoryFilter) return false;
       if (sentFilter === "email" && !l.sent_email) return false;
       if (sentFilter === "whatsapp" && !l.sent_whatsapp) return false;
-      if (sentFilter === "none" && (l.sent_email || l.sent_whatsapp)) return false;
+      if (sentFilter === "facebook" && !l.sent_facebook) return false;
+      if (sentFilter === "none" && (l.sent_email || l.sent_whatsapp || l.sent_facebook)) return false;
       return matchesSearch(l);
     })
     .sort((a, b) => {
@@ -505,6 +507,7 @@ export default function InventoryView() {
           <button onClick={() => bulkStatus("archived")} disabled={!selected.size} className="text-[12px] text-danger-ink border border-danger px-2.5 h-8 rounded-lg hover:bg-danger-bg disabled:opacity-40 flex items-center gap-1"><Ban size={12} /> Unavailable</button>
           <button onClick={() => bulkSent("whatsapp", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><MessageCircle size={12} /> WA sent</button>
           <button onClick={() => bulkSent("email", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Mail size={12} /> Emailed</button>
+          <button onClick={() => bulkSent("facebook", true)} disabled={!selected.size} className="text-[12px] text-ink-2 border border-line px-2.5 h-8 rounded-lg hover:bg-surface-2 disabled:opacity-40 flex items-center gap-1"><Facebook size={12} /> FB posted</button>
           <button onClick={bulkDelete} disabled={!selected.size} className="text-[12px] text-danger-ink bg-danger-bg border border-danger px-2.5 h-8 rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center gap-1"><Trash2 size={12} /> Delete</button>
           <button onClick={() => {
             window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: Array.from(selected) }));
@@ -576,6 +579,7 @@ export default function InventoryView() {
             <option value="any">Any send status</option>
             <option value="email">Emailed</option>
             <option value="whatsapp">Sent on WhatsApp</option>
+            <option value="facebook">Posted to Facebook</option>
             <option value="none">Not sent yet</option>
           </select>
 
@@ -637,6 +641,7 @@ export default function InventoryView() {
             onStatus={(s) => setStatus(lot, s)}
             onDelete={() => deleteOne(lot)}
             onBlast={() => setBlastLot(lot)}
+            onPostFacebook={() => setFbLot(lot)}
             onRenew={() => renewLot(lot)}
             storeUrl={storeUrl}
             onCopyStoreLink={() => copyStoreLink(lot.id)}
@@ -736,6 +741,9 @@ export default function InventoryView() {
         );
       })()}
 
+      {/* Post-to-Facebook compose, openable straight from a card (not just the detail) */}
+      {fbLot && <FbPostModal lot={fbLot} photos={(() => { try { return JSON.parse(fbLot.photos_json || "[]") ?? []; } catch { return []; } })()} onClose={() => setFbLot(null)} />}
+
       {linkModal && (() => {
         const lot = lots.find((l) => l.id === linkModal);
         if (!lot) return null;
@@ -762,12 +770,12 @@ export default function InventoryView() {
 // behind a hover bar + a MoreVertical menu so the grid reads quiet.
 function LotCard({
   lot, index, mediaBase, selectMode, selected, warnings,
-  onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, onRenew, storeUrl, onCopyStoreLink,
+  onOpen, onToggleSent, onEdit, onStatus, onDelete, onBlast, onPostFacebook, onRenew, storeUrl, onCopyStoreLink,
   unitCost, unitAsk, loadPrice, marginStr, profit,
 }: {
   lot: Lot; index: number; mediaBase: string; selectMode: boolean; selected: boolean; warnings: string[];
-  onOpen: () => void; onToggleSent: (c: "whatsapp" | "email") => void;
-  onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void; onRenew: () => void;
+  onOpen: () => void; onToggleSent: (c: "whatsapp" | "email" | "facebook") => void;
+  onEdit: () => void; onStatus: (s: string) => void; onDelete: () => void; onBlast: () => void; onPostFacebook: () => void; onRenew: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void;
   unitCost: number; unitAsk: number; loadPrice: number; marginStr: string; profit: number;
 }) {
@@ -872,9 +880,8 @@ function LotCard({
           <h3 className="text-[14px] font-semibold text-ink leading-snug line-clamp-1 group-hover:text-accent transition-colors duration-[140ms]">{lot.name}</h3>
           <span className="text-[11px] text-muted whitespace-nowrap flex-shrink-0 mt-px tabular-nums">{lot.quantity.toLocaleString()} units</span>
         </div>
-        {[lot.category, lot.supplier, lot.location].some(Boolean) && (
-          <p className="text-[11px] text-muted truncate mt-0.5">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
-        )}
+        {/* Always render (reserve one line) so the price line below sits at the same height on every card. */}
+        <p className="text-[11px] text-muted truncate mt-0.5 min-h-[15px]">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
 
         {/* Money block — load price is the headline, per-unit muted under it,
             profit a discreet internal line (hidden when cost is unset).
@@ -906,36 +913,48 @@ function LotCard({
           )}
         </div>
 
-        {/* Footer strip — sent readouts + stale, always visible & quiet */}
-        <div className="relative flex items-center gap-3 mt-2.5 pt-2.5 border-t border-line">
-          <span className={`flex items-center gap-1 text-[10px] ${lot.sent_whatsapp ? "text-success-ink" : "text-faint"}`} title={lot.sent_whatsapp ? "Sent on WhatsApp" : "Not sent on WhatsApp"}>
-            <MessageCircle size={11} /> WhatsApp {lot.sent_whatsapp && <Check size={10} />}
-          </span>
-          <span className={`flex items-center gap-1 text-[10px] ${lot.sent_email ? "text-info-ink" : "text-faint"}`} title={lot.sent_email ? "Emailed" : "Not emailed"}>
+        {/* Spacer — pushes the toggles + actions to the bottom so they line up across every
+            card no matter how long the name / details / price run above them. */}
+        <div className="flex-1" />
+
+        {/* Sent toggles — always visible & clickable; tap to mark WhatsApp / Email / Facebook. */}
+        <div className="flex items-center gap-1 mt-2.5 pt-2.5 border-t border-line">
+          <button onClick={(e) => { stop(e); onToggleSent("whatsapp"); }} title={lot.sent_whatsapp ? "Sent on WhatsApp — tap to unmark" : "Mark sent on WhatsApp"}
+            className={`flex items-center gap-1 text-[10px] px-1.5 h-6 rounded-md border transition-colors ${lot.sent_whatsapp ? "text-success-ink bg-success-bg border-success" : "text-faint border-line hover:text-ink-2"}`}>
+            <MessageCircle size={11} /> WA {lot.sent_whatsapp && <Check size={10} />}
+          </button>
+          <button onClick={(e) => { stop(e); onToggleSent("email"); }} title={lot.sent_email ? "Emailed — tap to unmark" : "Mark emailed"}
+            className={`flex items-center gap-1 text-[10px] px-1.5 h-6 rounded-md border transition-colors ${lot.sent_email ? "text-info-ink bg-info-bg border-info" : "text-faint border-line hover:text-ink-2"}`}>
             <Mail size={11} /> Email {lot.sent_email && <Check size={10} />}
-          </span>
+          </button>
+          <button onClick={(e) => { stop(e); onToggleSent("facebook"); }} title={lot.sent_facebook ? "Posted to Facebook — tap to unmark" : "Mark posted to Facebook"}
+            className={`flex items-center gap-1 text-[10px] px-1.5 h-6 rounded-md border transition-colors ${lot.sent_facebook ? "text-accent bg-accent/10 border-accent/40" : "text-faint border-line hover:text-ink-2"}`}>
+            <Facebook size={11} /> FB {lot.sent_facebook && <Check size={10} />}
+          </button>
           <div className="flex-1" />
           {stale && (
             <button onClick={(e) => { stop(e); onRenew(); }}
               title={`Last shared ${daysSince(lot.updated_at)} days ago — renew to reset freshness (no email sent).`}
-              className="flex items-center gap-1 text-[10px] text-warning-ink bg-warning-bg border border-warning px-2 py-0.5 rounded-full hover:opacity-90 transition-opacity">
+              className="flex items-center gap-1 text-[10px] text-warning-ink bg-warning-bg border border-warning px-2 h-6 rounded-full hover:opacity-90 transition-opacity">
               <RefreshCw size={11} /> Renew
             </button>
           )}
         </div>
 
-        {/* Hover action bar — slides up over the footer */}
+        {/* Send actions — ALWAYS visible so they're easy to see + press without opening the lot. */}
         {!selectMode && !sold && !archived && (
-          <div onClick={stop}
-            className="pointer-events-none group-hover:pointer-events-auto flex items-center gap-1.5 mt-2.5 opacity-0 translate-y-1.5 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-150"
-            style={{ transitionTimingFunction: "cubic-bezier(0.16,1,0.3,1)" }}>
-            <button onClick={() => window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: [lot.id] }))}
-              className="flex-1 flex items-center justify-center gap-1.5 text-[12px] font-medium text-success-ink border border-success bg-success-bg hover:opacity-90 h-8 rounded-lg transition-opacity">
-              <Send size={13} /> WhatsApp
+          <div onClick={stop} className="flex items-center gap-1.5 mt-2">
+            <button onClick={() => window.dispatchEvent(new CustomEvent("share-whatsapp", { detail: [lot.id] }))} title="Share this lot on WhatsApp"
+              className="flex-1 flex items-center justify-center gap-1 text-[11.5px] font-medium text-success-ink border border-success bg-success-bg hover:opacity-90 h-8 rounded-lg transition-opacity">
+              <Send size={12} /> WhatsApp
             </button>
-            <button onClick={onBlast}
-              className="flex-1 flex items-center justify-center gap-1.5 text-[12px] font-medium bg-accent hover:bg-accent-hover text-on-accent h-8 rounded-lg transition-colors">
-              <Mail size={13} /> Blast
+            <button onClick={onPostFacebook} title="Post this lot to your Facebook Page"
+              className="flex-1 flex items-center justify-center gap-1 text-[11.5px] font-medium text-ink-2 border border-line hover:border-accent hover:text-accent h-8 rounded-lg transition-colors">
+              <Facebook size={12} /> Facebook
+            </button>
+            <button onClick={onBlast} title="Email this lot to a buyer segment"
+              className="flex-1 flex items-center justify-center gap-1 text-[11.5px] font-medium bg-accent hover:bg-accent-hover text-on-accent h-8 rounded-lg transition-colors">
+              <Mail size={12} /> Email
             </button>
           </div>
         )}
@@ -1876,7 +1895,7 @@ function FbPostModal({ lot, photos, onClose }: { lot: Lot; photos: string[]; onC
 
 function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, onClose, onEdit, onStatus, onToggleSent, onLink, onDelete, onChanged, storeUrl, onCopyStoreLink, onOpenStoreLink }: {
   lot: Lot; deals: Deal[]; mediaBase: string; warnings: string[]; offers: Offer[]; onOffersChanged: () => void; onClose: () => void; onEdit: () => void;
-  onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
+  onStatus: (s: string) => void; onToggleSent: (c: "whatsapp" | "email" | "facebook") => void; onLink: () => void; onDelete: () => void; onChanged: () => void;
   storeUrl: string | null; onCopyStoreLink: () => void; onOpenStoreLink: () => void;
 }) {
   const photos: string[] = (() => { try { return JSON.parse(lot.photos_json || "[]") ?? []; } catch { return []; } })();
@@ -2002,6 +2021,10 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             <button onClick={() => onToggleSent("email")} title={lot.sent_email ? "Emailed — click to unmark" : "Not emailed — click to mark sent"}
               className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_email ? "bg-info-bg text-info-ink border-info" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
               <Mail size={12} /> Email {lot.sent_email && <Check size={11} />}
+            </button>
+            <button onClick={() => onToggleSent("facebook")} title={lot.sent_facebook ? "Posted to Facebook — click to unmark" : "Not posted to Facebook — click to mark posted"}
+              className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-full border transition-colors ${lot.sent_facebook ? "bg-accent/10 text-accent border-accent/40" : "bg-surface-2 text-muted border-line hover:bg-surface-3"}`}>
+              <Facebook size={12} /> Facebook {lot.sent_facebook && <Check size={11} />}
             </button>
           </div>
 
