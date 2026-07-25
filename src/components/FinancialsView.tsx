@@ -1370,11 +1370,21 @@ export default function FinancialsView() {
       {/* Import + AI toolbar */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-end gap-2 flex-wrap">
+          {/* Duplicate cleanup lives here — the primary transactions toolbar — because the
+              bank-feed panel it used to sit in collapses itself once a bank is connected. */}
+          <button
+            onClick={() => previewDedupe(false)}
+            disabled={dedupeRunning || bulkBusy}
+            title="Find transactions imported more than once (e.g. the same bank connected on two devices) and remove the extra copies."
+            className="mr-auto flex items-center gap-1.5 px-3 h-9 border border-accent/40 bg-accent/5 text-accent rounded-lg text-[13px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors"
+          >
+            {dedupeRunning && !dedupe ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Clean up duplicates
+          </button>
           <button
             onClick={clearStatementImports}
             disabled={clearing || bulkBusy}
             title="Delete transactions imported from statement files — keeps the live bank feed"
-            className="mr-auto flex items-center gap-1.5 px-3 h-9 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 h-9 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
           >
             {clearing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Remove statement imports
           </button>
@@ -1739,14 +1749,6 @@ export default function FinancialsView() {
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
                     Re-pull all
-                  </button>
-                  <button
-                    onClick={() => previewDedupe(false)}
-                    disabled={plaidSyncing || dedupeRunning}
-                    title="Find transactions imported more than once (e.g. the same bank linked on two devices) and safely remove the extra copies."
-                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                  >
-                    {dedupeRunning && !dedupe ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Clean up duplicates
                   </button>
                   <button
                     onClick={clearAndRepull}
