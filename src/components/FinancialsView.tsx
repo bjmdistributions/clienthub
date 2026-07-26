@@ -937,6 +937,32 @@ export default function FinancialsView() {
   const bulkTagLoan = (loan: Loan) =>
     runBulk((t) => api.tagBankTxnToLoan(t.id, loan.id));
 
+  // Delete hand-picked transactions — the escape hatch for duplicates the automatic
+  // cleanup refuses to touch. Anything booked to a deal/loan/refund is skipped by the
+  // backend (removing it would silently change recorded profit) and reported back.
+  const bulkDelete = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const ok = window.confirm(
+      `Delete ${ids.length} transaction${ids.length === 1 ? "" : "s"}?\n\n` +
+        `Anything linked to a deal, loan or refund is kept — those are skipped and reported.\n` +
+        `A copy of everything removed is saved locally, so nothing is truly lost.`
+    );
+    if (!ok) return;
+    setBulkActionBusy(true);
+    try {
+      const r = await api.deleteBankTxns(ids);
+      clearSelection();
+      await refreshAll(true);
+      const extra = r.skipped_booked > 0 ? ` · ${r.skipped_booked} kept (linked to a deal)` : "";
+      toast(`Deleted ${r.deleted} transaction${r.deleted === 1 ? "" : "s"}${extra}`, "success");
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setBulkActionBusy(false);
+    }
+  };
+
   // Suggest categories with AI. Suggestions only — does NOT mark reviewed. Loops the
   // batched command until the backlog is clear (or the model stops making progress).
   const aiCategorize = async () => {
@@ -2201,6 +2227,15 @@ export default function FinancialsView() {
             className="text-ink-2 hover:text-ink disabled:opacity-50 transition-colors"
           >
             Reopen
+          </button>
+          <span className="text-faint">·</span>
+          <button
+            onClick={bulkDelete}
+            disabled={bulkActionBusy}
+            title="Delete the selected transactions (booked ones are kept)"
+            className="text-danger-ink hover:opacity-80 disabled:opacity-50 transition-opacity"
+          >
+            Delete
           </button>
           <button
             onClick={clearSelection}

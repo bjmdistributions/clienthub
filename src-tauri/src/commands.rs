@@ -11807,6 +11807,66 @@ pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, 
     }))
 }
 
+/// Delete specific bank transactions the user picked by hand.
+///
+/// The automatic cleanup deliberately refuses anything it can't prove is a duplicate, and
+/// everything it refuses lands in a read-only "needs your review" list — so a duplicate the
+/// user can SEE had no way to be removed. This is that missing exit.
+///
+/// Safety mirrors the dedupe path exactly:
+///   * admin only,
+///   * a row linked to a deal / loan / refund is NEVER deleted (it would silently change
+///     recorded profit) — it's skipped and reported back,
+///   * every removed row is copied to `bank_txn_deleted_backup` first,
+///   * the delete goes through the oplog so it propagates instead of resurrecting.
+#[tauri::command]
+pub async fn delete_bank_txns(ids: Vec<String>) -> Result<Value, String> {
+    if !crate::employees::session_is_privileged() {
+        return Err("Only an admin can delete transactions.".into());
+    }
+    if ids.is_empty() {
+        return Ok(json!({ "deleted": 0, "skipped_booked": 0 }));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut deleted = 0usize;
+    let mut skipped_booked = 0usize;
+
+    for id in &ids {
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            // Booked money is never removed behind the user's back.
+            if bank_txn_is_referenced(&conn, id) {
+                skipped_booked += 1;
+                continue;
+            }
+            let row_json: Option<String> = conn.query_row(
+                "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,'amount',amount,\
+                    'direction',direction,'description',description,'memo_raw',memo_raw,'category',category,\
+                    'counterparty_name',counterparty_name,'source_format',source_format,'reviewed',reviewed,\
+                    'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at) FROM bank_txn WHERE id=?1",
+                [id], |r| r.get(0)).ok();
+            if row_json.is_none() { continue; } // already gone
+            if let Some(rj) = row_json {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,?3,?4,?5)",
+                    rusqlite::params![id, rj, "", "manual", now]);
+            }
+        }
+        let _ = sync::record_delete("bank_txn", id);
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        if conn.execute("DELETE FROM bank_txn WHERE id=?1", [id]).unwrap_or(0) > 0 { deleted += 1; }
+    }
+
+    if deleted > 0 { crate::netsync::push_now(); }
+
+    Ok(json!({
+        "deleted": deleted,
+        "skipped_booked": skipped_booked,
+        "backup_table": "bank_txn_deleted_backup",
+    }))
+}
+
 // ── Plaid live bank/card feed ───────────────────────────────────────────────
 
 fn plaid_txn_id(transaction_id: &str) -> String {

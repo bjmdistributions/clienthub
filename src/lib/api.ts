@@ -2283,6 +2283,9 @@ export const api = {
     invoke<{ deleted: number; allocations_removed: number; kept: number }>("clear_bank_txns", { scope, force }),
   dedupeBankTxns: (dryRun: boolean, aggressive = false) =>
     invoke<DedupeResult>("dedupe_bank_txns", { dryRun, aggressive }),
+  /** Delete hand-picked bank transactions. Booked rows are skipped, not silently removed. */
+  deleteBankTxns: (ids: string[]) =>
+    invoke<{ deleted: number; skipped_booked: number }>("delete_bank_txns", { ids }),
   getBankBackupSettings: () =>
     invoke<{ sheet_url: string; enabled: boolean; last_at: string; last_total: string }>("get_bank_backup_settings"),
   setBankBackupSettings: (sheetUrl: string, enabled: boolean) =>

@@ -943,6 +943,7 @@ fn main() {
             refund_status_all,
             clear_bank_txns,
             dedupe_bank_txns,
+            delete_bank_txns,
             undo_bank_account_merge,
             get_money_config,
             set_money_config,
