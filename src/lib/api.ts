@@ -1467,7 +1467,9 @@ export interface DedupeGroup {
   description: string;
   count?: number;
   reason?: string;
+  cross_account?: boolean;   // removal exists only because two account labels were merged
 }
+export interface AccountMerge { from: string; to: string; rows: number }
 export interface DedupeResult {
   dry_run: boolean;
   total_transactions?: number;
@@ -1475,6 +1477,8 @@ export interface DedupeResult {
   auto_remove?: number;
   removed?: number;
   skipped_now_referenced?: number;
+  relabelled?: number;
+  account_merges?: AccountMerge[];
   review: DedupeGroup[];
   review_count: number;
   sample?: DedupeGroup[];

@@ -1465,6 +1465,26 @@ export default function FinancialsView() {
                       </div>
                     </div>
 
+                    {/* Same card linked twice under two masks — the reason already-booked
+                        transactions kept re-appearing as "needs booking". */}
+                    {(dedupe.account_merges?.length || 0) > 0 && (
+                      <div className="rounded-xl border border-accent/40 bg-accent/5 px-3.5 py-3">
+                        <div className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
+                          <Landmark size={14} className="text-accent" /> Same account connected twice
+                        </div>
+                        <p className="text-[11.5px] text-muted leading-relaxed mt-1">
+                          These look like one account that got connected twice (the bank returned a different last-4 each time), which is why transactions you already booked keep coming back unbooked. They'll be combined into one account, keeping your reviewed ones.
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          {dedupe.account_merges!.map((m, i) => (
+                            <div key={i} className="text-[11.5px] text-ink-2 tabular-nums">
+                              <span className="text-muted">{m.from}</span> <span className="text-faint">→</span> <span className="font-medium">{m.to}</span> <span className="text-muted">({m.rows} moved)</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Mode: clearly-safe only, or every exact match (same date/amount/memo). */}
                     <div className="flex items-center gap-1 p-1 rounded-xl border border-line bg-surface-2/40">
                       <button onClick={() => previewDedupe(false)} disabled={dedupeRunning}
@@ -1492,6 +1512,7 @@ export default function FinancialsView() {
                                 <div className="text-muted text-[11px]">{g.date} · {g.account}</div>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
+                                {g.cross_account && <span className="text-[10px] text-accent bg-accent/10 border border-accent/30 rounded px-1.5 py-0.5">merged acct</span>}
                                 <span className={`tabular-nums font-medium ${g.direction === "in" ? "text-success-ink" : "text-ink-2"}`}>{g.direction === "in" ? "+" : "−"}${g.amount.toFixed(2)}</span>
                                 <span className="text-[10px] text-muted bg-surface-2 border border-line rounded px-1.5 py-0.5">−{(g.remove?.length || 1)}</span>
                               </div>
