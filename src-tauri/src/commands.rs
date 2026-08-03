@@ -9125,10 +9125,19 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
 #[tauri::command]
 pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // Refund-netted and fell-through-guarded, exactly like the hero
+    // (PROFIT_MONTH_SQL) and the server's /api/dashboard/monthly-profit. Without
+    // these this daily series disagreed with the dashboard's OWN refund-aware hero
+    // on the same screen — a month containing a refund or a voided-but-complete deal
+    // made the cumulative chart read high.
     let mut stmt = conn.prepare(
-        "SELECT date(df.completed_at) as d, COALESCE(SUM(df.net_profit),0), COALESCE(SUM(df.gross_revenue),0)
-         FROM deal_flows df
-         WHERE df.stage='complete' AND strftime('%Y-%m', df.completed_at) = ?1
+        "SELECT date(df.completed_at) as d,
+                COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0),
+                COALESCE(SUM(df.gross_revenue),0)
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
+           AND strftime('%Y-%m', df.completed_at) = ?1
          GROUP BY d ORDER BY d"
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&month], |r| {
@@ -11319,6 +11328,28 @@ pub async fn clear_bank_txns(scope: String, force: bool) -> Result<Value, String
             let rows = stmt.query_map([id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
             rows.filter_map(|r| r.ok()).collect()
         };
+        // Copy the row (and its allocations) into the local recovery table BEFORE deleting.
+        // Only `dedupe_bank_txns` did this, so a bulk clear — which is where most deletions
+        // actually come from — left nothing to recover: the live DB showed 3357 bank_txn
+        // tombstones against an EMPTY bank_txn_deleted_backup.
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let now = Utc::now().to_rfc3339();
+            let row_json: Option<String> = conn.query_row(
+                "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,'amount',amount,\
+                    'direction',direction,'description',description,'memo_raw',memo_raw,'category',category,\
+                    'counterparty_name',counterparty_name,'source_format',source_format,'reviewed',reviewed,\
+                    'raw_json',raw_json,'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at,\
+                    'allocations',(SELECT json_group_array(json_object('id',a.id,'deal_flow_id',a.deal_flow_id,\
+                        'amount',a.amount,'role',a.role,'note',a.note)) FROM bank_allocation a WHERE a.bank_txn_id=bank_txn.id)) \
+                 FROM bank_txn WHERE id=?1",
+                [id], |r| r.get(0)).ok();
+            if let Some(rj) = row_json {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,NULL,?3,?4)",
+                    rusqlite::params![id, rj, format!("clear:{scope}"), now]);
+            }
+        }
         for aid in &alloc_ids {
             let _ = sync::record_delete("bank_allocation", aid);
             let conn = pool().get().map_err(|e| e.to_string())?;
@@ -11406,6 +11437,84 @@ pub async fn undo_bank_account_merge(from: String) -> Result<Value, String> {
     }
     if moved > 0 { crate::netsync::push_now(); }
     Ok(json!({ "restored_to": from, "rows_moved_back": moved }))
+}
+
+/// The bank's OWN unique reference for a transaction, pulled out of the raw descriptor.
+///
+/// This is the key to making duplicates structurally impossible rather than merely
+/// detectable. Plaid's `transaction_id` belongs to the CONNECTION, so re-linking a bank (or
+/// linking the same card on a second device) renames every transaction and the old id-based
+/// dedup misses all of it. These references come from the banking rails themselves, so they
+/// survive a re-link, a card-mask change, and a PDF statement re-import of the same month.
+///
+/// Measured over the live book (1,248 rows): 43% of rows carry one, but that is **91% of the
+/// dollars** and >90% of everything above $10k, with ZERO collisions in 14 months once scoped
+/// by direction. (Un-scoped there are exactly 4 collisions, all of them the two legs of one
+/// internal transfer sharing a reference — hence the direction scoping at the call site.)
+///
+/// Deliberately NOT treated as references: check numbers and teller deposit ids. They look
+/// unique but are recycling counters, so keying on them would merge cheque #2136 for $2,000
+/// with a later #2136 for $18,000 and destroy money.
+///
+/// Returns `(kind, value)` — kind is kept so two different rails can never collide with each
+/// other, e.g. an IMAD that happens to equal a TRACE#.
+fn bank_txn_reference(desc: &str) -> Option<(&'static str, String)> {
+    let take_after = |hay: &str, needle: &str| -> Option<String> {
+        let i = hay.to_uppercase().find(needle)?;
+        let rest = &hay[i + needle.len()..];
+        let val: String = rest
+            .chars()
+            .skip_while(|c| c.is_whitespace() || *c == ':' || *c == '#')
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        // Short tails are almost always a truncated memo, not a real reference.
+        if val.len() >= 8 { Some(val.to_uppercase()) } else { None }
+    };
+    // Ordered by how authoritative the rail is.
+    for (kind, needle) in [
+        ("imad", "IMAD:"),
+        ("trace", "TRACE#"),
+        ("trn", "TRN:"),
+        ("txn", "TRANSACTION#"),
+    ] {
+        if let Some(v) = take_after(desc, needle) {
+            return Some((kind, v));
+        }
+    }
+    // Zelle stamps a bare token (e.g. "JPM99cjnk2kx") with no label.
+    if desc.to_uppercase().contains("ZELLE") {
+        if let Some(tok) = desc
+            .split_whitespace()
+            .find(|w| w.len() >= 10 && w.starts_with("JPM") && w.chars().all(|c| c.is_ascii_alphanumeric()))
+        {
+            return Some(("zelle", tok.to_uppercase()));
+        }
+    }
+    None
+}
+
+/// The canonical id for a bank transaction: a pure function of WHAT the transaction is, so
+/// every writer — desktop Plaid sync, statement import, the server, mobile — mints the same
+/// string and a second arrival collides with the existing row instead of inserting a new one.
+/// A primary-key collision is already the merge path in the sync engine (apply_upsert routes
+/// an existing id to UPDATE with per-column LWW), so nothing new is needed to converge.
+///
+/// `None` when the bank supplied no reference — those rows keep their existing id scheme and
+/// are handled by the hold-and-ask flow instead of being guessed at.
+fn canonical_bank_txn_id(account_key: &str, direction: &str, desc: &str) -> Option<String> {
+    let (kind, val) = bank_txn_reference(desc)?;
+    let key = format!("{}|{}|{}|{}", account_key.trim().to_lowercase(), direction, kind, val);
+    Some(format!("bt1_{:016x}", fnv1a64(key.as_bytes())))
+}
+
+/// FNV-1a (64-bit) — same family the statement importer already uses for its stable ids.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 /// Strict content fingerprint of a bank txn used for duplicate bucketing. Matches the
