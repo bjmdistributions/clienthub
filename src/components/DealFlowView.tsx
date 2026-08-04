@@ -411,6 +411,7 @@ export default function DealFlowView() {
               onReload={load}
               refund={refundMap[flow.id]}
               zebra={i % 2 === 1}
+              reconStatus={recon[flow.id]}
             />
           ))}
         </div>
@@ -475,6 +476,12 @@ function DealFlowCard({
   const isComplete    = flow.stage === "complete";
   const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced") || received;
 
+  // `reconStatus` comes from the list-level fetch and covers EVERY live deal, so the
+  // dots are right on a collapsed card. `reconLinked` is this card's own fetch, which
+  // only runs once opened — it's OR'd in so pairing inside the card fills the dot
+  // straight away instead of waiting for a reload.
+  const hasLinks = !!reconStatus?.has_financials || reconLinked;
+
   const done: Record<SectionKey, boolean> = {
     supplier: supplierDone,
     money:    moneyDone,
@@ -482,8 +489,8 @@ function DealFlowCard({
     // that's owed is either paired to the bank or explicitly marked "no record"
     // (reconStatus.needs_review === false). Being complete is NOT enough on its own:
     // you can complete now and reconcile later, and the dot must stay empty until you do.
-    link:     isComplete ? (!!reconStatus && !reconStatus.needs_review) : reconLinked,
-    profit:   reconLinked || isComplete,
+    link:     isComplete ? (!!reconStatus && !reconStatus.needs_review) : hasLinks,
+    profit:   hasLinks || isComplete,
     complete: isComplete,
   };
 

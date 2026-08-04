@@ -6513,6 +6513,105 @@ pub async fn set_anthropic_key(key: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- Load inbox: forwarded supplier posts waiting to become lots ----------
+// The candidates live on the SERVER (table `inbound_load`) because that is where a
+// forwarded message can arrive while this computer is asleep. Nothing exists as
+// inventory until it is approved here; approval is a server call that writes the
+// lot through the sync oplog, so it reaches every device the normal way.
+
+/// This device's connection to the server, or a message telling the user to connect.
+fn inbox_server() -> Result<(String, String), String> {
+    let cfg = crate::netsync::config()
+        .ok_or_else(|| "Connect this computer to your Ecliptr server first (Settings → Sync).".to_string())?;
+    Ok((cfg.url.trim_end_matches('/').to_string(), cfg.token))
+}
+
+fn inbox_http() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// The org's ingest link — what the phone's share sheet posts to. The token is
+/// minted HERE, on the desktop, because settings written on the server never travel
+/// back (`PUSHABLE` excludes `settings`); this is the same reason `storefront_token`
+/// is desktop-minted. Minting is harmless: the token does nothing until it's used.
+#[tauri::command]
+pub async fn get_load_inbox() -> Result<Value, String> {
+    let existing: Option<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT value FROM settings WHERE key='load_inbox_token'", [], |r| r.get::<_, String>(0))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let token = match existing {
+        Some(t) => t,
+        None => {
+            let t: String = Uuid::new_v4().to_string().replace('-', "").chars().take(24).collect();
+            write_setting("load_inbox_token", &t)?;
+            crate::netsync::push_now();
+            t
+        }
+    };
+    let url = crate::netsync::config()
+        .map(|c| format!("{}/api/loads/inbox/{}", c.url.trim_end_matches('/'), token));
+    Ok(json!({ "token": token, "url": url }))
+}
+
+/// Candidates waiting for review, newest first.
+#[tauri::command]
+pub async fn list_inbound_loads() -> Result<Vec<Value>, String> {
+    let (base, token) = inbox_server()?;
+    let resp = inbox_http()?
+        .get(format!("{base}/api/loads/inbox"))
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't load the inbox ({}).", resp.status()));
+    }
+    resp.json::<Vec<Value>>().await.map_err(|e| e.to_string())
+}
+
+/// Turn a candidate into one or more real lots. The server creates them (through the
+/// oplog) and copies the forwarded photos into each lot's media folder; we then pull
+/// so they appear on this computer straight away instead of at the next sync tick.
+#[tauri::command]
+pub async fn approve_inbound_load(id: String, lots: Vec<Value>) -> Result<Vec<String>, String> {
+    let (base, token) = inbox_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/loads/inbox/{id}/approve"))
+        .bearer_auth(&token)
+        .json(&json!({ "lots": lots }))
+        .send().await.map_err(|e| e.to_string())?;
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    let ids: Vec<String> = v.get("lot_ids")
+        .and_then(|l| l.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let _ = crate::netsync::pull_apply().await;
+    let _ = reconcile_inventory_media().await;
+    Ok(ids)
+}
+
+/// Dismiss a candidate. The server keeps the row and its photos — rejected, not gone.
+#[tauri::command]
+pub async fn reject_inbound_load(id: String) -> Result<(), String> {
+    let (base, token) = inbox_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/loads/inbox/{id}/reject"))
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't dismiss that load ({}).", resp.status()));
+    }
+    Ok(())
+}
+
 // ---------- Public storefront config (synced settings, read by the server) ----------
 
 #[derive(Serialize)]
@@ -7291,6 +7390,30 @@ fn lot_media_dir(lot_id: &str) -> Result<std::path::PathBuf, String> {
     let dir = crate::db::app_data_dir().join("sync").join("media").join("inventory").join(lot_id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// Write a clipboard-pasted image to a temp file and return its path, so a pasted
+/// photo can travel the SAME route as a dragged or picked one (`import_lot_photos`
+/// takes paths, not bytes). This is what makes "right-click the photo in WhatsApp
+/// Web → Copy image → paste into Ecliptr" work without ever saving a file by hand.
+/// The temp copy is disposable: `import_lot_photos` copies it into the lot's synced
+/// media folder, and the OS reclaims the temp directory.
+#[tauri::command]
+pub async fn stage_pasted_image(data_base64: String, ext: Option<String>) -> Result<String, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data_base64.trim())
+        .map_err(|e| format!("Couldn't read the pasted image: {}", e))?;
+    if bytes.is_empty() {
+        return Err("The pasted image was empty.".into());
+    }
+    let ext = ext
+        .map(|e| e.trim().trim_start_matches('.').to_lowercase())
+        .filter(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif"))
+        .unwrap_or_else(|| "png".to_string());
+    let dir = std::env::temp_dir().join("ecliptr-pasted");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("paste_{}.{}", Uuid::new_v4().simple(), ext));
+    std::fs::write(&path, &bytes).map_err(|e| format!("Couldn't stage the pasted image: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 /// Copy image files into the lot's media directory, named photo_001.jpg etc.
@@ -10792,7 +10915,7 @@ pub async fn deal_allocations(deal_flow_id: String) -> Result<Vec<Value>, String
     let mut stmt = conn.prepare(
         "SELECT a.id, a.bank_txn_id, a.amount, a.role, a.note,
                 bt.posted_at, bt.direction, bt.counterparty_name, bt.description,
-                bt.wire_ref, bt.rail, bt.amount AS txn_amount
+                bt.wire_ref, bt.rail, bt.amount AS txn_amount, bt.source_format
          FROM bank_allocation a
          JOIN bank_txn bt ON bt.id = a.bank_txn_id
          WHERE a.deal_flow_id = ?1
@@ -10811,6 +10934,9 @@ pub async fn deal_allocations(deal_flow_id: String) -> Result<Vec<Value>, String
         "wire_ref":          r.get::<_, String>(9)?,
         "rail":              r.get::<_, String>(10)?,
         "txn_amount":        r.get::<_, f64>(11)?,
+        // Lets the panel label a hand-entered line as cash rather than passing it
+        // off as something that came off a statement.
+        "source_format":     r.get::<_, String>(12)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -11067,7 +11193,11 @@ pub async fn add_cash_transaction(
     let now = Utc::now().to_rfc3339();
 
     let s = |v: &str| Value::String(v.to_string());
+    // Money rows carry their org at the author — leaving it to the schema default
+    // files every tenant's cash booking under 'org_default'.
+    let org = crate::employees::session_org_id();
     let mut cols = Map::new();
+    cols.insert("org_id".into(), s(&org));
     cols.insert("account_id".into(), s("Cash"));
     cols.insert("posted_at".into(), s(&date));
     cols.insert("amount".into(), json!(amount));
@@ -11085,12 +11215,77 @@ pub async fn add_cash_transaction(
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, reviewed, imported_at, created_at, updated_at)
-         VALUES (?1,'Cash',?2,?3,?4,?5,?5,?6,?7,'manual_cash',1,?8,?8,?8)",
-        rusqlite::params![id, date, amount, dir, desc, cat, cp, now],
+        "INSERT INTO bank_txn (id, org_id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, reviewed, imported_at, created_at, updated_at)
+         VALUES (?1,?2,'Cash',?3,?4,?5,?6,?6,?7,?8,'manual_cash',1,?9,?9,?9)",
+        rusqlite::params![id, org, date, amount, dir, desc, cat, cp, now],
     ).map_err(|e| e.to_string())?;
     crate::bank_backup::spawn_auto_backup(); // mirror the new booking to the safety-log sheet
     Ok(id)
+}
+
+/// A money line on a deal that never appeared on a bank statement — cash on the
+/// side, a payment that netted off against something else, an offset. It books a
+/// real `manual_cash` transaction (account `Cash`, exactly like the Financials
+/// cash card) and allocates it in full to this deal's leg.
+///
+/// Going through `bank_txn` + `bank_allocation` rather than inventing a
+/// parallel "manual line" store is deliberate: every money SUM in the codebase is
+/// guarded with `EXISTS (SELECT 1 FROM bank_txn …)` (invariant 2), so a line with
+/// no transaction behind it would be silently invisible in some queries and
+/// counted in others. This way reconciliation, deal actuals, the Google Sheet
+/// safety log, dedup and the orphan sweeper all treat it like any other booking.
+///
+/// The `Cash` account is not part of any bank balance (balances come from Plaid /
+/// a published figure / the manual figure), so this cannot inflate Free Cash.
+#[tauri::command]
+pub async fn add_manual_deal_line(
+    deal_flow_id: String,
+    role: String,
+    amount: f64,
+    posted_at: Option<String>,
+    counterparty: Option<String>,
+    note: Option<String>,
+) -> Result<String, String> {
+    // Direction is derived from the role, never passed in — the allocator rejects a
+    // role/direction mismatch, and letting the caller choose would only add a way
+    // to book money against the wrong side.
+    let dir = match role.as_str() {
+        "buyer_payment" | "refund_in" => "in",
+        "supplier_payment" | "fee"    => "out",
+        _ => return Err(format!("\"{}\" is not a money line you can add by hand", role)),
+    };
+    if !(amount > 0.0) {
+        return Err("Enter an amount greater than zero".into());
+    }
+    let exists: bool = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT 1 FROM deal_flows WHERE id=?1", [&deal_flow_id], |_| Ok(())).is_ok()
+    };
+    if !exists { return Err("Deal not found".into()); }
+
+    let note = note.unwrap_or_default().trim().to_string();
+    let txn_id = add_cash_transaction(
+        amount,
+        dir.to_string(),
+        posted_at.unwrap_or_default(),
+        counterparty,
+        if note.is_empty() { None } else { Some(note.clone()) },
+    ).await?;
+
+    // allow_split=false: this transaction was created for this deal alone, so the
+    // exclusive-link guard is exactly what we want.
+    match allocate_bank_txn(txn_id.clone(), deal_flow_id, amount, role, note, Some(false)).await {
+        Ok(alloc_id) => Ok(alloc_id),
+        Err(e) => {
+            // Never strand a cash booking with no deal behind it — roll the
+            // transaction back so it can't drift into Financials as a mystery row.
+            let _ = sync::record_delete("bank_txn", &txn_id);
+            if let Ok(conn) = pool().get() {
+                let _ = conn.execute("DELETE FROM bank_txn WHERE id=?1", [&txn_id]);
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Reconciliation rollup for one deal: expected profit (from the deal flow) vs.
@@ -11191,7 +11386,11 @@ pub async fn reconciliation_status_all() -> Result<Vec<Value>, String> {
                 EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),
                 COALESCE(df.metadata,'')
          FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0",
+         -- EVERY live deal, not just completed ones. The deal-flow list draws its
+         -- progress dots from this, and restricting it to stage=complete meant an
+         -- active deal read as nothing-done until the card was opened and fetched
+         -- its own reconciliation.
+         WHERE COALESCE(df.archived,0)=0",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;

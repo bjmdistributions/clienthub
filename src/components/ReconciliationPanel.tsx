@@ -117,6 +117,26 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
     setBusy(false);
   };
 
+  // ── manual (non-bank) lines ──
+  // Which leg currently has its "add by hand" form open. Only one at a time, and
+  // never at the same time as the bank picker.
+  const [manualLeg, setManualLeg] = useState<Leg["role"] | null>(null);
+
+  const addManual = async (role: Leg["role"], amount: number, date: string, who: string, note: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.addManualDealLine(flow.id, role, amount, date, who, note);
+      setManualLeg(null);
+      await load();
+      onChange?.();
+      toast("Line added");
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(false);
+  };
+
   return (
     <div className="bg-surface border border-line rounded-xl overflow-hidden">
       <div className="px-4 py-2.5 border-b border-line-2 flex items-center justify-between gap-2">
@@ -148,6 +168,10 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           onPair={pair}
           onUnpair={unpair}
           pairLabel="Pair payment"
+          manualOpen={manualLeg === "buyer_payment"}
+          onOpenManual={() => { setManualLeg("buyer_payment"); setPicker(null); setCands(null); }}
+          onCloseManual={() => setManualLeg(null)}
+          onAddManual={addManual}
         />
 
         {/* Supplier paid (money-out) */}
@@ -164,6 +188,10 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           onPair={pair}
           onUnpair={unpair}
           pairLabel="Pair supplier payment"
+          manualOpen={manualLeg === "supplier_payment"}
+          onOpenManual={() => { setManualLeg("supplier_payment"); setPicker(null); setCands(null); }}
+          onCloseManual={() => setManualLeg(null)}
+          onAddManual={addManual}
         />
 
         {/* Wire fees (money-out, optional, subtract from actual profit) */}
@@ -172,6 +200,11 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
             <div className="text-[13px] font-medium text-ink">Wire fees</div>
             <div className="flex items-center gap-2">
               {feeSum > 0 && <span className="text-[13px] font-semibold text-danger-ink tabular-nums">−{fmtAmount(feeSum)}</span>}
+              <ManualButton
+                active={manualLeg === "fee"}
+                onOpen={() => { setManualLeg("fee"); setPicker(null); setCands(null); }}
+                onClose={() => setManualLeg(null)}
+              />
               <PairButton
                 active={picker?.role === "fee"}
                 label="Attach wire fee"
@@ -185,6 +218,15 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
               {fees.map((f) => <PairedRow key={f.id} a={f} onUnpair={unpair} busy={busy} />)}
             </div>
           )}
+          {manualLeg === "fee" && (
+            <ManualLineForm
+              leg={{ role: "fee", direction: "out", label: "Wire fee", target: 0 }}
+              busy={busy}
+              defaultWho=""
+              onAdd={addManual}
+              onCancel={() => setManualLeg(null)}
+            />
+          )}
           {picker?.role === "fee" && (
             <Picker leg={picker} cands={cands} busy={busy} flow={flow} onPair={pair} />
           )}
@@ -197,6 +239,11 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
             <div className="text-[13px] font-medium text-ink">Supplier refund</div>
             <div className="flex items-center gap-2">
               {refundInSum > 0 && <span className="text-[13px] font-semibold text-success-ink tabular-nums">+{fmtAmount(refundInSum)}</span>}
+              <ManualButton
+                active={manualLeg === "refund_in"}
+                onOpen={() => { setManualLeg("refund_in"); setPicker(null); setCands(null); }}
+                onClose={() => setManualLeg(null)}
+              />
               <PairButton
                 active={picker?.role === "refund_in"}
                 label="Attach supplier refund"
@@ -209,6 +256,15 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
             <div className="mt-2 space-y-1.5">
               {refundIn.map((r) => <PairedRow key={r.id} a={r} onUnpair={unpair} busy={busy} />)}
             </div>
+          )}
+          {manualLeg === "refund_in" && (
+            <ManualLineForm
+              leg={{ role: "refund_in", direction: "in", label: "Supplier refund", target: 0 }}
+              busy={busy}
+              defaultWho=""
+              onAdd={addManual}
+              onCancel={() => setManualLeg(null)}
+            />
           )}
           {picker?.role === "refund_in" && (
             <Picker leg={picker} cands={cands} busy={busy} flow={flow} onPair={pair} />
@@ -300,6 +356,7 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
 // ── One money leg: title, paired rows or empty state, inline picker ──
 function LegBlock({
   title, leg, rows, picker, cands, busy, flow, onOpen, onClose, onPair, onUnpair, pairLabel,
+  manualOpen, onOpenManual, onCloseManual, onAddManual,
 }: {
   title: string;
   leg: Leg;
@@ -313,6 +370,10 @@ function LegBlock({
   onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
   onUnpair: (id: string) => void;
   pairLabel: string;
+  manualOpen: boolean;
+  onOpenManual: () => void;
+  onCloseManual: () => void;
+  onAddManual: (role: Leg["role"], amount: number, date: string, who: string, note: string) => void;
 }) {
   const paired = rows.length > 0;
   const sum = rows.reduce((s, a) => s + a.amount, 0);
@@ -334,13 +395,26 @@ function LegBlock({
             </span>
           )}
         </div>
-        <PairButton active={open} label={paired ? "Pair another" : pairLabel} onOpen={() => onOpen(leg)} onClose={onClose} />
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <ManualButton active={manualOpen} onOpen={onOpenManual} onClose={onCloseManual} />
+          <PairButton active={open} label={paired ? "Pair another" : pairLabel} onOpen={() => onOpen(leg)} onClose={onClose} />
+        </div>
       </div>
 
       {paired && (
         <div className="mt-2 space-y-1.5">
           {rows.map((a) => <PairedRow key={a.id} a={a} onUnpair={onUnpair} busy={busy} />)}
         </div>
+      )}
+
+      {manualOpen && (
+        <ManualLineForm
+          leg={leg}
+          busy={busy}
+          defaultWho={leg.direction === "in" ? (flow.client_name || "") : ""}
+          onAdd={onAddManual}
+          onCancel={onCloseManual}
+        />
       )}
 
       {open && (
@@ -359,14 +433,27 @@ function LegBlock({
 
 // ── A paired transaction row: payer/desc + date on the left, amount + unpair right ──
 function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: string) => void; busy: boolean }) {
-  const payer = a.counterparty_name?.trim() || a.description?.trim() || "Bank transaction";
+  const manual = a.source_format === "manual_cash";
+  const payer = a.counterparty_name?.trim() || a.description?.trim() || (manual ? "Cash" : "Bank transaction");
   const sign = a.direction === "out" ? "−" : "";
   const clr = a.direction === "out" ? "text-danger-ink" : "text-success-ink";
   return (
     <div className="flex items-center gap-2 bg-surface-2 border border-line-2 rounded-lg px-3 py-2">
       <div className="min-w-0 flex-1">
-        <div className="text-[12px] text-ink truncate">{payer}</div>
-        <div className="text-[11px] text-muted">{fmtShortDate(a.posted_at)}</div>
+        <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
+          <span className="truncate">{payer}</span>
+          {/* A hand-entered line must never read as something that came off a statement. */}
+          {manual && (
+            <span className="text-[10px] font-medium text-muted border border-line rounded px-1 py-px flex-shrink-0"
+              title="Entered by hand — not matched to a bank statement">
+              Cash
+            </span>
+          )}
+        </div>
+        <div className="text-[11px] text-muted truncate">
+          {fmtShortDate(a.posted_at)}
+          {manual && a.note?.trim() ? ` · ${a.note.trim()}` : ""}
+        </div>
       </div>
       <span className={`text-[13px] font-semibold tabular-nums ${clr}`}>{sign}{fmtAmount(a.amount)}</span>
       <button
@@ -379,6 +466,100 @@ function PairedRow({ a, onUnpair, busy }: { a: DealAllocation; onUnpair: (id: st
         <Trash2 size={12} />
       </button>
     </div>
+  );
+}
+
+// ── Add a money line that never hit the bank statement ──
+// Cash on the side, a payment that netted off against something else. It books a
+// real cash transaction against the deal, so it counts in actual profit exactly
+// like a paired one — and is labelled "Cash" everywhere so the two never blur.
+function ManualLineForm({ leg, busy, defaultWho, onAdd, onCancel }: {
+  leg: Leg;
+  busy: boolean;
+  defaultWho: string;
+  onAdd: (role: Leg["role"], amount: number, date: string, who: string, note: string) => void;
+  onCancel: () => void;
+}) {
+  const [amt,  setAmt]  = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [who,  setWho]  = useState(defaultWho);
+  const [note, setNote] = useState("");
+  const val = parseFloat(amt);
+  const invalid = !(val > 0.005);
+  const submit = () => { if (!invalid) onAdd(leg.role, val, date, who.trim(), note.trim()); };
+
+  return (
+    <div className="mt-2 border border-line rounded-lg bg-surface-2/50 px-3 py-3 space-y-2.5">
+      <div className="text-[11.5px] text-muted">
+        Records money that never showed on a statement. It counts toward this deal's actual
+        profit and is marked as cash, not as a bank match.
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center h-8 px-2 rounded-lg border border-line bg-surface w-[130px]">
+          <span className="text-[12px] text-muted">$</span>
+          <input
+            value={amt}
+            onChange={(e) => setAmt(e.target.value.replace(/[^0-9.]/g, ""))}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+            inputMode="decimal"
+            autoFocus
+            placeholder="0.00"
+            className="w-full bg-transparent text-[12.5px] text-ink tabular-nums focus:outline-none ml-0.5"
+          />
+        </div>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="h-8 px-2 rounded-lg border border-line bg-surface text-[12.5px] text-ink focus:outline-none"
+        />
+        <input
+          value={who}
+          onChange={(e) => setWho(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          placeholder={leg.direction === "in" ? "Received from" : "Paid to"}
+          className="h-8 px-2.5 rounded-lg border border-line bg-surface text-[12.5px] text-ink placeholder:text-muted focus:outline-none flex-1 min-w-[120px]"
+        />
+      </div>
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+        placeholder="What happened — e.g. cash on the side, cancelled out the wire on the statement"
+        className="w-full h-8 px-2.5 rounded-lg border border-line bg-surface text-[12.5px] text-ink placeholder:text-muted focus:outline-none"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || invalid}
+          onClick={submit}
+          className="h-7 px-3 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12px] font-semibold disabled:opacity-40 transition-colors"
+        >
+          <Plus size={12} /> Add {leg.direction === "in" ? "payment" : "payment out"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-7 px-2.5 flex items-center gap-1 rounded-lg border border-line text-[12px] text-muted hover:text-ink-2 transition-colors"
+        >
+          <X size={12} /> Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Opens the by-hand form for a leg ──
+function ManualButton({ active, onOpen, onClose }: { active: boolean; onOpen: () => void; onClose: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={active ? onClose : onOpen}
+      className="h-7 px-2.5 flex items-center gap-1 rounded-lg border border-line text-[12px] font-medium text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"
+      title="Record cash or an offset that never appeared on the bank statement"
+    >
+      {active ? <X size={12} /> : <Plus size={12} />} By hand
+    </button>
   );
 }
 

@@ -1507,6 +1507,7 @@ export interface DealAllocation {
   wire_ref: string;
   rail: string;
   txn_amount: number;
+  source_format: string; // "manual_cash" for a hand-entered line
 }
 export interface RefundRow {
   id: string;
@@ -2312,6 +2313,10 @@ export const api = {
     invoke<UnallocatedBankTxns>("unallocated_bank_txns", { dealFlowId }),
   addCashTransaction: (amount: number, direction: "in" | "out", postedAt: string, counterparty?: string, note?: string) =>
     invoke<string>("add_cash_transaction", { amount, direction, postedAt, counterparty: counterparty ?? null, note: note ?? null }),
+  // A money line on a deal that never hit the bank statement (cash on the side, an
+  // offset). Books a manual_cash transaction and allocates it to the leg in one go.
+  addManualDealLine: (dealFlowId: string, role: "buyer_payment" | "supplier_payment" | "fee" | "refund_in", amount: number, postedAt?: string, counterparty?: string, note?: string) =>
+    invoke<string>("add_manual_deal_line", { dealFlowId, role, amount, postedAt: postedAt ?? null, counterparty: counterparty ?? null, note: note ?? null }),
   dealReconciliation: (dealFlowId: string) =>
     invoke<DealReconciliation>("deal_reconciliation", { dealFlowId }),
   reconciliationStatusAll: () =>
@@ -2491,6 +2496,10 @@ export const api = {
   // Lots whose media hasn't fully synced (a file missing on this device, or still uploading).
   listMediaSyncIssues: () => invoke<{ lot_id: string; missing_local: boolean; pending_upload: boolean }[]>("list_media_sync_issues"),
   importLotPhotos: (lotId: string, paths: string[]) => invoke<string[]>("import_lot_photos", { lotId, paths }),
+  // Clipboard-pasted image -> temp file path, so it can then go through importLotPhotos
+  // like any picked or dragged file. Used by paste-a-load (copy an image in WhatsApp Web).
+  stagePastedImage: (dataBase64: string, ext?: string | null) =>
+    invoke<string>("stage_pasted_image", { dataBase64, ext: ext ?? null }),
   removeLotPhoto: (lotId: string, photoPath: string) => invoke<string[]>("remove_lot_photo", { lotId, photoPath }),
   attachLotManifest: (lotId: string, filePath: string) => invoke<string>("attach_lot_manifest", { lotId, filePath }),
   removeLotManifest: (lotId: string) => invoke<void>("remove_lot_manifest", { lotId }),

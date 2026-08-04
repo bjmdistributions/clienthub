@@ -121,8 +121,7 @@ export default function InventoryView() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Lot | null>(null);
   const [prefill, setPrefill] = useState<Partial<Lot> | null>(null);
-  const [prefillQueue, setPrefillQueue] = useState<Partial<Lot>[]>([]); // remaining pasted loads to step through
-  const [prefillSeq, setPrefillSeq] = useState(0);                       // bumps to remount LotForm per queued load
+  const [prefillSeq, setPrefillSeq] = useState(0);                       // bumps to remount LotForm on a fresh prefill
   const [pasting, setPasting] = useState(false);
   const [blastLot, setBlastLot] = useState<Lot | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -675,18 +674,14 @@ export default function InventoryView() {
       </div>
 
       {showForm && <LotForm key={editing ? editing.id : `pf-${prefillSeq}`} initial={editing} prefill={prefill}
-        onClose={() => {
-          setShowForm(false); setEditing(null); load();
-          // Step to the next pasted load, if any, in a freshly-prefilled form.
-          if (prefillQueue.length > 0) {
-            setPrefill(prefillQueue[0]); setPrefillQueue(prefillQueue.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true);
-          } else { setPrefill(null); }
-        }}
+        onClose={() => { setShowForm(false); setEditing(null); setPrefill(null); load(); }}
         deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} lots={lots} />}
 
       {pasting && <PasteLoadModal
         onClose={() => setPasting(false)}
-        onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true); }}
+        onCreated={(n) => { setPasting(false); load(); toast(`${n} lot${n !== 1 ? "s" : ""} added`); }}
+        suppliers={suppliers}
+        categories={categoryOptions}
       />}
 
       {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
@@ -965,48 +960,263 @@ function LotCard({
 
 // Paste-to-load: paste one or more supplier messages; the free rule-based parser
 // (server /api/tools/parse-loads, no AI) fills a New-lot form per load to review.
-function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: (pfs: Partial<Lot>[]) => void }) {
+// One parsed load, staged for review. Photos are raw file paths until the lot
+// exists — `import_lot_photos` copies them into the synced media folder after.
+type PastedRow = {
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+  quantity: number;
+  cost: number;
+  ask: number;
+  priceType: "per_unit" | "total";
+  supplier: string;
+  location: string;
+  condition: string;
+  notes: string;
+  extras: Record<string, unknown>; // parser extras (pallets/msrp/moq/size_run) -> details_json
+  photos: string[];
+};
+
+const rowFromParsed = (p: ParsedLoad, i: number): PastedRow => ({
+  key: `${Date.now()}-${i}`,
+  name: p.title ?? "",
+  description: p.description ?? "",
+  category: p.category ?? "",
+  quantity: p.quantity ?? 1,
+  cost: p.total_cost ?? p.unit_price ?? 0,
+  ask: p.asking_price ?? 0,
+  priceType: p.price_type === "total" ? "total" : "per_unit",
+  supplier: p.supplier ?? "",
+  location: p.location ?? "",
+  condition: p.condition ?? "",
+  notes: p.notes ?? "",
+  extras: {
+    pallets: p.pallets ?? null,
+    msrp: p.msrp ?? null,
+    avg_msrp: p.avg_msrp ?? null,
+    moq: p.moq ?? null,
+    size_run: p.size_run && p.size_run.length ? p.size_run : null,
+  },
+  photos: [],
+});
+
+function PasteLoadModal({ onClose, onCreated, suppliers, categories }: { onClose: () => void; onCreated: (n: number) => void; suppliers: string[]; categories: string[] }) {
   const [text, setText] = useState("");
+  const [rows, setRows] = useState<PastedRow[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Guard against losing a half-typed paste — confirm only when there's content.
+  const [active, setActive] = useState(0); // the card a pasted or dropped image attaches to
+
+  // Guard against losing pasted work — nothing here has reached inventory yet.
   const requestClose = () => {
-    if (text.trim() && !confirm("Discard this load? Your text will be lost.")) return;
+    const dirty = rows ? rows.length > 0 : text.trim().length > 0;
+    if (dirty && !confirm("Discard these loads? Nothing has been added to your inventory yet.")) return;
     onClose();
   };
 
-  const parse = async () => {
+  const parse = async (raw: string) => {
     setBusy(true); setErr(null);
     try {
-      const loads: ParsedLoad[] = await api.parseLoads(text);
+      const loads: ParsedLoad[] = await api.parseLoads(raw);
       if (!loads.length) { setErr("Couldn't find a load in that text — add a bit more detail and retry."); setBusy(false); return; }
-      const prefills: Partial<Lot>[] = loads.map((p) => {
-        const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
-        const pt = p.price_type === "per_unit" || p.price_type === "total" ? p.price_type : undefined;
-        const sizeRun = p.size_run && p.size_run.length ? p.size_run : null;
-        const hasDetails = p.pallets != null || p.msrp != null || p.avg_msrp != null || p.moq != null || sizeRun != null;
-        const detailsJson = hasDetails
-          ? JSON.stringify({ pallets: p.pallets ?? null, msrp: p.msrp ?? null, avg_msrp: p.avg_msrp ?? null, moq: p.moq ?? null, size_run: sizeRun })
-          : undefined;
-        return {
-          name: p.title ?? "",
-          description: p.description ?? "",
-          category: p.category ?? "",
-          quantity: p.quantity ?? 1,
-          total_cost: p.total_cost ?? p.unit_price ?? 0,
-          asking_price: p.asking_price ?? 0,
-          price_type: pt,
-          supplier: p.supplier ?? "",
-          location: p.location ?? "",
-          notes: notes || undefined,
-          details_json: detailsJson,
-        };
-      });
-      onParsed(prefills);
+      setRows(loads.map(rowFromParsed));
+      setActive(0);
     } catch (e: any) { setErr(String(e)); }
     setBusy(false);
   };
 
+  const patch = (i: number, p: Partial<PastedRow>) =>
+    setRows((prev) => (prev ? prev.map((r, idx) => (idx === i ? { ...r, ...p } : r)) : prev));
+  const addPhotos = (i: number, paths: string[]) => {
+    if (!paths.length) return;
+    setRows((prev) => (prev ? prev.map((r, idx) => (idx === i ? { ...r, photos: [...r.photos, ...paths] } : r)) : prev));
+  };
+
+  const pickPhotos = async (i: number) => {
+    const f = await openDialog({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
+    addPhotos(i, Array.isArray(f) ? f : typeof f === "string" ? [f] : []);
+  };
+
+  // Ctrl+V of an image anywhere in the review list attaches it to the active card.
+  // This is the WhatsApp Web path: right-click the photo, Copy image, paste here —
+  // so a photo never has to be saved to disk first.
+  const onPasteImages = async (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    const staged: string[] = [];
+    for (const f of files) {
+      try {
+        const buf = new Uint8Array(await f.arrayBuffer());
+        let bin = "";
+        buf.forEach((b) => { bin += String.fromCharCode(b); });
+        staged.push(await api.stagePastedImage(btoa(bin), f.type.split("/")[1] || "png"));
+      } catch (e2: any) { toast(String(e2), "error"); }
+    }
+    addPhotos(active, staged);
+  };
+
+  // OS file drag-drop while reviewing — same target as a paste, the active card.
+  useEffect(() => {
+    if (!rows) return;
+    let un: (() => void) | undefined;
+    let cancelled = false;
+    getCurrentWebview().onDragDropEvent((e) => {
+      if (e.payload.type !== "drop") return;
+      const imgs = e.payload.paths.filter((p) => /\.(jpe?g|png|webp|gif)$/i.test(p));
+      if (imgs.length) addPhotos(active, imgs);
+    }).then((fn) => { if (cancelled) fn(); else un = fn; }).catch(() => {});
+    return () => { cancelled = true; if (un) un(); };
+  }, [rows, active]);
+
+  // Create every reviewed load. A row that fails stays on screen with its error;
+  // rows that succeeded are dropped, so a retry can never double-create a lot.
+  const createAll = async () => {
+    if (!rows) return;
+    const named = rows.filter((r) => r.name.trim());
+    if (!named.length) { setErr("Give at least one load a name first."); return; }
+    setBusy(true); setErr(null); setProgress({ done: 0, total: named.length });
+    const failed: PastedRow[] = [];
+    const errs: string[] = [];
+    let made = 0;
+    for (const r of named) {
+      try {
+        const cat = r.category.trim();
+        const details: Record<string, unknown> = { ...r.extras };
+        if (r.condition.trim()) details.condition = r.condition.trim();
+        if (cat) details.categories = [cat];
+        const hasDetails = Object.values(details).some((v) => v != null && v !== "" && !(Array.isArray(v) && !v.length));
+        const lot = await api.createLot({
+          name: r.name.trim(),
+          quantity: r.quantity || 1,
+          totalCost: r.cost || 0,
+          askingPrice: r.ask || 0,
+          description: r.description.trim() || undefined,
+          category: cat || undefined,
+          notes: r.notes.trim() || undefined,
+          supplier: r.supplier.trim() || undefined,
+          location: normalizeLocation(r.location) || undefined,
+          priceType: r.priceType,
+          detailsJson: hasDetails ? JSON.stringify(details) : undefined,
+        });
+        // Photos were staged as raw paths; copy them in now that the lot has an id.
+        if (r.photos.length) {
+          const rel = await api.importLotPhotos(lot.id, r.photos);
+          await api.updateLot(lot.id, { photos: rel });
+        }
+        if (cat) api.createCategory({ label: cat }).catch(() => {});
+        made += 1;
+      } catch (e: any) {
+        failed.push(r);
+        errs.push(`${r.name.trim() || "Untitled"}: ${String(e)}`);
+      }
+      setProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
+    }
+    setBusy(false); setProgress(null);
+    if (failed.length) {
+      // Keep the unnamed rows as well — they were never attempted.
+      setRows([...failed, ...rows.filter((r) => !r.name.trim())]);
+      setErr(`${made} added, ${failed.length} failed. ${errs[0]}`);
+      return;
+    }
+    onCreated(made);
+  };
+
+  const total = rows?.length ?? 0;
+  const nameable = rows?.filter((r) => r.name.trim()).length ?? 0;
+
+  if (rows) {
+    // Step 2 — review every load in one list, then create them together.
+    return (
+      <div className="fixed inset-0 z-50 flex items-start justify-center pt-[6vh] bg-black/25 backdrop-blur-[3px]">
+        <div className="bg-surface rounded-2xl shadow-xl w-[840px] max-w-[94vw] max-h-[88vh] flex flex-col" onPaste={onPasteImages}>
+          <div className="px-5 py-4 border-b border-line flex justify-between items-start gap-3 flex-shrink-0">
+            <div className="min-w-0">
+              <h3 className="text-[15px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> {total} load{total !== 1 ? "s" : ""} found</h3>
+              <p className="text-[11.5px] text-muted mt-0.5">Fix anything the parser got wrong, then add them all at once. Click a load and press Ctrl+V to paste a photo straight from WhatsApp, or drop image files onto it.</p>
+            </div>
+            <button onClick={requestClose} className="text-muted hover:text-ink-2 flex-shrink-0"><X size={16} /></button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+            {rows.map((r, i) => (
+              <div
+                key={r.key}
+                onMouseDown={() => setActive(i)}
+                className={`border rounded-xl p-3 space-y-2 transition-colors ${i === active ? "border-accent/60 bg-accent/[0.03]" : "border-line"}`}
+              >
+                <div className="flex items-center gap-2">
+                  <input value={r.name} onChange={(e) => patch(i, { name: e.target.value })} placeholder="Load name (required)" className={`${inp} font-medium`} />
+                  <button onClick={() => setRows(rows.filter((_, idx) => idx !== i))} title="Remove this load"
+                    className="w-9 h-9 flex items-center justify-center rounded-lg text-muted hover:text-danger-ink hover:bg-surface-2 transition-colors flex-shrink-0"><Trash2 size={15} /></button>
+                </div>
+
+                <div className="grid grid-cols-[1fr_84px_104px_104px_112px] gap-2">
+                  <input value={r.category} onChange={(e) => patch(i, { category: e.target.value })} placeholder="Category" list="paste-cats" className={`${cellInp} w-full`} />
+                  <input type="number" min={1} value={r.quantity} onChange={(e) => patch(i, { quantity: parseInt(e.target.value) || 0 })} placeholder="Qty" className={`${cellInp} w-full`} />
+                  <input type="number" min={0} step="0.01" value={r.cost || ""} onChange={(e) => patch(i, { cost: parseFloat(e.target.value) || 0 })} placeholder="Cost" className={`${cellInp} w-full`} />
+                  <input type="number" min={0} step="0.01" value={r.ask || ""} onChange={(e) => patch(i, { ask: parseFloat(e.target.value) || 0 })} placeholder="Asking" className={`${cellInp} w-full`} />
+                  <select value={r.priceType} onChange={(e) => patch(i, { priceType: e.target.value as "per_unit" | "total" })} className={`${cellInp} w-full`}>
+                    <option value="per_unit">Per unit</option>
+                    <option value="total">Total</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <input value={r.supplier} onChange={(e) => patch(i, { supplier: e.target.value })} placeholder="Supplier" list="paste-suppliers" className={`${cellInp} w-full`} />
+                  <input value={r.location} onChange={(e) => patch(i, { location: e.target.value })} placeholder="Location" className={`${cellInp} w-full`} />
+                  <select value={r.condition} onChange={(e) => patch(i, { condition: e.target.value })} className={`${cellInp} w-full`}>
+                    <option value="">Condition</option>
+                    {CONDITIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+
+                <textarea value={r.description} onChange={(e) => patch(i, { description: e.target.value })} rows={2} placeholder="Description"
+                  className="w-full border border-line px-3 py-2 rounded-lg text-[13px] focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors resize-none" />
+                {r.notes.trim() && (
+                  <input value={r.notes} onChange={(e) => patch(i, { notes: e.target.value })} placeholder="Notes" className={`${cellInp} w-full`} />
+                )}
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {r.photos.map((p, pi) => (
+                    <div key={`${p}-${pi}`} className="relative group">
+                      <img src={convertFileSrc(p)} alt="" className="w-12 h-12 rounded-lg object-cover border border-line" />
+                      <button onClick={() => patch(i, { photos: r.photos.filter((_, x) => x !== pi) })}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-surface border border-line text-muted hover:text-danger-ink flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X size={11} /></button>
+                    </div>
+                  ))}
+                  <button onClick={() => pickPhotos(i)}
+                    className="h-9 px-3 rounded-lg border border-line text-[12px] text-ink-2 hover:bg-surface-2 transition-colors flex items-center gap-1.5"><Image size={13} /> Add photos</button>
+                  {i === active && <span className="text-[11px] text-muted">Ctrl+V pastes a copied image here</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <datalist id="paste-cats">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+          <datalist id="paste-suppliers">{suppliers.map((s) => <option key={s} value={s} />)}</datalist>
+
+          <div className="px-5 py-4 border-t border-line flex items-center justify-between gap-3 flex-shrink-0">
+            <div className="text-[11.5px] text-danger-ink pr-2">{err}</div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button onClick={() => { setRows(null); setErr(null); }} disabled={busy} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Back</button>
+              <button onClick={createAll} disabled={busy || !nameable}
+                className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
+                {busy
+                  ? <><RefreshCw size={14} className="animate-spin" /> Adding {progress ? `${progress.done} of ${progress.total}` : ""}…</>
+                  : <><Plus size={14} /> Add {nameable} lot{nameable !== 1 ? "s" : ""}</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Step 1 — paste.
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]">
       <div className="bg-surface rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
@@ -1014,11 +1224,21 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
           <button onClick={requestClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
         </div>
-        <p className="text-[12px] text-muted mb-3">Paste one or more loads — whole WhatsApp messages are fine. It strips the junk, splits multiple loads, and fills a form for each. Review, add photos and category, then save. Free — no AI, no key.</p>
+        <p className="text-[12px] text-muted mb-3">Paste one or more loads — whole WhatsApp messages are fine. It strips the junk, splits multiple loads, and lists them all for review in one go. Free — no AI, no key.</p>
 
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // Parse the moment something is pasted — the button is only for typed text.
+            const pasted = e.clipboardData.getData("text");
+            if (!pasted.trim()) return;
+            e.preventDefault();
+            const el = e.currentTarget;
+            const next = text.slice(0, el.selectionStart ?? text.length) + pasted + text.slice(el.selectionEnd ?? text.length);
+            setText(next);
+            parse(next);
+          }}
           rows={8}
           autoFocus
           placeholder="Paste the supplier message(s) here…"
@@ -1027,7 +1247,7 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
         {err && <div className="text-[11.5px] text-danger-ink mt-2">{err}</div>}
         <div className="flex justify-end gap-2 mt-4">
           <button onClick={requestClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
-          <button onClick={parse} disabled={busy || !text.trim()}
+          <button onClick={() => parse(text)} disabled={busy || !text.trim()}
             className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">
             {busy ? <><RefreshCw size={14} className="animate-spin" /> Reading…</> : <>Format loads →</>}
           </button>
