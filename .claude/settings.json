@@ -39,6 +39,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-C:/Users/Jack/Desktop/BUSINESS APP}/.claude/hooks/vault-current.sh\"",
+            "timeout": 20,
+            "statusMessage": "Checking the project brain is current"
+          }
+        ]
+      }
     ]
   }
 }
