@@ -63,3 +63,23 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## 5. Project brain (read this before asking the codebase)
+
+This project has a maintained knowledge base in Obsidian:
+
+**`C:/Users/Jack/Documents/Obsidian Vault/Ecliptr/`**
+
+**Start with `00-RULES.md`, then `00-START-HERE.md`, then `00-INDEX.md`.** Those files route you to the right note in one hop. Do not read the whole vault — index first, then open only the 1–2 notes you need.
+
+`00-RULES.md` is binding, not background. It restates this file as a contract and adds the **never-erase rule**: no destruction of business data, vault notes, or git history without a verified backup written first. It is enforced by `.claude/settings.json` deny rules and the `PreToolUse` hook at `.claude/hooks/no-erase.sh`, which refuse the command outright rather than trusting the agent to comply. **Do not weaken the guard to get a task done** — if it blocks you, change approach or ask Jack to run it himself.
+
+It holds: how each subsystem actually works and why, a screen-by-screen record of every page and its design choices on both desktop and mobile, the decisions behind the architecture, the landmines in `gotchas.md`, deploy runbooks, and a `revisit/` backlog of known-imperfect code.
+
+**Keep it true.** When you change behaviour, update the matching note in the same session and bump its `updated`/`verified` date. Notes carry a `verified` date because stale figures quoted confidently have already caused real errors here — re-verify before quoting a number. Conventions are in `CONVENTIONS.md`.
+
+**Capture requests.** When Jack describes a feature, add it to `Ecliptr/requests/00-REQUESTS.md` in the same message you acknowledge it — before code, before approval, even if you build it immediately. Nothing he asks for may live only in a chat transcript.
+
+**Work cheaply.** Read `00-START-HERE.md` then `00-INDEX.md`, open only the 1–2 notes it routes you to, and grep before reading code — `commands.rs` (~15.7k lines) and `www/app.js` (~7k) must never be read whole. `CONVENTIONS.md` has the full session protocol.
