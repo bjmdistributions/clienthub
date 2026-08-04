@@ -17,6 +17,11 @@ deny() {
   exit 0
 }
 
+ask() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Touches live production (%s). Confirm the dependency check was done: which routes, webhooks, or configs does this overwrite, and is the current version backed up?"}}\n' "$1"
+  exit 0
+}
+
 has() { printf '%s' "$cmd" | grep -Eiq "$1"; }
 
 # --- Exempt: rebuildable, contains no business data ------------------------
@@ -53,5 +58,16 @@ fi
 has '(\brm\b|\bmv\b|\bdel\b|Remove-Item|Clear-Content)[^|;&]*\.db([[:space:]]|$|["\x27])' && deny "moving or deleting a SQLite database"
 has '>[[:space:]]*[^[:space:]|;&]*\.db([[:space:]]|$)'  && deny "truncating a SQLite database"
 has '(\brm\b|\bmv\b|\bdel\b|Remove-Item|\brmdir\b)[^|;&]*Obsidian' && deny "deleting from the Obsidian project brain"
+
+# --- Production infrastructure ---------------------------------------------
+# plaid.rs must never reach the droplet: deploying it activates a THIRD source
+# of bank_txn rows on top of the two that already caused the duplicate
+# epidemic. This one is absolute — see runbooks/deploy.md.
+has '(scp|rsync)[^|;&]*plaid\.rs'                   && deny "deploying plaid.rs would activate a third bank_txn source"
+
+# Everything else that touches the live droplet is allowed but never silent.
+has '(scp|rsync)[^|;&]*(161\.35\.106\.143|ecliptr@|root@)' && ask "overwrites files on the live droplet"
+has 'systemctl[^|;&]*(stop|disable|mask)[^|;&]*ecliptr'    && ask "stops or disables the live API"
+has '(nginx|caddy|systemd|\.service|\.env|Caddyfile)[^|;&]*(>|scp|rsync|tee)' && ask "rewrites a production config"
 
 exit 0

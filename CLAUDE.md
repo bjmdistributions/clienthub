@@ -74,7 +74,11 @@ This project has a maintained knowledge base in Obsidian:
 
 **Start with `00-RULES.md`, then `00-START-HERE.md`, then `00-INDEX.md`.** Those files route you to the right note in one hop. Do not read the whole vault — index first, then open only the 1–2 notes you need.
 
-`00-RULES.md` is binding, not background. It restates this file as a contract and adds the **never-erase rule**: no destruction of business data, vault notes, or git history without a verified backup written first. It is enforced by `.claude/settings.json` deny rules and the `PreToolUse` hook at `.claude/hooks/no-erase.sh`, which refuse the command outright rather than trusting the agent to comply. **Do not weaken the guard to get a task done** — if it blocks you, change approach or ask Jack to run it himself.
+`00-RULES.md` is binding, not background. Three rules: this file is the working contract; **never erase stored data** (no destruction of business data, vault notes, or git history without a verified backup written first); and **do not break the pipelines** (webhooks, routes, and production configs serve external systems that fail silently — check dependencies first, and keep signature verification, payload handling, and error logging intact through any refactor; see `architecture/public-surface.md`).
+
+Enforced by `.claude/settings.json` deny rules and the `PreToolUse` hook at `.claude/hooks/no-erase.sh`, which refuse the command rather than trusting the agent to comply. Deploys to the droplet and service stops prompt for confirmation; `scp` of `plaid.rs` is refused outright. **Do not weaken the guard to get a task done** — if it blocks you, change approach or ask Jack to run it himself.
+
+`00-RULES.md` also carries the **session-close checklist**: update the note matching what you changed and bump its dates, add any new note's line to `00-INDEX.md`, record load-bearing decisions in `decisions/`, and push anything ugly you left behind to `revisit/` rather than widening the diff.
 
 It holds: how each subsystem actually works and why, a screen-by-screen record of every page and its design choices on both desktop and mobile, the decisions behind the architecture, the landmines in `gotchas.md`, deploy runbooks, and a `revisit/` backlog of known-imperfect code.
 
