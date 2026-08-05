@@ -12594,22 +12594,48 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     //   except pending→posted churn, so a same-connection content match is
                     //   churn even when the retraction lands on a later page or sync. The
                     //   fingerprint dedup exists for re-links, which always mint a new `pa`.
-                    if let Ok((existing_id, rj)) = conn.query_row(
-                        "SELECT id, COALESCE(raw_json,'') FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
-                           AND direction=?4 AND LOWER(COALESCE(description,''))=?5 AND imported_at < ?6 LIMIT 1",
-                        rusqlite::params![label, date, amount, direction, desc.to_lowercase(), now],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                    ) {
-                        let same_connection = !pacct.is_empty()
-                            && serde_json::from_str::<Value>(&rj).ok()
-                                .and_then(|v| v.get("pa").and_then(|p| p.as_str()).map(|p| p == pacct))
-                                .unwrap_or(false);
-                        if !removed_ids.contains(&existing_id) && !same_connection {
-                            if rj.is_empty() {
-                                let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, existing_id]);
-                                let mut c = Map::new();
-                                c.insert("raw_json".into(), Value::String(rawj.clone()));
-                                let _ = sync::record_upsert("bank_txn", &existing_id, c);
+                    // Examine EVERY content match, not one arbitrary row. The old query
+                    // was `LIMIT 1` with no ORDER BY, so when the ledger already held two
+                    // rows for the same real transaction (the normal state after a bank is
+                    // linked on two devices) SQLite could hand back the copy that is
+                    // neither being retracted nor from this connection — both exemptions
+                    // would miss, the posted twin would be skipped as a duplicate, and the
+                    // `removed` step would then delete the pending one. That is the
+                    // erasure this guard exists to prevent, reintroduced by the sampling.
+                    // A match qualifies as churn if ANY copy is being retracted now or
+                    // came from this same Plaid connection.
+                    let matches: Vec<(String, String)> = conn
+                        .prepare(
+                            "SELECT id, COALESCE(raw_json,'') FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
+                               AND direction=?4 AND LOWER(COALESCE(description,''))=?5 AND imported_at < ?6",
+                        )
+                        .and_then(|mut st| {
+                            st.query_map(
+                                rusqlite::params![label, date, amount, direction, desc.to_lowercase(), now],
+                                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                            )
+                            .map(|rows| rows.filter_map(|x| x.ok()).collect())
+                        })
+                        .unwrap_or_default();
+                    if !matches.is_empty() {
+                        let is_churn = matches.iter().any(|(mid, rj)| {
+                            removed_ids.contains(mid)
+                                || (!pacct.is_empty()
+                                    && serde_json::from_str::<Value>(rj).ok()
+                                        .and_then(|v| v.get("pa").and_then(|p| p.as_str()).map(|p| p == pacct))
+                                        .unwrap_or(false))
+                        });
+                        if !is_churn {
+                            // Genuine duplicate of a prior run. Backfill provenance onto any
+                            // legacy row that predates the `pa` stamp so a later cleanup —
+                            // and this very check on the next sync — can use the signal.
+                            for (mid, rj) in &matches {
+                                if rj.is_empty() {
+                                    let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, mid]);
+                                    let mut c = Map::new();
+                                    c.insert("raw_json".into(), Value::String(rawj.clone()));
+                                    let _ = sync::record_upsert("bank_txn", mid, c);
+                                }
                             }
                             continue;
                         }
