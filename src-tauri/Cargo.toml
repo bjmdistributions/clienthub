@@ -79,7 +79,11 @@ notify = "6.1"
 csv = "1.3"
 rust_xlsxwriter = "0.77"
 
-# Bank statement PDF text extraction (Chase statements)
+# Excel READING — supplier manifests arrive as .xlsx/.xls far more often than CSV
+# (rust_xlsxwriter above only writes). Used by manifest.rs.
+calamine = "0.26"
+
+# Bank statement PDF text extraction (Chase statements) + PDF manifests
 pdf-extract = "0.7"
 
 # Regex for signup detection rules

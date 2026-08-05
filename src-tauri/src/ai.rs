@@ -523,6 +523,115 @@ Include fees and interest as transactions. Do NOT emit running-balance, subtotal
     Err(last_err.unwrap_or_else(|| anyhow!("AI request failed")))
 }
 
+/// One Claude call that must come back as a JSON object. Retries transient failures;
+/// an auth/quota rejection surfaces immediately rather than being retried.
+async fn claude_json(
+    client: &reqwest::Client,
+    key: &str,
+    system: &str,
+    user_text: &str,
+    max_tokens: u32,
+) -> Result<Value> {
+    let body = serde_json::json!({
+        "model": LOAD_MODEL,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": user_text }] }]
+    });
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        let resp = client.post(ANTHROPIC_URL)
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body).send().await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                let v: Value = r.json().await.context("Anthropic returned invalid JSON")?;
+                let raw = v.get("content").and_then(|c| c.as_array())
+                    .and_then(|arr| arr.iter().find_map(|b| b.get("text").and_then(|t| t.as_str())))
+                    .ok_or_else(|| anyhow!("Unexpected AI response shape"))?;
+                let cleaned = raw.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                return serde_json::from_str(cleaned)
+                    .with_context(|| format!("AI returned non-JSON: {}", cleaned));
+            }
+            Ok(r) => {
+                let status = r.status();
+                let txt = r.text().await.unwrap_or_default();
+                if status.as_u16() == 401 || status.as_u16() == 403 {
+                    return Err(anyhow!("AI key rejected ({}). Check your Anthropic API key in Settings.", status));
+                }
+                last_err = Some(anyhow!("AI HTTP {}: {}", status, txt));
+            }
+            Err(e) => last_err = Some(e.into()),
+        }
+        if attempt < MAX_RETRIES {
+            tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("AI request failed")))
+}
+
+/// Characters of manifest text per request, and the ceiling on requests for one
+/// document. A 2,000-line manifest does not fit in a single call, and an unbounded
+/// loop over a huge PDF would be a surprise bill.
+const MANIFEST_CHUNK_CHARS: usize = 12_000;
+const MANIFEST_MAX_CHUNKS: usize = 20;
+
+/// Extract every product line from a manifest's raw text — the fallback for a PDF
+/// whose layout the deterministic parser can't hold. Returns (rows, truncated),
+/// where each row is {description, quantity, price, category, brand} and
+/// `truncated` means the document ran past the chunk ceiling, so the totals are
+/// incomplete. The caller surfaces that; it is never applied silently.
+pub async fn extract_manifest(text: &str) -> Result<(Vec<Value>, bool)> {
+    let key = anthropic_key().ok_or_else(|| anyhow!(
+        "Add your Anthropic API key in Settings → Loads to let Ecliptr read awkward PDF manifests."
+    ))?;
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(anyhow!("This manifest had no readable text."));
+    }
+
+    let system = "You extract EVERY product line from a wholesale/liquidation MANIFEST. \
+Return ONLY valid JSON, no markdown: \
+{\"rows\":[{\"description\":string,\"quantity\":number,\"price\":number,\"category\":string|null,\"brand\":string|null}]}. \
+Rules: one entry per product line. \
+`price` is the PER-UNIT retail price as a plain number (no $ or commas); if the line gives only an extended/total amount, divide it by the quantity. \
+`quantity` is the unit count on that line, or 1 when it is not stated. \
+`category` and `brand` ONLY when the manifest states them for that line — otherwise null. Never infer a brand from the description. \
+Skip page headers, repeated column headings, subtotals, grand totals and any summary line. \
+Never invent lines, quantities or prices. If this text contains no product lines, return {\"rows\":[]}.";
+
+    // Chunk on line boundaries so a row is never split across two requests.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in text.lines() {
+        if !cur.is_empty() && cur.len() + line.len() + 1 > MANIFEST_CHUNK_CHARS {
+            chunks.push(std::mem::take(&mut cur));
+        }
+        cur.push_str(line);
+        cur.push('\n');
+    }
+    if !cur.trim().is_empty() {
+        chunks.push(cur);
+    }
+
+    let truncated = chunks.len() > MANIFEST_MAX_CHUNKS;
+    if truncated {
+        chunks.truncate(MANIFEST_MAX_CHUNKS);
+    }
+
+    let client = http_client()?;
+    let mut rows: Vec<Value> = Vec::new();
+    for chunk in &chunks {
+        let v = claude_json(&client, &key, system, &format!("Manifest text:\n{}", chunk), 8192).await?;
+        if let Some(arr) = v.get("rows").and_then(|r| r.as_array()) {
+            rows.extend(arr.iter().cloned());
+        }
+    }
+    Ok((rows, truncated))
+}
+
 pub async fn draft_newsletter(prompt: &str, tone: &str) -> Result<String> {
     let tone_instruction = match tone {
         "formal" => "formal, professional",
