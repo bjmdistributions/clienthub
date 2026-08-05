@@ -14,6 +14,14 @@ import { toast } from "./Toast";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 
+// Backend errors arrive as raw Rust strings and were shown to the user verbatim,
+// often prefixed "Error:" by String(e). Strip the noise and never render an empty
+// toast — a failure with no message reads as nothing having happened at all.
+function errText(e: unknown): string {
+  const raw = typeof e === "string" ? e : ((e as { message?: string })?.message ?? String(e));
+  return raw.replace(/^Error:\s*/i, "").trim() || "Something went wrong. Please try again.";
+}
+
 // ── Transaction search ──────────────────────────────────────────────────────
 // Exact numeric token ("500", "$1,500.00", "1500") → number; anything else null.
 const numToken = (s: string): number | null =>
@@ -403,7 +411,7 @@ export default function FinancialsView() {
   const refreshScreen = async () => {
     setRefreshing(true);
     try { await refreshAll(true); }
-    catch (e: any) { toast(String(e?.message || e), "error"); }
+    catch (e: any) { toast(errText(e), "error"); }
     finally { setRefreshing(false); }
   };
 
@@ -416,7 +424,7 @@ export default function FinancialsView() {
       setCashOpen(false); setCashAmount(""); setCashCp(""); setCashNote("");
       await refreshAll(false);
       toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded — allocate it to deals below`);
-    } catch (e: any) { toast(String(e?.message || e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setCashSaving(false); }
   };
 
@@ -431,7 +439,7 @@ export default function FinancialsView() {
       if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
       setPlaidClientId(""); setPlaidSecret("");
       toast("Plaid keys saved");
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidSavingKeys(false); }
   };
 
@@ -439,7 +447,7 @@ export default function FinancialsView() {
     setPlaidTesting(true);
     try {
       toast(await api.plaidTestKeys());
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidTesting(false); }
   };
 
@@ -531,7 +539,7 @@ export default function FinancialsView() {
           if (pollCancelRef.current) return;
           if (pollErrors >= 5) {
             stopPolling();
-            toast(String(e), "error");
+            toast(errText(e), "error");
             setPlaidConnecting(false);
           } else {
             pollTimerRef.current = window.setTimeout(tick, 3000);
@@ -541,7 +549,7 @@ export default function FinancialsView() {
       pollTimerRef.current = window.setTimeout(tick, 3000);
     } catch (e: any) {
       stopPolling();
-      toast(String(e), "error");
+      toast(errText(e), "error");
       setPlaidConnecting(false);
     }
   };
@@ -602,7 +610,7 @@ export default function FinancialsView() {
       for (const x of errored) {
         toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
       }
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidSyncing(false); }
   };
 
@@ -635,7 +643,7 @@ export default function FinancialsView() {
         toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
       }
       await refreshAll(false);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidSyncing(false); }
   };
 
@@ -653,7 +661,7 @@ export default function FinancialsView() {
         toast("No duplicate transactions found", "success");
         setDedupe(null);
       }
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setDedupeRunning(false); }
   };
 
@@ -665,7 +673,7 @@ export default function FinancialsView() {
       setDedupeDone(true);
       await refreshAll(false);
       toast(`Removed ${r.removed || 0} duplicate${(r.removed || 0) === 1 ? "" : "s"}${r.review_count ? ` · ${r.review_count} still need a look` : ""}`, "success");
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setDedupeRunning(false); }
   };
 
@@ -680,7 +688,7 @@ export default function FinancialsView() {
 
   const saveBackupSettings = async (url: string, enabled: boolean) => {
     setBackupUrl(url); setBackupEnabled(enabled);
-    try { await api.setBankBackupSettings(url, enabled); } catch (e: any) { toast(String(e), "error"); }
+    try { await api.setBankBackupSettings(url, enabled); } catch (e: any) { toast(errText(e), "error"); }
   };
 
   const runBackupNow = async () => {
@@ -689,7 +697,7 @@ export default function FinancialsView() {
       const r = await api.backupBankTxnsNow();
       setBackupLast({ at: r.at, total: String(r.total) });
       toast(r.added > 0 ? `Backed up ${r.added} transaction${r.added === 1 ? "" : "s"} to your sheet` : "Sheet is already up to date", "success");
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setBackupBusy(false); }
   };
 
@@ -704,7 +712,7 @@ export default function FinancialsView() {
         if (prepTimerRef.current !== null) { clearTimeout(prepTimerRef.current); prepTimerRef.current = null; }
         setPlaidPreparing(false);
       }
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
   };
 
   // Open/close a row's allocation panel.
@@ -719,7 +727,7 @@ export default function FinancialsView() {
     setAllocLoading(true);
     api.listBankAllocationsForTxn(t.id)
       .then(setAllocs)
-      .catch((e: any) => toast(String(e), "error"))
+      .catch((e: any) => toast(errText(e), "error"))
       .finally(() => setAllocLoading(false));
   };
 
@@ -742,7 +750,7 @@ export default function FinancialsView() {
     try {
       const p = await api.bankPreview(selected);
       setPreview(p);
-    } catch (e: any) { toast(String(e), "error"); setPreviewPath(null); }
+    } catch (e: any) { toast(errText(e), "error"); setPreviewPath(null); }
     finally { setPreviewing(false); }
   };
 
@@ -784,7 +792,7 @@ export default function FinancialsView() {
       toast(`Imported ${s.imported}, skipped ${s.skipped} (already imported)`);
       setPreview(null); setPreviewPath(null);
       await refreshAll(false);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setImporting(false); }
   };
 
@@ -803,7 +811,7 @@ export default function FinancialsView() {
     try {
       const p = await api.bankPreviewAi(selected);
       setAiPreview(p);
-    } catch (e: any) { toast(String(e), "error"); setAiPreviewPath(null); }
+    } catch (e: any) { toast(errText(e), "error"); setAiPreviewPath(null); }
     finally { setAiExtracting(false); }
   };
 
@@ -817,7 +825,7 @@ export default function FinancialsView() {
       toast(`AI imported ${s.imported} (extracted ${s.extracted}); skipped ${s.skipped} already-imported. Review + allocate below.`);
       setAiPreview(null); setAiPreviewPath(null);
       await refreshAll(false);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setAiImporting(false); }
   };
 
@@ -839,7 +847,7 @@ export default function FinancialsView() {
         ].join(""),
       );
       await refreshAll(false);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setClearing(false); }
   };
 
@@ -854,7 +862,7 @@ export default function FinancialsView() {
       setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
       const s = await api.bankTxnSummary();
       setSummary(s);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
   };
 
   const submitAlloc = async () => {
@@ -866,7 +874,7 @@ export default function FinancialsView() {
         await api.tagBankTxnToLoan(openId, selectedLoan.id);
         toast("Tagged to loan");
         await refreshAll(true);
-      } catch (e: any) { toast(String(e), "error"); }
+      } catch (e: any) { toast(errText(e), "error"); }
       finally { setAllocBusy(false); }
       return;
     }
@@ -881,7 +889,7 @@ export default function FinancialsView() {
       setSelectedDeal(null); setDealQuery(""); setNote("");
       if (!allowSplit) setAmountStr("");
       await refreshAll(true);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
   };
 
@@ -891,7 +899,7 @@ export default function FinancialsView() {
       await api.untagBankTxnLoan(bankTxnId);
       toast("Loan tag removed");
       await refreshAll(true);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
   };
 
@@ -909,14 +917,14 @@ export default function FinancialsView() {
       setRules(await api.listTxnRules());
       await refreshAll(false);
       return true;
-    } catch (e: any) { toast(String(e), "error"); return false; }
+    } catch (e: any) { toast(errText(e), "error"); return false; }
   };
 
   const deleteRule = async (id: string) => {
     try {
       await api.deleteTxnRule(id);
       setRules(await api.listTxnRules());
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
   };
 
   const applyRules = async () => {
@@ -925,7 +933,7 @@ export default function FinancialsView() {
       toast(`Applied to ${r.updated} transaction${r.updated === 1 ? "" : "s"}`);
       await refreshAll(true);
       setRules(await api.listTxnRules());
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
   };
 
   const removeAlloc = async (id: string) => {
@@ -933,7 +941,7 @@ export default function FinancialsView() {
       await api.removeBankAllocation(id);
       toast("Allocation removed");
       await refreshAll(true);
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(errText(e), "error"); }
   };
 
   // ── Bulk actions ────────────────────────────────────────────────────────────
@@ -1003,7 +1011,7 @@ export default function FinancialsView() {
       const extra = r.skipped_booked > 0 ? ` · ${r.skipped_booked} kept (linked to a deal)` : "";
       toast(`Deleted ${r.deleted} transaction${r.deleted === 1 ? "" : "s"}${extra}`, "success");
     } catch (e) {
-      toast(String(e), "error");
+      toast(errText(e), "error");
     } finally {
       setBulkActionBusy(false);
     }
@@ -1024,7 +1032,7 @@ export default function FinancialsView() {
       setAiProgress("");
       toast(`AI categorized ${total} transaction${total === 1 ? "" : "s"}`);
       await refreshAll(true);
-    } catch (e: any) { setAiProgress(""); toast(String(e), "error"); }
+    } catch (e: any) { setAiProgress(""); toast(errText(e), "error"); }
     finally { setAiBusy(false); }
   };
 
@@ -1055,7 +1063,7 @@ export default function FinancialsView() {
       setDeals(await api.listDealFlows());
       await refreshAll(true);
       return true;
-    } catch (e: any) { toast(String(e), "error"); return false; }
+    } catch (e: any) { toast(errText(e), "error"); return false; }
     finally { setNewDealBusy(false); }
   };
 
@@ -1597,7 +1605,7 @@ export default function FinancialsView() {
                     </p>
                     {(dedupe.sample?.length || 0) > 0 && (
                       <div>
-                        <div className="text-[11px] font-medium text-muted uppercase tracking-wide mb-1.5">Will remove (sample)</div>
+                        <div className="text-[12px] font-medium text-muted mb-1.5">Will remove (sample)</div>
                         <div className="rounded-xl border border-line divide-y divide-line max-h-40 overflow-y-auto">
                           {dedupe.sample!.map((g, i) => (
                             <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
@@ -1620,7 +1628,7 @@ export default function FinancialsView() {
 
                 {dedupe.review.length > 0 && (
                   <div>
-                    <div className="text-[11px] font-medium text-warning-ink uppercase tracking-wide mb-1.5">Needs your review — not removed</div>
+                    <div className="text-[12px] font-medium text-warning-ink mb-1.5">Needs your review — not removed</div>
                     <div className="rounded-xl border border-warning/40 bg-warning-bg/30 divide-y divide-warning/20 max-h-48 overflow-y-auto">
                       {dedupe.review.slice(0, 60).map((g, i) => (
                         <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
@@ -1986,7 +1994,7 @@ export default function FinancialsView() {
         <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-[13px] text-ink">
-              Detected <span className="font-semibold uppercase">{preview.format}</span> ·{" "}
+              Detected <span className="font-semibold">{preview.format.toUpperCase()}</span> ·{" "}
               <span className="tabular-nums font-semibold">{preview.total}</span> transaction{preview.total !== 1 ? "s" : ""}
             </div>
             <div className="flex items-center gap-2">
