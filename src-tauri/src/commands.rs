@@ -15883,6 +15883,108 @@ pub struct IntegrityItem {
     pub targets: Vec<IntegrityTarget>,
 }
 
+/// One account's answer to "does the ledger still agree with the bank?".
+#[derive(serde::Serialize)]
+pub struct ReconAccount {
+    pub account: String,
+    /// The bank's own current balance for this account.
+    pub bank_balance: f64,
+    /// Money in minus money out, over every transaction we hold for it.
+    pub ledger_net: f64,
+    /// bank_balance - ledger_net. The balance this account must have had before our
+    /// first transaction. A CONSTANT, unless the ledger changed behind us.
+    pub implied_opening: f64,
+    /// What that figure was the last time we looked. None on the first check.
+    pub baseline: Option<f64>,
+    /// implied_opening - baseline. Non-zero means transactions were added, removed or
+    /// altered since the baseline was taken; the amount is the size of what moved.
+    pub drift: f64,
+    pub txn_count: i64,
+}
+
+/// Does the ledger still tie out to the bank?
+///
+/// There is no opening-balance anchor in this system, so an absolute tie-out is not
+/// available. What IS available is stronger than it sounds: for each account,
+/// `bank_balance - (money in - money out)` is the balance the account must have had
+/// before our first transaction — a number that can never legitimately change. Record
+/// it once and re-derive it on every check: if it moves, a transaction was added,
+/// deleted or altered behind us, and the drift is exactly the amount involved.
+///
+/// This is the detection net the ledger has never had. The $48,650 of transactions
+/// erased by the pending-settle churn in Jul-Aug 2026 went unnoticed for weeks; this
+/// check would have shown a drift the same day, naming the account and the amount.
+///
+/// `rebaseline` accepts the current figures as correct — used after a deliberate
+/// change (a cleanup, a re-pull, a first run).
+#[tauri::command]
+pub async fn reconcile_accounts(rebaseline: Option<bool>) -> Result<Vec<ReconAccount>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let aliases = account_alias_map();
+    // Live balances, keyed by the SAME label the importer writes onto bank_txn rows,
+    // through the same alias map — otherwise a renamed/re-masked account compares its
+    // balance against an empty ledger and reports the whole balance as drift.
+    let mut bank: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT accounts_json FROM plaid_items") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for aj in rows.filter_map(|r| r.ok()) {
+                let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
+                for a in &accts {
+                    let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind != "depository" && kind != "credit" { continue; }
+                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+                    let raw = if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
+                    let label = aliases.get(&raw).cloned().unwrap_or(raw);
+                    let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    // A card's "current" is money OWED — the ledger's sign convention for
+                    // a card is the mirror of a depository account, so negate it here.
+                    let signed = if kind == "credit" { -cur.abs() } else { cur };
+                    *bank.entry(label).or_insert(0.0) += signed;
+                }
+            }
+        }
+    }
+    if bank.is_empty() {
+        return Ok(Vec::new()); // nothing to reconcile against
+    }
+
+    let stored: Value = conn
+        .query_row("SELECT value FROM settings WHERE key='recon_baselines'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+
+    let mut out: Vec<ReconAccount> = Vec::new();
+    let mut next = serde_json::Map::new();
+    for (label, bal) in bank {
+        let (net, count): (f64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0), COUNT(*) \
+                 FROM bank_txn WHERE account_id=?1",
+                [&label],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0.0, 0));
+        let r2 = |x: f64| (x * 100.0).round() / 100.0;
+        let implied = r2(bal - net);
+        let baseline = stored.get(&label).and_then(|v| v.as_f64());
+        let drift = match baseline { Some(b) => r2(implied - b), None => 0.0 };
+        // Keep the ORIGINAL baseline unless asked to re-accept, or there wasn't one —
+        // otherwise every check silently forgives the drift it just found.
+        let keep = if rebaseline.unwrap_or(false) { implied } else { baseline.unwrap_or(implied) };
+        next.insert(label.clone(), json!(keep));
+        out.push(ReconAccount {
+            account: label, bank_balance: r2(bal), ledger_net: r2(net),
+            implied_opening: implied, baseline, drift, txn_count: count,
+        });
+    }
+    drop(conn);
+    write_setting("recon_baselines", &Value::Object(next).to_string())?;
+    out.sort_by(|a, b| b.drift.abs().partial_cmp(&a.drift.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
+}
+
 /// A write this device gave up delivering. The local row is still correct here; what
 /// failed is getting it to the server and therefore to every other device.
 #[derive(serde::Serialize)]

@@ -685,6 +685,7 @@ fn main() {
             scan_data_integrity,
             converge_integrity_item,
             list_stranded_writes,
+            reconcile_accounts,
             resync_all_completed_deals,
             set_deal_link_na,
             set_refund_done,

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, FinancialsOverview, MoneyConfig } from "../lib/api";
+import { api, FinancialsOverview, MoneyConfig, ReconAccount } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw, SlidersHorizontal, X, AlertTriangle } from "lucide-react";
+import { RefreshCw, SlidersHorizontal, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import { toast } from "./Toast";
 
 const inputCls =
@@ -73,6 +73,7 @@ export default function FreeCashView() {
   const [configLoaded, setConfigLoaded] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [recon, setRecon] = useState<ReconAccount[] | null>(null);
 
   // Config editor buffers (raw strings — coerced on save).
   const [bankStr, setBankStr]     = useState("");
@@ -119,6 +120,9 @@ export default function FreeCashView() {
   useEffect(() => {
     loadOverview();
     loadConfig();
+    // Does the ledger still agree with the bank? Checked on open, because a drift
+    // that nobody is told about is the same as no check at all.
+    api.reconcileAccounts().then(setRecon).catch(() => setRecon([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -219,6 +223,49 @@ export default function FreeCashView() {
       </div>
 
       <div className="flex-1 p-6 flex flex-col gap-5 max-w-[720px] w-full mx-auto">
+
+        {/* Does the ledger still tie out to the bank? Only rendered when there is
+            something to say — a drift, or a quiet one-line confirmation. */}
+        {recon && recon.length > 0 && (() => {
+          const drifted = recon.filter((r) => Math.abs(r.drift) >= 0.01);
+          if (drifted.length === 0) {
+            return (
+              <div className="text-[12px] text-muted flex items-center gap-1.5">
+                <ShieldCheck size={13} className="text-success-ink" />
+                Ledger agrees with {recon.length === 1 ? "your bank" : `all ${recon.length} accounts`}
+              </div>
+            );
+          }
+          return (
+            <div className="border border-danger-line rounded-xl p-4 bg-danger-bg/30">
+              <div className="text-[13px] font-semibold text-ink flex items-center gap-2">
+                <AlertTriangle size={15} className="text-danger-ink" />
+                Your ledger no longer matches your bank
+              </div>
+              <p className="text-[12px] text-muted mt-1 leading-relaxed">
+                Transactions have been added, removed or changed since this was last checked. The amount is
+                the size of what moved — it is not money missing from your bank, it is money missing from
+                (or doubled in) your records.
+              </p>
+              <div className="mt-2.5 space-y-1.5">
+                {drifted.map((r) => (
+                  <div key={r.account} className="flex items-baseline justify-between gap-3 text-[12.5px]">
+                    <span className="text-ink-2 truncate">{r.account}</span>
+                    <span className={`tabular-nums font-semibold flex-shrink-0 ${r.drift < 0 ? "text-danger-ink" : "text-ink"}`}>
+                      {r.drift > 0 ? "+" : ""}{fmtAmount(r.drift)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() => api.reconcileAccounts(true).then(setRecon).catch(() => {})}
+                className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+              >
+                These records are correct — use them as the new baseline
+              </button>
+            </div>
+          );
+        })()}
 
         {ov === null && loadError ? (
           // A failed load used to leave the skeleton pulsing forever, which reads as

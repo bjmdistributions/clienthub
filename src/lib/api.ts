@@ -1096,6 +1096,20 @@ export interface IntegrityItem {
   targets: IntegrityTarget[];
 }
 
+/// One account's answer to "does the ledger still agree with the bank?".
+/// `implied_opening` (bank balance minus net ledger movement) can never legitimately
+/// change; `drift` is how far it has moved since the baseline, i.e. the size of the
+/// transactions that were added, removed or altered behind us.
+export interface ReconAccount {
+  account: string;
+  bank_balance: number;
+  ledger_net: number;
+  implied_opening: number;
+  baseline: number | null;
+  drift: number;
+  txn_count: number;
+}
+
 /// A write this device gave up delivering to the server (and therefore to every
 /// other device). The local row is still correct here — only the delivery failed.
 export interface StrandedWrite {
@@ -2004,6 +2018,9 @@ export const api = {
   /// Writes this device permanently stopped trying to deliver. The local row is
   /// still correct here; what failed is reaching the server and the other devices.
   listStrandedWrites: () => invoke<StrandedWrite[]>("list_stranded_writes"),
+  /// Does the ledger still tie out to the bank? Pass `rebaseline` to accept the
+  /// current figures as correct after a deliberate change (cleanup, re-pull).
+  reconcileAccounts: (rebaseline = false) => invoke<ReconAccount[]>("reconcile_accounts", { rebaseline }),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>
     invoke<string[]>("converge_integrity_item", { kind, id }),
 
