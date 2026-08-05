@@ -1096,6 +1096,20 @@ export interface IntegrityItem {
   targets: IntegrityTarget[];
 }
 
+/// A write this device gave up delivering to the server (and therefore to every
+/// other device). The local row is still correct here — only the delivery failed.
+export interface StrandedWrite {
+  event_id: string;
+  table: string;
+  row_id: string;
+  op: "upsert" | "delete" | "unknown";
+  reason: string;
+  at: string;
+  /// One of the money tables — these are the ones that change a figure.
+  is_money: boolean;
+  detail: string;
+}
+
 export interface DashboardStats {
   clients: number;
   invoices: number;
@@ -1987,6 +2001,9 @@ export const api = {
   // Data safety (superadmin) — scan for cross-device integrity anomalies + converge one
   // to deleted everywhere via the sync path.
   scanDataIntegrity: () => invoke<IntegrityItem[]>("scan_data_integrity"),
+  /// Writes this device permanently stopped trying to deliver. The local row is
+  /// still correct here; what failed is reaching the server and the other devices.
+  listStrandedWrites: () => invoke<StrandedWrite[]>("list_stranded_writes"),
   convergeIntegrityItem: (kind: IntegrityItem["kind"], id: string) =>
     invoke<string[]>("converge_integrity_item", { kind, id }),
 

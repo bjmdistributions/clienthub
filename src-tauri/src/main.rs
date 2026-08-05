@@ -684,6 +684,7 @@ fn main() {
             cleanup_orphan_allocations,
             scan_data_integrity,
             converge_integrity_item,
+            list_stranded_writes,
             resync_all_completed_deals,
             set_deal_link_na,
             set_refund_done,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, IntegrityItem } from "../lib/api";
+import { api, IntegrityItem, StrandedWrite } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, ShieldAlert, ShieldCheck, FileWarning, Banknote, GitBranch, Trash2 } from "lucide-react";
 import { toast } from "./Toast";
@@ -13,6 +13,7 @@ const KIND_META: Record<IntegrityItem["kind"], { label: string; icon: typeof Fil
 
 export default function DataSafetyView() {
   const [items, setItems] = useState<IntegrityItem[] | null>(null);
+  const [stranded, setStranded] = useState<StrandedWrite[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState<string | null>(null);
 
@@ -22,6 +23,10 @@ export default function DataSafetyView() {
       .then(setItems)
       .catch((e) => { toast(String(e), "error"); setItems([]); })
       .finally(() => setLoading(false));
+    // Writes this device gave up delivering. These were previously invisible —
+    // only a log line and a table nothing read — so a payment could stop reaching
+    // the rest of the org while looking perfectly correct here.
+    api.listStrandedWrites().then(setStranded).catch(() => setStranded([]));
   };
   useEffect(load, []);
 
@@ -71,6 +76,42 @@ export default function DataSafetyView() {
           <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Rescan
         </button>
       </div>
+
+      {/* Writes this device stopped trying to deliver. Money rows first — those are the
+          ones that change a figure. Deliberately shown even when the integrity scan is
+          clean, because the two detect completely different failures: the scan compares
+          rows that ARRIVED, this lists rows that never left. */}
+      {stranded && stranded.length > 0 && (
+        <div className="bg-surface border border-danger-line rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-line">
+            <div className="text-[13px] font-semibold text-ink flex items-center gap-2">
+              <FileWarning size={15} className="text-danger-ink" />
+              {stranded.length} change{stranded.length === 1 ? "" : "s"} never reached your other devices
+            </div>
+            <p className="text-[12px] text-muted mt-1 leading-relaxed">
+              These are correct on this computer but this device gave up sending them, so the server and
+              your other devices do not have them. Nothing was lost here. Run <strong>Repair sync</strong>,
+              or make the same edit again, to push them through.
+            </p>
+          </div>
+          <div className="divide-y divide-line">
+            {[...stranded].sort((a, b) => Number(b.is_money) - Number(a.is_money)).map((s) => (
+              <div key={s.event_id} className="px-4 py-2.5 flex items-start gap-3 min-w-0">
+                <span className={`text-[11px] px-1.5 py-0.5 rounded flex-shrink-0 ${s.is_money ? "bg-danger-bg text-danger-ink font-medium" : "bg-surface-2 text-muted"}`}>
+                  {s.is_money ? "money" : s.table || "unknown"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12.5px] text-ink-2 truncate">
+                    {s.detail || `${s.op} ${s.table || "?"} ${s.row_id}`}
+                  </div>
+                  <div className="text-[11.5px] text-muted mt-0.5 break-words">{s.reason}</div>
+                </div>
+                <span className="text-[11.5px] text-faint flex-shrink-0">{s.at.slice(0, 10)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {all.length === 0 ? (
         <div className="bg-surface border border-line rounded-xl py-16 flex flex-col items-center">

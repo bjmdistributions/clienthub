@@ -15850,6 +15850,106 @@ pub struct IntegrityItem {
     pub targets: Vec<IntegrityTarget>,
 }
 
+/// A write this device gave up delivering. The local row is still correct here; what
+/// failed is getting it to the server and therefore to every other device.
+#[derive(serde::Serialize)]
+pub struct StrandedWrite {
+    pub event_id: String,
+    /// Which table the stranded write belongs to (decoded from the saved payload).
+    pub table: String,
+    pub row_id: String,
+    /// "upsert" | "delete" | "unknown"
+    pub op: String,
+    pub reason: String,
+    pub at: String,
+    /// True for the money tables — these are the ones that change a figure.
+    pub is_money: bool,
+    /// Best-effort human description of the row, read from the LOCAL copy if present.
+    pub detail: String,
+}
+
+/// Every sync event this device permanently stopped trying to deliver.
+///
+/// These were invisible: the payload was written to `sync_dead_letters` and the only
+/// other trace was a log line, so a money write could stop reaching the rest of the
+/// org while looking perfectly correct on the device that made it. Nothing may be
+/// dropped without it being visible — that is the whole point of surfacing this.
+#[tauri::command]
+pub async fn list_stranded_writes() -> Result<Vec<StrandedWrite>, String> {
+    const MONEY_TABLES: [&str; 7] = [
+        "bank_txn", "bank_allocation", "refunds", "loan", "cash_purchase",
+        "business_expense", "reserve_entry",
+    ];
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT event_id, reason, at, COALESCE(event_json,'') FROM sync_dead_letters ORDER BY at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out: Vec<StrandedWrite> = Vec::new();
+    for (event_id, reason, at, json) in rows.filter_map(|r| r.ok()) {
+        // Inbound dead-letters (an event from a peer this build could not apply) carry
+        // no payload; outbound ones carry the full event.
+        let v: Value = serde_json::from_str(&json).unwrap_or(Value::Null);
+        let op_obj = v.get("op");
+        let (op, table, row_id) = match op_obj {
+            Some(o) if o.get("Upsert").is_some() => {
+                let u = o.get("Upsert").unwrap();
+                (
+                    "upsert".to_string(),
+                    u.get("table").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    u.get("row_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                )
+            }
+            Some(o) if o.get("Delete").is_some() => {
+                let d = o.get("Delete").unwrap();
+                (
+                    "delete".to_string(),
+                    d.get("table").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    d.get("row_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                )
+            }
+            _ => ("unknown".to_string(), String::new(), String::new()),
+        };
+        let is_money = MONEY_TABLES.contains(&table.as_str());
+        // Describe it from the local row where we can, so the list is readable rather
+        // than a wall of ids.
+        let detail = if table == "bank_txn" && !row_id.is_empty() {
+            conn.query_row(
+                "SELECT COALESCE(posted_at,'') || '  ' || COALESCE(direction,'') || ' $' || \
+                 printf('%.2f', COALESCE(amount,0)) || '  ' || COALESCE(description,'') \
+                 FROM bank_txn WHERE id=?1",
+                [&row_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+        } else if table == "bank_allocation" && !row_id.is_empty() {
+            conn.query_row(
+                "SELECT 'allocation $' || printf('%.2f', COALESCE(amount,0)) || ' as ' || COALESCE(role,'') \
+                 FROM bank_allocation WHERE id=?1",
+                [&row_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        out.push(StrandedWrite { event_id, table, row_id, op, reason, at, is_money, detail });
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn scan_data_integrity() -> Result<Vec<IntegrityItem>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
