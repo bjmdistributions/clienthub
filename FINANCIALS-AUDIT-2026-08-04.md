@@ -21,7 +21,24 @@ is still open.
 
 ---
 
-## STATUS — round 1 fixed, 2026-08-04 (uncommitted, unreleased)
+## RELEASED — v0.15.126, 2026-08-04 evening
+
+Everything in the two STATUS blocks below, plus the pending-settle churn fix, shipped in
+**v0.15.126** (commit `6d569c6`, releasing `baff6ed`; tag pushed, CI builds and signs for
+Windows + macOS). The server mirror of the churn fix is `clienthub-api` `5303fce` — committed,
+still **never deployed** by design.
+
+Verified before tagging: `tsc --noEmit`, `vite build`, `cargo check` (both repos) and a
+release-profile `cargo build` all clean. **Not verified signed-in** — open the app after it
+updates and check the three Financials tabs.
+
+Standing warning that outlives this release: **do not run "every exact match" dedupe.** Jack
+confirmed the 2× $100k Tytan (Jul 28) and 2× $20k wires (Aug 3) are real repeats.
+Same-connection identical pairs are real money by design now.
+
+---
+
+## STATUS — round 1 fixed, 2026-08-04 (shipped in v0.15.126)
 
 Verified: `tsc --noEmit` clean, `cargo check` clean (pre-existing warnings only), app boots
 with no console errors. Not verified end-to-end in the running app — that needs Jack signed
@@ -49,7 +66,7 @@ in on the desktop build.
 | LN-8 | `delete_loan` untags its transactions first (returns them to the review queue, never deletes them) and reports the count; the confirm says so up front |
 | A1 (part) | "Auto-syncing" relabelled "Bank feed checked every 20 min" — the truth |
 
-### Round 2 — same day (uncommitted, unreleased)
+### Round 2 — same day (shipped in v0.15.126)
 
 Verified: `tsc --noEmit` clean, `vite build` clean, `cargo check` clean on **both** the
 desktop and the server. Not verified signed-in.
