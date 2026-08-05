@@ -6555,9 +6555,9 @@ pub async fn get_load_inbox() -> Result<Value, String> {
             t
         }
     };
-    let url = crate::netsync::config()
-        .map(|c| format!("{}/api/loads/inbox/{}", c.url.trim_end_matches('/'), token));
-    Ok(json!({ "token": token, "url": url }))
+    let server = crate::netsync::config().map(|c| c.url.trim_end_matches('/').to_string());
+    let url = server.as_ref().map(|b| format!("{}/api/loads/inbox/{}", b, token));
+    Ok(json!({ "token": token, "url": url, "server": server }))
 }
 
 /// Candidates waiting for review, newest first.
@@ -10603,17 +10603,24 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
     let reviewed = one("SELECT COUNT(*) FROM bank_txn WHERE reviewed=1");
     let sum_in = one("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='in'");
     let sum_out = one("SELECT COALESCE(SUM(amount),0) FROM bank_txn WHERE direction='out'");
-    // Money-in transactions not yet fully tied to a deal (excludes internal transfers,
-    // which are not deal money).
-    let unallocated_in = one(
-        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND bt.category!='internal_transfer'
+    // Money-in transactions not yet fully tied to a deal. Excludes internal transfers
+    // AND loan-tagged money, which is classified and will never carry an allocation —
+    // counting it left a backlog figure that could not be worked down. This matches
+    // the `stale_unallocated` definition in financials_overview so the Transactions
+    // summary and the Overview alert cannot disagree about the same rows.
+    let not_deal_money = "bt.category NOT IN ('internal_transfer','loan_received','loan_repayment') \
+                          AND COALESCE(bt.counterparty_type,'') != 'loan'";
+    let unallocated_in = one(&format!(
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND {}
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
-    );
+        not_deal_money,
+    ));
     // Money-out not yet tied to a deal (supplier payments / refunds out to reconcile).
-    let unallocated_out = one(
-        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='out' AND bt.category!='internal_transfer'
+    let unallocated_out = one(&format!(
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='out' AND {}
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
-    );
+        not_deal_money,
+    ));
     // Not yet classified at all (no category) — the raw cleanup backlog.
     let unclassified = one("SELECT COUNT(*) FROM bank_txn WHERE COALESCE(category,'')=''");
     Ok(json!({
@@ -10678,6 +10685,10 @@ pub async fn set_bank_txn_review(
         REVIEW_UPDATE_SQL,
         rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, flag, now, id],
     ).map_err(|e| e.to_string())?;
+    // Booking a transaction must reach the other admins immediately: waiting for the
+    // 20s poll leaves a window where two people work the same queue and both see the
+    // row as unbooked, which is how one payment gets allocated twice.
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -11220,6 +11231,10 @@ pub async fn add_cash_transaction(
         rusqlite::params![id, org, date, amount, dir, desc, cat, cp, now],
     ).map_err(|e| e.to_string())?;
     crate::bank_backup::spawn_auto_backup(); // mirror the new booking to the safety-log sheet
+    // Manual cash is the one class of transaction with no Plaid re-pull to fall back
+    // on: if this device closes before the next poll tick the row sits in the outbound
+    // queue and nobody else can see it. Push it now, like every other money write.
+    crate::netsync::push_now();
     Ok(id)
 }
 
@@ -12369,6 +12384,11 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let mut imported = 0i64;
     let mut removed = 0i64;
     let mut unlinked_removed: Vec<String> = Vec::new(); // bank retracted them AFTER they were reviewed/linked
+    let mut amended = 0i64;     // bank changed a transaction we already held
+    // Amendments that shrank a transaction below what's already booked against it.
+    // Surfaced, never auto-trimmed — deciding which allocation gives way is the
+    // user's call, and the healer that used to make it deleted the newest leg.
+    let mut amended_over_allocated: Vec<String> = Vec::new();
     let mut preparing = false;  // at least one item still extracting after we waited
     let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
     // Shared budget (seconds) for waiting on freshly-linked items whose initial
@@ -12380,6 +12400,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         // setting) so a bank still pulls even if the app is left on the other env.
         // A per-item error is recorded and reported, never failing the whole sync.
         let mut item_imported = 0i64;
+        let mut item_amended = 0i64;
         let mut status = "ok";
         let mut error_msg = String::new();
         let accts: Vec<Value> = serde_json::from_str(&accounts_json).unwrap_or_default();
@@ -12413,7 +12434,10 @@ pub async fn plaid_sync() -> Result<Value, String> {
             // A fresh item (no cursor yet) that returns an empty first page with no
             // cursor issued is also still preparing — wait+retry rather than exit at 0.
             let added_empty = page.get("added").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true);
-            let removed_empty = page.get("removed").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true);
+            // `modified` counts as content too: a page carrying only amendments is a
+            // real page, not the "still preparing" empty first page.
+            let removed_empty = page.get("removed").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true)
+                && page.get("modified").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true);
             let next_cursor_now = page.get("next_cursor").and_then(|v| v.as_str()).unwrap_or("");
             let has_more_now = page.get("has_more").and_then(|v| v.as_bool()).unwrap_or(false);
             // First sync of a fresh item: an empty page means Plaid is still
@@ -12431,6 +12455,18 @@ pub async fn plaid_sync() -> Result<Value, String> {
             pages += 1;
             if pages > 60 { break; } // safety cap
             let conn = pool().get().map_err(|e| e.to_string())?;
+            // Ids the bank retracts in THIS page. A pending transaction settling
+            // arrives as removed[pending_id] + added[posted_id] together, and the
+            // posted twin's content fingerprint matches the still-present pending
+            // row — the dedup below must not mistake it for a duplicate, or the
+            // posted twin is skipped, the pending row is then deleted, and the
+            // transaction vanishes from the ledger entirely.
+            let removed_ids: std::collections::HashSet<String> = page
+                .get("removed").and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|r| r.get("transaction_id").and_then(|v| v.as_str()))
+                    .map(plaid_txn_id).collect())
+                .unwrap_or_default();
             if let Some(added) = page.get("added").and_then(|v| v.as_array()) {
                 for t in added {
                     let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -12478,19 +12514,35 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // Content match against a prior-run row → this is a duplicate, skip it. But
                     // if that existing row predates provenance capture (empty raw_json), backfill
                     // it now (synced) so a later cleanup can use the connection/timestamp signal.
-                    if let Ok((existing_id, rj_empty)) = conn.query_row(
-                        "SELECT id, COALESCE(raw_json,'')='' FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
+                    //
+                    // Two matches are NOT duplicates and must import anyway:
+                    // - the matched row is in this page's `removed` set — it is the pending
+                    //   twin the bank is retracting right now, and this txn is its posted
+                    //   replacement (skipping it here erased $43k of book transfers);
+                    // - the matched row carries the SAME Plaid account_id (`pa`) — one
+                    //   connection never serves the same transaction twice under a new id
+                    //   except pending→posted churn, so a same-connection content match is
+                    //   churn even when the retraction lands on a later page or sync. The
+                    //   fingerprint dedup exists for re-links, which always mint a new `pa`.
+                    if let Ok((existing_id, rj)) = conn.query_row(
+                        "SELECT id, COALESCE(raw_json,'') FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
                            AND direction=?4 AND LOWER(COALESCE(description,''))=?5 AND imported_at < ?6 LIMIT 1",
                         rusqlite::params![label, date, amount, direction, desc.to_lowercase(), now],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)),
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
                     ) {
-                        if rj_empty {
-                            let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, existing_id]);
-                            let mut c = Map::new();
-                            c.insert("raw_json".into(), Value::String(rawj.clone()));
-                            let _ = sync::record_upsert("bank_txn", &existing_id, c);
+                        let same_connection = !pacct.is_empty()
+                            && serde_json::from_str::<Value>(&rj).ok()
+                                .and_then(|v| v.get("pa").and_then(|p| p.as_str()).map(|p| p == pacct))
+                                .unwrap_or(false);
+                        if !removed_ids.contains(&existing_id) && !same_connection {
+                            if rj.is_empty() {
+                                let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, existing_id]);
+                                let mut c = Map::new();
+                                c.insert("raw_json".into(), Value::String(rawj.clone()));
+                                let _ = sync::record_upsert("bank_txn", &existing_id, c);
+                            }
+                            continue;
                         }
-                        continue;
                     }
                     let s = |v: &str| Value::String(v.to_string());
                     let mut cols = Map::new();
@@ -12520,6 +12572,82 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         break;
                     }
                     item_imported += 1;
+                }
+            }
+            // AMENDMENTS. Plaid reports a transaction it has changed since we last saw
+            // it — a pending row settling at a different amount, a corrected date, a
+            // rewritten descriptor — in `modified`. Both this app and the server used
+            // to read only `added`/`removed` and drop this array on the floor, so the
+            // ledger permanently held the FIRST version of every amended transaction
+            // and no device ever learned otherwise.
+            //
+            // Only bank-authored facts are refreshed. A row the user has already
+            // reviewed keeps its category and counterparty: those are their work, and
+            // a descriptor rewrite must never silently re-classify booked money.
+            if let Some(modified) = page.get("modified").and_then(|v| v.as_array()) {
+                for t in modified {
+                    let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if tid.is_empty() { continue; }
+                    let id = plaid_txn_id(tid);
+                    // Only amend a row we actually hold. An unknown id here means we
+                    // never imported it (or it arrived under a different link), and the
+                    // `added` path is what owns creation.
+                    let existing: Option<(f64, i64)> = conn.query_row(
+                        "SELECT amount, COALESCE(reviewed,0) FROM bank_txn WHERE id=?1",
+                        [&id], |r| Ok((r.get(0)?, r.get(1)?)),
+                    ).ok();
+                    let Some((old_amount, reviewed)) = existing else { continue };
+
+                    let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let direction = if amt > 0.0 { "out" } else { "in" };
+                    let amount = amt.abs();
+                    let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let merchant = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let raw_name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let desc = if raw_name.is_empty() { merchant.clone() } else { raw_name };
+                    let dt = t.get("datetime").and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str()))
+                        .unwrap_or("").to_string();
+                    let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let rawj = json!({ "dt": dt, "pa": pacct, "tid": tid }).to_string();
+
+                    // An amount change on money already tied to a deal can break the
+                    // "allocations never exceed the transaction" invariant. Never
+                    // silently trim someone's allocation to fit — say so instead.
+                    if (amount - old_amount).abs() > 0.005 {
+                        let allocated: f64 = conn.query_row(
+                            "SELECT COALESCE(SUM(amount),0) FROM bank_allocation WHERE bank_txn_id=?1",
+                            [&id], |r| r.get(0),
+                        ).unwrap_or(0.0);
+                        if allocated > amount + 0.005 {
+                            amended_over_allocated.push(format!("{} ({} → {})", desc, old_amount, amount));
+                        }
+                    }
+
+                    let s = |v: &str| Value::String(v.to_string());
+                    let mut cols = Map::new();
+                    cols.insert("posted_at".into(), s(&date));
+                    cols.insert("amount".into(), json!(amount));
+                    cols.insert("direction".into(), s(direction));
+                    cols.insert("description".into(), s(&desc));
+                    cols.insert("memo_raw".into(), s(&desc));
+                    cols.insert("raw_json".into(), s(&rawj));
+                    cols.insert("updated_at".into(), s(&now));
+                    if reviewed == 0 {
+                        let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
+                        cols.insert("category".into(), s(&plaid_category(pfc, direction)));
+                        cols.insert("counterparty_name".into(), s(&if merchant.is_empty() { desc.clone() } else { merchant }));
+                    }
+                    if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
+                    if let Err(e) = conn.execute(
+                        "UPDATE bank_txn SET posted_at=?1, amount=?2, direction=?3, description=?4, memo_raw=?4, raw_json=?5, updated_at=?6 WHERE id=?7",
+                        rusqlite::params![date, amount, direction, desc, rawj, now, id],
+                    ) {
+                        tracing::warn!("plaid_sync: amendment for {} failed to save: {}", id, e);
+                        continue;
+                    }
+                    item_amended += 1;
                 }
             }
             if let Some(rem) = page.get("removed").and_then(|v| v.as_array()) {
@@ -12581,10 +12709,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
             }
         }
         imported += item_imported;
+        amended += item_amended;
         results.push(json!({
             "institution": institution,
             "env": item_env,
             "imported": item_imported,
+            "amended": item_amended,
             "status": status,
             "error": error_msg,
         }));
@@ -12593,14 +12723,36 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl(false);
     crate::netsync::push_now(); // freshly imported bank activity reaches other devices now
+    // Publish the refreshed balance for devices that have no Plaid link of their own.
+    // This used to happen ONLY when a human opened Financials or Analytics on this
+    // machine, so the "synced · as of" figure everyone else trusted could be days old
+    // even though this device had just pulled fresh balances.
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let (b, c, any) = plaid_balances(&conn);
+        drop(conn);
+        if any {
+            tokio::spawn(async move { crate::netsync::publish_bank_balance(b, c.max(0.0)).await; });
+        }
+    }
     if !unlinked_removed.is_empty() {
         tracing::warn!(
             "plaid_sync: bank retracted {} transaction(s) that were reviewed or linked to a deal — removed and unlinked (usually a pending row replaced by its posted twin; re-link the replacement): {}",
             unlinked_removed.len(), unlinked_removed.join(", ")
         );
     }
-    if imported > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
-    Ok(json!({ "imported": imported, "removed": removed, "unlinked": unlinked_removed.len(), "preparing": preparing, "results": results }))
+    if !amended_over_allocated.is_empty() {
+        tracing::warn!(
+            "plaid_sync: {} transaction(s) were amended by the bank to LESS than what is already booked against them — review these, nothing was trimmed automatically: {}",
+            amended_over_allocated.len(), amended_over_allocated.join(", ")
+        );
+    }
+    if imported > 0 || amended > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
+    Ok(json!({
+        "imported": imported, "removed": removed, "amended": amended,
+        "over_allocated": amended_over_allocated,
+        "unlinked": unlinked_removed.len(), "preparing": preparing, "results": results,
+    }))
 }
 
 /// Force a full re-pull: reset every bank's sync cursor to the start, then sync.
@@ -12657,13 +12809,17 @@ fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
         Ok(r) => r, Err(_) => return (0.0, 0.0, false),
     };
     for aj in rows.filter_map(|r| r.ok()) {
-        any = true;
+        // `any` must NOT be set from the mere existence of a plaid_items row. When the
+        // accounts call fails at link time the row is stored with accounts_json "[]",
+        // and flagging that as a live balance source reported a confident $0 — which
+        // then locked the manual fields AND got published over every other device's
+        // good balance. Only a row we actually parsed a usable account out of counts.
         let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
         for a in &accts {
             let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
             match a.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                "credit" => card += cur.abs(),
-                "depository" => bank += cur,
+                "credit" => { card += cur.abs(); any = true; }
+                "depository" => { bank += cur; any = true; }
                 _ => {}
             }
         }
@@ -12692,6 +12848,22 @@ pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_
     write_setting("money_tax_sweep_pct", &format!("{}", tax_sweep_pct))?;
     write_setting("money_refund_reserve_pct", &format!("{}", refund_reserve_pct))?;
     write_setting("money_war_chest", &format!("{}", war_chest))?;
+    // The reserve/floor/war-chest keys ride the shared-settings allowlist, but the two
+    // manual BALANCES do not (a Plaid device's unused zero would overwrite a real
+    // figure elsewhere). Publish them on the balance channel instead, and only from a
+    // device where the manual figure is the one actually in use — otherwise a device
+    // with no bank link kept its own balance forever while every deduction subtracted
+    // from it was already org-wide, producing a confident negative free-cash number.
+    let has_plaid = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        plaid_balances(&conn).2
+    };
+    if !has_plaid && (bank_balance != 0.0 || credit_card_balance != 0.0) {
+        let (b, c) = (bank_balance, credit_card_balance.max(0.0));
+        tokio::spawn(async move { crate::netsync::publish_bank_balance(b, c).await; });
+    }
+    // Reserve/floor changes move everyone's free cash — don't sit on them for a tick.
+    tokio::spawn(async { crate::netsync::push_shared_settings().await; });
     Ok(())
 }
 
@@ -12790,9 +12962,28 @@ pub async fn financials_overview() -> Result<Value, String> {
     // refunds account. Link that account later and reconcile against this number.
     let refund_reserve = (year_profit * refund_reserve_pct).max(0.0);
 
-    // Loans still owed (principal − set aside) for open loans.
+    // Loans still owed, for open loans.
+    //
+    // "Covered" is the GREATER of the manual set-aside and what the bank feed shows
+    // actually repaid against this loan. Using set_aside alone double-counted every
+    // repayment: the money had already left `bank_balance` above, yet the full
+    // principal was still deducted here until somebody remembered to click Apply on
+    // the Loans tab — so free cash read low by the repaid amount, indefinitely.
     let loan_outstanding: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(CASE WHEN principal - set_aside > 0 THEN principal - set_aside ELSE 0 END),0) FROM loan WHERE status='open'",
+        "SELECT COALESCE(SUM(
+             CASE WHEN principal - MAX(
+                 set_aside,
+                 COALESCE((SELECT SUM(bt.amount) FROM bank_txn bt
+                           WHERE bt.counterparty_type='loan' AND bt.counterparty_id=loan.id
+                             AND bt.direction='out'), 0)
+             ) > 0
+             THEN principal - MAX(
+                 set_aside,
+                 COALESCE((SELECT SUM(bt.amount) FROM bank_txn bt
+                           WHERE bt.counterparty_type='loan' AND bt.counterparty_id=loan.id
+                             AND bt.direction='out'), 0)
+             )
+             ELSE 0 END),0) FROM loan WHERE status='open'",
         [], |r| r.get(0)).unwrap_or(0.0);
 
     let free_cash = round2(bank_balance - credit_card_balance - supplier_payables - refund_liability - tax_reserve - refund_reserve - cash_floor - loan_outstanding);
@@ -12815,8 +13006,14 @@ pub async fn financials_overview() -> Result<Value, String> {
                              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)
                ) > 0.01",
         [], |r| r.get(0)).unwrap_or(0);
+    // Money in that still needs tying to a deal after a week. Loan drawdowns and
+    // anything else already classified are NOT unfinished work: a loan is tagged via
+    // counterparty_type='loan' and never gets an allocation, so it tripped this alert
+    // permanently — a red flag on the Overview screen that could never be cleared.
     let stale_unallocated: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND bt.category != 'internal_transfer'
+        "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in'
+           AND bt.category NOT IN ('internal_transfer','loan_received','loan_repayment')
+           AND COALESCE(bt.counterparty_type,'') != 'loan'
            AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
         [], |r| r.get(0)).unwrap_or(0);
@@ -12869,11 +13066,27 @@ pub async fn financials_overview() -> Result<Value, String> {
 pub async fn list_loans() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,name,lender,principal,set_aside,received_at,bank_txn_id,status,paid_at,note FROM loan ORDER BY received_at DESC, created_at DESC",
+        // `repaid` mirrors the free-cash definition exactly (see financials_overview):
+        // outstanding is measured against the GREATER of the manual set-aside and what
+        // the bank feed shows repaid, so the Loans card and Free Cash cannot disagree
+        // and no manual "Apply" click is needed for the books to be right.
+        "SELECT id,name,lender,principal,set_aside,received_at,bank_txn_id,status,paid_at,note,
+                COALESCE((SELECT SUM(bt.amount) FROM bank_txn bt
+                          WHERE bt.counterparty_type='loan' AND bt.counterparty_id=loan.id
+                            AND bt.direction='out'), 0) AS repaid
+         FROM loan ORDER BY received_at DESC, created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let principal: f64 = r.get(3)?;
         let set_aside: f64 = r.get(4)?;
+        let status: String = r.get(7)?;
+        let repaid: f64 = r.get(10)?;
+        let covered = if repaid > set_aside { repaid } else { set_aside };
+        // A loan marked paid off owes nothing, whatever set_aside happens to say.
+        // Marking paid only flipped the status, so the card kept showing the full
+        // principal as outstanding — in success green — while Free Cash (which
+        // filters on status='open') had already dropped it. The two disagreed.
+        let outstanding = if status == "paid" { 0.0 } else { ((principal - covered).max(0.0) * 100.0).round() / 100.0 };
         Ok(json!({
             "id": r.get::<_, String>(0)?,
             "name": r.get::<_, String>(1)?,
@@ -12882,10 +13095,11 @@ pub async fn list_loans() -> Result<Vec<Value>, String> {
             "set_aside": set_aside,
             "received_at": r.get::<_, String>(5)?,
             "bank_txn_id": r.get::<_, String>(6)?,
-            "status": r.get::<_, String>(7)?,
+            "status": status,
             "paid_at": r.get::<_, String>(8)?,
             "note": r.get::<_, String>(9)?,
-            "outstanding": ((principal - set_aside).max(0.0) * 100.0).round() / 100.0,
+            "repaid_from_feed": (repaid * 100.0).round() / 100.0,
+            "outstanding": outstanding,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -12913,6 +13127,7 @@ pub async fn create_loan(name: String, lender: String, principal: f64, received_
          VALUES (?1,?2,?3,?4,0,?5,?6,'open',?7,?8,?8)",
         rusqlite::params![id, name, lender, principal, received_at, bank_txn_id, note, now],
     ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(id)
 }
 
@@ -12940,15 +13155,45 @@ pub async fn update_loan(id: String, name: String, lender: String, principal: f6
                 received_at=CASE WHEN ?9<>'' THEN ?9 ELSE received_at END WHERE id=?10",
         rusqlite::params![name, lender, principal, set_aside, status, paid_at, note, now, rec, id],
     ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
+/// Delete a loan. Any transaction tagged to it is untagged FIRST, in the same call:
+/// deleting the row alone left those transactions pointing at a loan that no longer
+/// exists, where they rendered as a nameless loan row and were excluded from the
+/// review queue by their `loan_repayment` category — money effectively hidden.
+/// Untagging returns them to the queue unclassified, which is recoverable; the
+/// transactions themselves are never deleted.
 #[tauri::command]
-pub async fn delete_loan(id: String) -> Result<(), String> {
+pub async fn delete_loan(id: String) -> Result<i64, String> {
+    let tagged: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM bank_txn WHERE counterparty_type='loan' AND counterparty_id=?1",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let now = Utc::now().to_rfc3339();
+    for txn_id in &tagged {
+        let mut cols = Map::new();
+        cols.insert("category".into(), json!(""));
+        cols.insert("counterparty_type".into(), json!(""));
+        cols.insert("counterparty_id".into(), json!(""));
+        cols.insert("updated_at".into(), json!(now));
+        sync::record_upsert("bank_txn", txn_id, cols).map_err(|e| e.to_string())?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE bank_txn SET category='', counterparty_type='', counterparty_id='', updated_at=?1 WHERE id=?2",
+            rusqlite::params![now, txn_id],
+        ).map_err(|e| e.to_string())?;
+    }
     sync::record_delete("loan", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM loan WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
-    Ok(())
+    crate::netsync::push_now();
+    Ok(tagged.len() as i64)
 }
 
 /// AI-categorize unreviewed transactions (suggestions — does not mark reviewed).
@@ -13040,6 +13285,7 @@ pub async fn tag_bank_txn_to_loan(bank_txn_id: String, loan_id: String) -> Resul
         "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, updated_at=?3 WHERE id=?4",
         rusqlite::params![category, loan_id, now, bank_txn_id],
     ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -13061,6 +13307,7 @@ pub async fn untag_bank_txn_loan(bank_txn_id: String) -> Result<(), String> {
         "UPDATE bank_txn SET category='', counterparty_type='', counterparty_id='', updated_at=?1 WHERE id=?2",
         rusqlite::params![now, bank_txn_id],
     ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -13111,6 +13358,7 @@ pub async fn apply_loan_repayments_to_set_aside(loan_id: String) -> Result<f64, 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("UPDATE loan SET set_aside=?1, updated_at=?2 WHERE id=?3",
         rusqlite::params![set_aside, now, loan_id]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(set_aside)
 }
 

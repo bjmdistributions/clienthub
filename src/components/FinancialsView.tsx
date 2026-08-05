@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
-  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck,
+  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -316,41 +316,62 @@ export default function FinancialsView() {
   // Split mode: allow one transaction to be divided across multiple deals (partial
   // amounts, leg by leg). The backend keeps the running total <= the txn amount.
   const [allowSplit, setAllowSplit]   = useState(false);
+  // A failed first load must never render as "No transactions yet" — that reads as
+  // data loss and hides the real cause. Hold the message and offer a retry.
+  const [loadError, setLoadError]     = useState<string | null>(null);
+  const [refreshing, setRefreshing]   = useState(false);
+  // Latest refreshAll, for the mounted-once sync listener (see below).
+  const refreshRef = useRef<((keepOpen?: boolean) => Promise<void>) | null>(null);
+
+  const loadAll = async () => {
+    setLoadError(null);
+    try {
+      const [t, s, d, ln, r] = await Promise.all([
+        api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
+      ]);
+      setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
+      // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
+      // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
+      api.cleanupGhostDealFlows().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
+      // NOTE: healOverallocatedTxns is deliberately NOT run here. It deletes the
+      // most recently created allocation, which is as likely to be the correct leg
+      // as the duplicate — too destructive to fire from merely opening the screen.
+      // Over-allocation is surfaced below instead, for a human to resolve.
+    } catch (e: any) {
+      setLoadError(String(e?.message || e));
+    } finally { setLoading(false); }
+  };
+
+  const loadPlaid = async () => {
+    try {
+      const cfg = await api.plaidConfig();
+      setPlaidReady(cfg.has_keys);
+      if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
+    } catch { setPlaidReady(false); }
+    try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
+  };
 
   useEffect(() => {
-    (async () => {
-      try {
-        const [t, s, d, ln, r] = await Promise.all([
-          api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
-        ]);
-        setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
-        // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
-        // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
-        api.cleanupGhostDealFlows().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
-        // Trim any allocation that exceeds its txn amount from a concurrent-device
-        // double-book (idempotent; refresh if it actually fixed something).
-        api.healOverallocatedTxns().then((n) => { if (n > 0) refreshAll(false).catch(() => {}); }).catch(() => {});
-      } catch (e: any) { toast(String(e), "error"); }
-      finally { setLoading(false); }
-    })();
+    loadAll();
     // Bank feed is secondary — load separately so a Plaid hiccup never blocks the list.
-    (async () => {
-      try {
-        const cfg = await api.plaidConfig();
-        setPlaidReady(cfg.has_keys);
-        if (cfg.env === "sandbox" || cfg.env === "production") setPlaidEnv(cfg.env);
-      } catch { setPlaidReady(false); }
-      try { setPlaidItems(await api.plaidListItems()); } catch { /* no banks / not set up yet */ }
-    })();
+    loadPlaid();
   }, []);
 
   // Live-refresh when a sync pull applies remote rows — e.g. a second admin (a
   // brother's login on the same org) links a payment or records a refund on his
   // device. Without this the Financials tab shows stale data until it's remounted.
+  //
+  // The listener mounts once, so it must call through a ref: capturing refreshAll
+  // directly froze the first render's openId (always null), which meant an OPEN
+  // allocation panel kept showing stale allocations while the table underneath
+  // refreshed — the exact state that causes a double-book.
   useEffect(() => {
     let un: (() => void) | undefined;
-    listen("netsync-applied", () => { refreshAll(true).catch(() => {}); }).then((u) => { un = u; }).catch(() => {});
-    return () => { un?.(); };
+    let dead = false;
+    listen("netsync-applied", () => { refreshRef.current?.(true).catch(() => {}); })
+      .then((u) => { if (dead) u(); else un = u; })
+      .catch(() => {});
+    return () => { dead = true; un?.(); };
   }, []);
 
   // Stop any in-flight bank-connect polling when this view unmounts.
@@ -373,6 +394,17 @@ export default function FinancialsView() {
       const nt = t.find((x) => x.id === openId);
       setAmountStr(nt ? String(nt.unallocated) : "");
     }
+  };
+  refreshRef.current = refreshAll;
+
+  // Screen-level refresh. Deliberately NOT gated on a Plaid link: on a device that
+  // has never linked a bank itself, every other refresh control on this screen is
+  // hidden, which left no way to re-read the ledger without leaving the tab.
+  const refreshScreen = async () => {
+    setRefreshing(true);
+    try { await refreshAll(true); }
+    catch (e: any) { toast(String(e?.message || e), "error"); }
+    finally { setRefreshing(false); }
   };
 
   const recordCash = async () => {
@@ -531,19 +563,33 @@ export default function FinancialsView() {
               : await api.plaidSync();
       const errored = r.results.filter((x) => x.status === "error");
       const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
-      if (r.imported === 0 && r.removed === 0 && stillPreparing) {
+      const amended = r.amended ?? 0;
+      if (r.imported === 0 && r.removed === 0 && amended === 0 && stillPreparing) {
         setPlaidPreparing(true);
         schedulePrepRetries(6);
         toast("Plaid is still preparing your transactions — this can take a minute.");
       } else {
         setPlaidPreparing(stillPreparing);
-        if (mode === "refresh" && r.imported === 0 && r.removed === 0) {
+        if (mode === "refresh" && r.imported === 0 && r.removed === 0 && amended === 0) {
           toast("Refreshed from bank — nothing new yet. Same-day wires can take a few hours to post; try again shortly.");
         } else {
           const lead = mode === "refresh" ? "Refreshed — " : "";
-          toast(`${lead}Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}${r.removed > 0 ? `, removed ${r.removed}` : ""}`);
+          const bits = [`Synced ${r.imported} new transaction${r.imported === 1 ? "" : "s"}`];
+          if (r.removed > 0) bits.push(`removed ${r.removed}`);
+          // The bank changed a transaction we already held (a pending row settling at
+          // a different amount, a corrected date). These used to be discarded silently.
+          if (amended > 0) bits.push(`updated ${amended} the bank changed`);
+          toast(`${lead}${bits.join(", ")}`);
         }
         await refreshAll(false);
+      }
+      // An amendment shrank a transaction below what's already booked against it.
+      // Nothing was trimmed automatically — which allocation gives way is Jack's call.
+      if (r.over_allocated?.length) {
+        toast(
+          `${r.over_allocated.length} transaction${r.over_allocated.length === 1 ? " was" : "s were"} changed by the bank to less than what's booked against ${r.over_allocated.length === 1 ? "it" : "them"}: ${r.over_allocated.join("; ")}. Nothing was removed — please review the allocations.`,
+          "error",
+        );
       }
       // The bank retracted transactions we'd already reviewed or booked to a deal —
       // usually a pending row replaced by its posted twin. They're gone (keeping them
@@ -1114,7 +1160,16 @@ export default function FinancialsView() {
       // "Needs a deal" = still in the review queue (reviewed=0) with money to tie
       // out. Booking a row as an expense marks it reviewed, so it clears the flag —
       // the counter can now actually reach zero instead of counting every expense.
-      if (!t.reviewed && t.counterparty_type !== "loan" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001) needsDeal++;
+      // Keep this in step with the backend: bank_txn_summary.unallocated_in and
+      // financials_overview.stale_unallocated use the same exclusions. Three
+      // different definitions of "needs a deal" is why the tab count and the
+      // summary figure never matched.
+      if (
+        !t.reviewed &&
+        t.counterparty_type !== "loan" &&
+        !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "") &&
+        t.unallocated > 0.0001
+      ) needsDeal++;
     }
     return { total, reviewed, sumIn, sumOut, unclassified, needsDeal };
   }, [txns, fromDate, toDate]);
@@ -1364,9 +1419,22 @@ export default function FinancialsView() {
           <h2 className="text-[19px] font-semibold text-ink tracking-tight truncate">Financials</h2>
           <p className="text-[12px] text-muted mt-0.5">Import statements, classify money, tie receipts to deals</p>
         </div>
-        {plaidItems.length > 0 && (
-          <span className="text-[11.5px] text-muted flex-shrink-0 whitespace-nowrap">Auto-syncing</span>
-        )}
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {plaidItems.length > 0 && (
+            // Honest wording: the bank feed is pulled on a 20-minute timer by this
+            // device (main.rs), not continuously. "Auto-syncing" read as live.
+            <span className="text-[11.5px] text-muted whitespace-nowrap">Bank feed checked every 20 min</span>
+          )}
+          <button
+            onClick={refreshScreen}
+            disabled={refreshing}
+            title="Re-read transactions, deals and loans"
+            className="text-[12px] text-muted hover:text-ink-2 disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Sub-tabs — underline style */}
@@ -1680,10 +1748,16 @@ export default function FinancialsView() {
           <div className="border border-line-2 rounded-lg p-3.5 bg-surface-2/40">
             {plaidReady === true && !showKeys ? (
               <div className="flex items-center justify-between gap-2 min-w-0">
+                {/* This reflects SAVED API KEYS only — not a linked bank, and not a
+                    healthy feed. It used to read "Connected", which everyone took to
+                    mean a bank was connected. The bank list below is the real state. */}
                 <div className="flex items-center gap-1.5 text-[12px] text-ink-2 min-w-0">
-                  <Check size={13} className="text-success-ink flex-shrink-0" />
+                  <Check size={13} className={plaidItems.length > 0 ? "text-success-ink flex-shrink-0" : "text-muted flex-shrink-0"} />
                   <span className="truncate">
-                    Connected · <span className="font-medium text-ink">{plaidEnv === "sandbox" ? "Sandbox" : "Production"}</span>
+                    {plaidItems.length > 0
+                      ? <>Bank connected · <span className="font-medium text-ink">{plaidItems.length} {plaidItems.length === 1 ? "bank" : "banks"}</span></>
+                      : <>API keys saved · <span className="font-medium text-ink">no bank linked yet</span></>}
+                    <span className="text-faint"> · {plaidEnv === "sandbox" ? "Sandbox" : "Production"}</span>
                   </span>
                 </div>
                 <button
@@ -2252,13 +2326,32 @@ export default function FinancialsView() {
         <div className="flex items-center justify-center py-20 text-muted">
           <Loader2 size={18} className="animate-spin" />
         </div>
+      ) : loadError ? (
+        // A load failure used to fall through to the empty state, so a broken read
+        // looked exactly like an empty ledger. Say what happened, offer a retry.
+        <div className="text-center py-20">
+          <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+            <AlertTriangle size={18} className="text-danger-ink" />
+          </div>
+          <p className="text-[14px] font-semibold text-ink-2">Could not load your transactions</p>
+          <p className="text-[12px] text-muted mt-1 max-w-[420px] mx-auto break-words">{loadError}</p>
+          <p className="text-[11.5px] text-faint mt-1">Nothing has been changed or lost — this is a read that failed.</p>
+          <button
+            onClick={() => { setLoading(true); loadAll(); }}
+            className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+          >
+            Try again
+          </button>
+        </div>
       ) : txns.length === 0 ? (
         <div className="text-center py-20">
           <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
             <Landmark size={18} className="text-faint" />
           </div>
           <p className="text-[14px] font-semibold text-ink-2">No transactions yet</p>
-          <p className="text-[12px] text-muted mt-1">Import a statement to get started</p>
+          <p className="text-[12px] text-muted mt-1">
+            {plaidItems.length > 0 ? "Nothing has arrived from your bank yet" : "Connect your bank, or import a statement"}
+          </p>
           <button onClick={pickAndPreview} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
             Import statement
           </button>

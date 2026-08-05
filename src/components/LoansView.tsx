@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2, RotateCcw } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2, RotateCcw, RefreshCw, AlertTriangle } from "lucide-react";
 import { api, Loan, LoanLedger } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
@@ -37,6 +38,9 @@ export default function LoansView() {
   const [ledgers,  setLedgers]  = useState<Record<string, LoanLedger>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [applyingId, setApplyingId] = useState<string | null>(null);
+  const [loading,    setLoading]    = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError,  setLoadError]  = useState<string | null>(null);
 
   const load = async () => {
     const ls = await api.listLoans();
@@ -47,7 +51,29 @@ export default function LoansView() {
     );
     setLedgers(Object.fromEntries(pairs.filter(([, v]) => v) as [string, LoanLedger][]));
   };
-  useEffect(() => { load().catch((e) => toast(String(e), "error")); }, []);
+
+  // A failed load left `loans` empty, which is pixel-identical to "no loans yet" —
+  // so a broken read looked like your loans had disappeared.
+  const refresh = async (showSpinner = true) => {
+    if (showSpinner) setRefreshing(true);
+    try { await load(); setLoadError(null); }
+    catch (e: any) { setLoadError(String(e?.message || e)); }
+    finally { setRefreshing(false); setLoading(false); }
+  };
+
+  useEffect(() => { refresh(false); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // Loans move when another admin tags a repayment in the feed — without this the
+  // tab sat stale with no way to refresh at all.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let dead = false;
+    listen("netsync-applied", () => { refresh(false).catch(() => {}); })
+      .then((u) => { if (dead) u(); else un = u; })
+      .catch(() => {});
+    return () => { dead = true; un?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleExpand = (id: string) =>
     setExpanded((prev) => {
@@ -143,9 +169,20 @@ export default function LoansView() {
   };
 
   const removeLoan = async (l: Loan) => {
-    if (!confirm(`Delete loan "${l.name}"? This can't be undone.`)) return;
-    try { await api.deleteLoan(l.id); await load(); }
-    catch (e: any) { toast(String(e), "error"); }
+    // Say how many transactions this touches BEFORE asking. Deleting used to leave
+    // them tagged to a loan that no longer existed, where they showed as a nameless
+    // loan row and stayed out of the review queue.
+    const n = ledgers[l.id]?.entries.length ?? 0;
+    const tail = n > 0
+      ? `\n\n${n} tagged transaction${n === 1 ? "" : "s"} will be returned to your review queue, unclassified. The transactions themselves are not deleted.`
+      : "";
+    if (!confirm(`Delete loan "${l.name}"? This can't be undone.${tail}`)) return;
+    try {
+      const untagged = await api.deleteLoan(l.id);
+      await refresh(false);
+      toast(untagged > 0 ? `Loan deleted · ${untagged} transaction${untagged === 1 ? "" : "s"} returned to your queue` : "Loan deleted");
+    }
+    catch (e: any) { toast(String(e?.message || e), "error"); }
   };
 
   return (
@@ -159,13 +196,37 @@ export default function LoansView() {
             Money you received and owe back. It sits in your bank but reduces your free cash until it's paid off.
           </p>
         </div>
-        <button
-          onClick={openCreate}
-          className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
-        >
-          <Plus size={14} /> Add loan
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => refresh()}
+            disabled={refreshing}
+            title="Refresh"
+            className="w-9 h-9 flex items-center justify-center rounded-lg border border-line text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+          </button>
+          <button
+            onClick={openCreate}
+            className="flex items-center gap-1.5 px-4 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium transition-colors"
+          >
+            <Plus size={14} /> Add loan
+          </button>
+        </div>
       </div>
+
+      {loadError && (
+        <div className="flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3.5 py-3">
+          <AlertTriangle size={15} className="text-danger-ink flex-shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <div className="text-[12.5px] font-medium text-ink-2">Could not load your loans</div>
+            <div className="text-[12px] text-muted mt-0.5 break-words">{loadError}</div>
+            <div className="text-[11.5px] text-faint mt-0.5">Nothing has changed — this is a read that failed.</div>
+            <button onClick={() => refresh()} className="mt-1.5 text-[12px] font-medium text-accent hover:text-accent-hover">
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Total outstanding tile */}
       <div className="bg-surface-2 border border-line rounded-xl px-5 py-4 max-w-sm">
@@ -262,7 +323,11 @@ export default function LoansView() {
       )}
 
       {/* Loan list */}
-      {loans.length === 0 ? (
+      {loading ? (
+        <div className="flex items-center justify-center py-20 text-muted">
+          <Loader2 size={18} className="animate-spin" />
+        </div>
+      ) : loans.length === 0 && loadError ? null : loans.length === 0 ? (
         <div className="text-center py-20">
           <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
             <Landmark size={18} className="text-faint" />

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, FinancialsOverview, MoneyConfig } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, SlidersHorizontal, X, AlertTriangle } from "lucide-react";
@@ -67,6 +68,11 @@ export default function FreeCashView() {
   const [refreshing, setRefreshing] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Guard for the Adjust dialog: saving is refused unless the stored figures were
+  // actually read back, so a failed read can never be saved over them as zeros.
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Config editor buffers (raw strings — coerced on save).
   const [bankStr, setBankStr]     = useState("");
@@ -80,10 +86,14 @@ export default function FreeCashView() {
     setRefreshing(true);
     return api
       .financialsOverview()
-      .then(setOv)
-      .catch((e: any) => toast(String(e?.message || e), "error"))
+      .then((v) => { setOv(v); setLoadError(null); })
+      .catch((e: any) => { setLoadError(String(e?.message || e)); toast(String(e?.message || e), "error"); })
       .finally(() => setRefreshing(false));
   };
+
+  // Round a percentage for display: 0.07 * 100 is 7.000000000000001 in binary float,
+  // which was rendering in the input and drifting a little further on every save.
+  const pct = (frac: number) => String(Math.round(frac * 1000000) / 10000);
 
   const loadConfig = () =>
     api
@@ -93,11 +103,18 @@ export default function FreeCashView() {
         setCardStr(String(c.credit_card_balance));
         setFloorStr(String(c.cash_floor));
         // Stored as fractions (0.30) — shown and edited as percentages (30).
-        setTaxStr(String(c.tax_sweep_pct * 100));
-        setRefundStr(String(c.refund_reserve_pct * 100));
+        setTaxStr(pct(c.tax_sweep_pct));
+        setRefundStr(pct(c.refund_reserve_pct));
         setWarStr(String(c.war_chest));
+        setConfigLoaded(true);
       })
-      .catch(() => {});
+      .catch((e: any) => {
+        // Do NOT leave the buffers empty and pretend all is well: save() coerces
+        // empty to 0, so a silent failure here plus a Save wrote zeros over the cash
+        // floor, both reserve percentages and the war chest — and those keys sync.
+        setConfigLoaded(false);
+        setConfigError(String(e?.message || e));
+      });
 
   useEffect(() => {
     loadOverview();
@@ -105,17 +122,40 @@ export default function FreeCashView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Free cash is derived from allocations, refunds and loans — all of which another
+  // admin can change. Without this the number sat stale while the Transactions tab
+  // beside it updated, so the two tabs disagreed on screen.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let dead = false;
+    listen("netsync-applied", () => { loadOverview(); })
+      .then((u) => { if (dead) u(); else un = u; })
+      .catch(() => {});
+    return () => { dead = true; un?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const save = async () => {
+    // Never write a config we never successfully read — that turns a transient read
+    // failure into six zeroed settings, synced to every device.
+    if (!configLoaded) {
+      toast("Your saved figures could not be loaded, so saving is blocked to avoid overwriting them with zeros. Close and reopen this dialog.", "error");
+      return;
+    }
+    const num = (s: string, label: string): number | null => {
+      const n = Number(s.trim().replace(/[$,%\s]/g, ""));
+      if (!Number.isFinite(n)) { toast(`${label} is not a number`, "error"); return null; }
+      if (n < 0) { toast(`${label} cannot be negative`, "error"); return null; }
+      return n;
+    };
+    const bank = num(bankStr, "Bank balance"), card = num(cardStr, "Credit card balance");
+    const floor = num(floorStr, "Cash floor"), tax = num(taxStr, "Tax sweep");
+    const refund = num(refundStr, "Refund reserve"), war = num(warStr, "War chest");
+    if (bank === null || card === null || floor === null || tax === null || refund === null || war === null) return;
+    if (tax > 100 || refund > 100) { toast("Percentages cannot be above 100", "error"); return; }
     setSaving(true);
     try {
-      await api.setMoneyConfig(
-        Number(bankStr)   || 0,
-        Number(cardStr)   || 0,
-        Number(floorStr)  || 0,
-        (Number(taxStr)    || 0) / 100, // percent → fraction
-        (Number(refundStr) || 0) / 100,
-        Number(warStr)    || 0,
-      );
+      await api.setMoneyConfig(bank, card, floor, tax / 100, refund / 100, war);
       setAdjustOpen(false);
       await loadOverview();
       toast("Saved");
@@ -176,7 +216,18 @@ export default function FreeCashView() {
 
       <div className="flex-1 p-6 flex flex-col gap-5 max-w-[720px] w-full mx-auto">
 
-        {ov === null ? (
+        {ov === null && loadError ? (
+          // A failed load used to leave the skeleton pulsing forever, which reads as
+          // "still loading" rather than "this failed and here's why".
+          <div className="border border-line rounded-2xl p-5">
+            <div className="text-[13px] font-semibold text-ink-2">Could not load your figures</div>
+            <div className="text-[12px] text-muted mt-1 break-words">{loadError}</div>
+            <div className="text-[11.5px] text-faint mt-1">Nothing has changed — this is a read that failed.</div>
+            <button onClick={() => loadOverview()} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
+              Try again
+            </button>
+          </div>
+        ) : ov === null ? (
           <div className="h-[168px] bg-surface-2 rounded-2xl animate-pulse" />
         ) : (
           <>
@@ -296,6 +347,19 @@ export default function FreeCashView() {
             </div>
 
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto">
+              {configError && (
+                <div className="flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3 py-2.5">
+                  <AlertTriangle size={14} className="text-danger-ink flex-shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium text-ink-2">Your saved figures could not be loaded</div>
+                    <div className="text-[11.5px] text-muted mt-0.5 break-words">{configError}</div>
+                    <div className="text-[11.5px] text-muted mt-0.5">Saving is blocked so these fields can't overwrite your settings with zeros.</div>
+                    <button onClick={() => loadConfig()} className="mt-1.5 text-[11.5px] font-medium text-accent hover:text-accent-hover">
+                      Try again
+                    </button>
+                  </div>
+                </div>
+              )}
               <NumField
                 label="Current bank balance"
                 hint={ov?.has_plaid ? "Live from your connected bank — managed automatically." : ov?.balance_source === "synced" ? "Synced from your connected device — change it on the device that has the bank linked." : "Enter from your latest statement — this figure is maintained by you."}

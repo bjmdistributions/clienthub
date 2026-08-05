@@ -220,7 +220,15 @@ pub async fn fetch_published_bank_balance() -> Option<(f64, f64, String)> {
     let cfg = config()?;
     let base = cfg.url.trim_end_matches('/').to_string();
     let url = format!("{}/api/bank-balance", base);
-    let resp = http().get(&url).bearer_auth(&cfg.token).send().await.ok()?;
+    // Short timeout on purpose: this call sits in the Financials Overview load path,
+    // so the shared 30s client made the whole screen hang for half a minute whenever
+    // the server was unreachable. A missing balance falls back to the manual figure —
+    // far better than a frozen page.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .unwrap_or_default();
+    let resp = client.get(&url).bearer_auth(&cfg.token).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -1495,9 +1503,13 @@ pub async fn materialize_email_secrets_from_server() -> Result<u32, String> {
 // ---------- connection sharing: ALL sharable secrets ↔ server org store ----------
 
 /// Org `settings` keys (NOT keyring-backed) that carry sharable secrets: the
-/// Shopify webhook secret and the Plaid client_id/secret. These are materialized
-/// straight into the local `settings` table, never into the encrypted keyring.
-const SHARABLE_SETTINGS_KEYS: [&str; 3] = ["shopify_webhook_secret", "plaid_client_id", "plaid_secret"];
+/// Shopify webhook secret and the Plaid client_id/secret/environment. These are
+/// materialized straight into the local `settings` table, never into the keyring.
+///
+/// `plaid_env` is not a secret but MUST travel with the keys: it defaults to
+/// "production" when absent, so a teammate materializing a sandbox-linked item
+/// would call the production API with a sandbox token and fail every request.
+const SHARABLE_SETTINGS_KEYS: [&str; 4] = ["shopify_webhook_secret", "plaid_client_id", "plaid_secret", "plaid_env"];
 
 /// Read a `settings` value (trimmed, non-empty) from the local DB.
 fn settings_get(key: &str) -> Option<String> {
@@ -1936,6 +1948,9 @@ const SHARED_SETTINGS_KEYS: &[&str] = &[
     "profit_split_json",
     "rep_payouts_enabled", "rep_payout_period", "rep_payout_anchor", "rep_payout_custom_days",
     "money_cash_floor", "money_tax_sweep_pct", "money_refund_reserve_pct", "money_war_chest",
+    // money_bank_balance / money_credit_card_balance are deliberately absent — see the
+    // note in the server's SHARED_SETTINGS_WHITELIST. They ride /api/bank-balance so a
+    // Plaid device's unused zero can never overwrite someone's real manual figure.
     "portal_base_url", "brief_frequency_days",
 ];
 

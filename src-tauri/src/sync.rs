@@ -212,7 +212,68 @@ fn ensure_meta_tables() -> Result<()> {
     // here so it can be re-pushed by hand / a Repair sync; inbound dead-letters leave it
     // NULL. Idempotent — the duplicate-column error on re-run is ignored.
     let _ = conn.execute("ALTER TABLE sync_dead_letters ADD COLUMN event_json TEXT", []);
+    sweep_stale_tombstones(&conn);
     Ok(())
+}
+
+/// One-time repair: drop delete records for rows that are demonstrably alive.
+///
+/// A row deleted here and later legitimately re-created — a Plaid re-pull after a
+/// duplicate cleanup, most commonly — kept its tombstone forever, because nothing
+/// retired it on re-insert. Day to day that is invisible. But `restore_snapshot`
+/// skips any row carrying a delete record, so **the recovery path every other
+/// safety net points at silently excluded most of the ledger it was meant to
+/// restore**: on this book roughly 1,109 of 1,248 live transactions carried a stale
+/// tombstone (measured 2026-08-03), i.e. Restore from server would have returned
+/// about a ninth of the ledger and dropped the allocations hanging off the rest.
+///
+/// If the row physically exists, the delete record cannot describe reality, so it is
+/// safe to retire. Genuinely deleted rows match nothing and keep their tombstones —
+/// deletes still stay deleted, which is the invariant that must not bend.
+///
+/// Lives here rather than in a db.rs migration because `tombstones` is created in
+/// this function and `db::init` runs first: a migration would hit "no such table",
+/// be treated as benign, and be marked applied without ever running.
+fn sweep_stale_tombstones(conn: &rusqlite::Connection) {
+    let done: i64 = conn
+        .query_row("SELECT COUNT(*) FROM settings WHERE key='tombstone_sweep_done'", [], |r| r.get(0))
+        .unwrap_or(0);
+    if done > 0 {
+        return;
+    }
+    let mut cleared = 0usize;
+    for table in ALLOWED_TABLES {
+        // Only sweep tables that actually exist in this database.
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                rusqlite::params![table],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if exists == 0 {
+            continue;
+        }
+        let pk = primary_key(table);
+        let sql = format!(
+            "DELETE FROM tombstones WHERE tbl=?1 AND row_id IN (SELECT \"{}\" FROM \"{}\")",
+            pk, table
+        );
+        match conn.execute(&sql, rusqlite::params![table]) {
+            Ok(n) => cleared += n,
+            Err(e) => tracing::warn!("tombstone sweep: {} skipped: {}", table, e),
+        }
+    }
+    if cleared > 0 {
+        tracing::info!(
+            "tombstone sweep: retired {} stale delete record(s) on rows that are still present — Restore from server can now recover them",
+            cleared
+        );
+    }
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('tombstone_sweep_done', ?1)",
+        rusqlite::params![chrono::Utc::now().to_rfc3339()],
+    );
 }
 
 /// Record a local mutation. Writes both to SQLite (immediately) and to the event log.
@@ -238,6 +299,12 @@ pub fn record_upsert(
     // The insert is idempotent, so queueing a row whose local bookkeeping then
     // fails is strictly safer than the reverse.
     crate::netsync::on_local_event(&event); // durably queue for network push, connected or not
+    // A local write is authored NOW, so it is by definition newer than any delete we
+    // recorded earlier: this row is alive again and its tombstone is stale. Clearing
+    // it here is what keeps "Restore from server" honest — restore skips any row with
+    // a delete record, so a re-imported transaction that kept its old tombstone was
+    // silently excluded from recovery while sitting right there in the ledger.
+    clear_tombstone(table, row_id)?;
     update_row_clocks(table, row_id, &columns, event.hlc)?;
     write_event_file(&event)?;
     mark_applied(&event.id)?;
@@ -467,6 +534,18 @@ fn tombstone_clock(table: &str, row_id: &str) -> Result<Option<Hlc>> {
     }
 }
 
+/// Retire a delete record because the row legitimately exists again. Called only when
+/// the write that revives the row is provably NEWER than the delete (a local write, or
+/// a remote event whose HLC beats the tombstone) — never as a way to force a resurrect.
+fn clear_tombstone(table: &str, row_id: &str) -> Result<()> {
+    let conn = pool().get()?;
+    conn.execute(
+        "DELETE FROM tombstones WHERE tbl=?1 AND row_id=?2",
+        rusqlite::params![table, row_id],
+    )?;
+    Ok(())
+}
+
 /// True if this row has a local tombstone (i.e. it was deleted here and the delete is
 /// durable). Used by `restore_snapshot` to avoid re-materializing a row the user already
 /// removed — a snapshot restore writes raw rows and otherwise bypasses the tombstone guard
@@ -529,6 +608,13 @@ fn apply_event(event: &SyncEvent) -> Result<()> {
                     mark_applied(&event.id)?;
                     return Ok(());
                 }
+                // The row was legitimately re-created AFTER we deleted it (the event's
+                // clock beats the tombstone's), so the delete no longer describes
+                // reality — retire it. Leaving it behind is what made "Restore from
+                // server" skip rows that are alive and present: every re-imported
+                // transaction kept a stale delete record forever, and restore consults
+                // that record, not the row.
+                clear_tombstone(table, row_id)?;
             }
             apply_upsert(table, row_id, columns, event.hlc)?;
         }

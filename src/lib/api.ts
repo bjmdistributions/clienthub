@@ -1175,6 +1175,13 @@ export interface Lot {
 /** Parsed shape of Lot.details_json — public structured extras. */
 export interface LotDetails {
   pallets?: number | null;
+  // How the quantity was entered. `quantity` on the lot is ALWAYS the total unit
+  // count — the storefront, analytics and every report read it that way — but a
+  // supplier usually quotes per pallet, so the form lets you type that figure and
+  // records the basis here. `qty_per_pallet` is stored rather than re-derived by
+  // division so re-opening the form shows exactly what was typed.
+  qty_basis?: "total" | "per_pallet" | null;
+  qty_per_pallet?: number | null;
   msrp?: number | null;
   avg_msrp?: number | null;
   moq?: number | null;
@@ -1341,6 +1348,35 @@ export interface ParsedLoad {
   avg_msrp?: number | null;
   moq?: number | null;
   size_run?: { size: string; qty: number }[] | null;
+}
+
+/// A forwarded supplier post waiting to be turned into inventory. Lives on the
+/// server (it can arrive while this computer is asleep); nothing exists as a lot
+/// until it's approved. `photos` are server-relative `media/inbound/...` paths.
+export interface InboundLoad {
+  id: string;
+  source: string;
+  sender: string;
+  body: string;
+  photos: string[];
+  parsed: ParsedLoad[];
+  received_at: string;
+}
+
+/// One lot to create out of a candidate. Snake_case: this crosses to the server.
+export interface ApproveLotInput {
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  quantity?: number | null;
+  total_cost?: number | null;
+  asking_price?: number | null;
+  price_type?: string | null;
+  supplier?: string | null;
+  location?: string | null;
+  notes?: string | null;
+  details_json?: string | null;
+  photos: string[];
 }
 
 export interface CsvPreview {
@@ -2128,6 +2164,13 @@ export const api = {
   parseLoads: (text: string, imageBase64?: string | null, imageMediaType?: string | null) =>
     invoke<ParsedLoad[]>("parse_loads", { text, imageBase64: imageBase64 ?? null, imageMediaType: imageMediaType ?? null }),
   loadAiStatus: () => invoke<boolean>("load_ai_status"),
+
+  // Load inbox — supplier posts forwarded from a phone, waiting for approval.
+  // `server` is the base URL the inbound photos are served from.
+  getLoadInbox: () => invoke<{ token: string; url: string | null; server: string | null }>("get_load_inbox"),
+  listInboundLoads: () => invoke<InboundLoad[]>("list_inbound_loads"),
+  approveInboundLoad: (id: string, lots: ApproveLotInput[]) => invoke<string[]>("approve_inbound_load", { id, lots }),
+  rejectInboundLoad: (id: string) => invoke<void>("reject_inbound_load", { id }),
   setAnthropicKey: (key: string) => invoke<void>("set_anthropic_key", { key }),
 
   // Public storefront config
@@ -2259,9 +2302,9 @@ export const api = {
     invoke<void>("plaid_exchange", { publicToken, institution }),
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
-  plaidSync: () => invoke<{ imported: number; removed: number; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
-  plaidResyncAll: () => invoke<{ imported: number; removed: number; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
-  plaidRefreshSync: () => invoke<{ imported: number; removed: number; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_refresh_sync"),
+  plaidSync: () => invoke<{ imported: number; removed: number; amended: number; over_allocated: string[]; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
+  plaidResyncAll: () => invoke<{ imported: number; removed: number; amended: number; over_allocated: string[]; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
+  plaidRefreshSync: () => invoke<{ imported: number; removed: number; amended: number; over_allocated: string[]; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_refresh_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   // Takes a patch, not a full row: only the fields present are written. Sync is
@@ -2333,7 +2376,8 @@ export const api = {
     invoke<string>("create_loan", { name, lender, principal, receivedAt, bankTxnId, note }),
   updateLoan: (id: string, name: string, lender: string, principal: number, setAside: number, status: string, note: string, receivedAt?: string) =>
     invoke<void>("update_loan", { id, name, lender, principal, setAside, status, note, receivedAt }),
-  deleteLoan: (id: string) => invoke<void>("delete_loan", { id }),
+  /** Returns how many tagged transactions were untagged and returned to the queue. */
+  deleteLoan: (id: string) => invoke<number>("delete_loan", { id }),
   tagBankTxnToLoan: (bankTxnId: string, loanId: string) =>
     invoke<void>("tag_bank_txn_to_loan", { bankTxnId, loanId }),
   untagBankTxnLoan: (bankTxnId: string) => invoke<void>("untag_bank_txn_loan", { bankTxnId }),

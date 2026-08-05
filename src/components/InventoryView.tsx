@@ -1379,6 +1379,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   });
   const [condition, setCondition] = useState<string>(details0.condition ?? (prefill as any)?.condition ?? "");
   const [pallets, setPallets] = useState<number>(details0.pallets ?? 0);
+  // Whether the quantity box holds a per-pallet figure or the whole load. The lot's
+  // `quantity` column stays the TOTAL either way; this only changes what you type.
+  const [qtyBasis, setQtyBasis] = useState<"total" | "per_pallet">(details0.qty_basis === "per_pallet" ? "per_pallet" : "total");
+  const [perPallet, setPerPallet] = useState<number>(details0.qty_per_pallet ?? 0);
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
   const [moq, setMoq] = useState<number>(details0.moq ?? 0);
   // Legacy size_run is preserved on old lots (read-only now — the variant splitter below
@@ -1399,6 +1403,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const variantFor = (combo: string[]) => variants.find((v) => sameVals(v.values, combo));
   // When the lot is split into variants, its total quantity IS the sum of the splits.
   const variantTotal = variantCombos.reduce((s, c) => s + (variantFor(c)?.qty || 0), 0);
+  // The number that actually gets stored on the lot. Per-pallet entry multiplies out;
+  // with no pallet count there is nothing to multiply, so it falls back to what was typed.
+  const perPalletTotal = pallets > 0 ? perPallet * pallets : perPallet;
+  const totalUnits = qtyBasis === "per_pallet" ? perPalletTotal : qty;
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
   const [openToOffers, setOpenToOffers] = useState<boolean>(details0.open_to_offers ?? false);
@@ -1477,7 +1485,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
-    cats: JSON.stringify(cats), condition,
+    cats: JSON.stringify(cats), condition, qtyBasis, perPallet,
   }).current;
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
@@ -1485,6 +1493,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     priceType !== initialSnapshot.priceType || priceText !== initialSnapshot.priceText || openToOffers !== initialSnapshot.openToOffers ||
     supplier !== initialSnapshot.supplier || location !== initialSnapshot.location || notes !== initialSnapshot.notes ||
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
+    qtyBasis !== initialSnapshot.qtyBasis || perPallet !== initialSnapshot.perPallet ||
     photos.length !== initialSnapshot.photos || pallets !== initialSnapshot.pallets || msrp !== initialSnapshot.msrp ||
     moq !== initialSnapshot.moq || JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile ||
     JSON.stringify({ options, variants }) !== initialSnapshot.variants ||
@@ -1521,11 +1530,19 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // When the lot is split into variants, the total quantity IS the sum of the splits
       // (Jack: "do variants then quantity"). Otherwise the plain Quantity box wins.
       const variantQtyTotal = cleanVariants.reduce((s, v) => s + (v.qty || 0), 0);
-      const effQty = hasVariants ? variantQtyTotal : qty;
+      // Variants win, then the per-pallet multiplication, then the plain box. What
+      // lands in `quantity` is always the total unit count.
+      const effQty = hasVariants ? variantQtyTotal : totalUnits;
       const cleanCats = Array.from(new Set(cats.map((c) => c.trim()).filter(Boolean)));
       const primaryCat = cleanCats[0] || category.trim() || "";
       const conditionClean = condition.trim();
       const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun };
+      // Remember how the quantity was entered so re-opening the form shows the same
+      // figure back, instead of a total the supplier never quoted.
+      if (!hasVariants && qtyBasis === "per_pallet" && perPallet > 0) {
+        detailsObj.qty_basis = "per_pallet";
+        detailsObj.qty_per_pallet = perPallet;
+      }
       if (priceTextClean) detailsObj.price_text = priceTextClean;
       if (openToOffers) detailsObj.open_to_offers = true;
       if (hasVariants) { detailsObj.options = cleanOptions; detailsObj.variants = cleanVariants; }
@@ -1630,12 +1647,16 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             <div className="text-[12px] font-semibold text-ink">Quantity &amp; variants</div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Total quantity (units)</label>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">
+                  {variantTotal > 0 ? "Total quantity (units)" : qtyBasis === "per_pallet" ? "Units per pallet" : "Total quantity (units)"}
+                </label>
                 {variantTotal > 0 ? (
                   <div className={inp + " tabular-nums bg-surface-2 text-ink flex items-center justify-between"}>
                     <span>{variantTotal.toLocaleString()}</span>
                     <span className="text-[10.5px] text-muted font-normal">auto from variants</span>
                   </div>
+                ) : qtyBasis === "per_pallet" ? (
+                  <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={perPallet || ""} onChange={(e) => setPerPallet(parseInt(e.target.value) || 0)} placeholder="0" />
                 ) : (
                   <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={qty || ""} onChange={(e) => setQty(parseInt(e.target.value) || 0)} placeholder="0" />
                 )}
@@ -1645,6 +1666,38 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={pallets || ""} onChange={(e) => setPallets(parseInt(e.target.value) || 0)} placeholder="0" />
               </div>
             </div>
+
+            {/* Suppliers quote either the whole load or a per-pallet count. Saying which
+                removes the guesswork — the total that will actually be stored is shown below. */}
+            {variantTotal === 0 && (
+              <div>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">That quantity is</label>
+                <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5">
+                  {([["total", "The whole load"], ["per_pallet", "Per pallet"]] as const).map(([v, label]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setQtyBasis(v)}
+                      className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-all duration-[140ms] ${qtyBasis === v ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {qtyBasis === "per_pallet" && (
+                  <p className="text-[11.5px] mt-1.5 tabular-nums">
+                    {pallets > 0 && perPallet > 0 ? (
+                      <span className="text-ink-2">
+                        {perPallet.toLocaleString()} × {pallets} pallet{pallets === 1 ? "" : "s"} ={" "}
+                        <span className="font-semibold text-ink">{perPalletTotal.toLocaleString()} units</span> stored on this lot
+                      </span>
+                    ) : (
+                      <span className="text-warning-ink">Add a pallet count and the total is worked out for you.</span>
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Split into variants <span className="font-normal text-muted">— optional (e.g. 2 brands in one deal)</span></label>
               <VariantSplitEditor options={options} variants={variants} onOptions={setOptions} onVariants={setVariants} />
