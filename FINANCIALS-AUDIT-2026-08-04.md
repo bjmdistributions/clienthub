@@ -156,6 +156,26 @@ two are one bank re-link away from firing.
 | 3 | **Bank balance double-counted across Plaid connections.** `plaid_balances` summed every `plaid_items` row, but one physical account appears under several items after a re-link. Now counted once per real account (`persistent_account_id`, else name+mask+subtype; never the per-connection `account_id`, which is re-minted on every link). | 2 items, 4 distinct accounts → **$0.00 double-counted today** |
 | 4 | **The bank's own retractions could delete referenced money with no backup.** The `removed` path is the only *unattended* deleter and the only one writing no recovery copy. It now backs the row up with its allocations inline (so deal linkage survives) before deleting, and uses the broad `bank_txn_is_referenced` gate. That helper was itself missing **loan repayments** — tagged via `counterparty_type`, with `reviewed` deliberately untouched — so any automated delete could remove one and silently inflate loan outstanding, which now feeds free cash directly. | protective; no data change |
 
+### Round 3b — the silent-divergence hole (verified 2026-08-05)
+
+**A money write the server accepts but never applies was abandoned after ~3 minutes.**
+Confirmed: `MAX_PUSH_RETRIES = 10` at a 20s poll = **200 seconds** — shorter than a server
+deploy or a restart. After that the event is dead-lettered: the row stays correct on the
+originating device but **never reaches the server or any other device**, and the only trace
+is a log line plus a `sync_dead_letters` row. Verified that **nothing surfaces it**: there
+is no Tauri command exposing dead letters, no `api.ts` binding, and the Data safety console
+only calls `scanDataIntegrity` / `convergeIntegrityItem`. So the ledger can diverge between
+devices permanently with no visible signal.
+
+Raised to **90 attempts (~30 minutes)** — long enough to ride out a deploy or restart, still
+bounded so a genuinely poison event cannot wedge the queue head forever (the reason the cap
+exists). This reduces the window; it does not close the hole.
+
+**The hole itself is still open and is the top R-019 item:** dead letters must be *surfaced*.
+Minimum viable: a command that counts/lists `sync_dead_letters` with their payloads, shown in
+the Data safety console and as a banner on Financials when the count is non-zero for a money
+table. Nothing may be dropped without Jack being able to see that it was.
+
 **Still open from the hunt** (verified but deliberately not bundled):
 - **`resync_completed_deal` revenue ratchet** — a partial buyer payment permanently drags a
   completed deal's recorded revenue down and it never recovers. Real, HIGH, but it *moves

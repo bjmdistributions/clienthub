@@ -460,7 +460,16 @@ pub async fn push_pending() -> Result<usize> {
     // in sync_dead_letters and the underlying local row is untouched, so Repair/Restore can
     // recover it. This is the push-side mirror of the pull loop's MAX_STUCK_RETRIES guard.
     if !stuck_this_pass.is_empty() {
-        const MAX_PUSH_RETRIES: i64 = 10;
+        // 10 attempts at a 20s poll gave up after barely THREE MINUTES — shorter than a
+        // server deploy, a restart, or a brief outage. A money write (an allocation, a
+        // cash entry) caught in that window stopped being retried forever: it stays
+        // correct on this device but never reaches the server or any other device, and
+        // the only trace is a log line plus a `sync_dead_letters` row that NO screen
+        // reads. That is a silent divergence in the ledger, which is precisely what
+        // must not happen. 90 attempts is ~30 minutes — long enough to ride out a
+        // deploy or a restart, still bounded so a genuinely poison event cannot wedge
+        // the queue head forever (which is the reason a cap exists at all).
+        const MAX_PUSH_RETRIES: i64 = 90;
         if let Ok(conn) = pool().get() {
             for (id, json) in &stuck_this_pass {
                 // The event may have been acked in a LATER batch this pass; UPDATE changes a
