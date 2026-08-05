@@ -115,8 +115,16 @@ export default function DealFlowView() {
   // the duplicate/orphan rows themselves so no aggregate counts them. Idempotent.
   useEffect(() => {
     api.cleanupGhostDealFlows().then((n) => { if (n > 0) load(); }).catch(() => {});
-    // Remove dead bank links (txn deleted/re-imported) that were doubling actuals.
-    api.cleanupOrphanAllocations().then((n) => { if (n > 0) { toast(`Cleaned ${n} stale bank link${n !== 1 ? "s" : ""}`); load(); } }).catch(() => {});
+    // NOTE: cleanupOrphanAllocations is deliberately NOT run here any more. It DELETES
+    // bank_allocation rows org-wide with no recovery copy and then rewrites the deal's
+    // recorded profit — far too destructive to fire from merely opening a screen, and
+    // it ran on every mount. The allocations it targets point at a transaction that is
+    // currently missing, which is often temporary (a re-import in progress, a sync that
+    // has not landed yet), so "clean" could mean "throw away the only record of which
+    // deal a payment belonged to" the moment a page was opened. Every money SUM is
+    // already guarded with EXISTS(bank_txn), so a stale link cannot inflate a figure —
+    // it is untidy, not dangerous, and tidying it is a deliberate act, not a side
+    // effect. Same reasoning removed the over-allocation healer from Financials.
   }, [load]);
 
   // Cross-tab navigation restore

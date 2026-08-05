@@ -4408,12 +4408,26 @@ fn deal_bank_actuals(
     let fee       = role_sum("fee");
     let refund_in = role_sum("refund_in"); // supplier reversal → lowers our real cost
     let has_rev_link  = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role='buyer_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
+    // A FEE is not the supplier-cost leg. These must be tested separately: bank
+    // precedence means "a leg with a bank link uses its bank total", and a $25 wire
+    // fee says nothing about what the goods cost.
+    let has_supplier_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role='supplier_payment' AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
     let has_cost_link = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role IN ('supplier_payment','fee') AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
     let any_link      = exists("SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=?1 AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) LIMIT 1");
 
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
     let rev  = if has_rev_link  { buyer } else { manual_gross };
-    let cost = if has_cost_link { (supplier + fee - refund_in).max(0.0) } else { manual_cost };
+    // The supplier leg falls back to the entered cost when only a fee is linked.
+    // Previously `has_cost_link` (true for a fee alone) made the whole cost equal
+    // `fee`, so tying a single $25 wire fee to a deal REPLACED a $37,955 supplier
+    // cost with $25 — and that inflated profit was then persisted and used for
+    // partner payouts, rep cuts, the tax reserve and free cash.
+    let cost = if has_cost_link {
+        let supplier_leg = if has_supplier_link { supplier } else { manual_cost };
+        (supplier_leg + fee - refund_in).max(0.0)
+    } else {
+        manual_cost
+    };
     (r2(rev), r2(cost), r2(rev - cost), any_link)
 }
 
@@ -11637,10 +11651,19 @@ pub async fn clear_bank_txns(scope: String, force: bool) -> Result<Value, String
 /// query error so uncertainty never authorises a delete.
 fn bank_txn_is_referenced(conn: &rusqlite::Connection, id: &str) -> bool {
     conn.query_row(
+        // The loan clauses are TWO different links and both matter. `loan.bank_txn_id`
+        // is the disbursement. A REPAYMENT is tagged the other way round — on the
+        // transaction itself, via counterparty_type/counterparty_id, with `reviewed`
+        // deliberately left alone by tag_bank_txn_to_loan. Without the second clause a
+        // repayment counted as unreferenced, so any automated delete could remove it;
+        // loan_ledger derives repaid totals by summing those tagged rows, so the loan's
+        // outstanding balance silently jumped back up — and since outstanding now feeds
+        // free cash directly, that moves the headline number.
         "SELECT (SELECT COALESCE(reviewed,0) FROM bank_txn WHERE id=?1) = 1 \
             OR EXISTS(SELECT 1 FROM bank_allocation WHERE bank_txn_id=?1) \
             OR EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
             OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1) \
+            OR EXISTS(SELECT 1 FROM bank_txn WHERE id=?1 AND COALESCE(counterparty_type,'')='loan') \
             OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
             OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1)",
         [id],
@@ -12714,7 +12737,38 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // on the deal, and resync_completed_deal falls back to the last
                     // RECORDED figures for a leg that has no live link — losing a link
                     // can never erase it.
-                    let was_finished = bank_txn_is_finished(&conn, &id);
+                    // `bank_txn_is_referenced`, not `bank_txn_is_finished`: the narrower
+                    // check only sees reviewed/allocated rows, so a LOAN-tagged repayment
+                    // (tagging writes counterparty_type/id and deliberately leaves
+                    // `reviewed` alone), or a row behind a refund / cash purchase /
+                    // business expense, was retracted with no toast and no warning — and
+                    // because loan_ledger derives repaid totals by summing tagged rows,
+                    // the loan's outstanding balance silently jumped back up everywhere.
+                    let was_finished = bank_txn_is_referenced(&conn, &id);
+                    // Back the row up BEFORE deleting it. Every other delete path in the
+                    // ledger writes a recovery copy; this one — the only UNATTENDED
+                    // deleter, driven by the bank rather than by a person — did not, so a
+                    // retraction of allocated money left nothing to restore and no record
+                    // of which deal it belonged to. Store the allocations inline so the
+                    // deal linkage survives too, which the Google Sheet backup cannot do.
+                    if let Ok(rj) = conn.query_row(
+                        "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,\
+                            'amount',amount,'direction',direction,'description',description,'memo_raw',memo_raw,\
+                            'category',category,'counterparty_name',counterparty_name,\
+                            'counterparty_type',counterparty_type,'counterparty_id',counterparty_id,\
+                            'source_format',source_format,'reviewed',reviewed,'raw_json',raw_json,\
+                            'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at,\
+                            'allocations',(SELECT json_group_array(json_object('id',a.id,'deal_flow_id',a.deal_flow_id,\
+                                'amount',a.amount,'role',a.role,'note',a.note)) FROM bank_allocation a WHERE a.bank_txn_id=bank_txn.id)) \
+                         FROM bank_txn WHERE id=?1",
+                        [&id], |r| r.get::<_, String>(0),
+                    ) {
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) \
+                             VALUES (?1,?2,NULL,'plaid_removed',?3)",
+                            rusqlite::params![id, rj, now],
+                        );
+                    }
                     let allocs: Vec<String> = conn
                         .prepare("SELECT id FROM bank_allocation WHERE bank_txn_id=?1")
                         .and_then(|mut st| {
@@ -12855,6 +12909,18 @@ fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
     let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
         Ok(r) => r, Err(_) => return (0.0, 0.0, false),
     };
+    // One physical account can appear under SEVERAL plaid_items — re-linking a bank
+    // ("Connect a bank" instead of update mode) or linking the same bank on a second
+    // device mints a new item holding the same accounts. Summing every item's accounts
+    // therefore counted the same balance twice and overstated free cash by a whole
+    // account, while the manual correction field was locked out because a live source
+    // was present. Count each real account ONCE.
+    //
+    // Identity, best available first: Plaid's `persistent_account_id` is stable across
+    // re-links but is NOT issued for credit cards, so fall back to the bank's own
+    // name+mask+subtype. The per-connection `account_id` is deliberately NOT used — it
+    // is re-minted on every link, which is exactly the case being de-duplicated.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for aj in rows.filter_map(|r| r.ok()) {
         // `any` must NOT be set from the mere existence of a plaid_items row. When the
         // accounts call fails at link time the row is stored with accounts_json "[]",
@@ -12863,8 +12929,20 @@ fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
         // good balance. Only a row we actually parsed a usable account out of counts.
         let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
         for a in &accts {
+            let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "credit" && kind != "depository" { continue; }
+            let key = match a.get("persistent_account_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                Some(pid) => format!("p:{}", pid),
+                None => format!(
+                    "n:{}|{}|{}",
+                    a.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase(),
+                    a.get("mask").and_then(|v| v.as_str()).unwrap_or(""),
+                    a.get("subtype").and_then(|v| v.as_str()).unwrap_or(""),
+                ),
+            };
+            if !seen.insert(key) { continue; } // already counted through another item
             let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-            match a.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            match kind {
                 "credit" => { card += cur.abs(); any = true; }
                 "depository" => { bank += cur; any = true; }
                 _ => {}
