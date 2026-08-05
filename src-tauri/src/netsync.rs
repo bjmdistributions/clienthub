@@ -1152,7 +1152,18 @@ pub async fn restore_snapshot() -> Result<serde_json::Value> {
                 .filter(|c| c.as_str() != pk)
                 .map(|c| format!("{}=excluded.{}", c, c))
                 .collect();
-            let sql = if updates.is_empty() {
+            // `settings` is FILL-THE-GAPS ONLY — never overwrite a value this device
+            // already has. The device→server direction for settings does not exist (the
+            // server rejects `settings` pushes; only the ~40 allowlisted keys travel, and
+            // only via the hash-gated, admin-only shared-settings bridge), so the server's
+            // copy is systematically allowed to be STALER than local. A blind upsert here
+            // therefore silently reverted local configuration to an older value — including
+            // `profit_split_json`, i.e. how profit is divided between partners, changed
+            // without a word by an action whose whole purpose is "recover my data".
+            // Restore exists to bring back what is MISSING; config that is present is not
+            // missing. Rows absent locally are still inserted, so a genuinely lost setting
+            // is still recovered.
+            let sql = if updates.is_empty() || table == "settings" {
                 format!(
                     "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO NOTHING",
                     table,
