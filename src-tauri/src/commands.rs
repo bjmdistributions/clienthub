@@ -12966,7 +12966,7 @@ pub async fn get_money_config() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64) -> Result<(), String> {
+pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64, publish_manual: Option<bool>) -> Result<(), String> {
     write_setting("money_bank_balance", &format!("{}", bank_balance))?;
     write_setting("money_credit_card_balance", &format!("{}", credit_card_balance))?;
     write_setting("money_cash_floor", &format!("{}", cash_floor))?;
@@ -12983,7 +12983,14 @@ pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_
         let conn = pool().get().map_err(|e| e.to_string())?;
         plaid_balances(&conn).2
     };
-    if !has_plaid && (bank_balance != 0.0 || credit_card_balance != 0.0) {
+    // `publish_manual` is the caller telling us this device's manual figure is the one
+    // ACTUALLY IN USE here (Free Cash is showing `balance_source == "manual"`). Without
+    // it, a device that has no Plaid link but is happily displaying someone else's
+    // *synced* balance would still republish its own stale manual number over the live
+    // one — the org would read a figure nobody is looking at, until the next Plaid sync
+    // re-asserted the truth up to 20 minutes later. "No Plaid link" is not the same as
+    // "my manual number is the org's best answer".
+    if !has_plaid && publish_manual.unwrap_or(false) && (bank_balance != 0.0 || credit_card_balance != 0.0) {
         let (b, c) = (bank_balance, credit_card_balance.max(0.0));
         tokio::spawn(async move { crate::netsync::publish_bank_balance(b, c).await; });
     }

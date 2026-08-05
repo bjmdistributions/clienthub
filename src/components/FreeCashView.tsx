@@ -155,7 +155,11 @@ export default function FreeCashView() {
     if (tax > 100 || refund > 100) { toast("Percentages cannot be above 100", "error"); return; }
     setSaving(true);
     try {
-      await api.setMoneyConfig(bank, card, floor, tax / 100, refund / 100, war);
+      // Only offer this device's manual balance to the org when it is the figure this
+      // device is actually using. If Free Cash is showing a live or synced balance, the
+      // manual box holds a stale number nobody is looking at — publishing it would
+      // overwrite the good figure for everyone until the next bank sync.
+      await api.setMoneyConfig(bank, card, floor, tax / 100, refund / 100, war, ov?.balance_source === "manual");
       setAdjustOpen(false);
       await loadOverview();
       toast("Saved");

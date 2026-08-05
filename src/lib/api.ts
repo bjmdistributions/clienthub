@@ -2384,8 +2384,12 @@ export const api = {
   refundStatusAll: () =>
     invoke<{ deal_flow_id: string; refund_owed: number; refunded: number; remaining: number; done: boolean }[]>("refund_status_all"),
   getMoneyConfig: () => invoke<MoneyConfig>("get_money_config"),
-  setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number) =>
-    invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest }),
+  /// `publishManual` must be true ONLY when this device's manual balance is the figure
+  /// actually in use here (Free Cash showing `balance_source === "manual"`). It is what
+  /// stops a device that is displaying someone else's synced balance from republishing
+  /// its own stale manual number over the live one.
+  setMoneyConfig: (bankBalance: number, creditCardBalance: number, cashFloor: number, taxSweepPct: number, refundReservePct: number, warChest: number, publishManual = false) =>
+    invoke<void>("set_money_config", { bankBalance, creditCardBalance, cashFloor, taxSweepPct, refundReservePct, warChest, publishManual }),
   financialsOverview: () => invoke<FinancialsOverview>("financials_overview"),
   aiCategorizeBankTxns: () => invoke<{ updated: number; remaining: number }>("ai_categorize_bank_txns"),
   listLoans: () => invoke<Loan[]>("list_loans"),
