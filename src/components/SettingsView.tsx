@@ -3558,6 +3558,21 @@ function TemplatesTab() {
   );
 }
 
+/** The storefront background ids that render as a light page. */
+const LIGHT_STOREFRONT_BGS = new Set(["paper", "snow", "linen"]);
+
+/**
+ * Would this accent be unreadable on the chosen background? Mirrors the guard in
+ * `www/shop.html` so the warning here and the fallback there never disagree.
+ */
+function accentTooLightForBg(accent?: string, bg?: string): boolean {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(accent || "");
+  if (!m) return false;
+  const [r, g, b] = [1, 2, 3].map((i) => parseInt(m[i], 16));
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return LIGHT_STOREFRONT_BGS.has(bg || "paper") ? lum > 0.82 : lum < 0.12;
+}
+
 function StorefrontTab() {
   const [cfg, setCfg] = useState<StorefrontConfig | null>(null);
   const [saving, setSaving] = useState(false);
@@ -3660,8 +3675,11 @@ function StorefrontTab() {
         </div>
         <div className="pt-1">
           <label className="text-[13px] text-ink-2 block mb-2">Background</label>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {[
+              { id: "paper",    label: "Paper",    c: "#FBFAF7", light: true },
+              { id: "snow",     label: "Snow",     c: "#FFFFFF", light: true },
+              { id: "linen",    label: "Linen",    c: "#F7F4EE", light: true },
               { id: "charcoal", label: "Charcoal", c: "#0D0A09" },
               { id: "obsidian", label: "Obsidian", c: "#070707" },
               { id: "midnight", label: "Midnight", c: "#080A10" },
@@ -3669,10 +3687,19 @@ function StorefrontTab() {
               { id: "plum",     label: "Plum",     c: "#0D080D" },
             ].map((b) => (
               <button key={b.id} type="button" onClick={() => set({ bg: b.id })} title={b.label}
-                className={`w-9 h-9 rounded-lg border-2 transition-colors ${(cfg.bg || "charcoal") === b.id ? "border-accent" : "border-line"}`}
+                className={`w-9 h-9 rounded-lg border-2 transition-colors ${(cfg.bg || "paper") === b.id ? "border-accent" : b.light ? "border-line-3" : "border-line"}`}
                 style={{ background: b.c }} aria-label={b.label} />
             ))}
           </div>
+          {/* An accent chosen for a dark background can disappear on a light one.
+              The page falls back to Ecliptr orange rather than rendering invisible
+              buttons, but it should be a deliberate choice, not a rescue. */}
+          {accentTooLightForBg(cfg.accent, cfg.bg) && (
+            <p className="text-[11px] text-warning-ink mt-2">
+              {cfg.accent} is too light to read on this background, so the storefront falls back to Ecliptr orange.
+              Pick a darker accent to use your own colour.
+            </p>
+          )}
         </div>
       </div>
 

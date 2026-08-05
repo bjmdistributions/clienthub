@@ -1,9 +1,22 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// One city as the location picker sees it: display name, 2-letter state, population.
+/// Population is what ranks "Springfield" — the one in MO beats the one in VT.
+#[derive(Clone, serde::Serialize)]
+pub struct CityEntry {
+    pub city: String,
+    pub state: String,
+    pub population: u32,
+}
+
 pub struct CityLookup {
     by_state_id: HashMap<String, (f64, f64)>,
     by_state_name: HashMap<String, (f64, f64)>,
+    /// Every city, for prefix search and for resolving a bare city name to a state.
+    cities: Vec<CityEntry>,
+    /// Lowercased city name → indices into `cities`. A name like "Portland" has several.
+    by_city: HashMap<String, Vec<u32>>,
     pub loaded: u32,
 }
 
@@ -14,6 +27,8 @@ pub fn init() -> Result<u32, String> {
 
     let mut by_state_id: HashMap<String, (f64, f64)> = HashMap::new();
     let mut by_state_name: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut cities: Vec<CityEntry> = Vec::new();
+    let mut by_city: HashMap<String, Vec<u32>> = HashMap::new();
     let mut count = 0u32;
 
     let mut chars = data.chars().peekable();
@@ -68,12 +83,27 @@ pub fn init() -> Result<u32, String> {
         if !state_name.is_empty() {
             by_state_name.insert(format!("{}|{}", city.to_lowercase(), state_name), (lat, lng));
         }
+        // Index for the location picker. Population is column 8 and is blank for
+        // some small places — those rank last rather than being dropped.
+        if !state_id.is_empty() {
+            let population: u32 = fields
+                .get(8)
+                .map(|f| f.trim_matches('"').trim())
+                .and_then(|f| f.parse::<f64>().ok())
+                .map(|p| p as u32)
+                .unwrap_or(0);
+            by_city
+                .entry(city.to_lowercase())
+                .or_default()
+                .push(cities.len() as u32);
+            cities.push(CityEntry { city: city.to_string(), state: state_id.to_uppercase(), population });
+        }
         count += 1;
     }
 
     tracing::info!("geocode: loaded {} city entries", count);
 
-    let lookup = CityLookup { by_state_id, by_state_name, loaded: count };
+    let lookup = CityLookup { by_state_id, by_state_name, cities, by_city, loaded: count };
     CITY_LOOKUP.set(lookup).map_err(|_| "geocode already initialized".to_string())?;
     Ok(count)
 }
@@ -158,5 +188,40 @@ impl CityLookup {
             return Some(*c);
         }
         None
+    }
+
+    /// Cities whose name starts with `prefix`, biggest first. Powers the city
+    /// autocomplete on the lot form — picking a suggestion fills the state too.
+    pub fn suggest(&self, prefix: &str, limit: usize) -> Vec<CityEntry> {
+        let p = prefix.trim().to_lowercase();
+        if p.len() < 2 {
+            return Vec::new();
+        }
+        let mut hits: Vec<&CityEntry> = self
+            .cities
+            .iter()
+            .filter(|c| c.city.to_lowercase().starts_with(&p))
+            .collect();
+        // Exact name first, then by population. Keeps "Chicago" above "Chicago Heights".
+        hits.sort_by(|a, b| {
+            let exact = |c: &CityEntry| c.city.to_lowercase() == p;
+            exact(b).cmp(&exact(a)).then(b.population.cmp(&a.population))
+        });
+        hits.into_iter().take(limit).cloned().collect()
+    }
+
+    /// Every state a city of this name exists in, biggest first. Used by the reformat
+    /// screen to propose a state for a bare city like "Chicago" — and to SHOW that
+    /// "Springfield" is ambiguous rather than silently picking one.
+    pub fn states_for_city(&self, city: &str) -> Vec<CityEntry> {
+        let mut hits: Vec<CityEntry> = match self.by_city.get(&city.trim().to_lowercase()) {
+            Some(idx) => idx.iter().filter_map(|i| self.cities.get(*i as usize)).cloned().collect(),
+            None => return Vec::new(),
+        };
+        hits.sort_by(|a, b| b.population.cmp(&a.population));
+        // One entry per state — the same city name repeats across counties.
+        let mut seen = std::collections::HashSet::new();
+        hits.retain(|c| seen.insert(c.state.clone()));
+        hits
     }
 }

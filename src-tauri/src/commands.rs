@@ -16326,6 +16326,157 @@ pub async fn converge_integrity_item(kind: String, id: String) -> Result<Vec<Str
     Ok(deleted)
 }
 
+// ---------------------------------------------------------------------------
+// Lot locations (FOB)
+//
+// `inventory.location` holds ONE canonical string: "City, ST", or a bare "ST",
+// or empty. The storefront reads the state straight off the end of it to place
+// the lot on the US map, so the shape matters — a lot reading "Chicago" lands
+// nowhere. Deciding what IS canonical lives in `src/lib/location.ts` so there is
+// exactly one copy of that rule; everything here is deliberately dumb data
+// movement, driven by what the frontend asks for.
+// ---------------------------------------------------------------------------
+
+/// Cities matching a typed prefix, biggest first. Picking one fills in the state.
+#[tauri::command]
+pub async fn suggest_city(prefix: String, limit: Option<usize>) -> Result<Vec<crate::geocode::CityEntry>, String> {
+    let lookup = crate::geocode::get().ok_or("geocode not initialized")?;
+    Ok(lookup.suggest(&prefix, limit.unwrap_or(8)))
+}
+
+/// Every state a city of this name exists in, biggest first. More than one entry
+/// means the name is genuinely ambiguous and a human has to choose.
+#[tauri::command]
+pub async fn states_for_city(city: String) -> Result<Vec<crate::geocode::CityEntry>, String> {
+    let lookup = crate::geocode::get().ok_or("geocode not initialized")?;
+    Ok(lookup.states_for_city(&city))
+}
+
+#[derive(Serialize)]
+pub struct LotLocationGroup {
+    pub value: String,
+    pub lot_count: i64,
+}
+
+/// Every distinct non-empty location in use, with how many lots carry it. The
+/// reformat screen decides which of these are malformed.
+#[tauri::command]
+pub async fn list_lot_locations() -> Result<Vec<LotLocationGroup>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT TRIM(location) AS v, COUNT(*) FROM inventory \
+             WHERE status != 'archived' AND TRIM(COALESCE(location,'')) != '' \
+             GROUP BY v ORDER BY COUNT(*) DESC, v",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok(LotLocationGroup { value: r.get(0)?, lot_count: r.get(1)? }))
+        .map_err(|e| e.to_string())?;
+    // Collect explicitly: a filter_map(ok) here would silently swallow schema drift.
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+pub struct LocationChange {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Serialize)]
+pub struct LocationFixSummary {
+    pub lots_updated: i64,
+    pub values_changed: usize,
+    pub backup_path: String,
+}
+
+/// Rewrite lot locations in bulk, from an explicit old→new list the user confirmed.
+///
+/// Rule 2 (never erase stored data): every affected lot's CURRENT location is
+/// written to a timestamped backup file, and that file is verified non-empty on
+/// disk, BEFORE a single row is updated. Only the `location` column is touched —
+/// nothing else on the row is read back and rewritten, so this cannot blank a
+/// field it never looked at.
+#[tauri::command]
+pub async fn apply_location_normalization(changes: Vec<LocationChange>) -> Result<LocationFixSummary, String> {
+    let changes: Vec<LocationChange> = changes
+        .into_iter()
+        .map(|c| LocationChange { from: c.from.trim().to_string(), to: c.to.trim().to_string() })
+        .filter(|c| !c.from.is_empty() && c.from != c.to)
+        .collect();
+    if changes.is_empty() {
+        return Err("Nothing to change.".into());
+    }
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    // 1. Read every lot we are about to touch, and what it says today.
+    let mut affected: Vec<(String, String, String)> = Vec::new(); // (lot id, old, new)
+    for c in &changes {
+        let mut stmt = conn
+            .prepare("SELECT id, location FROM inventory WHERE status != 'archived' AND TRIM(COALESCE(location,'')) = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([&c.from], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (id, old) = r.map_err(|e| e.to_string())?;
+            affected.push((id, old, c.to.clone()));
+        }
+    }
+    if affected.is_empty() {
+        return Err("Those locations are no longer in use — nothing was changed.".into());
+    }
+
+    // 2. Back up first, and prove the backup landed before touching anything.
+    let dir = crate::db::app_data_dir().join("backups");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!(
+        "lot-locations-{}.json",
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+    ));
+    let backup = serde_json::json!({
+        "taken_at": chrono::Utc::now().to_rfc3339(),
+        "note": "inventory.location values as they were immediately before apply_location_normalization",
+        "lots": affected.iter().map(|(id, old, new)| serde_json::json!({
+            "id": id, "location_before": old, "location_after": new,
+        })).collect::<Vec<_>>(),
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let written = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    if written == 0 {
+        return Err("Backup file came out empty — nothing was changed.".into());
+    }
+
+    // 3. Now write, one column, through the oplog so every device gets it.
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut updated = 0i64;
+    for (id, _old, new) in &affected {
+        conn.execute(
+            "UPDATE inventory SET location = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![new, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+        let mut cols = serde_json::Map::new();
+        cols.insert("location".into(), serde_json::json!(new));
+        cols.insert("updated_at".into(), serde_json::json!(now));
+        crate::sync::record_upsert("inventory", id, cols).map_err(|e| e.to_string())?;
+        updated += 1;
+    }
+    crate::netsync::push_now();
+
+    Ok(LocationFixSummary {
+        lots_updated: updated,
+        values_changed: changes.len(),
+        backup_path: path.to_string_lossy().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod payout_tests {
     use super::{allocate_payout, build_payout_breakdown, parse_split_shares, shares_from_breakdown};

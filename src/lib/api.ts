@@ -1200,6 +1200,26 @@ export interface Lot {
   details_json: string | null;
 }
 
+/** One city from the bundled US gazetteer, as the location picker sees it. */
+export interface CityEntry {
+  city: string;
+  state: string;
+  population: number;
+}
+
+/** A distinct value in use in `inventory.location`, and how many lots carry it. */
+export interface LotLocationGroup {
+  value: string;
+  lot_count: number;
+}
+
+export interface LocationFixSummary {
+  lots_updated: number;
+  values_changed: number;
+  /** Where the pre-change values were saved. Shown so the undo path is never a mystery. */
+  backup_path: string;
+}
+
 /** Parsed shape of Lot.details_json — public structured extras. */
 export interface LotDetails {
   pallets?: number | null;
@@ -1298,6 +1318,20 @@ export interface ManifestGroup {
   total_retail: number;
 }
 
+/** What the parser actually did — shown in the UI so a mis-read price column is visible. */
+export interface ManifestDetection {
+  format: string;                  // "csv" | "tsv" | "xlsx" | "pdf" | "pdf (AI)"
+  sheet: string | null;            // spreadsheet tab the rows came from
+  header_row: number;              // 1-based; 0 = header synthesised (the PDF paths)
+  description_col: string | null;
+  quantity_col: string | null;
+  price_col: string | null;
+  category_col: string | null;
+  brand_col: string | null;
+  price_is_extended: boolean;      // price already includes qty, so it wasn't multiplied
+  note: string | null;             // caveats: AI used, truncated, qty defaulted to 1
+}
+
 export interface ManifestAnalysis {
   categories: ManifestGroup[];        // by the manifest's category column, else keyword guess
   brands: ManifestGroup[];            // by the manifest's brand column; empty if none
@@ -1309,6 +1343,7 @@ export interface ManifestAnalysis {
   total_quantity: number;   // sum of the quantity column — the real unit count
   skipped_rows: number;
   formula: string;
+  detection: ManifestDetection;
 }
 
 export interface ProfitForecast {
@@ -2564,6 +2599,14 @@ export const api = {
   createLot: (lot: { name: string; quantity: number; totalCost: number; askingPrice: number; description?: string; category?: string; photos?: string[]; notes?: string; supplier?: string; location?: string; priceType?: string; detailsJson?: string }) =>
     invoke<Lot>("create_lot", { ...lot }),
   updateLot: (id: string, fields: Record<string, any>) => invoke<void>("update_lot", { id, ...fields }),
+
+  // Lot locations (FOB)
+  suggestCity: (prefix: string, limit?: number) =>
+    invoke<CityEntry[]>("suggest_city", { prefix, limit: limit ?? null }),
+  statesForCity: (city: string) => invoke<CityEntry[]>("states_for_city", { city }),
+  listLotLocations: () => invoke<LotLocationGroup[]>("list_lot_locations"),
+  applyLocationNormalization: (changes: { from: string; to: string }[]) =>
+    invoke<LocationFixSummary>("apply_location_normalization", { changes }),
   setLotStatus: (id: string, status: string) => invoke<void>("set_lot_status", { id, status }),
   deleteLot: (id: string) => invoke<void>("delete_lot", { id }),
   deleteLots: (ids: string[]) => invoke<number>("delete_lots", { ids }),
@@ -2636,7 +2679,9 @@ export const api = {
   savePortalBaseUrl: (url: string) => invoke<void>("save_portal_base_url", { url }),
 
   // Manifest
-  analyzeManifest: (path: string) => invoke<ManifestAnalysis>("analyze_manifest", { path }),
+  // forceAi re-reads a PDF through Claude when the text-layer heuristic got it wrong.
+  analyzeManifest: (path: string, forceAi?: boolean) =>
+    invoke<ManifestAnalysis>("analyze_manifest", { path, forceAi: forceAi ?? false }),
 
   // Forecast
   getProfitForecast: () => invoke<ProfitForecast>("get_profit_forecast"),

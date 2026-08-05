@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { normalizeLocation } from "../lib/location";
+import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/location";
+import LocationField from "./LocationField";
+import LocationCleanup from "./LocationCleanup";
 import { buildNewsletterBody, LotBlockInput } from "../lib/newsletter";
-import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook } from "lucide-react";
+import { Plus, X, Package, ChevronDown, Link2, Upload, Clipboard, FileDown, Image, ChevronLeft, ChevronRight, MessageCircle, Mail, DollarSign, Ban, Trash2, RefreshCw, CheckSquare, Check, Send, FileText, MoreVertical, MoreHorizontal, Search, Users, Pencil, RotateCcw, Lock, ExternalLink, GitBranch, Facebook, MapPin } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -155,11 +157,19 @@ export default function InventoryView() {
   const [mediaIssues, setMediaIssues] = useState<Record<string, MediaIssue>>({});
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [fbLot, setFbLot] = useState<Lot | null>(null); // lot whose "Post to Facebook" compose is open
+  const [locFixOpen, setLocFixOpen] = useState(false);
+  const [locFixCount, setLocFixCount] = useState(0);
   const loadOffers = () => api.listOffers().then(setOffers).catch(() => {});
+  // The BANNER counts only malformed values. A bare state code ("LA") is well-formed,
+  // so it must not nag forever — the cleanup screen still lists it for confirmation,
+  // but a lot genuinely shipping from Louisiana shouldn't keep raising a flag.
+  const loadLocIssues = () => api.listLotLocations()
+    .then((gs) => setLocFixCount(gs.filter((g) => !isCanonicalLocation(g.value)).length))
+    .catch(() => {});
   const loadIssues = () => api.listMediaSyncIssues()
     .then((rows) => setMediaIssues(Object.fromEntries(rows.map((r) => [r.lot_id, { missing_local: r.missing_local, pending_upload: r.pending_upload }]))))
     .catch(() => {});
-  const load = async () => { const l = await api.listInventory(); setLots(l); loadOffers(); loadIssues(); };
+  const load = async () => { const l = await api.listInventory(); setLots(l); loadOffers(); loadIssues(); loadLocIssues(); };
   const checkStaleLots = async () => {
     setStaleBusy(true);
     try {
@@ -534,6 +544,20 @@ export default function InventoryView() {
         );
       })()}
 
+      {/* Locations typed before the field had a state picker — a lot with no state
+          can't be placed on the storefront's FOB map. */}
+      {locFixCount > 0 && (
+        <button
+          onClick={() => setLocFixOpen(true)}
+          className="w-full flex items-center gap-2.5 mb-4 rounded-xl border border-line bg-surface-2 px-4 py-3 text-left hover:border-accent/40 transition-colors">
+          <MapPin size={16} className="text-accent flex-shrink-0" />
+          <span className="text-[13px] text-ink min-w-0">
+            <span className="font-semibold">{locFixCount} location{locFixCount !== 1 ? "s" : ""} to tidy up</span>
+            <span className="text-muted"> · set a state so these loads show on the storefront map</span>
+          </span>
+        </button>
+      )}
+
       {/* Band B — toolbar */}
       {!selectMode && (
         <div className="flex flex-wrap items-center gap-2.5 pb-3 mb-4 border-b border-line">
@@ -747,6 +771,8 @@ export default function InventoryView() {
 
       {/* Post-to-Facebook compose, openable straight from a card (not just the detail) */}
       {fbLot && <FbPostModal lot={fbLot} photos={(() => { try { return JSON.parse(fbLot.photos_json || "[]") ?? []; } catch { return []; } })()} onClose={() => setFbLot(null)} />}
+
+      {locFixOpen && <LocationCleanup onClose={() => setLocFixOpen(false)} onDone={load} />}
 
       {linkModal && (() => {
         const lot = lots.find((l) => l.id === linkModal);
@@ -1571,7 +1597,11 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       if (details0.manifest) detailsObj.manifest = details0.manifest;
       const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
-      const locClean = normalizeLocation(location);
+      // Canonicalise on the way out. LocationField already emits the right shape,
+      // but a PREFILLED lot (paste-a-load) can reach save without the field ever
+      // being touched, so the parse runs here too.
+      const locParts = parseLocation(location);
+      const locClean = formatLocation(locParts.city, locParts.state);
       if (initial) {
         await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: primaryCat || null, quantity: effQty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: locClean || null, priceType, detailsJson });
       } else {
@@ -1650,15 +1680,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               <ConditionField value={condition} onChange={setCondition} />
             </div>
             <div>
-              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location</label>
-              <input className={inp} value={location} list="lot-location-options"
-                onChange={(e) => setLocation(e.target.value)}
-                onBlur={(e) => setLocation(normalizeLocation(e.target.value))}
-                placeholder="City, state (auto-formats) — or a warehouse name" />
-              <datalist id="lot-location-options">
-                {Array.from(new Set(lots.map((l) => (l.location || "").trim()).filter(Boolean))).slice(0, 30).map((l) => <option key={l} value={l} />)}
-              </datalist>
-              <p className="text-[10.5px] text-muted mt-1">Type a city/state (e.g. “los angeles ca”) and it becomes “Los Angeles, CA” for consistency.</p>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Location <span className="font-normal text-muted">— where the load ships FOB</span></label>
+              <LocationField value={location} onChange={setLocation} />
             </div>
           </div>
 

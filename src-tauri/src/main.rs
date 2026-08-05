@@ -774,6 +774,11 @@ fn main() {
             // Geocoding
             geocode_client,
             geocode_all_clients,
+            // Lot locations (FOB)
+            suggest_city,
+            states_for_city,
+            list_lot_locations,
+            apply_location_normalization,
             // Email
             send_email,
             scan_inbox,
