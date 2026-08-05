@@ -142,6 +142,54 @@ dated 07-28 — the duplicate problem is still active in the opposite direction.
 
 ---
 
+## ROUND 3 — adversarial hunt, 2026-08-05 (committed `7c1030e`, awaiting a release)
+
+A six-lens adversarial hunt over all financials code (34 findings, 8 verified, each
+critical re-checked by hand against the code). **Every fix below was measured against the
+live book first: none of them changes a number Jack currently sees.** They are latent, and
+two are one bank re-link away from firing.
+
+| # | Fix | Live impact today |
+|---|---|---|
+| 1 | **A single `fee` allocation replaced a deal's ENTIRE supplier cost** (`deal_bank_actuals`). Tying a $25 wire fee to a deal made its cost $25 instead of the real supplier figure, and that inflated profit is persisted into partner payouts, rep cuts, the 30% tax reserve and free cash. The supplier leg now falls back to the entered cost when only a fee is linked; a fee **adds** to cost, never replaces it. | 45 active deal flows; exactly **1** has a fee allocation and it also has a supplier payment linked → **no recorded profit moves** |
+| 2 | **Opening Deal Flow deleted allocations.** `cleanupOrphanAllocations` ran on every mount, deleting rows org-wide with no recovery copy, then rewriting the deal's profit. Its targets point at a transaction missing *right now*, which is often temporary (re-import mid-flight, sync not landed). Removed — same reasoning as the over-allocation healer in v0.15.126. | prevents silent loss; no data change |
+| 3 | **Bank balance double-counted across Plaid connections.** `plaid_balances` summed every `plaid_items` row, but one physical account appears under several items after a re-link. Now counted once per real account (`persistent_account_id`, else name+mask+subtype; never the per-connection `account_id`, which is re-minted on every link). | 2 items, 4 distinct accounts → **$0.00 double-counted today** |
+| 4 | **The bank's own retractions could delete referenced money with no backup.** The `removed` path is the only *unattended* deleter and the only one writing no recovery copy. It now backs the row up with its allocations inline (so deal linkage survives) before deleting, and uses the broad `bank_txn_is_referenced` gate. That helper was itself missing **loan repayments** — tagged via `counterparty_type`, with `reviewed` deliberately untouched — so any automated delete could remove one and silently inflate loan outstanding, which now feeds free cash directly. | protective; no data change |
+
+**Still open from the hunt** (verified but deliberately not bundled):
+- **`resync_completed_deal` revenue ratchet** — a partial buyer payment permanently drags a
+  completed deal's recorded revenue down and it never recovers. Real, HIGH, but it *moves
+  live P&L on existing deals*, so per `FINANCIALS-PLAN.md` it gets its own release with a
+  before/after table shown to Jack first.
+- **Content-dedup `LIMIT 1`** picks one arbitrary match, so the churn exemptions can miss
+  when the ledger holds more than one matching row (needs two connections to bite).
+- **Aggressive "every exact match" dedupe** would destroy real same-day repeats — the
+  standing "never press it" warning is the current mitigation.
+- **26 unverified leads**, 3 rated critical: a money write the server 200s-but-never-applies
+  being dropped from the outbound queue; `restore_snapshot` overwriting local `settings`
+  (including `profit_split_json`) with no LWW; and a no-Plaid device republishing a stale
+  manual balance as the org's.
+
+### Server: 12 process-wide deadlocks (`clienthub-api` `f130257`, NOT deployed)
+
+`db::conn()` hands out a guard over ONE global non-reentrant `std::sync::Mutex`, and
+`sync::record_upsert`/`record_delete`/`sync_category_upsert` take that same lock internally.
+Any handler emitting a sync event while holding its own guard deadlocks the thread **while
+holding the global DB lock** — every later request touching the DB, for every org, blocks
+forever. No error, no log line: sync silently stops until the service is restarted. This is
+the most likely mechanism behind any "sync just stopped" report.
+
+11 fixed and committed; the 12th (`main.rs` public signup) is fixed in the working tree but
+uncommitted because that file also carries another session's in-flight loads_inbox merge.
+**The live droplet still runs the deadlocking build.** Reachable today: create a deal flow,
+un-complete a deal, change a deal stage, send a staff message, any category/payment-method
+admin action, the public signup form.
+
+*Detection note: scan with brace-depth tracking. A naive "is there a `drop(conn)`" scan
+reports 114 sites, nearly all false positives — the real count was 12.*
+
+---
+
 ## TL;DR — why each complaint happens
 
 | Complaint | Verdict | Root cause |
