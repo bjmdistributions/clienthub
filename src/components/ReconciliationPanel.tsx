@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
-import { api, DealFlow, DealAllocation, UnallocatedTxn } from "../lib/api";
+import { api, DealFlow, DealAllocation, BankTxn } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
 
@@ -10,6 +10,11 @@ import { toast } from "./Toast";
 // "fully reconciled" state. A transaction can be SPLIT across deals: the picker
 // shows what's still free to allocate (original − everything already claimed),
 // so a $40k cash receipt put $20k on one deal still offers $20k on the next.
+//
+// The picker reads the SAME list as Financials → Transactions (`list_bank_txns`)
+// and shows every transaction of the leg's direction that still has money left —
+// no "near the expected amount" pre-filter. That filter used to hide a wire
+// larger than the invoice from the default view entirely.
 
 const fmtShortDate = (s?: string | null) => {
   if (!s) return "";
@@ -64,38 +69,48 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
 
   // ── pairing picker ──
   const [picker, setPicker] = useState<Leg | null>(null);
-  const [cands, setCands] = useState<UnallocatedTxn[] | null>(null);
+  const [txns, setTxns] = useState<BankTxn[] | null>(null);
+  // An allocation bigger than the leg still expects changes recorded profit, so it
+  // is never done silently — this holds the pending pair until it's confirmed.
+  const [overpay, setOverpay] = useState<{ t: BankTxn; leg: Leg; amt: number; expects: number } | null>(null);
+
+  const closePicker = () => { setPicker(null); setTxns(null); setOverpay(null); };
 
   const openPicker = async (leg: Leg) => {
     setPicker(leg);
-    setCands(null);
+    setTxns(null);
     try {
-      const res = await api.unallocatedBankTxns(flow.id);
-      const list = leg.direction === "in" ? res.money_in : res.money_out;
-      const ranked = [...list].sort((a, b) => {
-        const ma = matches(a, leg, flow) ? 0 : 1;
-        const mb = matches(b, leg, flow) ? 0 : 1;
-        if (ma !== mb) return ma - mb;
-        return (b.posted_at || "").localeCompare(a.posted_at || "");
-      });
-      setCands(ranked);
+      setTxns(await api.listBankTxns());
     } catch (e: any) {
       toast(String(e), "error");
-      setCands([]);
+      setTxns([]);
     }
   };
 
-  const pair = async (t: UnallocatedTxn, leg: Leg, amount?: number) => {
+  // What this leg still expects — drives both the overpay confirmation and the
+  // "Overpaid" hint. 0 for legs with no expected figure (fees, supplier refunds).
+  const stillExpected = (leg: Leg) => {
+    if (!(leg.target > 0)) return 0;
+    const paired = allocs.filter((a) => a.role === leg.role).reduce((s, a) => s + a.amount, 0);
+    return Math.max(0, leg.target - paired);
+  };
+
+  const pair = (t: BankTxn, leg: Leg, amount?: number) => {
     if (busy) return;
     const amt = Math.min(amount ?? t.unallocated, t.unallocated);
     if (!(amt > 0.005)) { toast("Enter an amount to allocate.", "error"); return; }
+    const expects = stillExpected(leg);
+    if (leg.target > 0 && amt > expects + 0.005) { setOverpay({ t, leg, amt, expects }); return; }
+    void doPair(t, leg, amt);
+  };
+
+  const doPair = async (t: BankTxn, leg: Leg, amt: number) => {
     setBusy(true);
     try {
       // allow_split=true: part of this transaction can already be on another deal
       // (e.g. a $40k cash receipt split across two deals) — take only this deal's slice.
       await api.allocateBankTxn(t.id, flow.id, amt, leg.role, "", true);
-      setPicker(null);
-      setCands(null);
+      closePicker();
       await load();
       onChange?.();
     } catch (e: any) {
@@ -160,16 +175,14 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           leg={{ role: "buyer_payment", direction: "in", label: "Payment received", target: flow.invoice_total }}
           rows={buyer}
           picker={picker}
-          cands={cands}
           busy={busy}
           flow={flow}
           onOpen={openPicker}
-          onClose={() => { setPicker(null); setCands(null); }}
-          onPair={pair}
+          onClose={closePicker}
           onUnpair={unpair}
           pairLabel="Pair payment"
           manualOpen={manualLeg === "buyer_payment"}
-          onOpenManual={() => { setManualLeg("buyer_payment"); setPicker(null); setCands(null); }}
+          onOpenManual={() => { setManualLeg("buyer_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
           onAddManual={addManual}
         />
@@ -180,16 +193,14 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           leg={{ role: "supplier_payment", direction: "out", label: "Supplier paid", target: flow.total_supplier_cost }}
           rows={supplier}
           picker={picker}
-          cands={cands}
           busy={busy}
           flow={flow}
           onOpen={openPicker}
-          onClose={() => { setPicker(null); setCands(null); }}
-          onPair={pair}
+          onClose={closePicker}
           onUnpair={unpair}
           pairLabel="Pair supplier payment"
           manualOpen={manualLeg === "supplier_payment"}
-          onOpenManual={() => { setManualLeg("supplier_payment"); setPicker(null); setCands(null); }}
+          onOpenManual={() => { setManualLeg("supplier_payment"); closePicker(); }}
           onCloseManual={() => setManualLeg(null)}
           onAddManual={addManual}
         />
@@ -202,14 +213,14 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
               {feeSum > 0 && <span className="text-[13px] font-semibold text-danger-ink tabular-nums">−{fmtAmount(feeSum)}</span>}
               <ManualButton
                 active={manualLeg === "fee"}
-                onOpen={() => { setManualLeg("fee"); setPicker(null); setCands(null); }}
+                onOpen={() => { setManualLeg("fee"); closePicker(); }}
                 onClose={() => setManualLeg(null)}
               />
               <PairButton
                 active={picker?.role === "fee"}
                 label="Attach wire fee"
                 onOpen={() => openPicker({ role: "fee", direction: "out", label: "Wire fee", target: 0 })}
-                onClose={() => { setPicker(null); setCands(null); }}
+                onClose={closePicker}
               />
             </div>
           </div>
@@ -227,9 +238,6 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
               onCancel={() => setManualLeg(null)}
             />
           )}
-          {picker?.role === "fee" && (
-            <Picker leg={picker} cands={cands} busy={busy} flow={flow} onPair={pair} />
-          )}
         </div>
 
         {/* Supplier refund (money-in, optional, adds back to actual profit) — a lost /
@@ -241,14 +249,14 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
               {refundInSum > 0 && <span className="text-[13px] font-semibold text-success-ink tabular-nums">+{fmtAmount(refundInSum)}</span>}
               <ManualButton
                 active={manualLeg === "refund_in"}
-                onOpen={() => { setManualLeg("refund_in"); setPicker(null); setCands(null); }}
+                onOpen={() => { setManualLeg("refund_in"); closePicker(); }}
                 onClose={() => setManualLeg(null)}
               />
               <PairButton
                 active={picker?.role === "refund_in"}
                 label="Attach supplier refund"
                 onOpen={() => openPicker({ role: "refund_in", direction: "in", label: "Supplier refund", target: 0 })}
-                onClose={() => { setPicker(null); setCands(null); }}
+                onClose={closePicker}
               />
             </div>
           </div>
@@ -265,9 +273,6 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
               onAdd={addManual}
               onCancel={() => setManualLeg(null)}
             />
-          )}
-          {picker?.role === "refund_in" && (
-            <Picker leg={picker} cands={cands} busy={busy} flow={flow} onPair={pair} />
           )}
         </div>
       </div>
@@ -349,25 +354,44 @@ export default function ReconciliationPanel({ flow, onChange }: { flow: DealFlow
           </div>
         )}
       </div>
+
+      {picker && (
+        <TxnPickerModal
+          leg={picker}
+          txns={txns}
+          flow={flow}
+          busy={busy}
+          expects={stillExpected(picker)}
+          onClose={closePicker}
+          onPair={pair}
+        />
+      )}
+
+      {overpay && (
+        <OverpayConfirm
+          info={overpay}
+          busy={busy}
+          onCancel={() => setOverpay(null)}
+          onConfirm={() => { const o = overpay; setOverpay(null); void doPair(o.t, o.leg, o.amt); }}
+        />
+      )}
     </div>
   );
 }
 
 // ── One money leg: title, paired rows or empty state, inline picker ──
 function LegBlock({
-  title, leg, rows, picker, cands, busy, flow, onOpen, onClose, onPair, onUnpair, pairLabel,
+  title, leg, rows, picker, busy, flow, onOpen, onClose, onUnpair, pairLabel,
   manualOpen, onOpenManual, onCloseManual, onAddManual,
 }: {
   title: string;
   leg: Leg;
   rows: DealAllocation[];
   picker: Leg | null;
-  cands: UnallocatedTxn[] | null;
   busy: boolean;
   flow: DealFlow;
   onOpen: (leg: Leg) => void;
   onClose: () => void;
-  onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
   onUnpair: (id: string) => void;
   pairLabel: string;
   manualOpen: boolean;
@@ -379,6 +403,9 @@ function LegBlock({
   const sum = rows.reduce((s, a) => s + a.amount, 0);
   const complete = leg.target > 0 ? sum >= leg.target - 0.5 : paired;
   const partial = paired && !complete;
+  // More money linked than this leg expected. Allowed on purpose — a wire can be
+  // bigger than the invoice — but it moves recorded profit, so it is never silent.
+  const over = paired && leg.target > 0 && sum > leg.target + 0.5;
   const open = picker?.role === leg.role;
   return (
     <div className="px-4 py-3">
@@ -392,6 +419,11 @@ function LegBlock({
           {partial && leg.target > 0 && (
             <span className="text-[11px] text-warning-ink tabular-nums">
               Partially paired · {fmtAmount(sum)} of {fmtAmount(leg.target)}
+            </span>
+          )}
+          {over && (
+            <span className="text-[11px] text-warning-ink tabular-nums">
+              Overpaid · {fmtAmount(sum)} of {fmtAmount(leg.target)} expected · +{fmtAmount(sum - leg.target)}
             </span>
           )}
         </div>
@@ -414,17 +446,6 @@ function LegBlock({
           defaultWho={leg.direction === "in" ? (flow.client_name || "") : ""}
           onAdd={onAddManual}
           onCancel={onCloseManual}
-        />
-      )}
-
-      {open && (
-        <Picker
-          leg={leg}
-          cands={cands}
-          busy={busy}
-          flow={flow}
-          onPair={onPair}
-          capTo={leg.target > 0 ? Math.max(0, leg.target - sum) : undefined}
         />
       )}
     </div>
@@ -587,142 +608,322 @@ function PairButton({ active, label, onOpen, onClose }: { active: boolean; label
   );
 }
 
-// ── Candidate picker: unallocated txns of the right direction, matches ranked first ──
-function Picker({ leg, cands, busy, flow, onPair, capTo }: {
+// ── Full-screen transaction picker ────────────────────────────────────────
+// Every transaction of the leg's direction that still has money left to allocate,
+// read from the same `list_bank_txns` the Financials list uses, laid out the same
+// way (date · payee · category · account · amount). Nothing is hidden by default
+// except internal transfers and loan money — which never carry a deal allocation —
+// and a chip brings even those back.
+function TxnPickerModal({ leg, txns, flow, busy, expects, onClose, onPair }: {
   leg: Leg;
-  cands: UnallocatedTxn[] | null;
-  busy: boolean;
+  txns: BankTxn[] | null;
   flow: DealFlow;
-  onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
-  capTo?: number; // sensible default allocation (what this leg still needs)
+  busy: boolean;
+  expects: number; // what this leg still expects, 0 when it has no expected figure
+  onClose: () => void;
+  onPair: (t: BankTxn, leg: Leg, amount?: number) => void;
 }) {
   const [q, setQ] = useState("");
-  const query = q.trim().toLowerCase();
-  const num = query.replace(/[^0-9.]/g, "");
+  const [acct, setAcct] = useState("all");
+  const [sort, setSort] = useState<"newest" | "largest" | "closest">(leg.target > 0 ? "closest" : "newest");
+  const [nearOnly, setNearOnly] = useState(false);
+  const [showOther, setShowOther] = useState(false); // transfers + loan money
+  const [sel, setSel] = useState<BankTxn | null>(null);
+  const [amt, setAmt] = useState("");
 
-  // Default view is SMART: only transactions right around the expected price (within
-  // 25%, min $50, of the leg target) plus payer matches — so a supplier leg doesn't
-  // list every expense. Typing searches ALL unallocated txns by payer or amount.
-  const near = (t: UnallocatedTxn) =>
-    leg.target <= 0
-      ? true
-      : Math.abs(t.unallocated - leg.target) <= Math.max(leg.target * 0.25, 50) || matches(t, leg, flow);
+  // Loan money and internal transfers never get a deal allocation (money invariant
+  // 17), so they are noise here — but a miscategorised wire would be hidden with
+  // them, which is why the chip exists rather than a hard exclusion.
+  const isOther = (t: BankTxn) =>
+    t.category === "internal_transfer" || t.category === "loan_received" ||
+    t.category === "loan_repayment" || t.counterparty_type === "loan";
 
-  const shown = (cands ?? []).filter((t) => {
-    if (!query) return near(t);
-    const payer = `${t.counterparty_name || ""} ${t.description || ""}`.toLowerCase();
-    return payer.includes(query) || (num.length > 0 && (t.unallocated.toFixed(2).includes(num) || String(t.unallocated).includes(num)));
-  });
+  const pool = useMemo(
+    () => (txns ?? []).filter((t) => t.direction === leg.direction && t.unallocated > 0.005 && (showOther || !isOther(t))),
+    [txns, leg.direction, showOther],
+  );
+
+  const accounts = useMemo(
+    () => Array.from(new Set(pool.map((t) => t.account_id).filter(Boolean))).sort(),
+    [pool],
+  );
+
+  // Space-separated tokens, all of which must hit somewhere on the row — the same
+  // shape as the Financials search, so payee + amount + date narrow together.
+  const toks = q.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const hit = (t: BankTxn) => {
+    if (toks.length === 0) return true;
+    const hay = [
+      t.counterparty_name, t.description, t.account_id, t.category, t.wire_ref,
+      t.posted_at?.slice(0, 10), t.unallocated.toFixed(2), t.amount.toFixed(2),
+    ].join(" ").toLowerCase();
+    return toks.every((k) => hay.includes(k));
+  };
+
+  const shown = useMemo(() => {
+    const list = pool.filter((t) =>
+      (acct === "all" || t.account_id === acct) &&
+      (!nearOnly || leg.target <= 0 || Math.abs(t.unallocated - leg.target) <= Math.max(leg.target * 0.25, 50)) &&
+      hit(t));
+    const byDate = (a: BankTxn, b: BankTxn) => (b.posted_at || "").localeCompare(a.posted_at || "");
+    return [...list].sort((a, b) => {
+      if (sort === "largest") return b.unallocated - a.unallocated || byDate(a, b);
+      if (sort === "closest" && leg.target > 0) {
+        const d = Math.abs(a.unallocated - leg.target) - Math.abs(b.unallocated - leg.target);
+        if (Math.abs(d) > 0.005) return d;
+      }
+      return byDate(a, b);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool, acct, nearOnly, q, sort, leg.target]);
+
+  const pick = (t: BankTxn) => { setSel(t); setAmt(t.unallocated.toFixed(2)); };
+  const val = parseFloat(amt);
+  const invalid = !sel || !(val > 0.005) || val > sel.unallocated + 0.005;
+  const surplus = sel && leg.target > 0 ? val - expects : 0;
 
   return (
-    <div className="mt-2 border border-line rounded-lg overflow-hidden">
-      {cands === null ? (
-        <div className="px-3 py-3 text-[12px] text-muted">Loading transactions…</div>
-      ) : cands.length === 0 ? (
-        <div className="px-3 py-3 text-[12px] text-muted">
-          No unallocated {leg.direction === "in" ? "incoming" : "outgoing"} transactions to pair.
+    <div className="fixed inset-0 z-[90] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+
+      <div className="relative w-[94vw] max-w-[1100px] h-[90vh] flex flex-col rounded-2xl bg-surface border border-line shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 px-5 py-3.5 border-b border-line">
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-semibold text-ink truncate">{leg.label}</h3>
+            <div className="text-[12px] text-muted mt-0.5 truncate">
+              {flow.client_name || flow.name || "This deal"}
+              {leg.target > 0 && <> · expected {fmtAmount(leg.target)}{expects < leg.target - 0.005 && <> · {fmtAmount(expects)} still to pair</>}</>}
+              {" · showing money "}{leg.direction === "in" ? "in" : "out"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-ink hover:bg-surface-2 transition-colors flex-shrink-0"
+          >
+            <X size={16} />
+          </button>
         </div>
-      ) : (
-        <>
-          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-line-2 bg-surface-2/50">
+
+        {/* Filters */}
+        <div className="flex items-center gap-2 flex-wrap px-5 py-2.5 border-b border-line-2 bg-surface-2/40">
+          <div className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-line bg-surface flex-1 min-w-[220px]">
             <Search size={13} className="text-muted flex-shrink-0" />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder={leg.target > 0 ? `Near ${fmtAmount(leg.target)} — or search payee / amount` : "Search payee or amount"}
-              className="w-full bg-transparent text-[12px] text-ink placeholder:text-muted focus:outline-none"
+              autoFocus
+              placeholder="Search payee, amount, date, account"
+              className="w-full bg-transparent text-[12.5px] text-ink placeholder:text-muted focus:outline-none"
             />
           </div>
-          {shown.length === 0 ? (
-            <div className="px-3 py-3 text-[12px] text-muted">
-              {query ? "No transactions match your search." : `No transactions near ${fmtAmount(leg.target)} — type to search all.`}
+          {accounts.length > 1 && (
+            <select
+              value={acct}
+              onChange={(e) => setAcct(e.target.value)}
+              className="h-8 px-2 rounded-lg border border-line bg-surface text-[12px] text-ink-2 focus:outline-none max-w-[200px]"
+            >
+              <option value="all">All accounts</option>
+              {accounts.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          )}
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as any)}
+            className="h-8 px-2 rounded-lg border border-line bg-surface text-[12px] text-ink-2 focus:outline-none"
+          >
+            {leg.target > 0 && <option value="closest">Closest to expected</option>}
+            <option value="newest">Newest first</option>
+            <option value="largest">Largest first</option>
+          </select>
+          {leg.target > 0 && (
+            <Chip active={nearOnly} onClick={() => setNearOnly((v) => !v)} label={`Near ${fmtAmount(leg.target)}`} />
+          )}
+          <Chip active={showOther} onClick={() => setShowOther((v) => !v)} label="Transfers & loans" />
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto">
+          {txns === null ? (
+            <div className="px-5 py-6 text-[12.5px] text-muted">Loading transactions…</div>
+          ) : shown.length === 0 ? (
+            <div className="px-5 py-6 text-[12.5px] text-muted">
+              {pool.length === 0
+                ? `No ${leg.direction === "in" ? "incoming" : "outgoing"} transactions have money left to pair.`
+                : "No transactions match these filters."}
             </div>
           ) : (
-            <div className="max-h-72 overflow-y-auto divide-y divide-line-2">
-              {shown.map((t) => (
-                <PickerRow key={t.id} t={t} leg={leg} flow={flow} busy={busy} capTo={capTo} onPair={onPair} />
-              ))}
+            <table className="w-full text-[13px]">
+              <thead className="sticky top-0 bg-surface z-10">
+                <tr className="text-left border-b border-line">
+                  <th className="text-[11px] font-medium text-muted py-2 pl-5 pr-3 whitespace-nowrap">Date</th>
+                  <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
+                  <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
+                  <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Account</th>
+                  <th className="text-[11px] font-medium text-muted py-2 pr-5 text-right whitespace-nowrap">Free to pair</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((t) => {
+                  const payer = t.counterparty_name?.trim() || t.description?.trim() || "Bank transaction";
+                  const part = t.allocated > 0.005;
+                  const active = sel?.id === t.id;
+                  return (
+                    <tr
+                      key={t.id}
+                      onClick={() => pick(t)}
+                      className={`border-b border-line-2 cursor-pointer transition-colors ${active ? "bg-accent/10" : "hover:bg-surface-2"}`}
+                    >
+                      <td className="py-2 pl-5 pr-3 text-[12px] text-muted whitespace-nowrap tabular-nums">{fmtShortDate(t.posted_at)}</td>
+                      <td className="py-2 pr-3 min-w-0">
+                        <div className="text-[12.5px] text-ink truncate max-w-[380px] flex items-center gap-1.5">
+                          <span className="truncate">{payer}</span>
+                          {matches(t, leg, flow) && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
+                        </div>
+                        {t.description?.trim() && t.counterparty_name?.trim() && (
+                          <div className="text-[11px] text-muted truncate max-w-[380px]">{t.description}</div>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[140px]">{t.category || "—"}</td>
+                      <td className="py-2 pr-3 text-[11.5px] text-muted truncate max-w-[160px]">{t.account_id}</td>
+                      <td className="py-2 pr-5 text-right whitespace-nowrap">
+                        <div className={`text-[12.5px] font-semibold tabular-nums ${t.direction === "out" ? "text-danger-ink" : "text-success-ink"}`}>
+                          {t.direction === "out" ? "−" : ""}{fmtAmount(t.unallocated)}
+                        </div>
+                        {part && <div className="text-[11px] text-muted tabular-nums">of {fmtAmount(t.amount)}</div>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Selected transaction → amount → add */}
+        <div className="border-t border-line px-5 py-3 bg-surface-2/40">
+          {!sel ? (
+            <div className="text-[12px] text-muted">
+              {txns === null ? "" : `${shown.length} transaction${shown.length === 1 ? "" : "s"} — pick one to pair it with this deal.`}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="min-w-0 flex-1">
+                <div className="text-[12.5px] text-ink truncate">
+                  {sel.counterparty_name?.trim() || sel.description?.trim() || "Bank transaction"}
+                </div>
+                <div className="text-[11px] text-muted tabular-nums">
+                  {fmtShortDate(sel.posted_at)} · {fmtAmount(sel.unallocated)} free of {fmtAmount(sel.amount)}
+                </div>
+              </div>
+              {surplus > 0.005 && (
+                <span className="text-[11px] text-warning-ink tabular-nums">
+                  {fmtAmount(surplus)} more than this leg expects
+                </span>
+              )}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11.5px] text-muted">Allocate</span>
+                <div className="flex items-center h-8 px-2 rounded-lg border border-line bg-surface w-[140px]">
+                  <span className="text-[12px] text-muted">$</span>
+                  <input
+                    value={amt}
+                    onChange={(e) => setAmt(e.target.value.replace(/[^0-9.]/g, ""))}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !invalid && !busy) onPair(sel, leg, val); }}
+                    inputMode="decimal"
+                    className="w-full bg-transparent text-[12.5px] text-ink tabular-nums focus:outline-none ml-0.5"
+                  />
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={busy || invalid}
+                onClick={() => onPair(sel, leg, val)}
+                className="h-8 px-3.5 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12.5px] font-semibold disabled:opacity-40 transition-colors"
+              >
+                <Plus size={13} /> Add to deal
+              </button>
             </div>
           )}
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 }
 
-// ── One candidate row: shows the amount still free to allocate (across all deals),
-// the original total when part is already spent elsewhere, and an editable amount so
-// you can put just a slice of one transaction on this deal ($20k of a $40k receipt). ──
-function PickerRow({ t, leg, flow, busy, capTo, onPair }: {
-  t: UnallocatedTxn;
-  leg: Leg;
-  flow: DealFlow;
-  busy: boolean;
-  capTo?: number;
-  onPair: (t: UnallocatedTxn, leg: Leg, amount?: number) => void;
-}) {
-  const remaining = t.unallocated;
-  const original = t.original ?? t.amount;
-  const elsewhere = Math.max(0, (t.allocated ?? 0) - (t.mine ?? 0));
-  const splitOff = elsewhere > 0.005 || (t.mine ?? 0) > 0.005;
-  // Default to what this leg still needs, capped by what's free on the transaction.
-  const smart = capTo && capTo > 0.005 ? Math.min(remaining, capTo) : remaining;
-  const [amt, setAmt] = useState<string>(smart.toFixed(2));
-  const isMatch = matches(t, leg, flow);
-  const payer = t.counterparty_name?.trim() || t.description?.trim() || "Bank transaction";
-  const clr = t.direction === "out" ? "text-danger-ink" : "text-success-ink";
-  const sign = t.direction === "out" ? "−" : "";
-  const val = parseFloat(amt);
-  const invalid = !(val > 0.005) || val > remaining + 0.005;
-
+// ── Filter chip ──
+function Chip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
   return (
-    <div className="px-3 py-2.5">
-      <div className="flex items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="text-[12px] text-ink truncate flex items-center gap-1.5">
-            <span className="truncate">{payer}</span>
-            {isMatch && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
+    <button
+      type="button"
+      onClick={onClick}
+      className={`h-8 px-2.5 rounded-lg border text-[12px] font-medium transition-colors ${
+        active ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ── Confirm counting money above what the leg expected ────────────────────
+// Allocating more than the invoice is allowed, but recorded profit is derived from
+// what is linked — so the surplus lands straight in the deal's profit (or cost).
+// Jack asked for this to be a decision, not a side effect.
+function OverpayConfirm({ info, busy, onCancel, onConfirm }: {
+  info: { t: BankTxn; leg: Leg; amt: number; expects: number };
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { leg, amt, expects } = info;
+  const surplus = amt - expects;
+  const moneyIn = leg.direction === "in";
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onCancel} />
+      <div className="relative w-[92vw] max-w-[440px] rounded-2xl bg-surface border border-line shadow-2xl overflow-hidden">
+        <div className="px-5 py-4">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle size={15} className="text-warning-ink flex-shrink-0" />
+            <h3 className="text-[14px] font-semibold text-ink">
+              {moneyIn ? "Count the overpayment as profit?" : "Count the extra as cost?"}
+            </h3>
           </div>
-          <div className="text-[11px] text-muted tabular-nums">
-            {fmtShortDate(t.posted_at)}
-            {splitOff && (
-              <span> · {fmtAmount(remaining)} left of {fmtAmount(original)}</span>
-            )}
+          <div className="text-[12.5px] text-ink-2 leading-relaxed">
+            {fmtAmount(amt)} is <span className="font-semibold tabular-nums">{fmtAmount(surplus)}</span> more than this deal's{" "}
+            {leg.role === "buyer_payment" ? "invoice" : "expected supplier cost"} of {fmtAmount(leg.target)}
+            {expects < leg.target - 0.005 && <> ({fmtAmount(expects)} still unpaired)</>}.
+          </div>
+          <div className="text-[12.5px] text-ink-2 leading-relaxed mt-2">
+            Add it all and this deal's recorded profit {moneyIn ? "goes up" : "goes down"} by{" "}
+            <span className="font-semibold tabular-nums">{fmtAmount(surplus)}</span>.
           </div>
         </div>
-        <span className={`text-[12px] font-semibold tabular-nums ${clr} flex-shrink-0`}>{sign}{fmtAmount(remaining)}</span>
-      </div>
-      <div className="flex items-center gap-2 mt-2">
-        <div className="flex items-center gap-1 flex-1 min-w-0">
-          <span className="text-[11px] text-muted flex-shrink-0">Allocate</span>
-          <div className="flex items-center h-7 px-2 rounded-lg border border-line bg-surface-2 flex-1 min-w-0 max-w-[160px]">
-            <span className="text-[12px] text-muted">$</span>
-            <input
-              value={amt}
-              onChange={(e) => setAmt(e.target.value.replace(/[^0-9.]/g, ""))}
-              inputMode="decimal"
-              className="w-full bg-transparent text-[12px] text-ink tabular-nums focus:outline-none ml-0.5"
-            />
-          </div>
-          {remaining - val > 0.005 && !invalid && (
-            <span className="text-[11px] text-muted tabular-nums flex-shrink-0">{fmtAmount(remaining - val)} left after</span>
-          )}
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-surface-2/40">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-8 px-3 rounded-lg border border-line text-[12.5px] text-muted hover:text-ink-2 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onConfirm}
+            className="h-8 px-3.5 rounded-lg bg-accent text-on-accent text-[12.5px] font-semibold disabled:opacity-40 transition-colors"
+          >
+            Yes, add the full {fmtAmount(amt)}
+          </button>
         </div>
-        <button
-          type="button"
-          disabled={busy || invalid}
-          onClick={() => onPair(t, leg, val)}
-          className="h-7 px-3 flex items-center gap-1 rounded-lg bg-accent text-on-accent text-[12px] font-semibold disabled:opacity-40 transition-colors flex-shrink-0"
-        >
-          <Plus size={12} /> Add
-        </button>
       </div>
     </div>
   );
 }
 
 // Match hint: same buyer name, or amount ≈ the expected leg amount.
-function matches(t: UnallocatedTxn, leg: Leg, flow: DealFlow): boolean {
+function matches(t: BankTxn, leg: Leg, flow: DealFlow): boolean {
   const cp = (t.counterparty_name || "").trim().toLowerCase();
   const name = (flow.client_name || "").toLowerCase();
   const byName = cp.length > 2 && name.length > 0 && (name.includes(cp) || cp.includes(name));

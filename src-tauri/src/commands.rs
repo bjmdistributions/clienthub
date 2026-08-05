@@ -814,6 +814,28 @@ pub async fn resolve_approval_request(id: String, approve: bool) -> Result<(), S
                 archive_source_email_for_client(eid).await;
             }
             ("client_add", false) | ("client_delete", true) => delete_client_row(eid)?,
+            // "Mark sold" on a stale storefront listing. The button in Notifications
+            // is labelled exactly that, but this arm did not exist — the request was
+            // resolved and the LOT WAS NEVER TOUCHED, so sold stock stayed `available`
+            // and therefore stayed on the public storefront and the website. 37
+            // rejections had produced 2 sold lots. The scheduler re-flags the lot every
+            // two days, so it came back and marking it sold failed again, forever.
+            // Mirrors the server's `set_lot_sold` (clienthub-api approvals.rs) so both
+            // surfaces do the same thing.
+            ("listing_stale", false) => {
+                let now = Utc::now().to_rfc3339();
+                {
+                    let conn = pool().get().map_err(|e| e.to_string())?;
+                    conn.execute(
+                        "UPDATE inventory SET status='sold', updated_at=?1 WHERE id=?2",
+                        rusqlite::params![now, eid],
+                    ).map_err(|e| e.to_string())?;
+                }
+                let mut cols = Map::new();
+                cols.insert("status".into(), Value::String("sold".into()));
+                cols.insert("updated_at".into(), Value::String(now));
+                sync::record_upsert("inventory", eid, cols).map_err(|e| e.to_string())?;
+            }
             _ => {}
         }
     }
@@ -4249,10 +4271,17 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
     let split = read_profit_split()?;
     let include_payout = payout_included.unwrap_or(false);
 
-    // Use caller-supplied date (YYYY-MM-DD) if provided; otherwise use now.
+    // Use caller-supplied date (YYYY-MM-DD) if provided; otherwise the day the buyer's
+    // payment actually landed — the deal closed when the money came in, not when it was
+    // keyed in. Only falls back to today when the deal has no payment date at all.
     let now = match completed_date.as_deref() {
         Some(d) if !d.is_empty() => format!("{}T00:00:00Z", d),
-        _ => Utc::now().to_rfc3339(),
+        _ => {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            buyer_bank_paid_date(&conn, &id)
+                .or_else(|| df.payment_received_at.clone().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| Utc::now().to_rfc3339())
+        }
     };
     // Bank actuals win: if the deal has linked bank transactions, its recorded
     // revenue / cost / profit come from those real transactions (per money leg),
@@ -4416,6 +4445,24 @@ fn bank_snapshot_value(conn: &rusqlite::Connection, deal_flow_id: &str) -> Value
     Value::Array(out)
 }
 
+/// When the BUYER's money actually landed, per the bank — the date a deal counts as
+/// closed. The LAST linked buyer payment, so a deal taken on a deposit closes when the
+/// balance arrives, not when the deposit did.
+///
+/// `None` when no buyer payment is linked, and callers must decide what to do with that
+/// rather than reaching for `payment_received_at`: that column is only a date somebody
+/// typed, and it defaults to the moment the payment step was recorded. Good enough to
+/// pre-fill a form; not good enough to move a deal already on the books into a different
+/// month. (Two live deals, $20,500 each, carry a `payment_received_at` of the evening
+/// they were keyed in — using it would have shifted $41k from July into August.)
+fn buyer_bank_paid_date(conn: &rusqlite::Connection, deal_flow_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT MAX(bt.posted_at) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
+         WHERE a.deal_flow_id=?1 AND a.role='buyer_payment' AND COALESCE(bt.posted_at,'') != ''",
+        [deal_flow_id], |r| r.get::<_, Option<String>>(0),
+    ).ok().flatten()
+}
+
 /// Re-derive a COMPLETED deal's recorded revenue / cost / profit from bank
 /// actuals (bank-precedence) and persist to deal_flows + invoices, preserving
 /// the deal's existing payout-split choice. No-op unless the deal is complete.
@@ -4429,21 +4476,21 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
     let df = read_df(id)?;
     if df.stage != "complete" { return Ok(()); }
 
-    let (gross, total_cost, net, _has_bank, snapshot, supplier_date) = {
+    let (gross, total_cost, net, _has_bank, snapshot, closed_date) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         // Fallback = already-recorded gross/cost (the completion snapshot), so a
         // vanished bank link keeps what's on the books instead of zeroing it.
         let (g, c, n, hb) = deal_bank_actuals(&conn, id, df.gross_revenue, df.total_cost);
-        // When the supplier was paid via a linked bank transaction, THAT date is when
-        // the deal actually finalized — use it as the completion date so weekly /
-        // financial breakdowns reflect what really happened and when (not the day it
-        // was entered). Only overrides when we actually have that date.
-        let sup_date: Option<String> = conn.query_row(
-            "SELECT MAX(bt.posted_at) FROM bank_allocation a JOIN bank_txn bt ON bt.id=a.bank_txn_id
-             WHERE a.deal_flow_id=?1 AND a.role='supplier_payment' AND COALESCE(bt.posted_at,'') != ''",
-            [id], |r| r.get::<_, Option<String>>(0),
-        ).ok().flatten();
-        (g, c, n, hb, bank_snapshot_value(&conn, id), sup_date)
+        // The deal closed the day the BUYER's money landed — not the day it was keyed in,
+        // and not (as this used to read) the day the SUPPLIER was paid. Only a real bank
+        // date rewrites a deal already on the books; one with no buyer payment linked keeps
+        // the date it has, and corrects itself the moment that payment is linked.
+        let closed = buyer_bank_paid_date(&conn, id).or_else(|| {
+            if df.completed_at.as_deref().unwrap_or("").is_empty() {
+                df.payment_received_at.clone().filter(|s| !s.is_empty())
+            } else { None }
+        });
+        (g, c, n, hb, bank_snapshot_value(&conn, id), closed)
     };
 
     let split = read_profit_split()?;
@@ -4470,7 +4517,7 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
     cols.insert("profit_business".into(), json!(business));
     cols.insert("metadata".into(), json!(meta_json));
     cols.insert("updated_at".into(), json!(now.clone()));
-    if let Some(d) = &supplier_date { cols.insert("completed_at".into(), json!(d)); }
+    if let Some(d) = &closed_date { cols.insert("completed_at".into(), json!(d)); }
     sync::record_upsert("deal_flows", id, cols).map_err(|e| e.to_string())?;
 
     let mut inv_cols = Map::new();
@@ -4484,7 +4531,7 @@ fn resync_completed_deal(id: &str) -> Result<(), String> {
         "UPDATE deal_flows SET gross_revenue=?1, total_cost=?2, net_profit=?3, profit_jack=?4, profit_ben=?5, profit_business=?6, metadata=?7, updated_at=?8 WHERE id=?9",
         rusqlite::params![gross, total_cost, net, jack, ben, business, meta_json, now, id],
     ).map_err(|e| e.to_string())?;
-    if let Some(d) = &supplier_date {
+    if let Some(d) = &closed_date {
         conn.execute("UPDATE deal_flows SET completed_at=?1 WHERE id=?2", rusqlite::params![d, id]).ok();
     }
     conn.execute(

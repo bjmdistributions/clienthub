@@ -1,6 +1,8 @@
 # Inventory / storefront audit — 2026-08-04
 
-**Status: diagnosis only. No code has been changed. No deploy has been made.**
+**Status (2026-08-05): the INV-1 fix is written and compiles but is NOT committed** — see §7.
+Everything else below is still diagnosis only. The INV-2 backfill (8 lots live on the store that
+Jack marked sold) has not been done.
 
 Trigger: Jack — *"when i mark stuff as sold, its still showing up in the live store. The whole
 inventory system seems flawed and i need a diagnosis of the whole operation from ecliptr to the
@@ -42,7 +44,7 @@ Severity: **P1** = live commercial impact today · **P2** = real defect, no acti
 
 | id | Severity | Finding | Status |
 |---|---|---|---|
-| INV-1 | **P1** | Desktop "Mark sold" on a stale storefront listing is a no-op on the lot | Confirmed, unfixed |
+| INV-1 | **P1** | Desktop "Mark sold" on a stale storefront listing is a no-op on the lot | **Fixed, written 2026-08-05 — uncommitted** |
 | INV-2 | **P1** | 8 lots Jack marked sold are still live on the store and the website right now | Confirmed, unfixed |
 | INV-3 | **P1** | Nothing links a sale to a lot — the auto-mark-sold path is unreachable | Confirmed, unfixed |
 | INV-4 | P2 | Mobile does the right thing but calls it "Reject" and renders a client form | Confirmed, unfixed |
@@ -316,6 +318,7 @@ Do **not** diagnose from the local Windows `clienthub.db` — see the last row o
 
 | when | who | what |
 |---|---|---|
+| 2026-08-05 | Claude (session 1) | Wrote the INV-1 fix: a `("listing_stale", false)` arm in `resolve_approval_request` mirroring the server's `set_lot_sold` (writes `status='sold'` + `updated_at` and records the oplog upsert). Compiles clean. **NOT committed** — `commands.rs` was mid-edit by a concurrent session, and sweeping another session's in-flight work into a release is exactly what caused the paste-a-load regression. Commit it the moment that file is free. INV-2 backfill still outstanding: 8 lots. |
 | 2026-08-04 | Claude (session 1) | Traced desktop → server → storefront → website. Found INV-1…INV-8. Ruled out §3. **No code changed, nothing deployed.** Logged R-014 in `requests/00-REQUESTS.md`. |
 
 **If you are the next agent:** append your findings as `INV-9`+ with the same

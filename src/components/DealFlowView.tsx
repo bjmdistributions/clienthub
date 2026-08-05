@@ -54,7 +54,8 @@ export default function DealFlowView() {
   const [recon, setRecon] = useState<Record<string, { payment_received_paired: boolean; supplier_paid_paired: boolean; fully_reconciled: boolean; has_payment: boolean; has_financials: boolean; no_buyer_link: boolean; no_supplier_link: boolean; needs_financials: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean }>>({});
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
-  const [refundsOpen, setRefundsOpen] = useState(false);
+  // Open by default — refunds are money owed back, not an archive to go looking for.
+  const [refundsOpen, setRefundsOpen] = useState(true);
   const [showDoneRefunds, setShowDoneRefunds] = useState(false);
   const [expandedRefund, setExpandedRefund] = useState<string | null>(null);
 
@@ -162,10 +163,20 @@ export default function DealFlowView() {
   // Refunds section: everything with refund activity, most-owed first — active refunds
   // AND fully-refunded ones (so a fully-refunded deal stays here, not in the pipeline),
   // until it's marked "fully done". "Show done" reveals the closed-out ones.
-  const refundFlows = flows
-    .filter((f) => refundMap[f.id] && (showDoneRefunds || !refundMap[f.id].done))
+  //
+  // "Done" means done AND nothing left owed. The flag was written once and never
+  // re-checked against the numbers, so a refund closed out while it looked settled —
+  // then given a higher refund_owed, or whose refund payment later vanished — stopped
+  // being anyone's problem while money was still owed. It comes back to the open list.
+  const isRefundDone = (id: string) => !!refundMap[id]?.done && refundMap[id].remaining <= 0.01;
+  // The whole drawer is keyed off every refunded deal, never the filtered list: "Show
+  // done" lives INSIDE it, so gating on the filtered list meant closing out the last
+  // open refund deleted the only way back to any of them.
+  const refundAll   = flows.filter((f) => refundMap[f.id]);
+  const refundFlows = refundAll
+    .filter((f) => showDoneRefunds || !isRefundDone(f.id))
     .sort((a, b) => refundMap[b.id].remaining - refundMap[a.id].remaining);
-  const doneRefundCount = flows.filter((f) => refundMap[f.id]?.done).length;
+  const doneRefundCount = refundAll.filter((f) => isRefundDone(f.id)).length;
 
   // Skeleton mirrors the real layout (header, search, deal cards) — and only on
   // first load, so refreshes after an action don't blank the whole view.
@@ -309,7 +320,7 @@ export default function DealFlowView() {
       )}
 
       {/* ── Refunds drawer ──────────────────────────────────────────────── */}
-      {refundFlows.length > 0 && (
+      {refundAll.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           {/* Drawer header */}
           <div className="w-full flex items-center justify-between px-5 py-3.5">
@@ -334,12 +345,20 @@ export default function DealFlowView() {
           {/* Drawer body */}
           {refundsOpen && (
             <div className="border-t border-line divide-y divide-line-2">
+              {refundFlows.length === 0 && (
+                <div className="px-5 py-6 text-[12.5px] text-muted">
+                  Every refund is closed out. Show done to see them.
+                </div>
+              )}
               {refundFlows.map((flow) => {
                 const r = refundMap[flow.id];
                 const isExp = expandedRefund === flow.id;
                 const fullyRefunded = r.remaining <= 0.01;
+                const done = isRefundDone(flow.id);
+                // Marked done, but the numbers moved since — say so instead of hiding it.
+                const staleDone = r.done && !fullyRefunded;
                 return (
-                  <div key={flow.id} className={r.done ? "opacity-60" : ""}>
+                  <div key={flow.id} className={done ? "opacity-60" : ""}>
                     <button
                       onClick={() => setExpandedRefund(isExp ? null : flow.id)}
                       className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-surface-2/40 cursor-pointer transition-colors"
@@ -347,6 +366,11 @@ export default function DealFlowView() {
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] font-medium text-ink truncate">{flow.client_name || "—"}</div>
                         <div className="text-[11px] text-muted mt-0.5 truncate">{flow.invoice_number || "—"}</div>
+                        {staleDone && (
+                          <div className="text-[11px] text-warning-ink mt-1 inline-flex items-center gap-1">
+                            <AlertTriangle size={11} /> Was marked fully done, but {fmtAmount(r.remaining)} is still owed
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-5 flex-shrink-0">
                         <Stat label="Owed" value={fmtAmount(r.refund_owed)} />
@@ -360,7 +384,7 @@ export default function DealFlowView() {
                           )}
                         </div>
                         {/* Mark fully done / reopen — only once there's nothing left owed */}
-                        {fullyRefunded && (r.done ? (
+                        {fullyRefunded && (done ? (
                           <span className="inline-flex items-center gap-1.5 flex-shrink-0">
                             <span className="text-[10.5px] font-semibold text-success-ink inline-flex items-center gap-1"><CheckCircle2 size={11} /> Done</span>
                             <span role="button" tabIndex={0}
@@ -1423,13 +1447,15 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
   useEffect(() => { api.getPayoutSplit().then(setRecipients).catch(() => {}); }, []);
   useEffect(() => { api.dealReconciliation(flow.id).then(setRecon).catch(() => {}); }, [flow.id, flow.stage]);
-  // Default the completion date to when the supplier was actually paid (bank date),
-  // so backdated / backlogged deals land on the real finalization date.
+  // Default the completion date to when the BUYER's payment actually landed (bank
+  // date of the last buyer leg), falling back to the recorded payment date — a deal
+  // closed on the day the money came in, so backdated / backlogged deals land right.
   useEffect(() => {
     if (flow.stage === "complete") return;
     api.dealAllocations(flow.id).then((allocs) => {
-      const sup = allocs.filter((a) => a.role === "supplier_payment" && a.posted_at).map((a) => a.posted_at as string).sort();
-      if (sup.length) setCompletedDate(sup[sup.length - 1].slice(0, 10));
+      const paid = allocs.filter((a) => a.role === "buyer_payment" && a.posted_at).map((a) => a.posted_at as string).sort();
+      if (paid.length) setCompletedDate(paid[paid.length - 1].slice(0, 10));
+      else if (flow.payment_received_at) setCompletedDate(flow.payment_received_at.slice(0, 10));
     }).catch(() => {});
   }, [flow.id, flow.stage]);
 
