@@ -123,6 +123,7 @@ export default function InventoryView() {
   const [prefill, setPrefill] = useState<Partial<Lot> | null>(null);
   const [prefillQueue, setPrefillQueue] = useState<Partial<Lot>[]>([]); // remaining pasted loads to step through
   const [prefillSeq, setPrefillSeq] = useState(0);                       // bumps to remount LotForm per queued load
+  const [prefillTotal, setPrefillTotal] = useState(0);                   // how many loads this paste produced, for "load 2 of 5"
   const [pasting, setPasting] = useState(false);
   const [blastLot, setBlastLot] = useState<Lot | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -680,13 +681,16 @@ export default function InventoryView() {
           // Step to the next pasted load, if any, in a freshly-prefilled form.
           if (prefillQueue.length > 0) {
             setPrefill(prefillQueue[0]); setPrefillQueue(prefillQueue.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true);
-          } else { setPrefill(null); }
+          } else { setPrefill(null); setPrefillTotal(0); }
         }}
+        // Position in the pasted batch, so the form can say which load this is.
+        pasteIndex={prefillTotal > 0 ? prefillTotal - prefillQueue.length : 0}
+        pasteTotal={prefillTotal}
         deals={deals} suppliers={suppliers} categories={categoryOptions} mediaBase={mediaBase} lots={lots} />}
 
       {pasting && <PasteLoadModal
         onClose={() => setPasting(false)}
-        onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillSeq((s) => s + 1); setShowForm(true); }}
+        onParsed={(pfs) => { setPasting(false); setEditing(null); setPrefill(pfs[0] ?? null); setPrefillQueue(pfs.slice(1)); setPrefillTotal(pfs.length); setPrefillSeq((s) => s + 1); setShowForm(true); }}
       />}
 
       {blastLot && <BlastLoadModal lot={blastLot} onClose={() => setBlastLot(null)} onSent={() => { setBlastLot(null); load(); }} />}
@@ -1347,7 +1351,7 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
   );
 }
 
-function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[] }) {
+function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, lots, pasteIndex = 0, pasteTotal = 0 }: { initial?: Lot | null; prefill?: Partial<Lot> | null; onClose: () => void; deals: Deal[]; suppliers: string[]; categories: string[]; mediaBase: string; lots: Lot[]; pasteIndex?: number; pasteTotal?: number }) {
   const [name, setName] = useState(initial?.name ?? prefill?.name ?? "");
   const [desc, setDesc] = useState(initial?.description ?? prefill?.description ?? "");
   const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
@@ -1599,8 +1603,23 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
         <div className="border-b border-line flex-shrink-0">
           <div className="max-w-[860px] mx-auto w-full flex justify-between items-center gap-3 px-6 py-3.5">
             <div className="min-w-0">
-              <h3 className="text-[15px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
-              <p className="text-[11.5px] text-muted mt-0.5">{initial ? "Update this inventory lot." : "Add a lot to your inventory — only a name is required."}</p>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <h3 className="text-[15px] font-semibold text-ink">{initial ? "Edit lot" : "New lot"}</h3>
+                {/* Stepping through a pasted batch: say which load this is, so a long
+                    paste never leaves you guessing how many are still to come. */}
+                {!initial && pasteTotal > 0 && (
+                  <span className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">
+                    {pasteTotal > 1 ? `Pasted load ${pasteIndex} of ${pasteTotal}` : "From a pasted load"}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11.5px] text-muted mt-0.5">
+                {initial
+                  ? "Update this inventory lot."
+                  : pasteTotal > 0
+                    ? `Filled in from the text you pasted — check it before saving.${pasteTotal > 1 ? " Saving opens the next one." : ""}`
+                    : "Add a lot to your inventory — only a name is required."}
+              </p>
             </div>
             <button onClick={requestClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"><X size={16} /></button>
           </div>
