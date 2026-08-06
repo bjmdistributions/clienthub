@@ -210,6 +210,32 @@ reports 114 sites, nearly all false positives — the real count was 12.*
 
 ---
 
+## ROUND 5 — the section-D UI work, 2026-08-05 (committed, unreleased)
+
+Deferred through four rounds of money fixes; Jack called it out. Four independent design
+passes + a conflict pass over their edit sets, applied in the prescribed order with a
+type-check after each. 24 edits, no rewrite.
+
+| D# | Fixed |
+|---|---|
+| D1 | **Setup no longer owns the top of the screen.** API-key form (password field included), backup card, import controls, AI categorizer and cleanup tools now sit behind one "Setup and tools" disclosure, closed by default once a bank is connected or any transaction exists. Record cash stays always-visible — it is a daily action. Nothing became unreachable. |
+| D10 | **The match chip: an obvious wire is now 1 click, not 8.** The +100 payer / +60 amount scoring already existed and was rendered as the muted word "match". A confident single match now names the deal, says why it matched, and carries a "Tie it" button that allocates the remaining amount with the role inferred from direction. Suppressed on expanded rows, on anything already allocated, and whenever the match is not confident. |
+| D3 | **Payee rename is inline**, not `window.prompt()` behind a hover-only pencil that did not exist on touch. Enter/blur commits, Escape cancels; blank or unchanged is a no-op. |
+| D6 | **Table stopped scrolling sideways.** Account column dropped (near-constant, and the reason 860px was forced) and moved into the allocation panel header; `min-w` now 560px. Column set verified consistent — expanded panel and chip row both span 8. |
+| D11 | **Allocation panel state no longer bleeds between rows.** Opening a different transaction used to inherit the previous row's amount, deal, role and split flag — the most dangerous carry-over on a money screen. |
+| D9 | Uppercase kickers removed (absolute design-rule violation, live in the dedupe dialog). |
+| D4 | `errText()` applied to all 30 toast sites — no more raw Rust strings, and never an empty toast. |
+| D3b | Two confirms now state their consequence (disconnecting stops the live feed; a bulk delete cannot be undone from the app). |
+
+**Still open in section D:** the true four-surface rebuild (To book / Ledger / Cash / Setup)
+— the disclosure achieves the daily-use effect, but the full split is a rewrite of the screen
+and deserves its own deliberate piece of work. Also: modals still lack Escape/focus-trap and
+are not portals (D13); the four near-identical sync buttons are unconsolidated (D5); three
+dead Plaid API bindings remain in `api.ts` (D12, pre-existing dead code — flagged, not
+deleted).
+
+---
+
 ## TL;DR — why each complaint happens
 
 | Complaint | Verdict | Root cause |
