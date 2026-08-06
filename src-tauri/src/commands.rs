@@ -13980,6 +13980,22 @@ pub struct NewsletterSendError {
     pub error: String,
 }
 
+/// `send_newsletter` flips a row to 'sending' and only back to 'sent' once its
+/// in-process loop finishes. Quit the app (or sleep the machine) mid-send and the
+/// row is stranded at 'sending' forever: the composer renders it as "still
+/// working…" with no cancel, and every list that HAS a delete button shows only
+/// 'draft' or 'sent' rows — so it can never be cleared from the UI. At startup any
+/// such row is orphaned by definition (no send loop can predate the app booting),
+/// so retire it with the counts it actually reached. `sent_at` falls back to
+/// `created_at` because the send happened then, not now.
+pub fn reap_stale_sending_newsletters() -> Result<usize, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE newsletters SET status='sent', sent_at=COALESCE(sent_at, created_at) WHERE status='sending'",
+        [],
+    ).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn list_newsletters() -> Result<Vec<Newsletter>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;

@@ -316,6 +316,13 @@ fn main() {
             // account). Everything that logs runs after this point.
             init_logging(db::app_data_dir());
             expect_startup("Signup rules table", signup_rules::ensure_table());
+            // A newsletter left at 'sending' by a quit/crash mid-send otherwise
+            // shows "still working…" forever with no way to dismiss it.
+            match commands::reap_stale_sending_newsletters() {
+                Ok(n) if n > 0 => tracing::info!("retired {} stranded 'sending' newsletter(s)", n),
+                Err(e) => tracing::warn!("newsletter reap failed: {}", e),
+                _ => {}
+            }
             // Unified RBAC tables + system roles (synced with the server).
             if let Err(e) = employees::ensure_rbac() {
                 tracing::warn!("rbac init failed: {}", e);
