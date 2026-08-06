@@ -128,6 +128,47 @@ const dealMatchesTxn = (d: DealFlow, txn: { counterparty_name?: string | null; a
   return byName || byAmount;
 };
 
+// The one obvious deal for a transaction — same signals the deal picker ranks by
+// (payer name, exact invoice amount), but only surfaced when EXACTLY ONE deal in the
+// pool carries them. Two deals for the same amount, or a repeat buyer with several
+// open deals, means the answer isn't obvious, so the row says nothing rather than
+// guessing loudly. Pass survivorDeals(deals) — never the raw list — so a suggestion
+// can't land on a duplicate deal_flow row the deal view hides.
+const CONFIDENT_SCORE = 60;
+const confidentMatch = (t: BankTxn, pool: DealFlow[]): { deal: DealFlow; reason: string } | null => {
+  // Loan-tagged rows aren't deals; anything already tied (in part or in full) is a
+  // deliberate allocation and must not be second-guessed by a one-click button.
+  if (t.counterparty_type === "loan") return null;
+  if (t.allocated > 0.0001) return null;
+  if (!(t.unallocated > 0.0001)) return null;
+  const cp = (t.counterparty_name || "").trim().toLowerCase();
+  const hits: { d: DealFlow; score: number }[] = [];
+  for (const d of pool) {
+    let score = 0;
+    if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
+    if (t.amount && d.invoice_total && Math.abs(d.invoice_total - t.amount) < 0.5) score += 60;
+    if (score >= CONFIDENT_SCORE) hits.push({ d, score });
+  }
+  if (hits.length !== 1) return null;
+  const { d, score } = hits[0];
+  return {
+    deal: d,
+    reason:
+      score >= 160 ? "payer name and exact amount match"
+      : score >= 100 ? "payer name matches"
+      : "exact amount match",
+  };
+};
+
+// "#0041 · Costco pallets" — invoice first, then who the deal is with. Falls back to
+// one or the other when the deal carries no name beyond its invoice number.
+const matchLabel = (d: DealFlow) => {
+  const inv = d.invoice_number ? `#${d.invoice_number}` : "";
+  const name = dealLabel(d);
+  if (!inv) return name;
+  return name === `Invoice #${d.invoice_number}` ? inv : `${inv} · ${name}`;
+};
+
 // A rich, scannable deal row: buyer · date · amount · completed/open — used by both
 // the allocate picker and the bulk-tag modal so they stay identical.
 function DealRowContent({ d, match }: { d: DealFlow; match?: boolean }) {
@@ -235,6 +276,9 @@ export default function FinancialsView() {
   const [plaidTesting, setPlaidTesting]     = useState(false);
   const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
   const [bankFeedOpen, setBankFeedOpen]     = useState(false); // collapse the whole feed panel once connected
+  // Connecting a bank, importing a statement and cleaning up are once-in-a-while
+  // jobs; booking money is the daily one — so they all fold behind one disclosure.
+  const [toolsOpen, setToolsOpen]           = useState(false);
   // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
   // take ~a minute) — keep re-syncing in the background until transactions land.
   const [plaidPreparing, setPlaidPreparing] = useState(false);
@@ -271,6 +315,14 @@ export default function FinancialsView() {
   const [searchIn, setSearchIn]       = useState("");
   const [searchOut, setSearchOut]     = useState("");
   const [untaggedOpen, setUntaggedOpen] = useState(false);
+
+  // Inline payee rename. Plaid mislabels transfers constantly (a Zelle to a person
+  // shows as a store), so the fix lives in the row itself — the old prompt() sat
+  // behind a hover-only pencil and so didn't exist on touch at all.
+  const [payeeEditId, setPayeeEditId] = useState<string | null>(null);
+  const [payeeDraft, setPayeeDraft]   = useState("");
+  // Escape blurs the input, and blur commits — this flag tells the two apart.
+  const payeeCancelRef = useRef(false);
 
   // Smart grouping suggestions — dismissed groups (payee|dir keys) + per-group
   // category overrides for the session.
@@ -321,6 +373,8 @@ export default function FinancialsView() {
   const [role, setRole]               = useState("buyer_payment");
   const [note, setNote]               = useState("");
   const [allocBusy, setAllocBusy]     = useState(false);
+  // Which row's one-click "Tie it" is in flight (id, not a bool, so only that row spins).
+  const [tyingId, setTyingId]         = useState<string | null>(null);
   // Split mode: allow one transaction to be divided across multiple deals (partial
   // amounts, leg by leg). The backend keeps the running total <= the txn amount.
   const [allowSplit, setAllowSplit]   = useState(false);
@@ -702,7 +756,9 @@ export default function FinancialsView() {
   };
 
   const disconnectBank = async (item: PlaidItem) => {
-    if (!confirm(`Disconnect ${item.institution}? Its imported transactions stay in the list.`)) return;
+    if (!confirm(
+      `Disconnect ${item.institution}?\n\nThe live feed from this bank stops. Transactions already imported stay in the list — nothing is deleted — but to start pulling again you'd have to link the bank from scratch.`
+    )) return;
     try {
       await api.plaidRemoveItem(item.id);
       toast("Bank disconnected");
@@ -716,12 +772,22 @@ export default function FinancialsView() {
   };
 
   // Open/close a row's allocation panel.
+  //
+  // This is the ONLY place openId changes, so it is also where the panel is reset.
+  // Every field has to be cleared here or it bleeds into the next row: split mode
+  // left on re-primes the amount for a different deal, and stale allocs render
+  // under the new transaction whenever its fetch fails (the catch below clears
+  // allocLoading but would otherwise leave the previous row's list on screen).
+  // A useEffect on [openId] cannot do this — it runs after the commit and would
+  // wipe the amount and role prefilled just below.
   const toggleRow = (t: BankTxn) => {
     if (openId === t.id) { setOpenId(null); return; }
     setOpenId(t.id);
     setTargetType("deal");
     setDealQuery(""); setSelectedDeal(null); setDealListOpen(false); setNote("");
     setLoanQuery(""); setSelectedLoan(null); setLoanListOpen(false);
+    setAllowSplit(false);
+    setAllocs([]);
     setRole(t.direction === "out" ? "supplier_payment" : "buyer_payment");
     setAmountStr(String(t.unallocated));
     setAllocLoading(true);
@@ -865,6 +931,17 @@ export default function FinancialsView() {
     } catch (e: any) { toast(errText(e), "error"); }
   };
 
+  // Enter and blur both land here; Escape sets payeeCancelRef first so the blur it
+  // causes closes the editor without writing. An empty or unchanged name is a no-op
+  // (clearing the payee is not what a blank box means).
+  const commitPayeeEdit = (t: BankTxn, raw: string) => {
+    setPayeeEditId(null);
+    if (payeeCancelRef.current) { payeeCancelRef.current = false; return; }
+    const next = raw.trim();
+    if (!next || next === (t.counterparty_name || "").trim()) return;
+    saveReview(t, { counterparty_name: next });
+  };
+
   const submitAlloc = async () => {
     if (!openId) return;
     if (targetType === "loan") {
@@ -891,6 +968,24 @@ export default function FinancialsView() {
       await refreshAll(true);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setAllocBusy(false); }
+  };
+
+  // One-click allocate for an unambiguous match: the full remaining amount, role read
+  // from the direction (money in = buyer payment, money out = supplier payment — the
+  // same pairing bulk allocate uses and the only roles rolesFor allows). This calls the
+  // exact command the panel calls, so nothing here skips a backend check; the row is
+  // re-checked for remaining amount at click time in case it went stale.
+  const tieMatch = async (t: BankTxn, d: DealFlow) => {
+    if (tyingId) return;
+    if (!(t.unallocated > 0.0001)) { toast("Nothing left to tie on this transaction", "error"); return; }
+    setTyingId(t.id);
+    try {
+      const r = t.direction === "out" ? "supplier_payment" : "buyer_payment";
+      await api.allocateBankTxn(t.id, d.id, t.unallocated, r, "");
+      toast(`Tied ${fmtAmount(t.unallocated)} to ${dealLabel(d)}`);
+      await refreshAll(true);
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setTyingId(null); }
   };
 
   const untagLoan = async (bankTxnId: string) => {
@@ -1000,7 +1095,7 @@ export default function FinancialsView() {
     const ok = window.confirm(
       `Delete ${ids.length} transaction${ids.length === 1 ? "" : "s"}?\n\n` +
         `Anything linked to a deal, loan or refund is kept — those are skipped and reported.\n` +
-        `A copy of everything removed is saved locally, so nothing is truly lost.`
+        `This can't be undone from here, though a copy of everything removed is saved locally.`
     );
     if (!ok) return;
     setBulkActionBusy(true);
@@ -1203,6 +1298,18 @@ export default function FinancialsView() {
       .map((x) => x.d);
   }, [deals, dealQuery, openId, txns]);
 
+  // txn id → the single obvious deal for it, if there is one. Computed once per data
+  // change (not per row render) and shared by every table instance.
+  const confidentMatches = useMemo(() => {
+    const pool = survivorDeals(deals);
+    const m = new Map<string, { deal: DealFlow; reason: string }>();
+    for (const t of txns) {
+      const c = confidentMatch(t, pool);
+      if (c) m.set(t.id, c);
+    }
+    return m;
+  }, [txns, deals]);
+
   const filteredLoans = useMemo(() => {
     const q = loanQuery.toLowerCase();
     return loans
@@ -1210,15 +1317,15 @@ export default function FinancialsView() {
       .slice(0, 8);
   }, [loans, loanQuery]);
 
-  // Deal column — quiet allocation state, or a "match" hint (accent) when an
-  // existing deal lines up with this un-tied transaction. Color stays neutral;
-  // only the actionable "match" earns the accent.
-  const dealCell = (t: BankTxn, hasMatch: boolean) => {
+  // Deal column — quiet allocation state only. A confident match is no longer
+  // announced here: it renders as the chip under the payee, which names the deal and
+  // carries the one-click "Tie it". A bare accent "match" in this cell said less, had
+  // no action attached, and read as a typo rather than an affordance.
+  const dealCell = (t: BankTxn) => {
     if (t.counterparty_type === "loan") return <span className="text-muted">—</span>;
     if (t.allocated > 0.0001 && t.unallocated <= 0.0001) return <span className="text-muted">Linked</span>;
     if (t.allocated > 0.0001)
       return <span className="text-muted tabular-nums">{fmtAmount(t.allocated)} of {fmtAmount(t.amount)}</span>;
-    if (hasMatch) return <span className="text-accent font-medium">match</span>;
     return <span className="text-muted">Link a deal</span>;
   };
 
@@ -1230,7 +1337,7 @@ export default function FinancialsView() {
   // only one row is ever expanded at a time).
   const renderTxnTable = (rows: BankTxn[]) => (
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[860px]">
+          <table className="w-full text-[13px] min-w-[560px]">
             <thead>
               <tr className="text-left border-b border-line">
                 <th className="py-2 pr-2 w-8">
@@ -1257,7 +1364,6 @@ export default function FinancialsView() {
                 <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Date</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
-                <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Account</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3 text-right whitespace-nowrap">Amount</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3">Deal</th>
                 <th className="text-[11px] font-medium text-muted py-2 text-center whitespace-nowrap w-12">Book</th>
@@ -1268,14 +1374,15 @@ export default function FinancialsView() {
                 const payee = t.counterparty_name?.trim();
                 const mainLabel = payee || t.description || "—";
                 const memo = payee ? t.description : "";
-                const hasMatch =
-                  t.counterparty_type !== "loan" && t.allocated <= 0.0001 && deals.some((d) => dealMatchesTxn(d, t));
+                // The obvious-deal suggestion. Hidden while the row is expanded — the
+                // full allocate panel is already open there.
+                const cm = openId === t.id ? null : confidentMatches.get(t.id) ?? null;
                 return (
                 <Fragment key={t.id}>
                   <tr
                     data-txn-id={t.id}
                     onClick={() => toggleRow(t)}
-                    className={`border-b border-line-2 cursor-pointer transition-colors ${
+                    className={`${cm ? "" : "border-b border-line-2"} cursor-pointer transition-colors ${
                       selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
                     }`}
                   >
@@ -1297,26 +1404,40 @@ export default function FinancialsView() {
                       <div>{(t.posted_at || "").slice(0, 10)}</div>
                       {fmtTime(t.posted_dt) && <div className="text-[10px] text-faint">{fmtTime(t.posted_dt)}</div>}
                     </td>
-                    <td className="py-3 pr-3 align-top max-w-[300px]">
-                      <div className="flex items-center gap-1.5 min-w-0 group/pe">
-                        <span className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const next = window.prompt(
-                              "Rename this payee. Plaid sometimes mislabels transfers (e.g. a Zelle to a person shows as a store) — set the real name so it categorizes and groups correctly.",
-                              payee || t.description || "",
-                            );
-                            if (next !== null && next.trim() && next.trim() !== (payee || "")) {
-                              saveReview(t, { counterparty_name: next.trim() });
-                            }
+                    <td
+                      className="py-3 pr-3 align-top max-w-[300px]"
+                      onClick={(e) => { if (payeeEditId === t.id) e.stopPropagation(); }}
+                    >
+                      {payeeEditId === t.id ? (
+                        <input
+                          autoFocus
+                          value={payeeDraft}
+                          aria-label="Payee name"
+                          onChange={(e) => setPayeeDraft(e.target.value)}
+                          onBlur={(e) => commitPayeeEdit(t, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+                            else if (e.key === "Escape") { e.preventDefault(); payeeCancelRef.current = true; e.currentTarget.blur(); }
                           }}
-                          title="Rename payee"
-                          className="opacity-0 group-hover/pe:opacity-100 focus:opacity-100 text-faint hover:text-ink-2 flex-shrink-0 transition-opacity"
-                        >
-                          <Pencil size={12} />
-                        </button>
-                      </div>
+                          className="w-full min-w-0 bg-surface border border-line rounded px-1.5 py-0.5 text-[13px] font-semibold text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPayeeDraft(payee || t.description || "");
+                              setPayeeEditId(t.id);
+                            }}
+                            title="Rename payee"
+                            aria-label="Rename payee"
+                            className="text-faint hover:text-ink-2 flex-shrink-0 transition-colors"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        </div>
+                      )}
                       {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
                     </td>
                     <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
@@ -1341,11 +1462,10 @@ export default function FinancialsView() {
                         </span>
                       )}
                     </td>
-                    <td className="py-3 pr-3 text-[12px] text-muted whitespace-nowrap align-top">{t.account_id || "—"}</td>
                     <td className={`py-3 pr-3 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
                       {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
                     </td>
-                    <td className="py-3 pr-3 text-[12px] whitespace-nowrap align-top">{dealCell(t, hasMatch)}</td>
+                    <td className="py-3 pr-3 text-[12px] whitespace-nowrap align-top">{dealCell(t)}</td>
                     <td className="py-3 text-center align-top" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => saveReview(t, { reviewed: !t.reviewed })}
@@ -1361,9 +1481,30 @@ export default function FinancialsView() {
                     </td>
                   </tr>
 
+                  {cm && (
+                    <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
+                      <td colSpan={3} />
+                      <td colSpan={5} className="pb-3 pr-3 align-top">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <span className="text-[11.5px] text-muted min-w-0">
+                            Looks like <span className="text-ink-2 font-medium">{matchLabel(cm.deal)}</span> — {cm.reason}
+                          </span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); tieMatch(t, cm.deal); }}
+                            disabled={tyingId === t.id}
+                            title={`Tie the full ${fmtAmount(t.unallocated)} to ${dealLabel(cm.deal)} as ${t.direction === "out" ? "a supplier payment" : "a buyer payment"}`}
+                            className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
+                          >
+                            {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Tie it
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+
                   {openId === t.id && (
                     <tr className="bg-surface-2">
-                      <td colSpan={9} className="px-3 pb-4 pt-1">
+                      <td colSpan={8} className="px-3 pb-4 pt-1">
                         <AllocationPanel
                           txn={t}
                           allocs={allocs}
@@ -1413,6 +1554,14 @@ export default function FinancialsView() {
           )}
         </div>
   );
+
+  // Setup/import/cleanup collapse as soon as there's something to work on, so the
+  // transaction list starts at the top. Anything mid-flight forces the panel open —
+  // its progress line, its bank-connect banner and that banner's Cancel live inside.
+  const hasLedger = plaidItems.length > 0 || txns.length > 0;
+  const toolsExpanded =
+    toolsOpen || !hasLedger || bulkBusy || aiBusy || previewing || aiExtracting ||
+    clearing || plaidConnecting || plaidPreparing;
 
   // Combined view splits the list into tagged rows (shown) and still-uncategorized
   // rows (tucked into a collapse) so the working list stays clean.
@@ -1469,8 +1618,31 @@ export default function FinancialsView() {
 
       {tab === "transactions" && (
       <div className="space-y-5">
-      {/* Import + AI toolbar */}
-      <div className="space-y-1.5">
+      {/* Daily row — booking money stays at the top of the screen; everything that
+          sets the ledger up (connect, import, clean up) folds into one disclosure. */}
+      <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
+        <button
+          onClick={() => setToolsOpen((o) => !o)}
+          title="Connect a bank, import a statement, or clean up duplicates"
+          className="min-w-0 flex items-center gap-1.5 text-[12.5px] text-muted hover:text-ink-2 transition-colors"
+        >
+          <ChevronRight size={13} className={`flex-shrink-0 transition-transform ${toolsExpanded ? "rotate-90" : ""}`} />
+          <span className="font-medium text-ink-2">Setup and tools</span>
+          <span className="text-faint truncate">· connect a bank, import statements, clean up</span>
+        </button>
+        <button
+          onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
+          className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
+        >
+          <Plus size={14} /> Record cash
+        </button>
+      </div>
+
+      {/* Import + AI toolbar — collapsed by default. The container stays mounted (as
+          display:contents when closed, so it adds no gap) because the dedupe and
+          record-cash modals live inside it and must open from the row above. */}
+      <div className={toolsExpanded ? "space-y-1.5" : "contents"}>
+        {toolsExpanded && (
         <div className="flex items-center justify-end gap-2 flex-wrap">
           {/* Duplicate cleanup lives here — the primary transactions toolbar — because the
               bank-feed panel it used to sit in collapses itself once a bank is connected. */}
@@ -1524,13 +1696,8 @@ export default function FinancialsView() {
           >
             {aiExtracting || bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Smart import (AI)
           </button>
-          <button
-            onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
-            className="flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
-          >
-            <Plus size={14} /> Record cash
-          </button>
         </div>
+        )}
 
         {dedupe && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => !dedupeRunning && setDedupe(null)}>
@@ -1708,14 +1875,17 @@ export default function FinancialsView() {
             </div>
           </div>
         )}
+        {toolsExpanded && (
         <p className="text-[11px] text-muted text-right leading-relaxed">
           Smart import reads any statement with AI — for credit cards and other banks. Set a distinct account per card
           (e.g. chase-card, amex) so each groups and dedupes separately. Selecting several files imports them all to the
           Account above, so import one account's statements together.
         </p>
+        )}
       </div>
 
       {/* Bank feed (Plaid) — live transactions straight from the bank */}
+      {toolsExpanded && (
       <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2 min-w-0">
           <Building2 size={15} className="text-muted flex-shrink-0" strokeWidth={1.8} />
@@ -1988,6 +2158,7 @@ export default function FinancialsView() {
           </>
         )}
       </div>
+      )}
 
       {/* Import preview / confirm card */}
       {preview && (
@@ -2676,9 +2847,12 @@ function AllocationPanel(props: {
   return (
     <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="text-[13px] text-ink-2">
+        <div className="text-[13px] text-ink-2 min-w-0">
           {txn.direction === "in" ? "Receipt" : "Payment"} of{" "}
           <span className="font-semibold tabular-nums text-ink">{fmtAmount(txn.amount)}</span>
+          {/* The account moved here when it left the table row — it is near-constant
+              down the column, but it must stay visible somewhere per transaction. */}
+          {txn.account_id ? <span className="text-muted"> · {txn.account_id}</span> : null}
         </div>
         <div className="text-[12px] text-muted">
           Unallocated{" "}
