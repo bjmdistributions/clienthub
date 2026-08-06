@@ -214,8 +214,26 @@ export function isCanonicalLocation(raw: string): boolean {
   return !!state && formatLocation(city, state) === s;
 }
 
+/** Capitalise after a space, a hyphen or an apostrophe: "winston-salem" → "Winston-Salem". */
+const capWord = (w: string) =>
+  w.toLowerCase().replace(/(^|[-'])([a-z])/g, (_m, p: string, c: string) => p + c.toUpperCase());
+
+/**
+ * Title-case a city name WITHOUT flattening capitals the typist meant.
+ *
+ * Naively lower-casing the tail turns real cities into wrong ones — McAllen became
+ * "Mcallen", DeKalb "Dekalb", O'Fallon "O'fallon", Winston-Salem "Winston-salem" —
+ * and the cleanup screen would then write that back to the database as if it were a
+ * correction. A word carrying an interior capital is left exactly as typed; ALL CAPS
+ * is treated as shouting and normalised.
+ */
 const titleCase = (s: string) =>
-  s.trim().replace(/\s+/g, " ").split(" ").map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w)).join(" ");
+  s.trim().replace(/\s+/g, " ").split(" ").map((w) => {
+    if (!w) return w;
+    const allCaps = w === w.toUpperCase();
+    if (!allCaps && /[A-Z]/.test(w.slice(1))) return w;
+    return capWord(w);
+  }).join(" ");
 
 /** Resolve a state fragment (full name or 2-letter abbr, any case) to its abbreviation, else null. */
 const resolveState = (frag: string): string | null => {
