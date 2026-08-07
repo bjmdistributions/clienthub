@@ -33,20 +33,21 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # Ad-hoc sign the macOS app (free, no Apple account) — eliminates the
-      # "app is damaged" error; users still see a one-time unidentified-developer
-      # prompt. Real Developer ID signing + notarization will be re-added here
-      # once a paid Apple Developer cert is configured in secrets.
-      - name: Ad-hoc sign (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Developer ID signing + notarization. APPLE_SIGNING_IDENTITY is deliberately
+          # absent: tauri-bundler derives the identity from the certificate itself, and
+          # setting it by hand only adds a way to mismatch. The ad-hoc signing step that
+          # used to sit above set it to "-", which hard-errors against a real certificate.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Ecliptr ${{ github.ref_name }}'
