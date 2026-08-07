@@ -1,6 +1,8 @@
 [package]
 name = "clienthub"
-version = "0.14.0"
+# Keep in step with src-tauri/tauri.conf.json — that file is what the release
+# pipeline reads, and these two drifted 118 patch versions apart before 2026-08-07.
+version = "0.15.132"
 edition = "2021"
 
 [lib]
