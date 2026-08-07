@@ -80,9 +80,14 @@ jobs:
   # `needs: build` fails if ANY matrix leg failed, so this job is skipped and the release
   # stays a draft. Drafts are invisible to /releases/latest/download/latest.json, so
   # installed apps keep seeing the last good version instead of a broken partial one.
+  #
+  # A tag containing a hyphen (v0.15.133-rc1, v0.16.0-signing-test) never auto-publishes.
+  # It builds, uploads into a draft, and stops there — which is how you try a risky
+  # pipeline change, like turning on Developer ID signing, without any install seeing it.
+  # Inspect the draft's assets, then delete the draft. Plain tags publish as normal.
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     permissions:
       contents: write
