@@ -5715,7 +5715,55 @@ pub struct Supplier {
     pub deal_count: u32,
     pub last_deal_date: Option<String>,
     pub avg_deal_amount: f64,
+    /// Profit earned on the deals this supplier stocked, apportioned by their share of
+    /// that deal's supplier payments. `total_revenue` is apportioned the same way so the
+    /// UI can show a margin — and tell "no revenue recorded" apart from "0%".
+    pub total_profit: f64,
+    pub total_revenue: f64,
 }
+
+/// Per-supplier money, derived from `deal_flows.supplier_payments_json` on completed deals.
+/// Shared verbatim by `list_suppliers` and `get_supplier` — two copies of this drifting apart
+/// is exactly the bug class the tier ladder produced (see the vault's tiers divergence note).
+///
+/// Three rules are load-bearing:
+///  * **Apportion, never duplicate.** A deal's profit is split across its suppliers by their
+///    share of that deal's payments. Summing whole `net_profit` per supplier would count the
+///    same profit once per supplier the moment a two-supplier deal exists.
+///  * **Refunds are capped per deal flow**, identical to `buyer_tiers.profit_map` — a refund
+///    returns revenue, so it can zero a deal's profit but must not invert it.
+///  * **One deal flow per invoice** (`MIN(d2.id)`) — duplicate 'complete' rows would double
+///    both the amount paid and the deal count.
+const SUPPLIER_STATS_SQL: &str = "
+    SELECT sup_id,
+           SUM(amt)                              AS total_paid,
+           COUNT(DISTINCT df_id)                 AS deal_count,
+           MAX(completed_at)                     AS last_deal_date,
+           SUM(amt) / COUNT(DISTINCT df_id)      AS avg_deal_amount,
+           SUM(CASE WHEN df_total > 0 THEN eff_profit    * amt / df_total ELSE 0 END) AS total_profit,
+           SUM(CASE WHEN df_total > 0 THEN gross_revenue * amt / df_total ELSE 0 END) AS total_revenue
+    FROM (
+      SELECT json_extract(sp.value, '$.supplier_id') AS sup_id,
+             df.id AS df_id, df.completed_at, df.gross_revenue,
+             CAST(json_extract(sp.value, '$.amount') AS REAL) AS amt,
+             df.net_profit - MIN(
+                 COALESCE((SELECT SUM(x.amt2) FROM (
+                     SELECT r.amount AS amt2, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
+                     UNION ALL
+                     SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
+                   ) x WHERE x.dfid = df.id),0),
+                 MAX(df.net_profit, 0)) AS eff_profit,
+             (SELECT SUM(CAST(json_extract(sp2.value, '$.amount') AS REAL))
+                FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp2
+               WHERE json_extract(sp2.value, '$.supplier_id') IS NOT NULL) AS df_total
+      FROM deal_flows df
+           JOIN invoices i ON i.id = df.invoice_id,
+           json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
+      WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
+        AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND COALESCE(df.archived,0)=0
+        AND df.id = (SELECT MIN(d2.id) FROM deal_flows d2
+                     WHERE d2.invoice_id = df.invoice_id AND d2.stage='complete' AND COALESCE(d2.archived,0)=0)
+    ) GROUP BY sup_id";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SupplierInput {
@@ -5813,36 +5861,30 @@ fn map_supplier_row(r: &rusqlite::Row) -> rusqlite::Result<Supplier> {
         deal_count: r.get::<_, i64>("deal_count").unwrap_or(0) as u32,
         last_deal_date: r.get("last_deal_date").ok(),
         avg_deal_amount: r.get("avg_deal_amount").unwrap_or(0.0),
+        total_profit: r.get("total_profit").unwrap_or(0.0),
+        total_revenue: r.get("total_revenue").unwrap_or(0.0),
     })
 }
 
 #[tauri::command]
 pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT s.id, s.name, s.contact_name, s.email, s.phone, s.address,
                 s.payment_method, s.payment_details, s.payment_terms, s.typical_lead_time,
                 s.notes, s.created_at, s.updated_at, COALESCE(s.archived, 0) as archived,
                 COALESCE(stats.total_paid, 0.0) as total_paid,
                 COALESCE(stats.deal_count, 0) as deal_count,
                 stats.last_deal_date,
-                COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount
+                COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount,
+                COALESCE(stats.total_profit, 0.0) as total_profit,
+                COALESCE(stats.total_revenue, 0.0) as total_revenue
          FROM suppliers s
-         LEFT JOIN (
-             SELECT json_extract(sp.value, '$.supplier_id') as sup_id,
-                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) as total_paid,
-                    COUNT(DISTINCT df.id) as deal_count,
-                    MAX(df.completed_at) as last_deal_date,
-                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) / COUNT(DISTINCT df.id) as avg_deal_amount
-             FROM deal_flows df
-                  JOIN invoices i ON i.id = df.invoice_id,
-                  json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
-             WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
-               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND COALESCE(df.archived,0)=0
-             GROUP BY json_extract(sp.value, '$.supplier_id')
-         ) stats ON stats.sup_id = s.id
-         ORDER BY s.name"
-    ).map_err(|e| e.to_string())?;
+         LEFT JOIN ({stats}) stats ON stats.sup_id = s.id
+         ORDER BY s.name",
+        stats = SUPPLIER_STATS_SQL
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_supplier_row).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -5850,31 +5892,22 @@ pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
 #[tauri::command]
 pub async fn get_supplier(id: String) -> Result<Supplier, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.query_row(
+    let sql = format!(
         "SELECT s.id, s.name, s.contact_name, s.email, s.phone, s.address,
                 s.payment_method, s.payment_details, s.payment_terms, s.typical_lead_time,
                 s.notes, s.created_at, s.updated_at, COALESCE(s.archived, 0) as archived,
                 COALESCE(stats.total_paid, 0.0) as total_paid,
                 COALESCE(stats.deal_count, 0) as deal_count,
                 stats.last_deal_date,
-                COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount
+                COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount,
+                COALESCE(stats.total_profit, 0.0) as total_profit,
+                COALESCE(stats.total_revenue, 0.0) as total_revenue
          FROM suppliers s
-         LEFT JOIN (
-             SELECT json_extract(sp.value, '$.supplier_id') as sup_id,
-                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) as total_paid,
-                    COUNT(DISTINCT df.id) as deal_count,
-                    MAX(df.completed_at) as last_deal_date,
-                    SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)) / COUNT(DISTINCT df.id) as avg_deal_amount
-             FROM deal_flows df
-                  JOIN invoices i ON i.id = df.invoice_id,
-                  json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
-             WHERE df.stage='complete' AND json_extract(sp.value, '$.supplier_id') IS NOT NULL
-               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND COALESCE(df.archived,0)=0
-             GROUP BY json_extract(sp.value, '$.supplier_id')
-         ) stats ON stats.sup_id = s.id
+         LEFT JOIN ({stats}) stats ON stats.sup_id = s.id
          WHERE s.id=?1",
-        [&id], map_supplier_row,
-    ).map_err(|e| e.to_string())
+        stats = SUPPLIER_STATS_SQL
+    );
+    conn.query_row(&sql, [&id], map_supplier_row).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

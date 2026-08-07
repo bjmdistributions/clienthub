@@ -614,6 +614,8 @@ export interface Supplier {
   deal_count: number;
   last_deal_date?: string | null;
   avg_deal_amount: number;
+  total_profit: number;    // profit on their deals, apportioned by their share of the payments
+  total_revenue: number;   // apportioned the same way — 0 means "no revenue recorded", not "0%"
 }
 
 export interface SupplierInput {
