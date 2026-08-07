@@ -45,6 +45,20 @@ fn compute_tier(conn: &Connection, client_id: &str, metadata_str: Option<&str>) 
         |r| Ok((r.get(0)?, r.get(1)?)),
     ).unwrap_or((0.0, 0));
 
+    // Net refunds off the paid figure before it reaches the ladder — the counted-once
+    // rule, same as `refunded_by_client` in commands.rs. Without this a merge field could
+    // render "Diamond" for a buyer every screen calls Gold (2026-08-07).
+    let refunded: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(x.amt),0) FROM ( \
+            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+            UNION ALL \
+            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+         ) x JOIN deal_flows df ON df.id=x.dfid JOIN invoices iv ON iv.id=df.invoice_id \
+         WHERE iv.client_id=?1",
+        [client_id], |r| r.get(0),
+    ).unwrap_or(0.0);
+    let actual_paid = (actual_paid - refunded).max(0.0);
+
     let meta: Option<Value> = metadata_str.and_then(|s| serde_json::from_str(s).ok());
     let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
     let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");

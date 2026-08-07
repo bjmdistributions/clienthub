@@ -9608,6 +9608,7 @@ pub struct BuyerTier {
     pub effective_annual: f64,
     pub spend_per_frequency: Option<String>,
     pub actual_paid: f64,
+    pub total_profit: f64,
     pub invoices_sent: u32,
     pub last_invoice_date: Option<String>,
     pub purchase_frequency: Option<String>,
@@ -9684,6 +9685,42 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Total profit per client, over the same completed deal flows the margin above uses.
+    //
+    // Two guards, both load-bearing:
+    //  * Deduped to ONE row per invoice — the known duplicate deal_flow rows (one invoice
+    //    → two 'complete' rows) leave an AVG unchanged but would double a SUM. Same
+    //    distinct-by-invoice rule as `completed_deals_by_client`.
+    //  * A refund is netted against ITS OWN deal flow and capped at that deal's profit,
+    //    never subtracted from the client total. Refunds return *revenue*, not profit:
+    //    on this data the naive client-level subtraction showed −$85,720 for a buyer
+    //    whose refunded deals never reached 'complete' and so never earned a cent.
+    //    Fully refunded deal → contributes 0. A genuinely loss-making deal stays negative.
+    let profit_map: std::collections::HashMap<String, f64> = {
+        let mut stmt = conn.prepare(
+            "SELECT i.client_id, COALESCE(SUM(
+                      df.net_profit - MIN(
+                        COALESCE((SELECT SUM(x.amt) FROM (
+                            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
+                            UNION ALL
+                            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
+                          ) x WHERE x.dfid = df.id),0),
+                        MAX(df.net_profit, 0))
+                    ),0)
+             FROM deal_flows df
+             JOIN invoices i ON i.id = df.invoice_id
+             WHERE df.stage = 'complete' AND COALESCE(df.archived,0)=0
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
+               AND df.id = (SELECT MIN(d2.id) FROM deal_flows d2
+                            WHERE d2.invoice_id = df.invoice_id
+                              AND d2.stage = 'complete' AND COALESCE(d2.archived,0)=0)
+             GROUP BY i.client_id"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     // Deals landed per client (completed deals, distinct by invoice) — a tier input + shown.
     let deals_map = completed_deals_by_client(&conn);
 
@@ -9704,6 +9741,8 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         // Net of refunds — a fully refunded buyer can't hold a tier on money we
         // gave back. This becomes the "actually paid" figure shown in the UI.
         let actual_paid = (paid - refunded_map.get(client_id).copied().unwrap_or(0.0)).max(0.0);
+        // Already net of refunds, per deal flow. Not floored: a loss-making deal is real.
+        let total_profit = profit_map.get(client_id).copied().unwrap_or(0.0);
         let (quotes_sent, quotes_won) = quotes_map.get(client_id).copied().unwrap_or((0, 0));
         // Buyer reliability: of the quotes we've sent, how many converted to a
         // deal. Only meaningful once we've sent a few — flagged after 3.
@@ -9720,7 +9759,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         results.push(BuyerTier {
             client_id: client_id.clone(), client_name: client_name.clone(), tier: tier.into(),
             effective_annual, spend_per_frequency: if spend_raw != "0" && !spend_raw.is_empty() { Some(spend_raw.to_string()) } else { None },
-            actual_paid, invoices_sent, last_invoice_date: last_inv,
+            actual_paid, total_profit, invoices_sent, last_invoice_date: last_inv,
             purchase_frequency: frequency.map(|s| s.to_string()),
             avg_commission_pct,
             quotes_sent,

@@ -829,6 +829,7 @@ export interface BuyerTier {
   effective_annual: number;
   spend_per_frequency: string | null;
   actual_paid: number;
+  total_profit: number;   // net profit earned from this client, after refunds
   invoices_sent: number;
   last_invoice_date: string | null;
   purchase_frequency: string | null;

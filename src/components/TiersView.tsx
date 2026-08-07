@@ -16,12 +16,32 @@ const SPEND_RANGES = [
   { label: "$50k+",         min: 50000, max: Infinity },
 ];
 
+// Profit can be negative once refunds are netted out, so this ladder is not the
+// spend one with different labels — it needs a loss bucket at the bottom.
+const PROFIT_RANGES = [
+  { label: "Any profit",     min: -Infinity, max: Infinity },
+  { label: "At a loss",      min: -Infinity, max: -0.01 },
+  { label: "None",           min: 0,         max: 0 },
+  { label: "$1 – $999",      min: 1,         max: 999 },
+  { label: "$1k – $4.9k",    min: 1000,      max: 4999 },
+  { label: "$5k – $24.9k",   min: 5000,      max: 24999 },
+  { label: "$25k+",          min: 25000,     max: Infinity },
+];
+
+const FREQUENCIES = ["weekly", "bi-weekly", "monthly", "quarterly", "annually"];
+
 const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
+
+const selectCls =
+  "border border-line h-8 px-2.5 rounded-lg text-[12px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 export default function TiersView() {
   const [tiers, setTiers]     = useState<BuyerTier[]>([]);
   const [filter, setFilter]   = useState<string>("all");
-  const [spendRange, setSpendRange] = useState(0);
+  const [paidRange, setPaidRange]     = useState(0);
+  const [profitRange, setProfitRange] = useState(0);
+  const [spendRange, setSpendRange]   = useState(0);
+  const [freqFilter, setFreqFilter]   = useState("");
   const [loading, setLoading] = useState(true);
   const [detailId, setDetailId] = useState<string | null>(null);
 
@@ -35,11 +55,27 @@ export default function TiersView() {
   const filtered = tiers
     .filter((t) => filter === "all" || t.tier === filter)
     .filter((t) => {
+      if (paidRange === 0) return true;
+      const r = SPEND_RANGES[paidRange];
+      return t.actual_paid >= r.min && t.actual_paid <= r.max;
+    })
+    .filter((t) => {
+      if (profitRange === 0) return true;
+      const r = PROFIT_RANGES[profitRange];
+      return t.total_profit >= r.min && t.total_profit <= r.max;
+    })
+    .filter((t) => {
       if (spendRange === 0) return true;
       const range = SPEND_RANGES[spendRange];
       const spend = parseFloat((t.spend_per_frequency || "0").replace(/[^0-9.]/g, "")) || 0;
       return spend >= range.min && spend <= range.max;
-    });
+    })
+    .filter((t) => !freqFilter || (t.purchase_frequency || "").toLowerCase() === freqFilter);
+
+  const anyFilter = filter !== "all" || paidRange > 0 || profitRange > 0 || spendRange > 0 || !!freqFilter;
+  const clearFilters = () => {
+    setFilter("all"); setPaidRange(0); setProfitRange(0); setSpendRange(0); setFreqFilter("");
+  };
 
   const tierCount = (t: string) => tiers.filter((x) => x.tier === t).length;
 
@@ -85,8 +121,8 @@ export default function TiersView() {
         })}
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
+      {/* Filters — same order as the columns they filter */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
         <button
           onClick={() => setFilter("all")}
           className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
@@ -96,22 +132,36 @@ export default function TiersView() {
           All tiers
         </button>
 
-        <div className="h-4 w-px bg-surface-3" />
+        <div className="h-4 w-px bg-surface-3 mx-1" />
 
-        <span className="text-[11px] text-muted font-medium">Spend per frequency:</span>
-        {SPEND_RANGES.map((r, i) => (
-          <button
-            key={i}
-            onClick={() => setSpendRange(i)}
-            className={`px-2.5 h-7 rounded-md text-[11px] font-medium transition-colors ${
-              spendRange === i
-                ? "bg-accent text-on-accent"
-                : "bg-surface border border-line text-ink-2 hover:border-line-3"
-            }`}
-          >
-            {r.label}
+        <select value={paidRange} onChange={(e) => setPaidRange(Number(e.target.value))} className={selectCls}>
+          {SPEND_RANGES.map((r, i) => (
+            <option key={i} value={i}>{i === 0 ? "Any spend" : `Spent ${r.label}`}</option>
+          ))}
+        </select>
+
+        <select value={profitRange} onChange={(e) => setProfitRange(Number(e.target.value))} className={selectCls}>
+          {PROFIT_RANGES.map((r, i) => (
+            <option key={i} value={i}>{i === 0 ? r.label : `Profit ${r.label}`}</option>
+          ))}
+        </select>
+
+        <select value={spendRange} onChange={(e) => setSpendRange(Number(e.target.value))} className={selectCls}>
+          {SPEND_RANGES.map((r, i) => (
+            <option key={i} value={i}>{i === 0 ? "Any spend / freq." : `Spend / freq. ${r.label}`}</option>
+          ))}
+        </select>
+
+        <select value={freqFilter} onChange={(e) => setFreqFilter(e.target.value)} className={selectCls}>
+          <option value="">Any frequency</option>
+          {FREQUENCIES.map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+
+        {anyFilter && (
+          <button onClick={clearFilters} className="text-[12px] text-muted hover:text-ink-2 px-2 h-8 rounded-lg hover:bg-surface-3 transition-colors">
+            Clear
           </button>
-        ))}
+        )}
       </div>
 
       {/* Result count */}
@@ -121,17 +171,18 @@ export default function TiersView() {
 
       {/* Table */}
       <div className="bg-surface border border-line rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[900px] text-sm">
+        <table className="w-full min-w-[1000px] text-sm">
           <thead>
             <tr className="border-b border-line-2">
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Client</th>
               <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Tier</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Spend / Freq.</th>
               <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Actually paid</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Profit</th>
               <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Invoices</th>
               <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Quotes</th>
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Reliability</th>
               <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg margin</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Spend / Freq.</th>
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Frequency</th>
             </tr>
           </thead>
@@ -146,11 +197,13 @@ export default function TiersView() {
                 <td className="px-5 py-3 text-center">
                   <TierBadge tier={t.tier} />
                 </td>
-                <td className="px-5 py-3 text-right text-[13px] text-ink-2 tabular-nums">
-                  {t.spend_per_frequency || "—"}
-                </td>
                 <td className="px-5 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
                   {t.actual_paid > 0 ? fmtAmount(t.actual_paid) : "—"}
+                </td>
+                <td className={`px-5 py-3 text-right text-[13px] font-semibold tabular-nums ${
+                  t.total_profit < 0 ? "text-danger-ink" : "text-ink"
+                }`}>
+                  {t.total_profit !== 0 ? <>{t.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(t.total_profit))}</> : "—"}
                 </td>
                 <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.invoices_sent}</td>
                 <td className="px-5 py-3 text-center text-[13px] text-ink-2 tabular-nums">{t.quotes_sent || "—"}</td>
@@ -170,14 +223,17 @@ export default function TiersView() {
                     <span className="text-[12px] text-faint">—</span>
                   )}
                 </td>
+                <td className="px-5 py-3 text-right text-[13px] text-ink-2 tabular-nums">
+                  {t.spend_per_frequency || "—"}
+                </td>
                 <td className="px-5 py-3 text-[12px] text-muted capitalize">{t.purchase_frequency || "—"}</td>
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-5 py-16 text-center">
+                <td colSpan={10} className="px-5 py-16 text-center">
                   <Layers size={24} className="text-faint mx-auto mb-2" />
-                  <p className="text-[13px] text-muted">No clients in this tier</p>
+                  <p className="text-[13px] text-muted">No clients match these filters</p>
                 </td>
               </tr>
             )}
