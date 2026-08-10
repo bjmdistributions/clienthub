@@ -231,9 +231,19 @@ export default function FinancialsView() {
   const [rules, setRules]     = useState<TxnRule[]>([]);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  // Land on the bank/transactions view so connected banks + pending to-do actions
-  // are the first thing visible; the Free-cash overview stays a click away.
-  const [tab, setTab]         = useState<"overview" | "transactions" | "loans">("transactions");
+  // Four surfaces: To book (the daily queue) opens first; Ledger is the full
+  // history; Cash holds Free cash + Loans; Setup is every once-in-a-while tool.
+  // The chosen surface survives leaving and re-entering the page — losing your
+  // place on every visit was one of the audit's standing complaints.
+  const [tab, setTabRaw] = useState<"tobook" | "ledger" | "cash" | "setup">(() => {
+    const t = localStorage.getItem("fin_tab");
+    return t === "ledger" || t === "cash" || t === "setup" ? t : "tobook";
+  });
+  const setTab = (v: "tobook" | "ledger" | "cash" | "setup") => {
+    setTabRaw(v);
+    localStorage.setItem("fin_tab", v);
+  };
+  const [cashTab, setCashTab] = useState<"freecash" | "loans">("freecash");
   const [aiBusy, setAiBusy]   = useState(false);
   const [newDealBusy, setNewDealBusy] = useState(false);
   // Record-cash modal (a manual cash txn that then allocates across deals).
@@ -276,9 +286,6 @@ export default function FinancialsView() {
   const [plaidTesting, setPlaidTesting]     = useState(false);
   const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
   const [bankFeedOpen, setBankFeedOpen]     = useState(false); // collapse the whole feed panel once connected
-  // Connecting a bank, importing a statement and cleaning up are once-in-a-while
-  // jobs; booking money is the daily one — so they all fold behind one disclosure.
-  const [toolsOpen, setToolsOpen]           = useState(false);
   // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
   // take ~a minute) — keep re-syncing in the background until transactions land.
   const [plaidPreparing, setPlaidPreparing] = useState(false);
@@ -305,8 +312,13 @@ export default function FinancialsView() {
   const [fromDate, setFromDate]       = useState(`${new Date().getFullYear()}-01-01`);
   const [toDate, setToDate]           = useState("");
 
-  // Primary working mode: To-do (unbooked) hides rows once they're booked.
-  const [queue, setQueue]             = useState<"todo" | "booked">("todo");
+  // Ledger scope: the full history by default; To book / Booked narrow it.
+  const [queue, setQueue]             = useState<"all" | "todo" | "booked">("all");
+
+  // To-book queue controls — search and account only. A queue is a queue: no date
+  // window, no status dropdowns, nothing that silently hides work.
+  const [toBookSearch, setToBookSearch] = useState("");
+  const [toBookAcct, setToBookAcct]     = useState("all");
 
   // Split view: money-in and money-out side by side, each with its own search —
   // for reconciling a refund against the original payment. Plus a collapse that
@@ -314,7 +326,6 @@ export default function FinancialsView() {
   const [splitView, setSplitView]     = useState(false);
   const [searchIn, setSearchIn]       = useState("");
   const [searchOut, setSearchOut]     = useState("");
-  const [untaggedOpen, setUntaggedOpen] = useState(false);
 
   // Inline payee rename. Plaid mislabels transfers constantly (a Zelle to a person
   // shows as a store), so the fix lives in the row itself — the old prompt() sat
@@ -436,6 +447,15 @@ export default function FinancialsView() {
     return () => { dead = true; un?.(); };
   }, []);
 
+  // Escape closes the booking sheet (the payee editor stops propagation so its
+  // own Escape doesn't also close the sheet).
+  useEffect(() => {
+    if (!openId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpenId(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openId]);
+
   // Stop any in-flight bank-connect polling when this view unmounts.
   useEffect(() => () => {
     pollCancelRef.current = true;
@@ -514,6 +534,35 @@ export default function FinancialsView() {
     }
   };
 
+  // Booking-destroying events must never pass silently. The bank retracting rows
+  // already reviewed or allocated (the pending→posted churn) and amendments below
+  // the booked total used to be surfaced only on the manual Sync-now path — the
+  // background prep-retry timer and the post-connect sync swallowed them, which is
+  // why a destroyed booking felt unexplained rather than like a warning that was
+  // shown. Every plaidSync-shaped result now reports through here.
+  const surfaceSyncWarnings = (r: {
+    results: { status: string; institution?: string | null; error?: string | null }[];
+    unlinked: number;
+    over_allocated?: string[];
+  }) => {
+    if (r.over_allocated?.length) {
+      toast(
+        `${r.over_allocated.length} transaction${r.over_allocated.length === 1 ? " was" : "s were"} changed by the bank to less than what's booked against ${r.over_allocated.length === 1 ? "it" : "them"}: ${r.over_allocated.join("; ")}. Nothing was removed — please review the allocations.`,
+        "error",
+      );
+    }
+    // The bank retracted transactions already reviewed or booked to a deal —
+    // usually a pending row replaced by its posted twin. The replacement needs
+    // re-linking. Recorded profit on a completed deal is unaffected.
+    if (r.unlinked > 0) {
+      toast(`Your bank replaced ${r.unlinked} transaction${r.unlinked === 1 ? "" : "s"} you'd already reviewed or linked to a deal — re-link the replacement${r.unlinked === 1 ? "" : "s"}. Completed deals keep their recorded profit.`, "error");
+    }
+    // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
+    for (const x of r.results.filter((x) => x.status === "error")) {
+      toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
+    }
+  };
+
   // While a freshly-linked bank is still being prepared by Plaid, re-sync in the
   // background a few times (~every 20s) until transactions land, then stop.
   const schedulePrepRetries = (left: number) => {
@@ -529,6 +578,7 @@ export default function FinancialsView() {
       prepTimerRef.current = null;
       try {
         const r = await api.plaidSync();
+        surfaceSyncWarnings(r);
         if (r.imported > 0 || r.removed > 0) {
           setPlaidPreparing(false);
           await refreshAll(false);
@@ -567,6 +617,7 @@ export default function FinancialsView() {
             toast(`Connected ${inst}`);
             setPlaidItems(await api.plaidListItems());
             const s = await api.plaidSync();
+            surfaceSyncWarnings(s);
             if (s.imported > 0) {
               toast(`Synced ${s.imported} transaction${s.imported === 1 ? "" : "s"}`);
               await refreshAll(false);
@@ -623,7 +674,6 @@ export default function FinancialsView() {
       const r = mode === "full" ? await api.plaidResyncAll()
               : mode === "refresh" ? await api.plaidRefreshSync()
               : await api.plaidSync();
-      const errored = r.results.filter((x) => x.status === "error");
       const stillPreparing = r.preparing || r.results.some((x) => x.status === "preparing");
       const amended = r.amended ?? 0;
       if (r.imported === 0 && r.removed === 0 && amended === 0 && stillPreparing) {
@@ -645,25 +695,7 @@ export default function FinancialsView() {
         }
         await refreshAll(false);
       }
-      // An amendment shrank a transaction below what's already booked against it.
-      // Nothing was trimmed automatically — which allocation gives way is Jack's call.
-      if (r.over_allocated?.length) {
-        toast(
-          `${r.over_allocated.length} transaction${r.over_allocated.length === 1 ? " was" : "s were"} changed by the bank to less than what's booked against ${r.over_allocated.length === 1 ? "it" : "them"}: ${r.over_allocated.join("; ")}. Nothing was removed — please review the allocations.`,
-          "error",
-        );
-      }
-      // The bank retracted transactions we'd already reviewed or booked to a deal —
-      // usually a pending row replaced by its posted twin. They're gone (keeping them
-      // would leave two rows for one transaction), so say so: the replacement needs
-      // re-linking. Recorded profit on a completed deal is unaffected.
-      if (r.unlinked > 0) {
-        toast(`Your bank replaced ${r.unlinked} transaction${r.unlinked === 1 ? "" : "s"} you'd already reviewed or linked to a deal — re-link the replacement${r.unlinked === 1 ? "" : "s"}. Completed deals keep their recorded profit.`, "error");
-      }
-      // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
-      for (const x of errored) {
-        toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
-      }
+      surfaceSyncWarnings(r);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidSyncing(false); }
   };
@@ -693,9 +725,7 @@ export default function FinancialsView() {
       setPlaidPreparing(stillPreparing);
       if (stillPreparing) schedulePrepRetries(6);
       toast(`Cleared ${c.deleted} old, pulled ${r.imported} fresh transaction${r.imported === 1 ? "" : "s"}${c.kept > 0 ? ` (kept ${c.kept} reviewed or deal-linked)` : ""}`);
-      for (const x of r.results.filter((x) => x.status === "error")) {
-        toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
-      }
+      surfaceSyncWarnings(r);
       await refreshAll(false);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setPlaidSyncing(false); }
@@ -1277,6 +1307,110 @@ export default function FinancialsView() {
     return { total, reviewed, sumIn, sumOut, unclassified, needsDeal };
   }, [txns, fromDate, toDate]);
 
+  // ── To book — the daily queue ────────────────────────────────────────────────
+  // Every unbooked transaction, org-wide, newest first. Search and account narrow
+  // it; nothing else hides rows.
+  const toBookRows = useMemo(
+    () => txns
+      .filter((t) => !t.reviewed &&
+        (toBookAcct === "all" || t.account_id === toBookAcct) &&
+        matchesQuery(t, toBookSearch))
+      .sort((a, b) => (b.posted_at || "").localeCompare(a.posted_at || "")),
+    [txns, toBookAcct, toBookSearch],
+  );
+
+  // Headline figures: rows waiting, and money still needing a deal — the same
+  // definition as rangeSummary.needsDeal (kept in step with bank_txn_summary and
+  // financials_overview.stale_unallocated), with no date window.
+  const toBookStats = useMemo(() => {
+    let count = 0, needsDealAmt = 0;
+    for (const t of txns) {
+      if (t.reviewed) continue;
+      count++;
+      if (
+        t.counterparty_type !== "loan" &&
+        !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "") &&
+        t.unallocated > 0.0001
+      ) needsDealAmt += t.unallocated;
+    }
+    return { count, needsDealAmt };
+  }, [txns]);
+
+  // Rows grouped by posted day, newest day first (toBookRows is already sorted).
+  const toBookGroups = useMemo(() => {
+    const groups: { date: string; rows: BankTxn[] }[] = [];
+    for (const t of toBookRows) {
+      const d = (t.posted_at || "").slice(0, 10);
+      const g = groups[groups.length - 1];
+      if (g && g.date === d) g.rows.push(t); else groups.push({ date: d, rows: [t] });
+    }
+    return groups;
+  }, [toBookRows]);
+
+  // What was accomplished this month — the caught-up state should read like an
+  // achievement, not a shrug.
+  const monthBooked = useMemo(() => {
+    const now = new Date();
+    const pfx = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    let amt = 0, n = 0;
+    for (const t of txns) {
+      if (!(t.posted_at || "").startsWith(pfx)) continue;
+      if (t.allocated > 0.0001) { amt += t.allocated; n++; }
+    }
+    return { amt, n };
+  }, [txns]);
+
+  // Local-constructed date (never `new Date("YYYY-MM-DD")` — that parses as UTC
+  // and renders a day early in Central time).
+  const localDay = (dt: Date) =>
+    `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  const dayHeading = (iso: string) => {
+    if (!iso) return "No date";
+    if (iso === localDay(new Date())) return "Today";
+    if (iso === localDay(new Date(Date.now() - 86400000))) return "Yesterday";
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) return iso;
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: y === new Date().getFullYear() ? undefined : "numeric" });
+  };
+
+  // The left rail carries state: solid accent = needs a deal, faded = partly
+  // tied, none = nothing owed. That is what colour is for on this screen.
+  const railClass = (t: BankTxn) => {
+    if (t.counterparty_type === "loan") return "border-l-2 border-transparent";
+    if (t.allocated > 0.0001 && t.unallocated > 0.0001) return "border-l-2 border-accent/40";
+    if (
+      t.unallocated > 0.0001 &&
+      !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "")
+    ) return "border-l-2 border-accent";
+    return "border-l-2 border-transparent";
+  };
+
+  // The subline says what the row NEEDS, not what it is.
+  const needsLine = (t: BankTxn) => {
+    const acct = t.account_id ? ` · ${t.account_id}` : "";
+    if (t.counterparty_type === "loan") return `${loanTagLabel(t.direction)}${acct}`;
+    if (t.allocated > 0.0001 && t.unallocated > 0.0001)
+      return `${fmtAmount(t.allocated)} of ${fmtAmount(t.amount)} tied${acct}`;
+    if (t.allocated > 0.0001) return `Tied to a deal — book it${acct}`;
+    const noCat = !(t.category || "").trim();
+    const needsDeal =
+      !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "") &&
+      t.unallocated > 0.0001;
+    if (needsDeal && noCat) return `Needs a deal or a category${acct}`;
+    if (needsDeal) return `${catLabel(t.category || "")} — needs a deal${acct}`;
+    if (noCat) return `Needs a category${acct}`;
+    return `${catLabel(t.category || "")} — ready to book${acct}`;
+  };
+
+  // Reset every Ledger filter in one click — the filtered-to-nothing state used
+  // to be a grey line with no exit.
+  const clearFilters = () => {
+    setSearch(""); setSearchIn(""); setSearchOut("");
+    setDirFilter("all"); setAcctFilter("all"); setCatFilter("all"); setStatusFilter("all");
+    setQueue("all");
+    setFromDate(`${new Date().getFullYear()}-01-01`); setToDate("");
+  };
+
   const filteredDeals = useMemo(() => {
     const q = dealQuery.trim().toLowerCase();
     const ot = openId ? txns.find((t) => t.id === openId) : null;
@@ -1502,71 +1636,70 @@ export default function FinancialsView() {
                     </tr>
                   )}
 
-                  {openId === t.id && (
-                    <tr className="bg-surface-2">
-                      <td colSpan={8} className="px-3 pb-4 pt-1">
-                        <AllocationPanel
-                          txn={t}
-                          allocs={allocs}
-                          loading={allocLoading}
-                          targetType={targetType}
-                          setTargetType={setTargetType}
-                          filteredDeals={filteredDeals}
-                          dealQuery={dealQuery}
-                          setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); setDealListOpen(true); }}
-                          dealListOpen={dealListOpen}
-                          setDealListOpen={setDealListOpen}
-                          selectedDeal={selectedDeal}
-                          onPickDeal={(d) => { setSelectedDeal(d); setDealQuery(dealLabel(d)); setDealListOpen(false); }}
-                          filteredLoans={filteredLoans}
-                          loanQuery={loanQuery}
-                          setLoanQuery={(v) => { setLoanQuery(v); setSelectedLoan(null); setLoanListOpen(true); }}
-                          loanListOpen={loanListOpen}
-                          setLoanListOpen={setLoanListOpen}
-                          selectedLoan={selectedLoan}
-                          onPickLoan={(l) => { setSelectedLoan(l); setLoanQuery(loanLabel(l)); setLoanListOpen(false); }}
-                          amountStr={amountStr}
-                          setAmountStr={setAmountStr}
-                          role={role}
-                          setRole={setRole}
-                          note={note}
-                          setNote={setNote}
-                          allowSplit={allowSplit}
-                          setAllowSplit={setAllowSplit}
-                          busy={allocBusy}
-                          onSubmit={submitAlloc}
-                          onRemove={removeAlloc}
-                          onUntagLoan={untagLoan}
-                          onCreateRule={createRule}
-                          newDealBusy={newDealBusy}
-                          onCreateDeal={createDealFromTxn}
-                        />
-                      </td>
-                    </tr>
-                  )}
                 </Fragment>
                 );
               })}
             </tbody>
           </table>
           {rows.length === 0 && (
-            <div className="text-center py-10 text-[12px] text-muted">No transactions match these filters</div>
+            <div className="text-center py-10 text-[12px] text-muted">
+              No transactions match these filters
+              <button
+                onClick={clearFilters}
+                className="block mx-auto mt-2 text-[12px] font-medium text-accent hover:text-accent-hover"
+              >
+                Clear filters
+              </button>
+            </div>
           )}
         </div>
   );
 
-  // Setup/import/cleanup collapse as soon as there's something to work on, so the
-  // transaction list starts at the top. Anything mid-flight forces the panel open —
-  // its progress line, its bank-connect banner and that banner's Cancel live inside.
-  const hasLedger = plaidItems.length > 0 || txns.length > 0;
-  const toolsExpanded =
-    toolsOpen || !hasLedger || bulkBusy || aiBusy || previewing || aiExtracting ||
-    clearing || plaidConnecting || plaidPreparing;
+  // Loading placeholder at roughly row height, so the page stops jumping.
+  const skeletonRows = (
+    <div className="space-y-2" aria-hidden="true">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="h-[52px] rounded-lg bg-surface-2 animate-pulse" />
+      ))}
+    </div>
+  );
 
-  // Combined view splits the list into tagged rows (shown) and still-uncategorized
-  // rows (tucked into a collapse) so the working list stays clean.
-  const ready    = filtered.filter((t) => (t.category || "").trim());
-  const untagged = filtered.filter((t) => !(t.category || "").trim());
+  // A load failure must never render as an empty ledger — that reads as data
+  // loss and hides the real cause. Shared by the To-book and Ledger surfaces.
+  const errorState = (
+    <div className="text-center py-20">
+      <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+        <AlertTriangle size={18} className="text-danger-ink" />
+      </div>
+      <p className="text-[14px] font-semibold text-ink-2">Could not load your transactions</p>
+      <p className="text-[12px] text-muted mt-1 max-w-[420px] mx-auto break-words">{loadError}</p>
+      <p className="text-[11.5px] text-faint mt-1">Nothing has been changed or lost — this is a read that failed.</p>
+      <button
+        onClick={() => { setLoading(true); loadAll(); }}
+        className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+      >
+        Try again
+      </button>
+    </div>
+  );
+
+  // First run: the right door is the bank feed, not a statement upload.
+  const firstRunState = (
+    <div className="text-center py-20">
+      <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+        <Landmark size={18} className="text-faint" />
+      </div>
+      <p className="text-[14px] font-semibold text-ink-2">No transactions yet</p>
+      <p className="text-[12px] text-muted mt-1">
+        {plaidItems.length > 0
+          ? "Nothing has arrived from your bank yet"
+          : "Connect your bank for a live feed, or import a statement"}
+      </p>
+      <button onClick={() => setTab("setup")} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
+        {plaidItems.length > 0 ? "Open setup" : "Connect your bank"}
+      </button>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -1574,7 +1707,12 @@ export default function FinancialsView() {
       <div className="min-w-0 flex items-end justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-[19px] font-semibold text-ink tracking-tight truncate">Financials</h2>
-          <p className="text-[12px] text-muted mt-0.5">Import statements, classify money, tie receipts to deals</p>
+          <p className="text-[12px] text-muted mt-0.5">
+            {tab === "tobook" ? "Book the money that came in and went out"
+              : tab === "ledger" ? "Everything ever — search, filter, drill in"
+              : tab === "cash" ? "Free cash, reserves and loans"
+              : "Bank connections, statement imports and cleanup tools"}
+          </p>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           {plaidItems.length > 0 && (
@@ -1594,12 +1732,14 @@ export default function FinancialsView() {
         </div>
       </div>
 
-      {/* Sub-tabs — underline style */}
+      {/* Surface nav — To book is the daily queue and opens first; its count is
+          the one number that says whether there is work to do. */}
       <div className="flex items-center gap-5 border-b border-line">
         {([
-          ["overview", "Overview"],
-          ["transactions", "Transactions"],
-          ["loans", "Loans"],
+          ["tobook", "To book"],
+          ["ledger", "Ledger"],
+          ["cash", "Cash"],
+          ["setup", "Setup"],
         ] as const).map(([v, label]) => (
           <button
             key={v}
@@ -1609,40 +1749,83 @@ export default function FinancialsView() {
             }`}
           >
             {label}
+            {v === "tobook" && toBookStats.count > 0 && (
+              <span className="ml-1.5 font-normal text-muted tabular-nums">{toBookStats.count}</span>
+            )}
           </button>
         ))}
       </div>
 
-      {tab === "overview" && <FreeCashView />}
-      {tab === "loans" && <LoansView />}
+      {/* Cash — free cash and loans together; the best-designed screens stay as they are. */}
+      {tab === "cash" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-1">
+            {([["freecash", "Free cash"], ["loans", "Loans"]] as const).map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => setCashTab(v)}
+                className={`px-3 h-8 rounded-lg text-[12.5px] font-medium transition-colors ${
+                  cashTab === v ? "bg-surface-2 text-ink border border-line" : "text-muted hover:text-ink-2"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {cashTab === "freecash" ? <FreeCashView /> : <LoansView />}
+        </div>
+      )}
 
-      {tab === "transactions" && (
+      {tab !== "cash" && (
       <div className="space-y-5">
-      {/* Daily row — booking money stays at the top of the screen; everything that
-          sets the ledger up (connect, import, clean up) folds into one disclosure. */}
-      <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
-        <button
-          onClick={() => setToolsOpen((o) => !o)}
-          title="Connect a bank, import a statement, or clean up duplicates"
-          className="min-w-0 flex items-center gap-1.5 text-[12.5px] text-muted hover:text-ink-2 transition-colors"
-        >
-          <ChevronRight size={13} className={`flex-shrink-0 transition-transform ${toolsExpanded ? "rotate-90" : ""}`} />
-          <span className="font-medium text-ink-2">Setup and tools</span>
-          <span className="text-faint truncate">· connect a bank, import statements, clean up</span>
-        </button>
-        <button
-          onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
-          className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
-        >
-          <Plus size={14} /> Record cash
-        </button>
-      </div>
+      {/* To book — headline row: how much work waits, plus the daily controls. */}
+      {tab === "tobook" && (
+        <div className="min-w-0 flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[14px] text-ink min-w-0">
+            <span className="font-semibold tabular-nums">
+              {toBookStats.count === 0 ? "Nothing to book" : `${toBookStats.count} to book`}
+            </span>
+            {toBookStats.needsDealAmt > 0.005 && (
+              <span className="text-muted"> · <span className="tabular-nums">{fmtAmount(toBookStats.needsDealAmt)}</span> waiting on a deal</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-9">
+              <Search size={13} className="text-muted flex-shrink-0" />
+              <input
+                value={toBookSearch}
+                onChange={(e) => setToBookSearch(e.target.value)}
+                placeholder="Search payee, memo, exact amount…"
+                className="w-full bg-transparent text-[13px] text-ink placeholder:text-muted focus:outline-none"
+              />
+            </div>
+            {accounts.length > 1 && (
+              <select
+                value={toBookAcct}
+                onChange={(e) => setToBookAcct(e.target.value)}
+                className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-9 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                <option value="all">All accounts</option>
+                {accounts.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
+              className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
+            >
+              <Plus size={14} /> Record cash
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* Import + AI toolbar — collapsed by default. The container stays mounted (as
-          display:contents when closed, so it adds no gap) because the dedupe and
-          record-cash modals live inside it and must open from the row above. */}
-      <div className={toolsExpanded ? "space-y-1.5" : "contents"}>
-        {toolsExpanded && (
+      {/* Setup — import + cleanup toolbar. The container stays mounted (as
+          display:contents on other surfaces, so it adds no gap) because the dedupe
+          and record-cash modals live inside it and must open from any surface. */}
+      <div className={tab === "setup" ? "space-y-1.5" : "contents"}>
+        {tab === "setup" && (
         <div className="flex items-center justify-end gap-2 flex-wrap">
           {/* Duplicate cleanup lives here — the primary transactions toolbar — because the
               bank-feed panel it used to sit in collapses itself once a bank is connected. */}
@@ -1875,7 +2058,7 @@ export default function FinancialsView() {
             </div>
           </div>
         )}
-        {toolsExpanded && (
+        {tab === "setup" && (
         <p className="text-[11px] text-muted text-right leading-relaxed">
           Smart import reads any statement with AI — for credit cards and other banks. Set a distinct account per card
           (e.g. chase-card, amex) so each groups and dedupes separately. Selecting several files imports them all to the
@@ -1885,7 +2068,7 @@ export default function FinancialsView() {
       </div>
 
       {/* Bank feed (Plaid) — live transactions straight from the bank */}
-      {toolsExpanded && (
+      {tab === "setup" && (
       <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2 min-w-0">
           <Building2 size={15} className="text-muted flex-shrink-0" strokeWidth={1.8} />
@@ -2161,7 +2344,7 @@ export default function FinancialsView() {
       )}
 
       {/* Import preview / confirm card */}
-      {preview && (
+      {tab === "setup" && preview && (
         <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-[13px] text-ink">
@@ -2218,7 +2401,7 @@ export default function FinancialsView() {
       )}
 
       {/* AI import preview / confirm card */}
-      {aiPreview && (
+      {tab === "setup" && aiPreview && (
         <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-[13px] text-ink">
@@ -2275,7 +2458,7 @@ export default function FinancialsView() {
       )}
 
       {/* Summary — a quiet figures strip, not stat cards */}
-      {txns.length > 0 && (
+      {tab === "ledger" && txns.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[12px] border-b border-line pb-3">
           <span className="text-muted">Transactions <span className="text-ink font-medium tabular-nums">{rangeSummary.total}</span></span>
           <span className="text-muted">Reviewed <span className="text-ink font-medium tabular-nums">{rangeSummary.reviewed}/{rangeSummary.total}</span></span>
@@ -2286,10 +2469,11 @@ export default function FinancialsView() {
         </div>
       )}
 
-      {/* Toolbar — To-do / Booked (left) + search & filters (right) */}
+      {/* Ledger toolbar — scope (left) + search & filters (right) */}
+      {tab === "ledger" && (
       <div className="border-t border-b border-line flex items-center gap-x-5 gap-y-2 py-2.5 flex-wrap">
         <div className="flex items-center gap-5">
-          {([["todo", "To-do"], ["booked", "Booked"]] as const).map(([v, label]) => (
+          {([["all", "All"], ["todo", "To book"], ["booked", "Booked"]] as const).map(([v, label]) => (
             <button
               key={v}
               onClick={() => setQueue(v)}
@@ -2297,7 +2481,7 @@ export default function FinancialsView() {
             >
               {label}
               <span className="ml-1.5 font-normal text-muted tabular-nums">
-                {v === "todo" ? rangeSummary.total - rangeSummary.reviewed : rangeSummary.reviewed}
+                {v === "all" ? rangeSummary.total : v === "todo" ? rangeSummary.total - rangeSummary.reviewed : rangeSummary.reviewed}
               </span>
             </button>
           ))}
@@ -2382,9 +2566,10 @@ export default function FinancialsView() {
           </div>
         </div>
       </div>
+      )}
 
-      {/* Smart grouping suggestions — clear look-alike backlogs in one click (To-do only) */}
-      {queue === "todo" && suggestedGroups.length > 0 && (
+      {/* Smart grouping suggestions — clear look-alike backlogs in one click */}
+      {tab === "tobook" && suggestedGroups.length > 0 && (
         <div className="space-y-1">
           {/* Show a rolling few so the suggestions never bury the transaction list;
               clearing one surfaces the next. */}
@@ -2436,9 +2621,14 @@ export default function FinancialsView() {
       )}
 
       {/* Bulk bar — a plain full-width row of text actions once rows are selected */}
-      {selected.size > 0 && (
+      {(tab === "tobook" || tab === "ledger") && selected.size > 0 && (
         <div className="flex items-center gap-x-3 gap-y-2 flex-wrap border-b border-line py-2.5 text-[12.5px]">
           <span className="font-semibold text-ink whitespace-nowrap tabular-nums">{selected.size} selected</span>
+          {bulkProgress && (
+            <span className="flex items-center gap-1.5 text-muted">
+              <Loader2 size={12} className="animate-spin" /> {bulkProgress}
+            </span>
+          )}
           <span className="text-faint">·</span>
           <div className="flex items-center gap-2">
             <select
@@ -2500,42 +2690,115 @@ export default function FinancialsView() {
         </div>
       )}
 
-      {/* Transaction list */}
-      {loading ? (
-        <div className="flex items-center justify-center py-20 text-muted">
-          <Loader2 size={18} className="animate-spin" />
-        </div>
-      ) : loadError ? (
-        // A load failure used to fall through to the empty state, so a broken read
-        // looked exactly like an empty ledger. Say what happened, offer a retry.
-        <div className="text-center py-20">
-          <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
-            <AlertTriangle size={18} className="text-danger-ink" />
+      {/* To book — the queue, grouped by day. Card rows: the left rail carries
+          allocation state, the subline says what the row needs, and the obvious
+          match is one click. */}
+      {tab === "tobook" && (
+        loading ? skeletonRows
+        : loadError ? errorState
+        : txns.length === 0 ? firstRunState
+        : toBookRows.length === 0 ? (
+          <div className="text-center py-20">
+            <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
+              <Check size={18} className="text-success-ink" />
+            </div>
+            <p className="text-[14px] font-semibold text-ink-2">
+              {toBookSearch.trim() || toBookAcct !== "all" ? "Nothing here matches" : "You're all caught up"}
+            </p>
+            <p className="text-[12px] text-muted mt-1">
+              {toBookSearch.trim() || toBookAcct !== "all"
+                ? "No unbooked transactions match this search"
+                : monthBooked.n > 0
+                  ? `${fmtAmount(monthBooked.amt)} tied to deals this month across ${monthBooked.n} transaction${monthBooked.n === 1 ? "" : "s"}`
+                  : "Every transaction is booked"}
+            </p>
+            {(toBookSearch.trim() !== "" || toBookAcct !== "all") && (
+              <button
+                onClick={() => { setToBookSearch(""); setToBookAcct("all"); }}
+                className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
+              >
+                Clear search
+              </button>
+            )}
           </div>
-          <p className="text-[14px] font-semibold text-ink-2">Could not load your transactions</p>
-          <p className="text-[12px] text-muted mt-1 max-w-[420px] mx-auto break-words">{loadError}</p>
-          <p className="text-[11.5px] text-faint mt-1">Nothing has been changed or lost — this is a read that failed.</p>
-          <button
-            onClick={() => { setLoading(true); loadAll(); }}
-            className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover"
-          >
-            Try again
-          </button>
-        </div>
-      ) : txns.length === 0 ? (
-        <div className="text-center py-20">
-          <div className="w-12 h-12 rounded-full bg-surface-3 flex items-center justify-center mx-auto mb-3">
-            <Landmark size={18} className="text-faint" />
+        ) : (
+          <div className="space-y-4">
+            {toBookGroups.map((g) => (
+              <div key={g.date}>
+                <div className="text-[11.5px] font-medium text-muted pb-1.5 border-b border-line">{dayHeading(g.date)}</div>
+                <div className="divide-y divide-line-2">
+                  {g.rows.map((t) => {
+                    const payee = t.counterparty_name?.trim();
+                    const mainLabel = payee || t.description || "—";
+                    const memo = payee ? t.description : "";
+                    const cm = openId === t.id ? null : confidentMatches.get(t.id) ?? null;
+                    return (
+                      <div
+                        key={t.id}
+                        data-txn-id={t.id}
+                        onClick={() => toggleRow(t)}
+                        className={`${railClass(t)} pl-3 pr-1 py-2.5 cursor-pointer transition-colors ${
+                          selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
+                        }`}
+                      >
+                        <div className="flex items-start gap-3 min-w-0">
+                          <input
+                            type="checkbox"
+                            aria-label="Select transaction"
+                            checked={selected.has(t.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => toggleSelect(t.id)}
+                            className="mt-1 align-middle accent-accent flex-shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</div>
+                            <div className="text-[11.5px] text-muted truncate">
+                              {needsLine(t)}
+                              {memo ? <span className="text-faint"> · {memo}</span> : null}
+                            </div>
+                            {cm && (
+                              <div className="mt-1 flex items-center gap-2 flex-wrap min-w-0">
+                                <span className="text-[11.5px] text-muted min-w-0">
+                                  Looks like <span className="text-ink-2 font-medium">{matchLabel(cm.deal)}</span> — {cm.reason}
+                                </span>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); tieMatch(t, cm.deal); }}
+                                  disabled={tyingId === t.id}
+                                  title={`Tie the full ${fmtAmount(t.unallocated)} to ${dealLabel(cm.deal)} as ${t.direction === "out" ? "a supplier payment" : "a buyer payment"}`}
+                                  className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
+                                >
+                                  {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Tie it
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          <div className={`text-[13px] tabular-nums whitespace-nowrap font-medium flex-shrink-0 ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                            {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); saveReview(t, { reviewed: true }); }}
+                            title="Book it"
+                            className="mt-0.5 w-5 h-5 rounded inline-flex items-center justify-center border border-line-3 text-transparent hover:border-ink-2 hover:text-ink-2 transition-colors flex-shrink-0"
+                          >
+                            <Check size={12} strokeWidth={2.4} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
-          <p className="text-[14px] font-semibold text-ink-2">No transactions yet</p>
-          <p className="text-[12px] text-muted mt-1">
-            {plaidItems.length > 0 ? "Nothing has arrived from your bank yet" : "Connect your bank, or import a statement"}
-          </p>
-          <button onClick={pickAndPreview} className="mt-3 text-[12px] font-medium text-accent hover:text-accent-hover">
-            Import statement
-          </button>
-        </div>
-      ) : splitView ? (
+        )
+      )}
+
+      {/* Ledger — the full history */}
+      {tab === "ledger" && (
+        loading ? skeletonRows
+        : loadError ? errorState
+        : txns.length === 0 ? firstRunState
+        : splitView ? (
         // Money in and money out, side by side, each with its own search — pin the
         // received side and the sent side at once to reconcile a refund.
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -2567,22 +2830,8 @@ export default function FinancialsView() {
           </div>
         </div>
       ) : (
-        <>
-          {renderTxnTable(ready)}
-          {untagged.length > 0 && (
-            <div className="mt-2.5 border border-line-2 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setUntaggedOpen((o) => !o)}
-                className="w-full flex items-center gap-2 px-3 py-2.5 text-[12.5px] text-ink-2 hover:bg-surface-2 transition-colors"
-              >
-                <ChevronRight size={13} className={`text-muted transition-transform ${untaggedOpen ? "rotate-90" : ""}`} />
-                <span className="font-medium">Still need a category</span>
-                <span className="text-muted tabular-nums">· {untagged.length}</span>
-              </button>
-              {untaggedOpen && <div className="border-t border-line-2">{renderTxnTable(untagged)}</div>}
-            </div>
-          )}
-        </>
+        renderTxnTable(filtered)
+      )
       )}
 
       {bulkAllocOpen && (
@@ -2597,16 +2846,152 @@ export default function FinancialsView() {
         />
       )}
 
-      {/* Auto-tag rules — a quiet section under the table */}
-      <RulesCard
-        rules={rules}
-        open={rulesOpen}
-        setOpen={setRulesOpen}
-        onApply={applyRules}
-        onDelete={deleteRule}
-        onCreate={(cp, cat, dir) => createRule(cp, cat, "expense", "", dir)}
-      />
+      {/* Auto-tag rules — managed from Setup, next to the tools that act on them */}
+      {tab === "setup" && (
+        <RulesCard
+          rules={rules}
+          open={rulesOpen}
+          setOpen={setRulesOpen}
+          onApply={applyRules}
+          onDelete={deleteRule}
+          onCreate={(cp, cat, dir) => createRule(cp, cat, "expense", "", dir)}
+        />
+      )}
       </div>
+      )}
+
+      {/* Booking sheet — the allocation panel out of the table. One transaction,
+          full height, Escape or the overlay closes it, and it can no longer be
+          scrolled away from its own row. */}
+      {openTxn && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-black/30"
+          onClick={() => setOpenId(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Book transaction"
+            tabIndex={-1}
+            ref={(el) => el?.focus()}
+            className="h-full w-full max-w-[560px] bg-surface border-l border-line shadow-2xl overflow-y-auto p-5 space-y-4 focus:outline-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                {payeeEditId === openTxn.id ? (
+                  <input
+                    autoFocus
+                    value={payeeDraft}
+                    aria-label="Payee name"
+                    onChange={(e) => setPayeeDraft(e.target.value)}
+                    onBlur={(e) => commitPayeeEdit(openTxn, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+                      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); payeeCancelRef.current = true; e.currentTarget.blur(); }
+                    }}
+                    className="w-full min-w-0 bg-surface border border-line rounded px-1.5 py-0.5 text-[16px] font-semibold text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  />
+                ) : (
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-[16px] font-semibold text-ink truncate">
+                      {openTxn.counterparty_name?.trim() || openTxn.description || "Transaction"}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setPayeeDraft(openTxn.counterparty_name?.trim() || openTxn.description || "");
+                        setPayeeEditId(openTxn.id);
+                      }}
+                      title="Rename payee"
+                      aria-label="Rename payee"
+                      className="text-faint hover:text-ink-2 flex-shrink-0 transition-colors"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </div>
+                )}
+                <div className="text-[12px] text-muted mt-0.5 truncate">
+                  {(openTxn.posted_at || "").slice(0, 10)}
+                  {fmtTime(openTxn.posted_dt) ? ` · ${fmtTime(openTxn.posted_dt)}` : ""}
+                  {openTxn.counterparty_name?.trim() && openTxn.description ? ` · ${openTxn.description}` : ""}
+                </div>
+              </div>
+              <button
+                onClick={() => setOpenId(null)}
+                aria-label="Close"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 flex-shrink-0 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className={`text-[20px] font-semibold tabular-nums ${openTxn.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                {openTxn.direction === "in" ? "+" : "−"}{fmtAmount(openTxn.amount)}
+              </div>
+              <button
+                onClick={() => saveReview(openTxn, { reviewed: !openTxn.reviewed })}
+                className={`flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium transition-colors ${
+                  openTxn.reviewed
+                    ? "border border-line text-ink-2 hover:bg-surface-2"
+                    : "bg-accent hover:bg-accent-hover text-on-accent"
+                }`}
+              >
+                <Check size={14} /> {openTxn.reviewed ? "Booked — reopen" : "Book it"}
+              </button>
+            </div>
+
+            {openTxn.counterparty_type !== "loan" && (
+              <label className="block">
+                <span className="block text-[12px] font-medium text-ink-2 mb-1">Category</span>
+                <select
+                  value={openTxn.category || ""}
+                  onChange={(e) => saveReview(openTxn, { category: e.target.value })}
+                  className={`${inp} text-ink-2`}
+                >
+                  <CategoryOptions />
+                </select>
+              </label>
+            )}
+
+            <AllocationPanel
+              txn={openTxn}
+              allocs={allocs}
+              loading={allocLoading}
+              targetType={targetType}
+              setTargetType={setTargetType}
+              filteredDeals={filteredDeals}
+              dealQuery={dealQuery}
+              setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); setDealListOpen(true); }}
+              dealListOpen={dealListOpen}
+              setDealListOpen={setDealListOpen}
+              selectedDeal={selectedDeal}
+              onPickDeal={(d) => { setSelectedDeal(d); setDealQuery(dealLabel(d)); setDealListOpen(false); }}
+              filteredLoans={filteredLoans}
+              loanQuery={loanQuery}
+              setLoanQuery={(v) => { setLoanQuery(v); setSelectedLoan(null); setLoanListOpen(true); }}
+              loanListOpen={loanListOpen}
+              setLoanListOpen={setLoanListOpen}
+              selectedLoan={selectedLoan}
+              onPickLoan={(l) => { setSelectedLoan(l); setLoanQuery(loanLabel(l)); setLoanListOpen(false); }}
+              amountStr={amountStr}
+              setAmountStr={setAmountStr}
+              role={role}
+              setRole={setRole}
+              note={note}
+              setNote={setNote}
+              allowSplit={allowSplit}
+              setAllowSplit={setAllowSplit}
+              busy={allocBusy}
+              onSubmit={submitAlloc}
+              onRemove={removeAlloc}
+              onUntagLoan={untagLoan}
+              onCreateRule={createRule}
+              newDealBusy={newDealBusy}
+              onCreateDeal={createDealFromTxn}
+            />
+          </div>
+        </div>
       )}
     </div>
   );
