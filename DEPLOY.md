@@ -80,8 +80,14 @@ Go to GitHub → your repo → Releases → find the draft → click **Publish r
 
 1. Download the `.dmg` from the GitHub release
 2. Open it, drag ClientHub to Applications
-3. **First launch:** right-click ClientHub in Applications → **Open** → **Open** (one-time only)
-   - This bypasses Gatekeeper for unsigned apps. Subsequent launches just work.
+3. **First launch:** double-click it. No right-click, no Gatekeeper bypass.
+   - Signed with a Developer ID certificate and notarized by Apple since v0.15.134,
+     with the notarization ticket stapled into the app, so it validates offline.
+   - macOS asks once whether to open an app downloaded from the internet. That is the
+     ordinary quarantine prompt every notarized app gets — not a security warning.
+   - The signature changed in v0.15.134, so macOS treats it as a new app and re-prompts
+     for keychain access once. Approve it. Do not rename the keyring service to silence
+     this — that breaks credential lookup for existing installs.
 4. In ClientHub:
    - **Settings → Email:** paste your `you@yourbusiness.com` and the app password (or use OAuth2 button)
    - **Settings → Company:** fill in business info that goes on invoices
@@ -133,17 +139,24 @@ Until TASK-007 is complete, repeat the per-device installation flow.
 
 ## What can go wrong (and what to do)
 
-### Mac: "ClientHub is damaged and can't be opened"
-This means the ad-hoc signing didn't apply. Run in Terminal:
-```bash
-xattr -cr /Applications/ClientHub.app
-```
-Then launch normally.
+### Mac: "Ecliptr is damaged and can't be opened"
+On a notarized build this means the download is corrupt or the app was modified after
+signing — not a Gatekeeper quirk. Do **not** run `xattr -cr`. That strips the quarantine
+flag, which skips the check rather than passing it, and it hides the real fault.
 
-### Mac: First launch is rejected even with right-click → Open
-Newer macOS versions sometimes require:
-1. System Settings → Privacy & Security
-2. Scroll to bottom: "ClientHub was blocked..." → click **Open Anyway**
+Confirm what you actually have:
+```bash
+spctl -a -vvv -t exec /Applications/Ecliptr.app
+xcrun stapler validate /Applications/Ecliptr.app
+```
+A good install prints `accepted` with `source=Notarized Developer ID`, and
+`The validate action worked!`. Anything else means re-download the `.dmg`.
+
+### Mac: "Apple could not verify Ecliptr is free of malware"
+Means the build reaching that Mac is not notarized — an older release, or a build whose
+notarization step failed. Check the release the `.dmg` came from, and confirm its
+workflow run has a green macOS leg. Every leg must be green: a failed macOS leg leaves
+the release a draft precisely so a half-signed build never reaches anyone.
 
 ### Windows: SmartScreen blocks every launch
 Add the `.msi`'s install directory (typically `C:\Program Files\ClientHub\`) to Windows Defender's exclusions. Or accept the one-time "Run anyway" each install — it's not blocked after install completes.
