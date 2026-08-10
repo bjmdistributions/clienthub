@@ -12,9 +12,12 @@ How to ship ClientHub to your devices. This is the human's runbook — agents do
 - **Email:** Google Workspace (paid, ~$6/mo) — your business address as sender
 - **Sync:** Syncthing P2P between the 3 devices, free
 - **AI:** Ollama running locally on each device, free
-- **Code-signing:** Skipped (no Apple Developer ID, no Windows EV cert) — first-launch warnings handled below
+- **Code-signing:** macOS signed with a Developer ID certificate and notarized by Apple
+  since v0.15.135. Windows is still unsigned (no EV cert) — its SmartScreen warning is
+  handled below
 
-**Total recurring cost:** ~$6/mo for Google Workspace. Nothing else.
+**Total recurring cost:** ~$14/mo — ~$6/mo Google Workspace plus the $99/yr Apple
+Developer Program that pays for macOS signing and notarization.
 
 ---
 
@@ -81,7 +84,7 @@ Go to GitHub → your repo → Releases → find the draft → click **Publish r
 1. Download the `.dmg` from the GitHub release
 2. Open it, drag ClientHub to Applications
 3. **First launch:** double-click it. No right-click, no Gatekeeper bypass.
-   - Signed with a Developer ID certificate and notarized by Apple since v0.15.134,
+   - Signed with a Developer ID certificate and notarized by Apple since v0.15.135,
      with the notarization ticket stapled into the app, so it validates offline.
    - macOS asks once whether to open an app downloaded from the internet. That is the
      ordinary quarantine prompt every notarized app gets — not a security warning.
@@ -197,8 +200,9 @@ Your sync folder **is** your backup, but only if Syncthing is healthy on at leas
 | GitHub Actions | $0 (within 2,000 min/mo private repo allotment) |
 | Syncthing | $0 |
 | Ollama + models | $0 (local) |
-| Code-signing | $0 (skipped) |
+| Apple Developer Program (macOS signing + notarization) | $99/yr — ~$8.25/mo |
+| Windows code-signing | $0 (skipped, no EV cert) |
 | Domain (already owned for Workspace) | $0 incremental |
-| **Total** | **~$6/mo** |
+| **Total** | **~$14/mo** |
 
 vs. equivalent SaaS bundle (HubSpot Starter $20 + QuickBooks $30 + Zapier $20 + Loom $15 = ~$85/mo). Net savings: ~$950/yr.
