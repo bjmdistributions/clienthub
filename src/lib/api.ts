@@ -1703,6 +1703,9 @@ export interface FinancialsOverview {
   refund_liability: number;
   tax_reserve: number;
   refund_reserve: number;
+  /** Free cash if both reserve TARGETS were actually parked elsewhere. The headline
+   *  `free_cash` no longer subtracts reserves — see financials_overview. */
+  free_cash_after_reserves: number;
   refund_reserve_base: number;
   refund_reserve_pct: number;
   cash_floor: number;

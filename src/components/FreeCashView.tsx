@@ -174,17 +174,20 @@ export default function FreeCashView() {
     }
   };
 
+  // Reserves are NOT here any more — they are targets, not deductions (2026-08-10).
+  // Every line below is money that is genuinely owed to someone else or fenced off
+  // by a floor you set; the tax and refund reserves ride under "Set aside" instead.
   const deductions: { label: string; tag: string; value: number; strong?: boolean }[] = ov
     ? [
         { label: "Credit cards owed",                  tag: "not yours",    value: ov.credit_card_balance },
         { label: "Supplier payables",                  tag: "not yours",    value: ov.supplier_payables },
         { label: "Refund liability (we owe buyers)",   tag: "not yours",    value: ov.refund_liability },
-        { label: "Tax reserve",                        tag: "untouchable",  value: ov.tax_reserve, strong: true },
-        { label: `Refund reserve · ${Math.round((ov.refund_reserve_pct ?? 0.3) * 100)}% of ${fmtAmount(ov.refund_reserve_base ?? 0)} net profit`, tag: "set aside", value: ov.refund_reserve },
         { label: "Cash floor",                         tag: "untouchable",  value: ov.cash_floor },
         { label: "Loans outstanding",                  tag: "not yours",    value: ov.loan_outstanding },
       ]
     : [];
+
+  const reserveTotal = ov ? ov.tax_reserve + ov.refund_reserve : 0;
 
   const reconciled = ov
     ? ov.allocated_actuals.buyer_in + ov.allocated_actuals.supplier_paid + ov.allocated_actuals.refunds_out
@@ -330,6 +333,40 @@ export default function FreeCashView() {
                 )}
               </div>
             </div>
+
+            {/* ── Reserve targets — a record, never a deduction ──
+                These used to be subtracted from free cash, which hid the money
+                permanently and double-counted every tax payment (the payment
+                already leaves the bank balance). They are goals to park in a
+                real account, so they are stated, not taken. */}
+            {reserveTotal > 0.005 && (
+              <div className="min-w-0">
+                <h3 className="text-[13px] font-semibold text-ink tracking-tight">Set aside</h3>
+                <p className="text-[11px] text-muted mt-0.5">
+                  A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year — for the record only,
+                  not taken out of the number above
+                </p>
+                <div className="mt-3 border-t border-line-2 divide-y divide-line-2">
+                  <div className="flex items-center gap-3 py-2.5 min-w-0">
+                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">Tax</span>
+                    <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.tax_reserve)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 py-2.5 min-w-0">
+                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">
+                      Refunds
+                      <span className="text-muted"> · {Math.round((ov.refund_reserve_pct ?? 0.3) * 100)}%</span>
+                    </span>
+                    <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.refund_reserve)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 py-2.5 min-w-0">
+                    <span className="min-w-0 flex-1 text-[12.5px] text-muted">If you parked both, free cash would be</span>
+                    <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${(ov.free_cash_after_reserves ?? 0) < 0 ? "text-danger-ink" : "text-muted"}`}>
+                      {fmtAmount(ov.free_cash_after_reserves ?? 0)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ── War chest progress (informational target, not deducted) ── */}
             {ov.war_chest > 0 && (

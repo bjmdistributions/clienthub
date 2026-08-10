@@ -13221,7 +13221,18 @@ pub async fn financials_overview() -> Result<Value, String> {
              ELSE 0 END),0) FROM loan WHERE status='open'",
         [], |r| r.get(0)).unwrap_or(0.0);
 
-    let free_cash = round2(bank_balance - credit_card_balance - supplier_payables - refund_liability - tax_reserve - refund_reserve - cash_floor - loan_outstanding);
+    // Reserves are TARGETS, not deductions (Jack's call, 2026-08-10). They are derived
+    // from profit for the record only: nothing ever draws them down (`reserve_entry` has
+    // no reader and no writer, 0 rows live), so subtracting them hid money permanently
+    // AND double-counted every tax payment — the payment already left `bank_balance`,
+    // yet the full percentage stayed withheld here. Free cash is now what is genuinely
+    // spendable; `tax_reserve`/`refund_reserve` still ride along in the response so the
+    // screen can show them as goals to park in a real account. Do not re-subtract them
+    // without wiring `reserve_entry` draw-downs first.
+    let free_cash = round2(bank_balance - credit_card_balance - supplier_payables - refund_liability - cash_floor - loan_outstanding);
+    // What would be left if both reserve targets were actually parked elsewhere —
+    // shown as a secondary line, never as the headline figure.
+    let free_cash_after_reserves = round2(free_cash - tax_reserve - refund_reserve);
 
     // Trailing monthly opex (last 90 days / 3) for the runway/status.
     let opex_3mo: f64 = conn.query_row(
@@ -13279,6 +13290,7 @@ pub async fn financials_overview() -> Result<Value, String> {
         "loan_outstanding": round2(loan_outstanding),
         "war_chest": round2(war_chest),
         "free_cash": free_cash,
+        "free_cash_after_reserves": free_cash_after_reserves,
         // True when a bank is connected via Plaid — the bank/card balances are then
         // live from the feed, so the manual Adjust fields are display-only.
         "has_plaid": has_plaid,

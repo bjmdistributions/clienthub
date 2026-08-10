@@ -744,7 +744,10 @@ export default function AnalyticsView() {
                   { label: "Credit card owed",   v: money.credit_card_balance, out: true },
                   { label: "Supplier payables",  v: money.supplier_payables,  out: true },
                   { label: "Refund liability",   v: money.refund_liability,   out: true },
-                  { label: "Reserves (tax + refund)", v: money.tax_reserve + money.refund_reserve, out: true },
+                  // Reserves are targets, not deductions — listing them here made the
+                  // breakdown fail to add up to the figure printed above it. Cash floor
+                  // IS deducted and was missing, which broke the same sum the other way.
+                  { label: "Cash floor",         v: money.cash_floor,         out: true },
                   { label: "Loans outstanding",  v: money.loan_outstanding,   out: true },
                 ].filter((r) => r.v > 0.005 || r.label === "Bank balance").map((r) => (
                   <div key={r.label} className="flex items-center justify-between text-[12.5px]">
