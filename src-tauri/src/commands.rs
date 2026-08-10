@@ -11748,6 +11748,243 @@ fn bank_txn_is_referenced(conn: &rusqlite::Connection, id: &str) -> bool {
     ).unwrap_or(1) != 0
 }
 
+/// Full-fidelity recovery copy of a bank row, allocations inline. Lifted out of the
+/// `removed` handler so the settle path and the retraction path cannot drift apart.
+const BANK_TXN_BACKUP_SQL: &str =
+    "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,\
+        'amount',amount,'direction',direction,'description',description,'memo_raw',memo_raw,\
+        'category',category,'counterparty_name',counterparty_name,\
+        'counterparty_type',counterparty_type,'counterparty_id',counterparty_id,\
+        'source_format',source_format,'reviewed',reviewed,'raw_json',raw_json,\
+        'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at,\
+        'allocations',(SELECT json_group_array(json_object('id',a.id,'deal_flow_id',a.deal_flow_id,\
+            'amount',a.amount,'role',a.role,'note',a.note)) FROM bank_allocation a WHERE a.bank_txn_id=bank_txn.id)) \
+     FROM bank_txn WHERE id=?1";
+
+/// Resolve the pending row a posted transaction replaces — but only on THIS Plaid
+/// connection. Plaid's `transaction_id` is unique per ITEM, not globally (the root cause
+/// of every duplicate in this ledger), and the caller DELETES what this resolves to, so
+/// the connection assertion is not optional. The `account_id` arm covers rows predating
+/// the `pa` stamp. `json_valid()` is mandatory: `raw_json` is TEXT NOT NULL DEFAULT ''
+/// and a bare json_extract over '' throws "malformed JSON" and blanks the whole
+/// Financials screen (invariant 10, the v0.15.116 incident).
+const SETTLE_SRC_SQL: &str =
+    "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,''), \
+            COALESCE(counterparty_type,''), COALESCE(counterparty_id,''), \
+            COALESCE(direction,''), COALESCE(description,'') \
+       FROM bank_txn \
+      WHERE id=?1 AND source_format='plaid' \
+        AND ( (?2 <> '' AND json_valid(raw_json) AND COALESCE(json_extract(raw_json,'$.pa'),'')=?2) \
+              OR account_id=?3 )";
+
+/// Which booking fields land on the posted twin. Pure, so the rule is directly testable.
+///
+/// A blank twin was inserted moments ago and its `category`/`counterparty_name` are
+/// machine output — `plaid_category` ALWAYS writes one, so gap-filling would carry
+/// nothing and the user would re-classify every settle. A twin the user has already
+/// worked on keeps its own values and only its gaps are filled — the `dedupe_bank_txns`
+/// rule. `reviewed` only ever ORs, never downgrades.
+///
+/// `counterparty_type` + `counterparty_id` are ONE fact — the loan tag written by
+/// `tag_bank_txn_to_loan`, which deliberately leaves `reviewed` alone and which
+/// `loan_ledger` sums to derive a loan's repaid total. They move as a pair, gated on the
+/// target's slot being empty, never independently.
+fn carried_booking_fields(
+    src: (i64, &str, &str, &str, &str),   // reviewed, category, cp_name, cp_type, cp_id
+    tgt: (i64, &str, &str, &str, &str),
+    tgt_has_work: bool,
+) -> (i64, String, String, String, String) {
+    let pick = |s: &str, t: &str| -> String {
+        if tgt_has_work {
+            if t.trim().is_empty() { s.to_string() } else { t.to_string() }
+        } else if s.trim().is_empty() { t.to_string() } else { s.to_string() }
+    };
+    let rev = if src.0 == 1 || tgt.0 == 1 { 1 } else { 0 };
+    let (ct, ci) = if tgt.3.trim().is_empty() && !src.3.trim().is_empty() {
+        (src.3.to_string(), src.4.to_string())
+    } else { (tgt.3.to_string(), tgt.4.to_string()) };
+    (rev, pick(src.1, tgt.1), pick(src.2, tgt.2), ct, ci)
+}
+
+enum Settled { None, Retired, Refused(String) }
+
+/// Plaid says `posted_id` replaces `pending_id`. Move the pending row's booking work onto
+/// the posted row and retire the pending row — as ONE operation, so no instant exists in
+/// which two rows for one payment both carry allocations. Splitting this into "carry now,
+/// delete when `removed` arrives" would leave both rows allocated for the real
+/// coexistence window (measured 10.5-74.1h across devices); `deal_bank_actuals` sums both
+/// past its EXISTS guard, `resync_completed_deal` persists the doubled figure, and
+/// invariant 8's last-recorded fallback then freezes it permanently.
+#[allow(clippy::too_many_arguments)]
+fn settle_pending_twin(
+    conn: &rusqlite::Connection,
+    pending_id: &str, posted_id: &str,
+    pacct: &str, label: &str, direction: &str, now: &str,
+    over_allocated: &mut Vec<String>,
+    touched_deals: &mut std::collections::HashSet<String>,
+) -> Settled {
+    if pending_id == posted_id { return Settled::None; }
+
+    let src = conn.query_row(SETTLE_SRC_SQL, rusqlite::params![pending_id, pacct, label], |r| Ok((
+        r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+        r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?,
+    ))).ok();
+    let Some((s_rev, s_cat, s_cp, s_ct, s_ci, s_dir, s_desc)) = src else { return Settled::None };
+
+    // Invariant 9. A settle never flips direction; if it did, moving a buyer_payment onto
+    // it would book money against the wrong side of reconciliation.
+    if s_dir != direction { return Settled::Refused(format!("{s_desc}: direction differs")); }
+
+    let tgt = conn.query_row(
+        "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,''), \
+                COALESCE(counterparty_type,''), COALESCE(counterparty_id,''), amount \
+           FROM bank_txn WHERE id=?1", [posted_id], |r| Ok((
+        r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+        r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, f64>(5)?,
+    ))).ok();
+    let Some((t_rev, t_cat, t_cp, t_ct, t_ci, t_amount)) = tgt else { return Settled::None };
+
+    // Links this fix does not know how to move. Refusing costs nothing — both rows stay
+    // exactly as they are and the retraction is deferred — whereas moving the allocation
+    // and leaving `refunds.bank_txn_id` behind rots the counted-once rule. Fails SAFE on a
+    // query error, matching bank_txn_is_referenced.
+    let unmovable: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=?1) \
+             OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=?1) \
+             OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=?1) \
+             OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=?1)",
+        [pending_id], |r| r.get(0)).unwrap_or(1);
+    if unmovable != 0 {
+        return Settled::Refused(format!("{s_desc}: a refund / loan / purchase / expense is linked to it"));
+    }
+
+    let src_allocs: Vec<(String, String, String, f64, String, String, String, String)> = conn
+        .prepare("SELECT id, COALESCE(org_id,''), deal_flow_id, amount, COALESCE(role,''), \
+                         COALESCE(note,''), COALESCE(created_by,''), COALESCE(created_at,'') \
+                    FROM bank_allocation WHERE bank_txn_id=?1")
+        .and_then(|mut st| st.query_map([pending_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?,
+            r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))
+            .map(|rows| rows.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let tgt_allocs: Vec<(String, String, f64)> = conn
+        .prepare("SELECT deal_flow_id, COALESCE(role,''), amount FROM bank_allocation WHERE bank_txn_id=?1")
+        .and_then(|mut st| st.query_map([posted_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map(|rows| rows.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+
+    // Exclusivity, mirroring allocate_bank_txn. Never invent a split across deals that
+    // nobody chose.
+    let src_deals: std::collections::HashSet<&str> = src_allocs.iter().map(|a| a.2.as_str()).collect();
+    let tgt_deals: std::collections::HashSet<&str> = tgt_allocs.iter().map(|a| a.0.as_str()).collect();
+    if !tgt_deals.is_empty() && !src_deals.is_empty() && src_deals != tgt_deals {
+        return Settled::Refused(format!("{s_desc}: the posted transaction is already booked to a different deal"));
+    }
+
+    // Invariant 5 — recovery copy BEFORE the first mutation, so a settle that refuses
+    // halfway still leaves a copy of anything already touched. INSERT OR IGNORE: the first
+    // (richest) copy wins, so a re-entry after a partial run cannot overwrite a good backup
+    // with one whose allocations array is already empty.
+    if let Ok(rj) = conn.query_row(BANK_TXN_BACKUP_SQL, [pending_id], |r| r.get::<_, String>(0)) {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) \
+             VALUES (?1,?2,?3,'plaid_settled',?4)",
+            rusqlite::params![pending_id, rj, posted_id, now]);
+    }
+
+    // Only USER work travels. A non-empty `category` is not user work — plaid_category
+    // always writes one.
+    if bank_txn_is_referenced(conn, pending_id) {
+        let tgt_work = bank_txn_is_referenced(conn, posted_id);
+        let (rev, cat, cp, ct, ci) = carried_booking_fields(
+            (s_rev, &s_cat, &s_cp, &s_ct, &s_ci),
+            (t_rev, &t_cat, &t_cp, &t_ct, &t_ci), tgt_work);
+        if (rev, &cat, &cp, &ct, &ci) != (t_rev, &t_cat, &t_cp, &t_ct, &t_ci) {
+            let mut c = Map::new();
+            c.insert("reviewed".into(), json!(rev));
+            c.insert("category".into(), Value::String(cat.clone()));
+            c.insert("counterparty_name".into(), Value::String(cp.clone()));
+            c.insert("counterparty_type".into(), Value::String(ct.clone()));
+            c.insert("counterparty_id".into(), Value::String(ci.clone()));
+            c.insert("updated_at".into(), Value::String(now.to_string()));
+            // A DISTINCT record_upsert from the insert's, so it carries a later HLC:
+            // per-column LWW is strict (`hlc > c`), so folding this into the insert event
+            // would leave every peer holding the blank values.
+            if sync::record_upsert("bank_txn", posted_id, c).is_err() {
+                return Settled::Refused(format!("{s_desc}: could not record the carry"));
+            }
+            if conn.execute(
+                "UPDATE bank_txn SET reviewed=?1, category=?2, counterparty_name=?3, \
+                        counterparty_type=?4, counterparty_id=?5, updated_at=?6 WHERE id=?7",
+                rusqlite::params![rev, cat, cp, ct, ci, now, posted_id]).is_err() {
+                return Settled::Refused(format!("{s_desc}: could not save the carry"));
+            }
+        }
+    }
+
+    let mut all_ok = true;
+    let mut moved_any = false;
+    for (aid, aorg, adeal, aamt, arole, anote, aby, aat) in &src_allocs {
+        // The user re-booked this same payment on the posted twin while both rows were
+        // visible. Moving this one would leave TWO allocations for one payment on one deal
+        // and double the leg. It is a proven duplicate inside a bank-proven pair, the
+        // backup above already holds it, and the delete goes through the oplog
+        // (invariant 4), so retire it instead of stacking it.
+        if tgt_allocs.iter().any(|(d, r, amt)| d == adeal && r == arole && (amt - aamt).abs() <= 0.005) {
+            if sync::record_delete("bank_allocation", aid).is_err() { all_ok = false; continue; }
+            if conn.execute("DELETE FROM bank_allocation WHERE id=?1", [aid]).is_err() { all_ok = false; continue; }
+            touched_deals.insert(adeal.clone());
+            continue;
+        }
+        // MOVE, never copy: the same primary key, so a replay is a no-op UPDATE, no
+        // alloc_<uuid> is minted, no tombstone is written, and created_by/created_at
+        // provenance survives. The FULL identifying set is sent, not just the changed
+        // column — apply_upsert's stub-INSERT path would otherwise materialise
+        // amount=0/role='' on a peer that has not seen the create event.
+        let mut c = Map::new();
+        c.insert("org_id".into(), json!(aorg));
+        c.insert("bank_txn_id".into(), json!(posted_id));
+        c.insert("deal_flow_id".into(), json!(adeal));
+        c.insert("amount".into(), json!(aamt));
+        c.insert("role".into(), json!(arole));
+        c.insert("note".into(), json!(anote));
+        c.insert("created_by".into(), json!(aby));
+        c.insert("created_at".into(), json!(aat));
+        c.insert("updated_at".into(), json!(now));
+        if sync::record_upsert("bank_allocation", aid, c).is_err() { all_ok = false; continue; }
+        if conn.execute("UPDATE bank_allocation SET bank_txn_id=?1, updated_at=?2 WHERE id=?3",
+                        rusqlite::params![posted_id, now, aid]).is_err() { all_ok = false; continue; }
+        moved_any = true;
+        touched_deals.insert(adeal.clone());
+    }
+
+    // Invariant 1. A hold settling LOWER than it was authorised for (card holds, tips, FX)
+    // leaves allocations above the transaction. Surface it; NEVER trim — the `modified`
+    // handler made exactly this call, and refusing here would drop the booking, which is
+    // the bug this exists to fix.
+    if moved_any {
+        let tgt_sum: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM bank_allocation WHERE bank_txn_id=?1",
+            [posted_id], |r| r.get(0)).unwrap_or(0.0);
+        if tgt_sum > t_amount + 0.005 {
+            over_allocated.push(format!("{s_desc} ({tgt_sum:.2} booked against a settled {t_amount:.2})"));
+        }
+    }
+
+    if !all_ok { return Settled::Refused(format!("{s_desc}: could not move every booking, both rows kept")); }
+    // Invariant 2: an allocation must never outlive its transaction.
+    let left: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM bank_allocation WHERE bank_txn_id=?1", [pending_id], |r| r.get(0)).unwrap_or(1);
+    if left != 0 { return Settled::Refused(format!("{s_desc}: bookings still attached, both rows kept")); }
+
+    // Invariant 4: oplog first. A local DELETE with no tombstone resurrects on the next
+    // pull — and would resurrect WITHOUT its allocations, which have moved.
+    if sync::record_delete("bank_txn", pending_id).is_err() {
+        return Settled::Refused(format!("{s_desc}: could not record the retraction, both rows kept"));
+    }
+    let _ = conn.execute("DELETE FROM bank_txn WHERE id=?1", [pending_id]);
+    Settled::Retired
+}
+
 /// Account labels that are really the SAME account under a different mask, as confirmed by a
 /// previous `dedupe_bank_txns` merge (`old label -> surviving label`). Applied when importing
 /// so a stale Plaid item that re-sends under the old mask can't re-split the account.
@@ -12530,12 +12767,19 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let now = Utc::now().to_rfc3339();
     let mut imported = 0i64;
     let mut removed = 0i64;
-    let mut unlinked_removed: Vec<String> = Vec::new(); // bank retracted them AFTER they were reviewed/linked
     let mut amended = 0i64;     // bank changed a transaction we already held
     // Amendments that shrank a transaction below what's already booked against it.
     // Surfaced, never auto-trimmed — deciding which allocation gives way is the
     // user's call, and the healer that used to make it deleted the newest leg.
     let mut amended_over_allocated: Vec<String> = Vec::new();
+    // Pending -> posted settles. Plaid names the pending row each posted transaction
+    // replaces (`pending_transaction_id`); nothing in this codebase had ever read it, so
+    // every guard around churn was inferring an identity the bank states outright.
+    let mut settled = 0i64;                              // pending rows retired onto their posted twin
+    let mut settle_refused: Vec<String> = Vec::new();    // pair found, work NOT moved — both rows kept
+    let mut retracted_kept: Vec<String> = Vec::new();    // bank retracted booked work; we KEPT the row
+    let mut with_pending_ref = 0i64;                     // added txns carrying pending_transaction_id
+    let mut touched_deals: std::collections::HashSet<String> = Default::default();
     let mut preparing = false;  // at least one item still extracting after we waited
     let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
     // Shared budget (seconds) for waiting on freshly-linked items whose initial
@@ -12650,6 +12894,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         .unwrap_or("").to_string();
                     let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let rawj = json!({ "dt": dt, "pa": pacct, "tid": tid }).to_string();
+                    // Plaid names the pending row this posted transaction replaces. Nothing
+                    // in this codebase has ever read it; every guard around pending/posted
+                    // churn has been inferring an identity the bank states outright. Exact
+                    // string, normalised through the same plaid_txn_id the pending row was
+                    // created under, so the result IS that row's primary key.
+                    let ptid = t.get("pending_transaction_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if !ptid.is_empty() { with_pending_ref += 1; }
+                    let pend: Option<String> = (!ptid.is_empty()).then(|| plaid_txn_id(ptid));
                     // DEDUP. Plaid's transaction_id is unique PER ITEM, not across links —
                     // reconnecting Plaid mints a brand-new item and re-pulls ~2 years of
                     // history under NEW transaction_ids, so an id-only check re-imports it all
@@ -12657,7 +12909,22 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // exact id, OR by its account/date/amount/direction/memo fingerprint against
                     // a PRE-EXISTING row (imported_at < now) — the `imported_at` guard means two
                     // genuinely-identical transactions in the SAME sync still both import.
-                    if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() { continue; }
+                    if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_ok() {
+                        // Already held — a replayed page, or the twin landed on an earlier
+                        // sync while the pending row was deferred. Settle BEFORE the
+                        // continue: this is what lets "Re-pull all history" heal a deferred
+                        // row, because a full re-pull re-serves every posted transaction
+                        // with its pending_transaction_id intact.
+                        if let Some(p) = &pend {
+                            match settle_pending_twin(&conn, p, &id, &pacct, &label, direction, &now,
+                                                      &mut amended_over_allocated, &mut touched_deals) {
+                                Settled::Retired    => settled += 1,
+                                Settled::Refused(w) => settle_refused.push(w),
+                                Settled::None       => {}
+                            }
+                        }
+                        continue;
+                    }
                     // Content match against a prior-run row → this is a duplicate, skip it. But
                     // if that existing row predates provenance capture (empty raw_json), backfill
                     // it now (synced) so a later cleanup can use the connection/timestamp signal.
@@ -12714,6 +12981,26 @@ pub async fn plaid_sync() -> Result<Value, String> {
                                     let _ = sync::record_upsert("bank_txn", mid, c);
                                 }
                             }
+                            // The posted transaction is already on the books under ANOTHER
+                            // id — normally the other device's Plaid connection imported it
+                            // first. This device still holds the pending row and is still
+                            // the one that will be told to retract it, and the payload in
+                            // hand names it. Only when exactly ONE surviving copy matches:
+                            // two content-identical rows mean the ledger cannot say which is
+                            // the replacement, and this book holds genuinely distinct
+                            // same-amount wires days apart.
+                            if let Some(p) = &pend {
+                                let cands: Vec<&String> = matches.iter().map(|(m, _)| m)
+                                    .filter(|m| *m != p && !removed_ids.contains(*m)).collect();
+                                if cands.len() == 1 {
+                                    match settle_pending_twin(&conn, p, cands[0], &pacct, &label, direction, &now,
+                                                              &mut amended_over_allocated, &mut touched_deals) {
+                                        Settled::Retired    => settled += 1,
+                                        Settled::Refused(w) => settle_refused.push(w),
+                                        Settled::None       => {}
+                                    }
+                                }
+                            }
                             continue;
                         }
                     }
@@ -12745,6 +13032,17 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         break;
                     }
                     item_imported += 1;
+                    // The normal same-page settle: the posted twin was just inserted, so
+                    // move the pending row's booking onto it and retire the pending row as
+                    // ONE operation — no instant exists in which both rows carry allocations.
+                    if let Some(p) = &pend {
+                        match settle_pending_twin(&conn, p, &id, &pacct, &label, direction, &now,
+                                                  &mut amended_over_allocated, &mut touched_deals) {
+                            Settled::Retired    => settled += 1,
+                            Settled::Refused(w) => settle_refused.push(w),
+                            Settled::None       => {}
+                        }
+                    }
                 }
             }
             // AMENDMENTS. Plaid reports a transaction it has changed since we last saw
@@ -12823,11 +13121,27 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     item_amended += 1;
                 }
             }
+            // A row failed to persist — do NOT advance the cursor, or Plaid never
+            // re-serves this page and those transactions vanish from the ledger.
+            // Break BEFORE `removed` (not after, as this used to): the break inside the
+            // `added` loop only exits that loop, so a page whose imports half-failed still
+            // applied every retraction it was handed, against twins that were never
+            // imported. Breaking here leaves the cursor unadvanced exactly as before, so
+            // the page simply replays.
+            if status == "error" { break; }
             if let Some(rem) = page.get("removed").and_then(|v| v.as_array()) {
                 for r in rem {
                     let tid = r.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
                     if tid.is_empty() { continue; }
                     let id = plaid_txn_id(tid);
+                    // Nothing to retract. The settle above already retired it in this page,
+                    // an earlier page/sync did, or this device never held it — with one
+                    // account linked on two devices only ONE copy of each real transaction
+                    // survives dedup, so the device that lost the import race is still told
+                    // to retract its own pending id. This MUST come before
+                    // `bank_txn_is_referenced`, which fails SAFE and reports a MISSING row
+                    // as referenced, inflating the warning with phantom ids on every replay.
+                    if conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&id], |_| Ok(())).is_err() { continue; }
                     // The bank retracted this transaction — most often a PENDING row
                     // being replaced by its posted twin under a NEW transaction_id.
                     // Honour it. Keeping a retracted row that is reviewed/allocated
@@ -12848,26 +13162,53 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // because loan_ledger derives repaid totals by summing tagged rows,
                     // the loan's outstanding balance silently jumped back up everywhere.
                     let was_finished = bank_txn_is_referenced(&conn, &id);
+                    // INVARIANT 3: a booked transaction is never deleted automatically.
+                    // Until now this value was computed and only LOGGED while the delete ran
+                    // regardless — which is how four reviewed rows were destroyed unattended
+                    // on 2026-08-10 by the 20-minute timer. If the settle above could not
+                    // account for this row's work, KEEP it. A stale row that is visible and
+                    // still in the ledger is a ten-second fix; deleted work is not
+                    // recoverable from a toast nobody was there to read. "Re-pull all
+                    // history" re-serves every posted transaction with its
+                    // pending_transaction_id and settles this row properly.
+                    if was_finished {
+                        // Record the retraction ON the row so it is not silently a normal
+                        // transaction forever. Built in Rust, not SQL json_set, so the oplog
+                        // event and the local row carry the same string.
+                        let raw: String = conn.query_row(
+                            "SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [&id], |r| r.get(0))
+                            .unwrap_or_default();
+                        let mut obj = serde_json::from_str::<Value>(&raw).ok()
+                            .and_then(|v| v.as_object().cloned()).unwrap_or_default();
+                        if !obj.contains_key("rtr") {
+                            obj.insert("rtr".into(), Value::String(now.clone()));
+                            let rj = Value::Object(obj).to_string();
+                            let mut c = Map::new();
+                            c.insert("raw_json".into(), Value::String(rj.clone()));
+                            c.insert("updated_at".into(), Value::String(now.clone()));
+                            if sync::record_upsert("bank_txn", &id, c).is_ok() {
+                                let _ = conn.execute(
+                                    "UPDATE bank_txn SET raw_json=?1, updated_at=?2 WHERE id=?3",
+                                    rusqlite::params![rj, now, id]);
+                            }
+                        }
+                        retracted_kept.push(id);
+                        continue;
+                    }
                     // Back the row up BEFORE deleting it. Every other delete path in the
                     // ledger writes a recovery copy; this one — the only UNATTENDED
                     // deleter, driven by the bank rather than by a person — did not, so a
                     // retraction of allocated money left nothing to restore and no record
                     // of which deal it belonged to. Store the allocations inline so the
                     // deal linkage survives too, which the Google Sheet backup cannot do.
+                    // INSERT OR IGNORE, not REPLACE: a re-entry after a partial delete
+                    // re-reads the row with an empty allocations array and would otherwise
+                    // overwrite the only record of the deal linkage. First copy wins.
                     if let Ok(rj) = conn.query_row(
-                        "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,\
-                            'amount',amount,'direction',direction,'description',description,'memo_raw',memo_raw,\
-                            'category',category,'counterparty_name',counterparty_name,\
-                            'counterparty_type',counterparty_type,'counterparty_id',counterparty_id,\
-                            'source_format',source_format,'reviewed',reviewed,'raw_json',raw_json,\
-                            'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at,\
-                            'allocations',(SELECT json_group_array(json_object('id',a.id,'deal_flow_id',a.deal_flow_id,\
-                                'amount',a.amount,'role',a.role,'note',a.note)) FROM bank_allocation a WHERE a.bank_txn_id=bank_txn.id)) \
-                         FROM bank_txn WHERE id=?1",
-                        [&id], |r| r.get::<_, String>(0),
+                        BANK_TXN_BACKUP_SQL, [&id], |r| r.get::<_, String>(0),
                     ) {
                         let _ = conn.execute(
-                            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) \
+                            "INSERT OR IGNORE INTO bank_txn_deleted_backup (id,row_json,survivor_id,reason,deleted_at) \
                              VALUES (?1,?2,NULL,'plaid_removed',?3)",
                             rusqlite::params![id, rj, now],
                         );
@@ -12885,16 +13226,8 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     }
                     let _ = sync::record_delete("bank_txn", &id);
                     if conn.execute("DELETE FROM bank_txn WHERE id=?1", [&id]).unwrap_or(0) > 0 { removed += 1; }
-                    // Finished work disappearing must never be silent — Jack needs to
-                    // re-link the posted replacement.
-                    if was_finished { unlinked_removed.push(id); }
                 }
             }
-            // A row failed to persist — do NOT advance the cursor, or Plaid never
-            // re-serves this page and those transactions vanish from the ledger.
-            // Break here (cursor unchanged) so the next sync retries the same page;
-            // the id-exists check + INSERT OR IGNORE make the replay safe.
-            if status == "error" { break; }
             cursor = next_cursor_now.to_string();
             let _ = conn.execute("UPDATE plaid_items SET cursor=?1 WHERE id=?2", rusqlite::params![cursor, item_pk]);
             if !has_more_now { break; }
@@ -12923,6 +13256,15 @@ pub async fn plaid_sync() -> Result<Value, String> {
             "error": error_msg,
         }));
     }
+    // Re-derive every deal whose bank link actually MOVED in a settle. plaid_sync has
+    // never called this, so a deal whose linked transaction changed kept a figure derived
+    // from a row that no longer exists — frozen rather than corrected by invariant 8's
+    // last-recorded fallback. Only touched deals, and `resync_completed_deal` is itself a
+    // no-op unless the deal is at stage='complete'.
+    // NOTE: this re-derives completed_at from MAX(posted_at) over buyer_payment legs, so a
+    // moved buyer_payment shifts the deal's closed date from the authorisation date to the
+    // settled date — typically 1-2 days.
+    for d in &touched_deals { let _ = resync_completed_deal(d); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
     let _ = apply_txn_rules_impl(false);
@@ -12939,11 +13281,20 @@ pub async fn plaid_sync() -> Result<Value, String> {
             tokio::spawn(async move { crate::netsync::publish_bank_balance(b, c.max(0.0)).await; });
         }
     }
-    if !unlinked_removed.is_empty() {
+    if !retracted_kept.is_empty() {
         tracing::warn!(
-            "plaid_sync: bank retracted {} transaction(s) that were reviewed or linked to a deal — removed and unlinked (usually a pending row replaced by its posted twin; re-link the replacement): {}",
-            unlinked_removed.len(), unlinked_removed.join(", ")
+            "plaid_sync: the bank retracted {} transaction(s) that hold booked work and no posted replacement was identified — NOTHING was deleted, they are still in the ledger: {}",
+            retracted_kept.len(), retracted_kept.join(", ")
         );
+    }
+    if !settle_refused.is_empty() {
+        tracing::warn!(
+            "plaid_sync: {} settled transaction(s) could not have their booking moved automatically — both rows kept: {}",
+            settle_refused.len(), settle_refused.join("; ")
+        );
+    }
+    if settled > 0 {
+        tracing::info!("plaid_sync: carried booking work across {} pending->posted settle(s)", settled);
     }
     if !amended_over_allocated.is_empty() {
         tracing::warn!(
@@ -12955,7 +13306,16 @@ pub async fn plaid_sync() -> Result<Value, String> {
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
         "over_allocated": amended_over_allocated,
-        "unlinked": unlinked_removed.len(), "preparing": preparing, "results": results,
+        // Pending -> posted settles.
+        "settled": settled,                       // bookings carried onto the posted twin
+        "settle_refused": settle_refused,         // pair found, work NOT moved, both rows kept
+        "retracted_kept": retracted_kept.len(),   // booked work the bank retracted — KEPT, not deleted
+        "with_pending_ref": with_pending_ref,     // added txns carrying pending_transaction_id
+        // Retained for the existing UI contract. Now always 0 by construction: booked work
+        // is never deleted by a retraction, so nothing is ever unlinked behind the user's
+        // back. `retracted_kept` is the figure that needs surfacing instead.
+        "unlinked": 0,
+        "preparing": preparing, "results": results,
     }))
 }
 
@@ -16755,5 +17115,111 @@ mod review_cols_tests {
                 |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(cat2, "supplier_payment");
         assert_eq!(rev2, 0);
+    }
+}
+
+#[cfg(test)]
+mod settle_twin_tests {
+    use super::{carried_booking_fields, SETTLE_SRC_SQL};
+
+    // A blank twin was inserted moments ago; its category is machine output from
+    // plaid_category, which ALWAYS writes something. Gap-filling would therefore carry
+    // nothing and Jack would re-classify every settle.
+    #[test]
+    fn blank_twin_takes_the_users_work() {
+        let (rev, cat, cp, ct, ci) = carried_booking_fields(
+            (1, "owner_draw", "Jack", "", ""),
+            (0, "card_payment", "APPLE.COM/US", "", ""),
+            false,
+        );
+        assert_eq!(rev, 1);
+        assert_eq!(cat, "owner_draw", "the user's classification must win over plaid_category");
+        assert_eq!(cp, "Jack");
+        assert_eq!((ct.as_str(), ci.as_str()), ("", ""));
+    }
+
+    // The live 2026-08-10 case: the pending row was reviewed=0 with a machine category
+    // while its posted twin already carried Jack's hand-set value. His work must survive.
+    #[test]
+    fn worked_twin_is_only_gap_filled() {
+        let (rev, cat, cp, _, _) = carried_booking_fields(
+            (0, "card_payment", "APPLE.COM/US", "", ""),
+            (1, "owner_draw", "", "", ""),
+            true,
+        );
+        assert_eq!(rev, 1);
+        assert_eq!(cat, "owner_draw", "an already-worked twin keeps its own classification");
+        assert_eq!(cp, "APPLE.COM/US", "but a genuinely empty field is filled");
+    }
+
+    #[test]
+    fn reviewed_ors_and_never_downgrades() {
+        for (s, t) in [(1, 0), (0, 1), (1, 1)] {
+            let (rev, ..) = carried_booking_fields((s, "", "", "", ""), (t, "", "", "", ""), t == 1);
+            assert_eq!(rev, 1, "reviewed must OR, never downgrade ({s} -> {t})");
+        }
+        let (rev, ..) = carried_booking_fields((0, "", "", "", ""), (0, "", "", "", ""), false);
+        assert_eq!(rev, 0);
+    }
+
+    // counterparty_type + counterparty_id are ONE fact — the loan tag. Splitting them
+    // would leave a row tagged 'loan' pointing at nothing, and loan_ledger sums those
+    // rows to derive a loan's repaid total.
+    #[test]
+    fn loan_tag_moves_as_a_pair_or_not_at_all() {
+        let (_, _, _, ct, ci) = carried_booking_fields(
+            (1, "", "", "loan", "loan_7"), (0, "", "", "", ""), false);
+        assert_eq!((ct.as_str(), ci.as_str()), ("loan", "loan_7"), "an empty target takes both");
+
+        let (_, _, _, ct2, ci2) = carried_booking_fields(
+            (1, "", "", "loan", "loan_7"), (0, "", "", "loan", "loan_9"), true);
+        assert_eq!((ct2.as_str(), ci2.as_str()), ("loan", "loan_9"), "a tagged target keeps its own pair");
+    }
+
+    // Replay safety: a settle that runs twice must converge, not oscillate.
+    #[test]
+    fn carry_is_a_fixpoint_under_replay() {
+        let src = (1, "owner_draw", "Jack", "loan", "loan_7");
+        let once = carried_booking_fields(src, (0, "card_payment", "", "", ""), false);
+        let twice = carried_booking_fields(
+            src,
+            (once.0, &once.1, &once.2, &once.3, &once.4),
+            true,
+        );
+        assert_eq!((once.0, once.1.clone(), once.2.clone(), once.3.clone(), once.4.clone()),
+                   (twice.0, twice.1, twice.2, twice.3, twice.4));
+    }
+
+    // The connection assertion, and the invariant-10 regression guard. `raw_json` is
+    // TEXT NOT NULL DEFAULT '' and a bare json_extract over '' throws "malformed JSON",
+    // which is what blanked the entire Financials screen in v0.15.116.
+    #[test]
+    fn settle_source_is_scoped_to_the_connection_and_survives_empty_raw_json() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
+               category TEXT NOT NULL DEFAULT '', counterparty_name TEXT NOT NULL DEFAULT '',
+               counterparty_type TEXT NOT NULL DEFAULT '', counterparty_id TEXT NOT NULL DEFAULT '',
+               direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+               account_id TEXT NOT NULL DEFAULT '', source_format TEXT NOT NULL DEFAULT '',
+               raw_json TEXT NOT NULL DEFAULT '');
+             INSERT INTO bank_txn (id,reviewed,direction,description,account_id,source_format,raw_json)
+               VALUES ('btpl_a',1,'out','APPLE','Amex ··1004','plaid','{\"pa\":\"CONN1\"}');
+             -- legacy row, no provenance stamp at all: must still resolve via account_id
+             INSERT INTO bank_txn (id,reviewed,direction,description,account_id,source_format,raw_json)
+               VALUES ('btpl_legacy',1,'out','WALMART','Amex ··1004','plaid','');",
+        ).unwrap();
+
+        let found = |id: &str, pa: &str, label: &str| -> bool {
+            conn.query_row(SETTLE_SRC_SQL, rusqlite::params![id, pa, label], |r| r.get::<_, i64>(0)).is_ok()
+        };
+
+        assert!(found("btpl_a", "CONN1", "Amex ··1004"), "same connection resolves");
+        assert!(found("btpl_a", "CONN2", "Amex ··1004"), "same account label resolves a re-link");
+        assert!(!found("btpl_a", "CONN2", "Chase ··9999"),
+            "a foreign connection AND a foreign account must NOT resolve — the caller deletes this row");
+        // The v0.15.116 guard: empty raw_json must not throw.
+        assert!(found("btpl_legacy", "CONN1", "Amex ··1004"),
+            "a row with raw_json='' must resolve by account_id without throwing");
     }
 }
