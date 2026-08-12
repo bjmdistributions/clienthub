@@ -1696,6 +1696,31 @@ export interface PlaidSyncResult {
   status: string; // "ok" | "preparing" | "error"
   error: string;
 }
+/** What one run of the bank feed did. Every field that can destroy or defer booked
+ *  work must be surfaced by EVERY caller — see surfaceSyncWarnings in FinancialsView. */
+export interface PlaidSyncSummary {
+  imported: number;
+  removed: number;
+  amended: number;
+  over_allocated: string[];
+  /** Bookings carried from a pending row onto the posted twin that replaced it. */
+  settled: number;
+  /** A pending/posted pair was identified but the booking was NOT moved. Both rows
+   *  kept, nothing changed — needs a human. */
+  settle_refused: string[];
+  /** Booked work the bank retracted with no replacement identified. The row is KEPT,
+   *  not deleted (invariant 3). */
+  retracted_kept: number;
+  /** Added transactions carrying Plaid's `pending_transaction_id`. This is the canary:
+   *  after a sync that imported anything, 0 means Plaid is not serving the pointer for
+   *  these institutions and the automatic carry-forward is inert. */
+  with_pending_ref: number;
+  /** Always 0 since v0.15.137 — booked work is no longer deleted by a retraction.
+   *  Kept so older callers still type-check. */
+  unlinked: number;
+  preparing: boolean;
+  results: PlaidSyncResult[];
+}
 export interface FinancialsOverview {
   bank_balance: number;
   credit_card_balance: number;
@@ -2377,9 +2402,9 @@ export const api = {
     invoke<void>("plaid_exchange", { publicToken, institution }),
   plaidListItems: () => invoke<PlaidItem[]>("plaid_list_items"),
   plaidRemoveItem: (id: string) => invoke<void>("plaid_remove_item", { id }),
-  plaidSync: () => invoke<{ imported: number; removed: number; amended: number; over_allocated: string[]; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_sync"),
-  plaidResyncAll: () => invoke<{ imported: number; removed: number; amended: number; over_allocated: string[]; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_resync_all"),
-  plaidRefreshSync: () => invoke<{ imported: number; removed: number; amended: number; over_allocated: string[]; unlinked: number; preparing: boolean; results: PlaidSyncResult[] }>("plaid_refresh_sync"),
+  plaidSync: () => invoke<PlaidSyncSummary>("plaid_sync"),
+  plaidResyncAll: () => invoke<PlaidSyncSummary>("plaid_resync_all"),
+  plaidRefreshSync: () => invoke<PlaidSyncSummary>("plaid_refresh_sync"),
   listBankTxns: () => invoke<BankTxn[]>("list_bank_txns"),
   bankTxnSummary: () => invoke<BankTxnSummary>("bank_txn_summary"),
   // Takes a patch, not a full row: only the fields present are written. Sync is

@@ -1413,6 +1413,12 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
 pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let pattern = format!("%{}%", query.to_lowercase());
+    // Phone search matches on digits only, so "(815) 593-2342", "815-593" and
+    // "815593" all find the same client regardless of how the number was typed in.
+    // Below 3 digits the phone pattern is an impossible literal (no wildcards), so a
+    // stray digit in a name query cannot match every client with that digit.
+    let digits: String = query.chars().filter(|c| c.is_ascii_digit()).collect();
+    let phone_pattern = if digits.len() >= 3 { format!("%{digits}%") } else { "\u{0}".to_string() };
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
@@ -1424,10 +1430,11 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          WHERE LOWER(c.name) LIKE ?1 OR LOWER(c.email) LIKE ?1 OR LOWER(c.company) LIKE ?1 OR LOWER(c.metadata) LIKE ?1
+            OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(c.phone,''),'-',''),' ',''),'(',''),')',''),'.',''),'+','') LIKE ?2
          GROUP BY c.id
          ORDER BY c.name LIMIT 50", fc = FIRST_CONTACT_SQL);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([pattern], |r| {
+    let rows = stmt.query_map(rusqlite::params![pattern, phone_pattern], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
         let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
         let high_value = meta_flag(&meta, "high_value");

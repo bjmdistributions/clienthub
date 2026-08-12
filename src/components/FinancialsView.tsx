@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
-  Loan, TxnRule, DedupeResult,
+  Loan, TxnRule, DedupeResult, PlaidSyncSummary,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -286,6 +286,9 @@ export default function FinancialsView() {
   const [plaidTesting, setPlaidTesting]     = useState(false);
   const [showKeys, setShowKeys]             = useState(false); // reveal the keys/env form once set up
   const [bankFeedOpen, setBankFeedOpen]     = useState(false); // collapse the whole feed panel once connected
+  // Did the last importing sync carry Plaid's pending_transaction_id? Drives the
+  // one-line health note in Setup; "unknown" until a sync actually imports something.
+  const [pendingRefSeen, setPendingRefSeen] = useState<"unknown" | "yes" | "no">("unknown");
   // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
   // take ~a minute) — keep re-syncing in the background until transactions land.
   const [plaidPreparing, setPlaidPreparing] = useState(false);
@@ -540,22 +543,32 @@ export default function FinancialsView() {
   // background prep-retry timer and the post-connect sync swallowed them, which is
   // why a destroyed booking felt unexplained rather than like a warning that was
   // shown. Every plaidSync-shaped result now reports through here.
-  const surfaceSyncWarnings = (r: {
-    results: { status: string; institution?: string | null; error?: string | null }[];
-    unlinked: number;
-    over_allocated?: string[];
-  }) => {
+  const surfaceSyncWarnings = (r: PlaidSyncSummary) => {
+    // Canary: if a sync imported transactions but not one carried Plaid's
+    // pending_transaction_id, the automatic pending→posted carry-forward cannot
+    // fire for these institutions. It is inert, not broken — bookings are still
+    // never destroyed — but Jack should know the safety net is doing nothing.
+    if (r.imported > 0) setPendingRefSeen(r.with_pending_ref > 0 ? "yes" : "no");
+    // Work the bank moved for you, carried automatically onto the posted twin.
+    if (r.settled > 0) {
+      toast(`${r.settled} transaction${r.settled === 1 ? "" : "s"} settled at your bank — ${r.settled === 1 ? "its booking was" : "their bookings were"} carried over, no re-work needed.`, "success");
+    }
     if (r.over_allocated?.length) {
       toast(
         `${r.over_allocated.length} transaction${r.over_allocated.length === 1 ? " was" : "s were"} changed by the bank to less than what's booked against ${r.over_allocated.length === 1 ? "it" : "them"}: ${r.over_allocated.join("; ")}. Nothing was removed — please review the allocations.`,
         "error",
       );
     }
-    // The bank retracted transactions already reviewed or booked to a deal —
-    // usually a pending row replaced by its posted twin. The replacement needs
-    // re-linking. Recorded profit on a completed deal is unaffected.
-    if (r.unlinked > 0) {
-      toast(`Your bank replaced ${r.unlinked} transaction${r.unlinked === 1 ? "" : "s"} you'd already reviewed or linked to a deal — re-link the replacement${r.unlinked === 1 ? "" : "s"}. Completed deals keep their recorded profit.`, "error");
+    // The bank retracted work already reviewed or booked, and no replacement could
+    // be identified. Since v0.15.137 the row is KEPT — nothing was deleted, so there
+    // is nothing to "re-link"; the old copy said the opposite and was wrong.
+    if (r.retracted_kept > 0) {
+      toast(`Your bank retracted ${r.retracted_kept} transaction${r.retracted_kept === 1 ? "" : "s"} you'd already reviewed or booked. Nothing was deleted — ${r.retracted_kept === 1 ? "it is" : "they are"} still in your ledger. If the replacement has landed, use "Re-pull all" in Setup to move your work onto it.`, "error");
+    }
+    // A pending/posted pair was identified but the booking could not be moved
+    // automatically. Both rows are intact; which one keeps the work is a human call.
+    if (r.settle_refused?.length) {
+      toast(`${r.settle_refused.length} settled transaction${r.settle_refused.length === 1 ? "" : "s"} couldn't have the booking moved automatically: ${r.settle_refused.join("; ")}. Nothing was changed — please re-link by hand.`, "error");
     }
     // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
     for (const x of r.results.filter((x) => x.status === "error")) {
@@ -1576,14 +1589,17 @@ export default function FinancialsView() {
                     </td>
                     <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
                       {t.counterparty_type === "loan" ? (
-                        <span className="text-[12px] text-ink-2">{loanTagLabel(t.direction)}</span>
+                        <span className="text-[12px] text-ink-2 whitespace-nowrap">{loanTagLabel(t.direction)}</span>
                       ) : (
                         <span className="relative inline-flex items-center">
                           <select
                             value={t.category || ""}
+                            aria-label="Category"
                             onChange={(e) => saveReview(t, { category: e.target.value })}
-                            className={`appearance-none bg-transparent pr-4 text-[12px] cursor-pointer rounded focus:outline-none focus:ring-2 focus:ring-accent/40 ${
-                              t.category ? "text-ink-2" : "text-accent font-medium"
+                            className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
+                              t.category
+                                ? "bg-transparent border-line text-ink-2 hover:border-line-3"
+                                : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
                             }`}
                           >
                             <option value="">Set category</option>
@@ -1591,7 +1607,7 @@ export default function FinancialsView() {
                           </select>
                           <ChevronDown
                             size={12}
-                            className={`pointer-events-none absolute right-0 ${t.category ? "text-faint" : "text-accent"}`}
+                            className={`pointer-events-none absolute right-1.5 ${t.category ? "text-faint" : "text-accent"}`}
                           />
                         </span>
                       )}
@@ -1603,14 +1619,14 @@ export default function FinancialsView() {
                     <td className="py-3 text-center align-top" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => saveReview(t, { reviewed: !t.reviewed })}
-                        title={t.reviewed ? "Booked — click to reopen" : "Book it"}
-                        className={`w-5 h-5 rounded inline-flex items-center justify-center border transition-colors ${
+                        title={t.reviewed ? "Booked — click to reopen" : "Mark this transaction booked"}
+                        className={`h-7 px-2.5 rounded-md inline-flex items-center gap-1 justify-center border text-[11.5px] font-semibold transition-colors whitespace-nowrap ${
                           t.reviewed
                             ? "bg-ink border-ink text-surface"
-                            : "border-line-3 text-transparent hover:border-ink-2"
+                            : "border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
                         }`}
                       >
-                        <Check size={12} strokeWidth={2.4} />
+                        <Check size={11} strokeWidth={2.4} /> {t.reviewed ? "Booked" : "Book"}
                       </button>
                     </td>
                   </tr>
@@ -2315,6 +2331,21 @@ export default function FinancialsView() {
               </div>
             )}
 
+            {/* Is the pending→posted carry-forward actually armed? It relies on Plaid
+                sending pending_transaction_id; if a sync imports rows and none carry
+                it, the carry is inert for these banks. Bookings are still never
+                destroyed either way — a retraction now keeps the row. */}
+            {pendingRefSeen === "no" && (
+              <div className="flex items-start gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
+                <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-0.5" />
+                <p className="text-[12px] text-ink-2 flex-1 min-w-0 leading-relaxed">
+                  Your bank isn't telling us which pending transaction each posted one replaces, so bookings can't be
+                  carried over automatically when something settles. Nothing gets deleted — you'll be told instead, and
+                  can move the booking yourself.
+                </p>
+              </div>
+            )}
+
             {plaidItems.length > 0 && (
               <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
                 {plaidItems.map((it) => (
@@ -2722,66 +2753,121 @@ export default function FinancialsView() {
             )}
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-5">
             {toBookGroups.map((g) => (
-              <div key={g.date}>
-                <div className="text-[11.5px] font-medium text-muted pb-1.5 border-b border-line">{dayHeading(g.date)}</div>
+              <div key={g.date} className="bg-surface border border-line rounded-xl overflow-hidden">
+                <div className="px-4 py-2 bg-surface-2/60 border-b border-line text-[11.5px] font-semibold text-ink-2">
+                  {dayHeading(g.date)}
+                </div>
                 <div className="divide-y divide-line-2">
                   {g.rows.map((t) => {
                     const payee = t.counterparty_name?.trim();
                     const mainLabel = payee || t.description || "—";
                     const memo = payee ? t.description : "";
                     const cm = openId === t.id ? null : confidentMatches.get(t.id) ?? null;
+                    const isLoan = t.counterparty_type === "loan";
                     return (
                       <div
                         key={t.id}
                         data-txn-id={t.id}
                         onClick={() => toggleRow(t)}
-                        className={`${railClass(t)} pl-3 pr-1 py-2.5 cursor-pointer transition-colors ${
+                        className={`${railClass(t)} pl-3 pr-3 py-3 cursor-pointer transition-colors ${
                           selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
                         }`}
                       >
-                        <div className="flex items-start gap-3 min-w-0">
+                        {/* One booking row: everything needed to book lives HERE — the
+                            category select, the deal action and a labeled Book button.
+                            The drawer (row click) is for detail, never a requirement. */}
+                        <div className="flex items-center gap-3 min-w-0 flex-wrap lg:flex-nowrap">
                           <input
                             type="checkbox"
                             aria-label="Select transaction"
                             checked={selected.has(t.id)}
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => toggleSelect(t.id)}
-                            className="mt-1 align-middle accent-accent flex-shrink-0"
+                            className="align-middle accent-accent flex-shrink-0"
                           />
-                          <div className="min-w-0 flex-1">
+                          {t.direction === "in"
+                            ? <ArrowDownLeft size={15} className="text-success-ink flex-shrink-0" strokeWidth={2} />
+                            : <ArrowUpRight size={15} className="text-danger-ink flex-shrink-0" strokeWidth={2} />}
+                          <div className="min-w-0 flex-1 basis-full lg:basis-auto order-1 lg:order-none">
                             <div className="text-[13px] font-semibold text-ink truncate" title={mainLabel}>{mainLabel}</div>
                             <div className="text-[11.5px] text-muted truncate">
                               {needsLine(t)}
                               {memo ? <span className="text-faint"> · {memo}</span> : null}
                             </div>
-                            {cm && (
-                              <div className="mt-1 flex items-center gap-2 flex-wrap min-w-0">
-                                <span className="text-[11.5px] text-muted min-w-0">
-                                  Looks like <span className="text-ink-2 font-medium">{matchLabel(cm.deal)}</span> — {cm.reason}
-                                </span>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); tieMatch(t, cm.deal); }}
-                                  disabled={tyingId === t.id}
-                                  title={`Tie the full ${fmtAmount(t.unallocated)} to ${dealLabel(cm.deal)} as ${t.direction === "out" ? "a supplier payment" : "a buyer payment"}`}
-                                  className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
-                                >
-                                  {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Tie it
-                                </button>
-                              </div>
-                            )}
                           </div>
-                          <div className={`text-[13px] tabular-nums whitespace-nowrap font-medium flex-shrink-0 ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                          <div
+                            className={`text-[13.5px] tabular-nums whitespace-nowrap font-semibold flex-shrink-0 lg:order-none ${
+                              t.direction === "in" ? "text-success-ink" : "text-danger-ink"
+                            }`}
+                          >
                             {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
                           </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); saveReview(t, { reviewed: true }); }}
-                            title="Book it"
-                            className="mt-0.5 w-5 h-5 rounded inline-flex items-center justify-center border border-line-3 text-transparent hover:border-ink-2 hover:text-ink-2 transition-colors flex-shrink-0"
-                          >
-                            <Check size={12} strokeWidth={2.4} />
-                          </button>
+                          {/* Category — a real, visible control on the row itself. */}
+                          <span className="flex-shrink-0 order-2 lg:order-none" onClick={(e) => e.stopPropagation()}>
+                            {isLoan ? (
+                              <span className="inline-flex items-center h-8 px-2.5 rounded-lg bg-surface-2 border border-line text-[12px] text-ink-2 whitespace-nowrap">
+                                {loanTagLabel(t.direction)}
+                              </span>
+                            ) : (
+                              <span className="relative inline-flex items-center">
+                                <select
+                                  value={t.category || ""}
+                                  aria-label="Category"
+                                  onChange={(e) => saveReview(t, { category: e.target.value })}
+                                  className={`appearance-none h-8 pl-2.5 pr-7 rounded-lg border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
+                                    t.category
+                                      ? "bg-surface border-line text-ink-2 hover:border-line-3"
+                                      : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
+                                  }`}
+                                >
+                                  <option value="">Set category</option>
+                                  <CategoryOptions includeUncat={false} />
+                                </select>
+                                <ChevronDown
+                                  size={12}
+                                  className={`pointer-events-none absolute right-2 ${t.category ? "text-faint" : "text-accent"}`}
+                                />
+                              </span>
+                            )}
+                          </span>
+                          {/* Deal — tie the obvious match in one click, or open the picker. */}
+                          <span className="flex-shrink-0 order-2 lg:order-none" onClick={(e) => e.stopPropagation()}>
+                            {isLoan ? null : t.allocated > 0.0001 && t.unallocated <= 0.0001 ? (
+                              <span className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-success-bg/60 border border-success/40 text-[12px] text-success-ink whitespace-nowrap">
+                                <Link2 size={11} /> Linked
+                              </span>
+                            ) : cm ? (
+                              <button
+                                onClick={() => tieMatch(t, cm.deal)}
+                                disabled={tyingId === t.id}
+                                title={`Tie the full ${fmtAmount(t.unallocated)} to ${dealLabel(cm.deal)} as ${t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${cm.reason}`}
+                                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap max-w-[220px]"
+                              >
+                                {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
+                                <span className="truncate">Tie to {matchLabel(cm.deal)}</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => toggleRow(t)}
+                                title="Pick a deal to tie this payment to"
+                                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-line text-[12px] text-ink-2 font-medium hover:bg-surface-2 hover:border-line-3 transition-colors whitespace-nowrap"
+                              >
+                                <Link2 size={11} /> {t.allocated > 0.0001 ? `${fmtAmount(t.allocated)} tied` : "Link deal"}
+                              </button>
+                            )}
+                          </span>
+                          {/* Book — labeled, always visible, never hover-only. */}
+                          <span className="flex-shrink-0 order-2 lg:order-none" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              onClick={() => saveReview(t, { reviewed: true })}
+                              title="Mark this transaction booked"
+                              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-semibold transition-colors whitespace-nowrap"
+                            >
+                              <Check size={12} strokeWidth={2.4} /> Book
+                            </button>
+                          </span>
                         </div>
                       </div>
                     );
