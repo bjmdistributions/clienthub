@@ -330,8 +330,10 @@ export default function FinancialsView() {
   const [statusFilter, setStatusFilter] = useState<
     "all" | "unclassified" | "unallocated_in" | "unallocated_out"
   >("all");
+  // The Ledger is a tax-year view by default (R-145): each year's transactions stand
+  // alone, because the books are read per tax year. Custom from/to stays available.
   const [fromDate, setFromDate]       = useState(`${new Date().getFullYear()}-01-01`);
-  const [toDate, setToDate]           = useState("");
+  const [toDate, setToDate]           = useState(`${new Date().getFullYear()}-12-31`);
 
   // Ledger scope: the full history by default; To book / Booked narrow it.
   const [queue, setQueue]             = useState<"all" | "todo" | "booked">("all");
@@ -1420,7 +1422,31 @@ export default function FinancialsView() {
     setSearch(""); setSearchIn(""); setSearchOut("");
     setDirFilter("all"); setAcctFilter("all"); setCatFilter("all"); setStatusFilter("all");
     setQueue("all");
-    setFromDate(`${new Date().getFullYear()}-01-01`); setToDate("");
+    setFromDate(`${new Date().getFullYear()}-01-01`); setToDate(`${new Date().getFullYear()}-12-31`);
+  };
+
+  // Tax-year scope (R-145). Every year that appears in the ledger, newest first —
+  // so old years stay reachable exactly as the accountant needs them, one at a time.
+  const taxYears = useMemo(() => {
+    const ys = new Set<number>([new Date().getFullYear()]);
+    for (const t of txns) {
+      const y = Number((t.posted_at || "").slice(0, 4));
+      if (y > 1990) ys.add(y);
+    }
+    return [...ys].sort((a, b) => b - a);
+  }, [txns]);
+  // Which option the current from/to bounds represent: a whole tax year, everything,
+  // or a hand-picked range.
+  const taxYearValue = useMemo(() => {
+    if (!fromDate && !toDate) return "all";
+    const m = /^(\d{4})-01-01$/.exec(fromDate);
+    if (m && toDate === `${m[1]}-12-31`) return m[1];
+    return "custom";
+  }, [fromDate, toDate]);
+  const pickTaxYear = (v: string) => {
+    if (v === "all") { setFromDate(""); setToDate(""); return; }
+    if (v === "custom") return; // the date inputs are the editor for this
+    setFromDate(`${v}-01-01`); setToDate(`${v}-12-31`);
   };
 
   const filteredDeals = useMemo(() => {
@@ -1455,6 +1481,38 @@ export default function FinancialsView() {
     }
     return m;
   }, [txns, deals]);
+
+  // Booking memory — what the book itself already says about a payee. Only BOOKED
+  // rows teach (reviewed = a human confirmed the classification; unreviewed Plaid
+  // categories are machine guesses and teaching from them would launder noise into
+  // advice). A payee+direction suggests its dominant category once it has been booked
+  // that way at least twice and in at least 60% of its booked rows — one odd booking
+  // must never become "usually".
+  const catMemory = useMemo(() => {
+    const counts = new Map<string, Map<string, number>>();
+    for (const t of txns) {
+      if (!t.reviewed || !(t.category || "").trim()) continue;
+      const p = (t.counterparty_name || "").trim().toLowerCase();
+      if (!p) continue;
+      const key = `${p}|${t.direction}`;
+      const m = counts.get(key) ?? new Map<string, number>();
+      m.set(t.category, (m.get(t.category) || 0) + 1);
+      counts.set(key, m);
+    }
+    const out = new Map<string, { cat: string; count: number }>();
+    for (const [key, m] of counts) {
+      let best = "", bestN = 0, total = 0;
+      for (const [cat, n] of m) { total += n; if (n > bestN) { best = cat; bestN = n; } }
+      if (bestN >= 2 && bestN / total >= 0.6) out.set(key, { cat: best, count: bestN });
+    }
+    return out;
+  }, [txns]);
+  const suggestionFor = (t: BankTxn) => {
+    if ((t.category || "").trim() || t.counterparty_type === "loan") return null;
+    const p = (t.counterparty_name || "").trim().toLowerCase();
+    if (!p) return null;
+    return catMemory.get(`${p}|${t.direction}`) ?? null;
+  };
 
   const filteredLoans = useMemo(() => {
     const q = loanQuery.toLowerCase();
@@ -2579,6 +2637,20 @@ export default function FinancialsView() {
             <option value="unallocated_in">Needs a deal (in)</option>
             <option value="unallocated_out">Needs a deal (out)</option>
           </select>
+          {/* Tax year first — the books are read one tax year at a time (R-145).
+              The date inputs stay for odd ranges; touching them flips this to Custom. */}
+          <select
+            value={taxYearValue}
+            onChange={(e) => pickTaxYear(e.target.value)}
+            aria-label="Tax year"
+            className="bg-surface-2 border border-line text-[12px] font-medium text-ink hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            {taxYears.map((y) => (
+              <option key={y} value={String(y)}>Tax year {y}</option>
+            ))}
+            <option value="all">All years</option>
+            {taxYearValue === "custom" && <option value="custom">Custom range</option>}
+          </select>
           <div className="flex items-center gap-1.5 text-[12px] text-muted bg-surface-2 border border-line rounded-lg px-2.5 h-8">
             <input
               type="date"
@@ -2795,6 +2867,20 @@ export default function FinancialsView() {
                               {needsLine(t)}
                               {memo ? <span className="text-faint"> · {memo}</span> : null}
                             </div>
+                            {(() => {
+                              // Booking memory: this payee's own history, one tap to apply.
+                              const sg = suggestionFor(t);
+                              return sg ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); saveReview(t, { category: sg.cat }); }}
+                                  title={`Booked as ${catLabel(sg.cat)} ${sg.count} time${sg.count === 1 ? "" : "s"} before — click to apply`}
+                                  className="mt-1 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-medium hover:bg-accent/10 transition-colors max-w-full"
+                                >
+                                  <Wand2 size={10} className="flex-shrink-0" />
+                                  <span className="truncate">Usually {catLabel(sg.cat)}</span>
+                                </button>
+                              ) : null;
+                            })()}
                           </div>
                           <div
                             className={`text-[13.5px] tabular-nums whitespace-nowrap font-semibold flex-shrink-0 lg:order-none ${
@@ -3036,6 +3122,21 @@ export default function FinancialsView() {
                 >
                   <CategoryOptions />
                 </select>
+                {(() => {
+                  // Booking memory: what this payee's own booked history says.
+                  const sg = suggestionFor(openTxn);
+                  return sg ? (
+                    <button
+                      onClick={(e) => { e.preventDefault(); saveReview(openTxn, { category: sg.cat }); }}
+                      className="mt-1.5 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-medium hover:bg-accent/10 transition-colors max-w-full"
+                    >
+                      <Wand2 size={11} className="flex-shrink-0" />
+                      <span className="truncate">
+                        Usually {catLabel(sg.cat)} — booked that way {sg.count} time{sg.count === 1 ? "" : "s"}
+                      </span>
+                    </button>
+                  ) : null;
+                })()}
               </label>
             )}
 
@@ -3288,29 +3389,29 @@ function AllocationPanel(props: {
     else onCreateRule(counterparty, txn.category || "", "expense", "", dir);
   };
 
-  const renderRuleButton = () => {
-    const dirWord = txn.direction === "in" ? "money-in" : "money-out";
+  // Booking memory, designed to stay inside its own box: the payee lives in a
+  // truncating text span (full string on hover), never inside the button label —
+  // the old "Tag all money-out from "<entire bank memo>" as X" button rendered a
+  // 90-character quoted memo as its own label and broke the panel layout.
+  const renderRememberRow = () => {
     const canTag = !!counterparty && (isLoanRule || !!txn.category);
-    const label = !counterparty
-      ? "Always tag like this"
-      : isLoanRule
-        ? `Tag all ${dirWord} from "${counterparty}" to this loan`
-        : `Tag all ${dirWord} from "${counterparty}" as ${catLabel(txn.category || "")}`;
+    if (!canTag) return null;
+    const dirWord = txn.direction === "in" ? "money in" : "money out";
+    const what = isLoanRule ? "books to this loan" : `books as ${catLabel(txn.category || "")}`;
     return (
-      <button
-        onClick={alwaysTag}
-        disabled={!canTag}
-        title={
-          !counterparty ? "This transaction has no payer name to match on"
-          : !canTag ? "Pick a category for this transaction first"
-          : "Create a rule and tag every matching transaction now"
-        }
-        className={`flex items-center gap-1.5 h-9 px-3 border border-line rounded-lg text-[12px] font-medium transition-colors ${
-          canTag ? "text-ink-2 hover:bg-surface-2" : "text-faint opacity-60 cursor-not-allowed"
-        }`}
-      >
-        <Wand2 size={13} /> {label}
-      </button>
+      <div className="flex items-center gap-2.5 min-w-0 border border-line-2 rounded-lg pl-3 pr-2 py-2 bg-surface-2/40">
+        <Wand2 size={13} className="text-muted flex-shrink-0" />
+        <div className="min-w-0 flex-1 text-[12px] text-muted truncate" title={counterparty}>
+          Every future {dirWord} from <span className="text-ink-2 font-medium">{counterparty}</span> {what}
+        </div>
+        <button
+          onClick={alwaysTag}
+          title="Remember this booking — applies to every matching unbooked transaction now, and to future ones as they arrive"
+          className="flex-shrink-0 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 transition-colors"
+        >
+          Remember
+        </button>
+      </div>
     );
   };
 
@@ -3438,12 +3539,14 @@ function AllocationPanel(props: {
               value={amountStr}
               onChange={(e) => setAmountStr(e.target.value)}
               placeholder="Amount"
-              className={`${inp} sm:col-span-2 tabular-nums`}
+              aria-label="Amount to allocate"
+              className={`${inp} sm:col-span-3 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
             />
             <select
               value={role}
               onChange={(e) => setRole(e.target.value)}
-              className="sm:col-span-3 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
+              aria-label="Allocation role"
+              className="sm:col-span-4 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
             >
               {rolesFor(txn.direction).map((r) => (
                 <option key={r.value} value={r.value}>{r.label}</option>
@@ -3452,7 +3555,7 @@ function AllocationPanel(props: {
             <button
               onClick={onSubmit}
               disabled={busy || !selectedDeal}
-              className="sm:col-span-2 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
+              className="sm:col-span-12 flex items-center justify-center gap-1.5 h-9 bg-accent hover:bg-accent-hover text-on-accent rounded-lg text-[13px] font-medium disabled:opacity-50 transition-colors"
             >
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Allocate
             </button>
@@ -3488,8 +3591,8 @@ function AllocationPanel(props: {
                 <Plus size={13} /> New deal from this transaction
               </button>
             )}
-            {renderRuleButton()}
           </div>
+          {renderRememberRow()}
         </>
       )}
 
@@ -3533,18 +3636,18 @@ function AllocationPanel(props: {
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Landmark size={14} />} Tag to loan
             </button>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">{renderRuleButton()}</div>
+          {renderRememberRow()}
         </>
       )}
 
       {/* Expense / income — no target, just the row's category */}
       {targetType === "expense" && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-[12px] text-muted flex-1 min-w-[180px]">
+        <>
+          <p className="text-[12px] text-muted">
             Tracked by category only — set the category on the row above; it isn't tied to a deal or loan.
           </p>
-          {renderRuleButton()}
-        </div>
+          {renderRememberRow()}
+        </>
       )}
 
       {/* Create a deal retroactively from this transaction */}
@@ -3640,9 +3743,11 @@ function RulesCard({
       {open && (
         <div className="pt-3 space-y-3">
           <p className="text-[11px] text-muted leading-relaxed">
-            Open a transaction, set its category, and choose "Tag all like this" — it creates a rule and instantly tags
-            every matching transaction. A rule can be limited to money in or money out, so the same payer (e.g. Whatnot)
-            can be a sale one way and an expense the other. Tagged rows stay in To-do until you book them.
+            Booking teaches the app. Once a payee has been booked the same way twice, its unbooked transactions show a
+            one-tap "Usually …" suggestion drawn from your own history. "Remember" in the booking sheet goes one step
+            further — it applies the booking to every matching transaction now and to future ones as they arrive. A
+            memory can be limited to money in or money out, so the same payer (e.g. Whatnot) can be a sale one way and
+            an expense the other. Suggested rows stay in To book until you book them.
           </p>
 
           {rules.length > 0 && (
