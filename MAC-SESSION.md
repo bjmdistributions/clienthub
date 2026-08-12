@@ -1,5 +1,30 @@
 # Mac session — Apple signing and iOS setup
 
+> **DONE — the Mac session ran on 2026-08-12 and every macOS step below is complete.**
+> Read this as a record, not as outstanding work. What actually shipped: Developer ID
+> signing and notarization in **v0.15.135**, the App ID `app.ecliptr.mobile`, the APNs
+> key, the distribution certificate, and iOS builds 1 and 2 uploaded to App Store Connect.
+>
+> Still live below: **Step 0's Xcode gate** and the iOS items in **Step 2**, which are
+> referenced by the ongoing mobile work.
+>
+> Now-false lines, kept for the record rather than deleted: `:92-95` (delete the ad-hoc
+> step — already gone), `:101-126` (Step 5 dry run — done as `v0.15.134-rc1`, tag deleted
+> after), `:128-136` ("the one unknown" on entitlements — resolved, none are needed),
+> `:138-142` (keychain re-prompt — it happened, and is now documented in `DEPLOY.md`),
+> `:144-145` (rewrite DEPLOY.md's Gatekeeper section — done in `978bff7`).
+>
+> One correction to what is written below: **Tauri staples the `.app`, never the DMG**, so
+> `stapler validate` failing on the `.dmg` is expected and not a problem.
+>
+> Verified facts, identifiers and the build/upload commands now live in the vault:
+> `decisions/developer-id-signing.md`, `architecture/ios-app-store-setup.md`,
+> `architecture/ecliptr-mobile-bundle-pipeline.md`, and `gotchas.md` §13–§14.
+>
+> Also stale in this repo, same reason: `MOBILE-REDESIGN-PLAN.md:47,337,750` and
+> `NATIVE-APP-SPEC.md:806,900` still name "begin Apple Developer Program enrollment" as
+> the critical-path item to start today. The account was approved 2026-08-07.
+
 The executable copy of this runbook, kept in the repo so a Claude Code session on the
 MacBook can read it without needing the Obsidian vault. Written 2026-08-07, the day the
 Apple Developer account was approved.
