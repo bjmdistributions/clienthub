@@ -419,7 +419,11 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                       )}
                     </div>
                     <div className="text-[11px] text-muted tabular-nums truncate">
-                      {p.posted_at ? new Date(p.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""}
+                      {(() => {
+                        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(p.posted_at || "");
+                        const day = m ? `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m[2]) - 1]} ${Number(m[3])}` : "";
+                        return day;
+                      })()}
                       {p.invoice_number ? ` · #${p.invoice_number}` : ""}
                     </div>
                   </div>
