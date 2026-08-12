@@ -73,6 +73,24 @@ const CATEGORIES: { value: string; label: string; group: string }[] = [
 
 const CAT_GROUP_ORDER = ["Income", "Cost of goods", "Operating expenses", "Transfers & owner"];
 
+// The ONLY categories whose money can belong to a deal. Everything else — every
+// operating expense, every transfer, owner draw, card payment — is fully booked by
+// its category and must never be counted as deal work. Blank stays in because an
+// uncategorised wire is usually exactly the buyer payment that needs tying; it is
+// the "we don't know yet" case, not the "definitely not a deal" case.
+//
+// This list is duplicated in Rust in TWO places — `bank_txn_summary` and
+// `financials_overview.stale_unallocated` (`commands.rs`). All three must move
+// together or the queue count, the summary figure and the Overview alert start
+// disagreeing about the same rows, which is the bug this replaced.
+const DEAL_CAPABLE_CATEGORIES = ["", "receipt", "payment", "merchandise", "shipping", "cash_in", "cash_out"];
+
+// Does this transaction still owe someone a link to a deal?
+const needsADeal = (t: BankTxn) =>
+  t.counterparty_type !== "loan" &&
+  DEAL_CAPABLE_CATEGORIES.includes(t.category || "") &&
+  t.unallocated > 0.0001;
+
 // Grouped <option>s for any category <select>. Set includeUncat={false} to omit
 // the blank "Uncategorized" entry (e.g. a "Set category…" placeholder select).
 function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
@@ -1303,19 +1321,10 @@ export default function FinancialsView() {
         if (t.direction === "in") sumIn += t.amount; else sumOut += t.amount;
       }
       if (!(t.category || "").trim()) unclassified++;
-      // "Needs a deal" = still in the review queue (reviewed=0) with money to tie
-      // out. Booking a row as an expense marks it reviewed, so it clears the flag —
-      // the counter can now actually reach zero instead of counting every expense.
-      // Keep this in step with the backend: bank_txn_summary.unallocated_in and
-      // financials_overview.stale_unallocated use the same exclusions. Three
-      // different definitions of "needs a deal" is why the tab count and the
-      // summary figure never matched.
-      if (
-        !t.reviewed &&
-        t.counterparty_type !== "loan" &&
-        !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "") &&
-        t.unallocated > 0.0001
-      ) needsDeal++;
+      // "Needs a deal" = still in the queue, with money to tie out, in a category
+      // that can belong to a deal at all (see needsADeal). Booking a row marks it
+      // reviewed, so it clears — the counter can actually reach zero.
+      if (!t.reviewed && needsADeal(t)) needsDeal++;
     }
     return { total, reviewed, sumIn, sumOut, unclassified, needsDeal };
   }, [txns, fromDate, toDate]);
@@ -1340,11 +1349,7 @@ export default function FinancialsView() {
     for (const t of txns) {
       if (t.reviewed) continue;
       count++;
-      if (
-        t.counterparty_type !== "loan" &&
-        !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "") &&
-        t.unallocated > 0.0001
-      ) needsDealAmt += t.unallocated;
+      if (needsADeal(t)) needsDealAmt += t.unallocated;
     }
     return { count, needsDealAmt };
   }, [txns]);
@@ -1389,16 +1394,14 @@ export default function FinancialsView() {
   // The left rail carries state: solid accent = needs a deal, faded = partly
   // tied, none = nothing owed. That is what colour is for on this screen.
   const railClass = (t: BankTxn) => {
-    if (t.counterparty_type === "loan") return "border-l-2 border-transparent";
     if (t.allocated > 0.0001 && t.unallocated > 0.0001) return "border-l-2 border-accent/40";
-    if (
-      t.unallocated > 0.0001 &&
-      !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "")
-    ) return "border-l-2 border-accent";
+    if (needsADeal(t)) return "border-l-2 border-accent";
     return "border-l-2 border-transparent";
   };
 
-  // The subline says what the row NEEDS, not what it is.
+  // The subline says what the row NEEDS, not what it is. An expense never asks for
+  // a deal — a fuel purchase or a software subscription is fully booked by its
+  // category, and saying "needs a deal" on one made the queue read as unfinishable.
   const needsLine = (t: BankTxn) => {
     const acct = t.account_id ? ` · ${t.account_id}` : "";
     if (t.counterparty_type === "loan") return `${loanTagLabel(t.direction)}${acct}`;
@@ -1406,12 +1409,8 @@ export default function FinancialsView() {
       return `${fmtAmount(t.allocated)} of ${fmtAmount(t.amount)} tied${acct}`;
     if (t.allocated > 0.0001) return `Tied to a deal — book it${acct}`;
     const noCat = !(t.category || "").trim();
-    const needsDeal =
-      !["internal_transfer", "loan_received", "loan_repayment"].includes(t.category || "") &&
-      t.unallocated > 0.0001;
-    if (needsDeal && noCat) return `Needs a deal or a category${acct}`;
-    if (needsDeal) return `${catLabel(t.category || "")} — needs a deal${acct}`;
     if (noCat) return `Needs a category${acct}`;
+    if (needsADeal(t)) return `${catLabel(t.category)} — needs a deal${acct}`;
     return `${catLabel(t.category || "")} — ready to book${acct}`;
   };
 

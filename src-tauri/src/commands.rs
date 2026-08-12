@@ -10753,7 +10753,14 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
     // counting it left a backlog figure that could not be worked down. This matches
     // the `stale_unallocated` definition in financials_overview so the Transactions
     // summary and the Overview alert cannot disagree about the same rows.
-    let not_deal_money = "bt.category NOT IN ('internal_transfer','loan_received','loan_repayment') \
+    // Only these categories can belong to a deal at all. Every operating expense,
+    // transfer, owner draw and card payment is fully booked by its category, so
+    // counting them as untied deal money produced a backlog that could never reach
+    // zero — a fuel purchase was being reported as work outstanding. Blank stays in:
+    // an uncategorised wire is usually the buyer payment that does need tying.
+    // MUST match DEAL_CAPABLE_CATEGORIES in FinancialsView.tsx and the copy in
+    // financials_overview.stale_unallocated.
+    let not_deal_money = "COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','cash_in','cash_out') \
                           AND COALESCE(bt.counterparty_type,'') != 'loan'";
     let unallocated_in = one(&format!(
         "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND {}
@@ -13625,7 +13632,7 @@ pub async fn financials_overview() -> Result<Value, String> {
     // permanently — a red flag on the Overview screen that could never be cleared.
     let stale_unallocated: i64 = conn.query_row(
         "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in'
-           AND bt.category NOT IN ('internal_transfer','loan_received','loan_repayment')
+           AND COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','cash_in','cash_out')
            AND COALESCE(bt.counterparty_type,'') != 'loan'
            AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
