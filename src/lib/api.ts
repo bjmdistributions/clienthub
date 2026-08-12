@@ -1801,6 +1801,20 @@ export interface BankSuggestCandidate {
   reason: string;
 }
 
+export interface CounterpartyPaymentRow {
+  txn_id: string;
+  posted_at: string;
+  amount: number;
+  direction: "in" | "out";
+  description: string;
+  counterparty_name: string;
+  deal_flow_id: string;
+  role: string;
+  invoice_number: string;
+  client_name: string;
+  tagged: boolean;
+}
+
 export interface ReconciliationMissingDeal {
   deal_id: string;
   invoice_number: string;
@@ -2539,6 +2553,10 @@ export const api = {
   // profiles show payment history even for money never tied to a deal.
   tagBankTxnCounterparty: (bankTxnId: string, ctype: "supplier" | "client", counterpartyId: string) =>
     invoke<void>("tag_bank_txn_counterparty", { bankTxnId, ctype, counterpartyId }),
+  // R-150: every bank transaction a supplier or client touches — directly
+  // tagged rows plus role allocations on their deals, deduped per txn.
+  counterpartyPayments: (ctype: "supplier" | "client", id: string, name: string) =>
+    invoke<CounterpartyPaymentRow[]>("counterparty_payments", { ctype, id, name }),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),

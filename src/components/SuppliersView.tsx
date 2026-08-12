@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronRight, ArrowUp, ArrowDown } from "lucide-react";
-import { api, Supplier, SupplierInput, SupplierPriceEntry } from "../lib/api";
+import { api, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsModal from "./SupplierDealsModal";
 
@@ -73,6 +73,7 @@ export default function SuppliersView() {
   const [editing,       setEditing]       = useState(false);
   const [input,         setInput]         = useState<SupplierInput>(emptyInput);
   const [history,       setHistory]       = useState<SupplierPriceEntry[]>([]);
+  const [payments,      setPayments]      = useState<CounterpartyPaymentRow[]>([]);
   const [supplierDeals, setSupplierDeals] = useState<any[]>([]);
   const [dealsModalOpen,setDealsModalOpen]= useState(false);
   const [query,         setQuery]         = useState("");
@@ -110,8 +111,11 @@ export default function SuppliersView() {
     setOpen(true);
     setDealsModalOpen(false);
     setSupplierDeals([]);
+    setPayments([]);
     api.getSupplierPriceHistory(s.id).then(setHistory).catch(() => setHistory([]));
     api.getDealsForSupplier(s.id).then(setSupplierDeals).catch(() => setSupplierDeals([]));
+    // Bank payments this supplier touches: tagged rows + supplier_payment legs.
+    api.counterpartyPayments("supplier", s.id, s.name).then(setPayments).catch(() => setPayments([]));
   };
 
   const createNew = () => {
@@ -413,6 +417,7 @@ export default function SuppliersView() {
                 <Profile
                   s={selected}
                   history={history}
+                  payments={payments}
                   dealCount={supplierDeals.length}
                   onOpenDeals={() => setDealsModalOpen(true)}
                 />
@@ -489,8 +494,8 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   );
 }
 
-function Profile({ s, history, dealCount, onOpenDeals }: {
-  s: Supplier; history: SupplierPriceEntry[]; dealCount: number; onOpenDeals: () => void;
+function Profile({ s, history, payments, dealCount, onOpenDeals }: {
+  s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[]; dealCount: number; onOpenDeals: () => void;
 }) {
   const m = marginOf(s);
   return (
@@ -523,6 +528,38 @@ function Profile({ s, history, dealCount, onOpenDeals }: {
         <span>View completed deals ({dealCount})</span>
         <ChevronRight size={14} className="text-muted flex-shrink-0" />
       </button>
+
+      {/* Bank payments this supplier touches — tagged rows plus supplier legs on deals */}
+      <div className="space-y-2">
+        <p className="text-[12.5px] font-medium text-muted">Bank payments</p>
+        {payments.length === 0 ? (
+          <p className="text-[11.5px] text-faint bg-surface-2 border border-line rounded-lg px-3 py-2.5">
+            Nothing linked yet — book a payment to this supplier in Financials and it shows up here.
+          </p>
+        ) : (
+          <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
+            {payments.slice(0, 12).map((p) => (
+              <div key={p.txn_id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-[12px] text-ink-2 truncate">
+                    {p.description || p.counterparty_name}
+                    {p.tagged && (
+                      <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-muted tabular-nums truncate">
+                    {shortDate(p.posted_at)}
+                    {p.invoice_number ? ` · #${p.invoice_number}${p.client_name ? ` · ${p.client_name}` : ""}` : ""}
+                  </div>
+                </div>
+                <div className={`text-[12.5px] font-semibold tabular-nums flex-shrink-0 ${p.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                  {p.direction === "in" ? "+" : "−"}{fmtAmount(p.amount)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Contact */}
       {(s.phone || s.email || s.address) && (

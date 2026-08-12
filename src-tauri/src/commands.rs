@@ -14051,6 +14051,76 @@ pub async fn tag_bank_txn_counterparty(bank_txn_id: String, ctype: String, count
     Ok(())
 }
 
+/// Payment history for a supplier or client (R-150): every bank transaction
+/// this counterparty touches — rows tagged directly (counterparty_type/id)
+/// plus allocations on deals they own (buyer_payment on the client's invoices;
+/// supplier_payment on flows whose legs name the supplier by id or name).
+/// Deduped to one row per transaction, the deal-linked row winning. Read-only.
+#[tauri::command]
+pub async fn counterparty_payments(ctype: String, id: String, name: String) -> Result<Value, String> {
+    let (tag_type, role, leg_pat) = match ctype.as_str() {
+        "supplier" => ("supplier", "supplier_payment", Some(format!("%\"supplier_name\":\"{}\"%", name.replace('"', "")))),
+        "client" => ("client", "buyer_payment", None),
+        _ => return Err("ctype must be supplier or client".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let leg_match = match &leg_pat {
+        Some(_) => "df.supplier_payments_json LIKE ?4",
+        None => "i.client_id = ?2",
+    };
+    let sql = format!(
+        "SELECT t.id, COALESCE(t.posted_at,''), t.amount, t.direction, COALESCE(t.description,''), \
+                COALESCE(t.counterparty_name,''), COALESCE(a.deal_flow_id,''), COALESCE(a.role,''), \
+                COALESCE(i.number,''), COALESCE(c.name,''), 1 AS tagged, 1 AS src \
+         FROM bank_txn t \
+         LEFT JOIN bank_allocation a ON a.bank_txn_id = t.id AND a.role = ?3 \
+         LEFT JOIN deal_flows df ON a.deal_flow_id = df.id \
+         LEFT JOIN invoices i ON df.invoice_id = i.id \
+         LEFT JOIN clients c ON i.client_id = c.id \
+         WHERE t.counterparty_type = ?1 AND t.counterparty_id = ?2 \
+         UNION ALL \
+         SELECT t.id, COALESCE(t.posted_at,''), t.amount, t.direction, COALESCE(t.description,''), \
+                COALESCE(t.counterparty_name,''), COALESCE(a.deal_flow_id,''), COALESCE(a.role,''), \
+                COALESCE(i.number,''), COALESCE(c.name,''), 0 AS tagged, 2 AS src \
+         FROM bank_allocation a \
+         JOIN bank_txn t ON a.bank_txn_id = t.id \
+         JOIN deal_flows df ON a.deal_flow_id = df.id \
+         LEFT JOIN invoices i ON df.invoice_id = i.id \
+         LEFT JOIN clients c ON i.client_id = c.id \
+         WHERE a.role = ?3 AND ({leg_match}) \
+         ORDER BY posted_at DESC, src DESC LIMIT 100"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, f64, String, String, String, String, String, String, String, bool, i64)> = if leg_pat.is_some() {
+        let pat = leg_pat.as_deref().unwrap_or("");
+        stmt.query_map(rusqlite::params![tag_type, id, role, pat], |r| Ok((
+            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+        ))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect()
+    } else {
+        stmt.query_map(rusqlite::params![tag_type, id, role], |r| Ok((
+            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+        ))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect()
+    };
+    // One row per transaction: a deal-linked row wins over a tag-only row and
+    // inherits its tag, so a txn that is both tagged and allocated lists once.
+    let mut best: std::collections::BTreeMap<String, (String, String, f64, String, String, String, String, String, String, String, bool, i64)> = Default::default();
+    for r in rows {
+        best.entry(r.0.clone())
+            .and_modify(|e| {
+                if r.11 < e.11 { *e = r.clone(); }
+                else if r.10 { e.10 = true; }
+            })
+            .or_insert(r);
+    }
+    let out: Vec<Value> = best.into_values().map(|(txn_id, posted_at, amount, direction, description, counterparty_name, deal_flow_id, role, invoice_number, client_name, tagged, _)| json!({
+        "txn_id": txn_id, "posted_at": posted_at, "amount": amount, "direction": direction,
+        "description": description, "counterparty_name": counterparty_name,
+        "deal_flow_id": deal_flow_id, "role": role, "invoice_number": invoice_number,
+        "client_name": client_name, "tagged": tagged,
+    })).collect();
+    Ok(json!(out))
+}
+
 /// The transactions tagged to one loan, plus received / repaid totals (kind is
 /// derived from each txn's direction — money-in received, money-out repaid).
 #[tauri::command]

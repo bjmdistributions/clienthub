@@ -1,5 +1,5 @@
 import { useEffect, useState, Children } from "react";
-import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo, PaymentMethod } from "../lib/api";
+import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo, PaymentMethod, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
 import CreditPanel from "./CreditPanel";
@@ -147,6 +147,8 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const [creditEdit, setCreditEdit] = useState("");
   // Profit made from this client = sum of its completed deals' net profit.
   const [clientProfit, setClientProfit] = useState<number | null>(null);
+  // Bank payments this client touches: tagged rows + buyer_payment allocations.
+  const [payments, setPayments] = useState<CounterpartyPaymentRow[]>([]);
 
   useEffect(() => {
     api.getClientCreditStatus(clientId)
@@ -177,6 +179,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
       const active = links.find((l) => l.is_active && new Date(l.expires_at) > new Date());
       if (active) setPortalLink(active);
     }).catch(() => {});
+    api.counterpartyPayments("client", clientId, c.name).then(setPayments).catch(() => setPayments([]));
   };
 
   useEffect(() => { load(); }, [clientId]);
@@ -395,6 +398,38 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
           <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
           <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
+        </div>
+
+        {/* Bank payments — payments from this buyer, tagged or deal-linked (R-150) */}
+        <div className="mt-4 pt-4 border-t border-line-2">
+          <p className="text-[12.5px] font-medium text-muted mb-2">Bank payments</p>
+          {payments.length === 0 ? (
+            <p className="text-[11.5px] text-faint bg-surface-2 border border-line rounded-lg px-3 py-2.5">
+              Nothing linked yet — book a payment from this client in Financials and it shows up here.
+            </p>
+          ) : (
+            <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
+              {payments.slice(0, 12).map((p) => (
+                <div key={p.txn_id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="text-[12px] text-ink-2 truncate">
+                      {p.description || p.counterparty_name}
+                      {p.tagged && (
+                        <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-muted tabular-nums truncate">
+                      {p.posted_at ? new Date(p.posted_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""}
+                      {p.invoice_number ? ` · #${p.invoice_number}` : ""}
+                    </div>
+                  </div>
+                  <div className={`text-[12.5px] font-semibold tabular-nums flex-shrink-0 ${p.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                    {p.direction === "in" ? "+" : "−"}{fmtAmount(p.amount)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {credit && (
