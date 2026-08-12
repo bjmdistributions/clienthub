@@ -12800,6 +12800,36 @@ pub async fn plaid_sync() -> Result<Value, String> {
     // extraction is still running — bounds total command time regardless of count.
     let mut wait_budget = 150u64;
 
+    // Plaid's `payment_meta` — the payer/payee/by_order_of the bank knows about a
+    // payment — is the metadata smart linking (R-150) matches against. Until now it
+    // was fetched and discarded. Persist it (plus the clean merchant name) into the
+    // row's provenance blob so it travels with the row through sync; same shape at
+    // the added and modified sites so an amendment never strips it.
+    fn rawj_for(t: &Value, dt: &str, pacct: &str, tid: &str, merchant: &str) -> String {
+        let mut obj = serde_json::Map::new();
+        obj.insert("dt".into(), json!(dt));
+        obj.insert("pa".into(), json!(pacct));
+        obj.insert("tid".into(), json!(tid));
+        if !merchant.is_empty() {
+            obj.insert("merchant".into(), json!(merchant));
+        }
+        if let Some(m) = t.get("payment_meta").and_then(|v| v.as_object()) {
+            let mut pm = serde_json::Map::new();
+            for k in [
+                "by_order_of", "payee", "payer", "payment_method", "payment_processor",
+                "ppd_id", "reason", "reference_number",
+            ] {
+                if let Some(v) = m.get(k).and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+                    pm.insert(k.into(), json!(v));
+                }
+            }
+            if !pm.is_empty() {
+                obj.insert("pm".into(), Value::Object(pm));
+            }
+        }
+        Value::Object(obj).to_string()
+    }
+
     for (item_pk, access, mut cursor, accounts_json, item_env, institution) in items {
         // Sync each item under the environment it was LINKED in (not the current UI
         // setting) so a bank still pulls even if the app is left on the other env.
@@ -12893,7 +12923,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     let merchant = t.get("merchant_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let raw_name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let desc = if raw_name.is_empty() { merchant.clone() } else { raw_name };
-                    let cp = if merchant.is_empty() { desc.clone() } else { merchant };
+                    let cp = if merchant.is_empty() { desc.clone() } else { merchant.clone() };
                     let pfc = t.get("personal_finance_category").and_then(|c| c.get("primary")).and_then(|v| v.as_str()).unwrap_or("");
                     let cat = plaid_category(pfc, direction);
                     let date = t.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -12907,7 +12937,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str()))
                         .unwrap_or("").to_string();
                     let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let rawj = json!({ "dt": dt, "pa": pacct, "tid": tid }).to_string();
+                    let rawj = rawj_for(t, &dt, &pacct, &tid, &merchant);
                     // Plaid names the pending row this posted transaction replaces. Nothing
                     // in this codebase has ever read it; every guard around pending/posted
                     // churn has been inferring an identity the bank states outright. Exact
@@ -13095,7 +13125,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         .or_else(|| t.get("authorized_datetime").and_then(|v| v.as_str()))
                         .unwrap_or("").to_string();
                     let pacct = t.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let rawj = json!({ "dt": dt, "pa": pacct, "tid": tid }).to_string();
+                    let rawj = rawj_for(t, &dt, &pacct, &tid, &merchant);
 
                     // An amount change on money already tied to a deal can break the
                     // "allocations never exceed the transaction" invariant. Never
@@ -13874,6 +13904,62 @@ pub async fn ai_categorize_bank_txns() -> Result<Value, String> {
 
 // ── Loan tagging + memorized auto-tag rules ─────────────────────────────────
 
+/// One authenticated GET against the server's read-only smart-linking engine
+/// (R-150), with a single token refresh on 401. Any failure falls back to an
+/// empty payload with source "local" so the frontend keeps its local matcher —
+/// suggestions are hints and must never block or error the ledger.
+async fn fetch_bank_suggest(path: &str) -> Value {
+    let empty = || json!({ "source": "local" });
+    let mut cfg = match crate::netsync::config() {
+        Some(c) => c,
+        None => return empty(),
+    };
+    let url = format!("{}{}", cfg.url, path);
+    let mut resp = match crate::netsync::http().get(&url).bearer_auth(&cfg.token).send().await {
+        Ok(r) => r,
+        Err(_) => return empty(),
+    };
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        match crate::netsync::refresh_token(&cfg.url, &cfg.token).await {
+            Ok(t) => {
+                cfg.token = t;
+                resp = match crate::netsync::http().get(&url).bearer_auth(&cfg.token).send().await {
+                    Ok(r) => r,
+                    Err(_) => return empty(),
+                };
+            }
+            Err(_) => return empty(),
+        }
+    }
+    if !resp.status().is_success() {
+        return empty();
+    }
+    match resp.json::<Value>().await {
+        Ok(v) => v,
+        Err(_) => empty(),
+    }
+}
+
+/// Smart-linking suggestions (R-150) from the server's read-only matching
+/// engine over the mirror DB. The server scores this org's own ledger — bank
+/// names (counterparty / memo / payment_meta / merchant) against client and
+/// supplier names, amounts against invoice totals and unpaid supplier legs,
+/// date proximity, and invoice-number hits in the memo — and returns ranked
+/// candidate deals per unbooked transaction. Never writes anything: every
+/// booking still flows through allocate_bank_txn locally.
+#[tauri::command]
+pub async fn suggest_bank_txn_links() -> Result<Value, String> {
+    Ok(fetch_bank_suggest("/api/bank/suggestions/bulk?limit=120").await)
+}
+
+/// R-150 phase 5 — completed deals whose payments were never bank-linked,
+/// each with candidate transactions from history (name/amount/date/invoice
+/// number). Read-only; attaching anything still goes through allocate_bank_txn.
+#[tauri::command]
+pub async fn suggest_reconciliation_missing() -> Result<Value, String> {
+    Ok(fetch_bank_suggest("/api/bank/reconciliation-missing").await)
+}
+
 /// Tag a whole bank transaction to a loan: sets counterparty_type='loan' + the
 /// loan id/name on the txn itself (no synced-schema change) and derives the
 /// category from the txn's direction — money-in books as loan_received, money-out
@@ -13927,6 +14013,39 @@ pub async fn untag_bank_txn_loan(bank_txn_id: String) -> Result<(), String> {
     conn.execute(
         "UPDATE bank_txn SET category='', counterparty_type='', counterparty_id='', updated_at=?1 WHERE id=?2",
         rusqlite::params![now, bank_txn_id],
+    ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
+/// Tag a bank transaction to a supplier or client (R-150 smart linking): sets
+/// counterparty_type='supplier'|'client' + the row id, so profiles can show
+/// payment history even for money never tied to a deal. An identity tag, not a
+/// booking — leaves `reviewed`, `category` and the payee name alone (same rule
+/// as loan tagging: overwriting the name destroys the bank memo).
+#[tauri::command]
+pub async fn tag_bank_txn_counterparty(bank_txn_id: String, ctype: String, counterparty_id: String) -> Result<(), String> {
+    let table = match ctype.as_str() {
+        "supplier" => "suppliers",
+        "client" => "clients",
+        _ => return Err("counterparty_type must be supplier or client".into()),
+    };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        // Validate the row exists so we never create a dangling tag.
+        conn.query_row(&format!("SELECT 1 FROM {table} WHERE id=?1"), [&counterparty_id], |_| Ok(()))
+            .map_err(|_| "Counterparty not found".to_string())?;
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("counterparty_type".into(), json!(ctype));
+    cols.insert("counterparty_id".into(), json!(counterparty_id));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("bank_txn", &bank_txn_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bank_txn SET counterparty_type=?1, counterparty_id=?2, updated_at=?3 WHERE id=?4",
+        rusqlite::params![ctype, counterparty_id, now, bank_txn_id],
     ).map_err(|e| e.to_string())?;
     crate::netsync::push_now();
     Ok(())

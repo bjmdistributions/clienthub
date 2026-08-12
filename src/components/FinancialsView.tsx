@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
-  Loan, TxnRule, DedupeResult, PlaidSyncSummary,
+  Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ReconciliationMissingDeal,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -185,6 +185,26 @@ const matchLabel = (d: DealFlow) => {
   const name = dealLabel(d);
   if (!inv) return name;
   return name === `Invoice #${d.invoice_number}` ? inv : `${inv} · ${name}`;
+};
+
+// Server-scored suggestion for a transaction (R-150): the mirror engine weighs
+// bank metadata (payer/payee/by_order_of, merchant), amounts against invoice
+// totals and unpaid supplier legs, date proximity, and invoice-number hits.
+// Only surfaced when unambiguous — a top candidate rated certain/strong with no
+// near-equal second — matching the local matcher's "say nothing rather than
+// guess loudly" rule.
+const serverMatchFor = (t: BankTxn, pool: DealFlow[], cands?: BankSuggestCandidate[]):
+  { deal: DealFlow; reason: string; candidate: BankSuggestCandidate } | null => {
+  if (!cands || cands.length === 0) return null;
+  if (t.allocated > 0.0001) return null;
+  if (!(t.unallocated > 0.0001)) return null;
+  const top = cands[0];
+  if (top.tier !== "certain" && top.tier !== "strong") return null;
+  const second = cands[1];
+  if (second && (second.tier === "certain" || top.score - second.score < 20)) return null;
+  const deal = pool.find((d) => d.id === top.deal_id);
+  if (!deal) return null;
+  return { deal, reason: top.reason, candidate: top };
 };
 
 // A rich, scannable deal row: buyer · date · amount · completed/open — used by both
@@ -418,6 +438,25 @@ export default function FinancialsView() {
   const [refreshing, setRefreshing]   = useState(false);
   // Latest refreshAll, for the mounted-once sync listener (see below).
   const refreshRef = useRef<((keepOpen?: boolean) => Promise<void>) | null>(null);
+  // Server-scored smart links (R-150) — txn id → ranked candidate deals. Empty
+  // when the server is unreachable; the local matcher stays as the fallback.
+  const [serverSugg, setServerSugg] = useState<Map<string, BankSuggestCandidate[]>>(new Map());
+  // R-150 phase 5 — completed deals whose payments were never bank-linked.
+  const [missingLinks, setMissingLinks] = useState<ReconciliationMissingDeal[]>([]);
+  const [missingLinksOpen, setMissingLinksOpen] = useState(false);
+  const [missingLinksLoading, setMissingLinksLoading] = useState(false);
+  const [attachBusy, setAttachBusy] = useState<string | null>(null);
+
+  // Fetch server-scored suggestions without blocking the ledger load — hints are
+  // optional; a slow or unreachable server must never stall the money screen.
+  const loadServerSugg = async () => {
+    try {
+      const r = await api.suggestBankTxnLinks();
+      const m = new Map<string, BankSuggestCandidate[]>();
+      for (const row of r.suggestions || []) if (row.candidates.length) m.set(row.txn_id, row.candidates);
+      setServerSugg(m);
+    } catch { /* offline — the local matcher stays */ }
+  };
 
   const loadAll = async () => {
     setLoadError(null);
@@ -426,6 +465,8 @@ export default function FinancialsView() {
         api.listBankTxns(), api.bankTxnSummary(), api.listDealFlows(), api.listLoans(), api.listTxnRules(),
       ]);
       setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
+      // Smart-link hints arrive separately and never block the ledger (R-150).
+      loadServerSugg();
       // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
       // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
       api.cleanupGhostDealFlows().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
@@ -493,6 +534,7 @@ export default function FinancialsView() {
     // in the app must reach the allocation picker without a full remount.
     const [t, s, ln, d] = await Promise.all([api.listBankTxns(), api.bankTxnSummary(), api.listLoans(), api.listDealFlows()]);
     setTxns(t); setSummary(s); setLoans(ln); setDeals(d);
+    loadServerSugg();
     if (keepOpen && openId) {
       const a = await api.listBankAllocationsForTxn(openId);
       setAllocs(a);
@@ -1035,20 +1077,72 @@ export default function FinancialsView() {
 
   // One-click allocate for an unambiguous match: the full remaining amount, role read
   // from the direction (money in = buyer payment, money out = supplier payment — the
-  // same pairing bulk allocate uses and the only roles rolesFor allows). This calls the
+  // same pairing bulk allocate uses and the only roles rolesFor allows). A server
+  // candidate (R-150) overrides both: its role, its supplier leg cap, and the
+  // counterparty tag stamped on the txn after the allocation lands. This calls the
   // exact command the panel calls, so nothing here skips a backend check; the row is
   // re-checked for remaining amount at click time in case it went stale.
-  const tieMatch = async (t: BankTxn, d: DealFlow) => {
+  const tieMatch = async (t: BankTxn, d: DealFlow, candidate?: BankSuggestCandidate) => {
     if (tyingId) return;
     if (!(t.unallocated > 0.0001)) { toast("Nothing left to tie on this transaction", "error"); return; }
     setTyingId(t.id);
     try {
-      const r = t.direction === "out" ? "supplier_payment" : "buyer_payment";
-      await api.allocateBankTxn(t.id, d.id, t.unallocated, r, "");
-      toast(`Tied ${fmtAmount(t.unallocated)} to ${dealLabel(d)}`);
+      const r = candidate?.role ?? (t.direction === "out" ? "supplier_payment" : "buyer_payment");
+      // A supplier leg is one cut of a deal: tie at most that leg's amount so a
+      // multi-leg wire leaves its remainder allocatable elsewhere. Buyer ties keep
+      // the full remainder (the pre-existing behaviour, over-invoice confirm aside).
+      const amt = r === "supplier_payment" && candidate && candidate.leg_amount > 0
+        ? Math.min(t.unallocated, candidate.leg_amount)
+        : t.unallocated;
+      const note = r === "supplier_payment" && candidate?.supplier_name ? candidate.supplier_name : "";
+      await api.allocateBankTxn(t.id, d.id, amt, r, note);
+      // R-150 phase 4: stamp the supplier/client identity on the txn so profiles
+      // show payment history even for money never tied to a deal. Best-effort —
+      // a failed tag must never undo or hide a successful allocation.
+      const cpid = r === "supplier_payment" ? candidate?.supplier_id : candidate?.client_id;
+      if (cpid) {
+        api.tagBankTxnCounterparty(t.id, r === "supplier_payment" ? "supplier" : "client", cpid).catch(() => {});
+      }
+      toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)}`);
       await refreshAll(true);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTyingId(null); }
+  };
+
+  // ── R-150 phase 5: missing links on completed deals ─────────────────────────
+  const openMissingLinks = async () => {
+    setMissingLinksOpen(true);
+    setMissingLinksLoading(true);
+    try {
+      const r = await api.suggestReconciliationMissing();
+      setMissingLinks(r.deals || []);
+    } catch { setMissingLinks([]); }
+    finally { setMissingLinksLoading(false); }
+  };
+
+  // Attach one suggested transaction to its deal. Same command the panel uses,
+  // so every backend guard applies; capped at the leg/invoice target so an
+  // over-sized wire leaves its remainder for other legs. The txn can only ever
+  // land on ONE deal (exclusivity), so the suggestion is withdrawn everywhere
+  // the moment it attaches.
+  const attachMissing = async (cand: BankSuggestCandidate) => {
+    if (attachBusy) return;
+    setAttachBusy(cand.txn_id);
+    try {
+      const txn = txns.find((x) => x.id === cand.txn_id);
+      const amt = txn ? Math.min(txn.amount, cand.leg_amount) : cand.leg_amount;
+      await api.allocateBankTxn(cand.txn_id, cand.deal_id, amt, cand.role, cand.supplier_name || "");
+      const cpid = cand.role === "supplier_payment" ? cand.supplier_id : cand.client_id;
+      if (cpid) {
+        api.tagBankTxnCounterparty(cand.txn_id, cand.role === "supplier_payment" ? "supplier" : "client", cpid).catch(() => {});
+      }
+      toast(`Attached ${fmtAmount(amt)} to ${cand.client_name}${cand.supplier_name ? ` · ${cand.supplier_name}` : ""}`);
+      setMissingLinks((prev) => prev
+        .map((d) => ({ ...d, missing: d.missing.map((m) => ({ ...m, candidates: m.candidates.filter((c) => c.txn_id !== cand.txn_id) })) }))
+        .filter((d) => d.missing.some((m) => m.candidates.length > 0)));
+      await refreshAll(true);
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setAttachBusy(null); }
   };
 
   const untagLoan = async (bankTxnId: string) => {
@@ -1463,12 +1557,16 @@ export default function FinancialsView() {
     const ot = openId ? txns.find((t) => t.id === openId) : null;
     const cp = (ot?.counterparty_name || "").trim().toLowerCase();
     const amt = ot?.amount || 0;
+    // Server-scored candidates (R-150) for the open transaction — the local
+    // ranking only knows buyer names, so supplier matches come from here.
+    const sc = openId ? serverSugg.get(openId) ?? [] : [];
     return survivorDeals(deals)
       .filter((d) => !q || `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(q))
       .map((d) => {
         // Rank deals that match the open transaction (same buyer / same amount) to
         // the top so the right deal is one glance away.
         let score = 0;
+        if (sc.some((c) => c.deal_id === d.id)) score += 250;
         if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
         if (amt && d.invoice_total && Math.abs(d.invoice_total - amt) < 0.5) score += 60;
         const when = Date.parse(d.completed_at || d.created_at || "") || 0;
@@ -1477,19 +1575,23 @@ export default function FinancialsView() {
       .sort((a, b) => b.score - a.score || b.when - a.when)
       .slice(0, 20)
       .map((x) => x.d);
-  }, [deals, dealQuery, openId, txns]);
+  }, [deals, dealQuery, openId, txns, serverSugg]);
 
   // txn id → the single obvious deal for it, if there is one. Computed once per data
-  // change (not per row render) and shared by every table instance.
+  // change (not per row render) and shared by every table instance. The server
+  // engine (R-150) wins when it has an unambiguous answer; the local matcher stays
+  // as the offline fallback.
   const confidentMatches = useMemo(() => {
     const pool = survivorDeals(deals);
-    const m = new Map<string, { deal: DealFlow; reason: string }>();
+    const m = new Map<string, { deal: DealFlow; reason: string; candidate?: BankSuggestCandidate }>();
     for (const t of txns) {
+      const sc = serverMatchFor(t, pool, serverSugg.get(t.id));
+      if (sc) { m.set(t.id, sc); continue; }
       const c = confidentMatch(t, pool);
       if (c) m.set(t.id, c);
     }
     return m;
-  }, [txns, deals]);
+  }, [txns, deals, serverSugg]);
 
   // Booking memory — what the book itself already says about a payee. Only BOOKED
   // rows teach (reviewed = a human confirmed the classification; unreviewed Plaid
@@ -1706,9 +1808,9 @@ export default function FinancialsView() {
                             Looks like <span className="text-ink-2 font-medium">{matchLabel(cm.deal)}</span> — {cm.reason}
                           </span>
                           <button
-                            onClick={(e) => { e.stopPropagation(); tieMatch(t, cm.deal); }}
+                            onClick={(e) => { e.stopPropagation(); tieMatch(t, cm.deal, cm.candidate); }}
                             disabled={tyingId === t.id}
-                            title={`Tie the full ${fmtAmount(t.unallocated)} to ${dealLabel(cm.deal)} as ${t.direction === "out" ? "a supplier payment" : "a buyer payment"}`}
+                            title={`Tie to ${dealLabel(cm.deal)} as ${cm.candidate?.role === "supplier_payment" ? "a supplier payment" : cm.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${cm.reason}`}
                             className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
                           >
                             {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Tie it
@@ -1894,11 +1996,78 @@ export default function FinancialsView() {
               </select>
             )}
             <button
+              onClick={openMissingLinks}
+              title="Find completed deals whose payments were never linked to bank transactions, and suggest the matching transactions from history"
+              className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-accent/40 bg-accent/5 text-accent rounded-lg text-[13px] font-semibold hover:bg-accent/10 transition-colors"
+            >
+              <Wand2 size={14} /> Find missing links
+            </button>
+            <button
               onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
               className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
             >
               <Plus size={14} /> Record cash
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* R-150 phase 5 — missing payment links on completed deals. Confirm-only:
+          every attach flows through allocate_bank_txn and nothing is written
+          without a click. */}
+      {missingLinksOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setMissingLinksOpen(false)}>
+          <div className="bg-surface border border-line rounded-2xl w-full max-w-xl max-h-[82vh] shadow-xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-line flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[15px] font-semibold text-ink">Missing payment links</div>
+                <div className="text-[11.5px] text-muted mt-0.5">Completed deals whose payments were never tied to bank transactions — candidates from history, confirm before attaching.</div>
+              </div>
+              <button onClick={() => setMissingLinksOpen(false)} className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2"><X size={16} /></button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto flex flex-col gap-3">
+              {missingLinksLoading ? (
+                <div className="flex items-center gap-2 text-[12.5px] text-muted py-8 justify-center"><Loader2 size={14} className="animate-spin" /> Scanning completed deals…</div>
+              ) : missingLinks.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="text-[13px] text-ink-2 font-medium">Nothing missing</div>
+                  <div className="text-[12px] text-muted mt-1">Every completed deal with recorded payments already has them bank-linked.</div>
+                </div>
+              ) : (
+                missingLinks.map((d) => (
+                  <div key={d.deal_id} className="border border-line rounded-xl px-4 py-3">
+                    <div className="text-[13px] font-semibold text-ink">{d.invoice_number ? `#${d.invoice_number} · ` : ""}{d.client_name || "Deal"}</div>
+                    {d.missing.map((m) => (
+                      <div key={`${d.deal_id}-${m.leg}-${m.supplier_name ?? ""}`} className="mt-2">
+                        <div className="text-[11.5px] text-muted">
+                          {m.leg === "buyer_payment" ? `Buyer owed ${fmtAmount(m.target_amount)}` : `Supplier ${m.supplier_name ?? ""} owed ${fmtAmount(m.target_amount)}`}
+                        </div>
+                        <div className="flex flex-col gap-1.5 mt-1.5">
+                          {m.candidates.map((c) => {
+                            const txn = txns.find((x) => x.id === c.txn_id);
+                            return (
+                              <div key={c.txn_id} className="flex items-center justify-between gap-2 bg-surface-2 border border-line rounded-lg px-2.5 py-1.5">
+                                <div className="min-w-0 text-[12px] text-ink-2 truncate" title={c.reason}>
+                                  {txn ? `${fmtAmount(txn.amount)} · ${txn.counterparty_name || txn.description}` : c.txn_id}
+                                  <span className="text-muted"> — {c.reason}</span>
+                                </div>
+                                <button
+                                  onClick={() => attachMissing(c)}
+                                  disabled={attachBusy !== null}
+                                  className="flex-shrink-0 flex items-center gap-1 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors"
+                                >
+                                  {attachBusy === c.txn_id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Attach
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -2934,13 +3103,16 @@ export default function FinancialsView() {
                               </span>
                             ) : cm ? (
                               <button
-                                onClick={() => tieMatch(t, cm.deal)}
+                                onClick={() => tieMatch(t, cm.deal, cm.candidate)}
                                 disabled={tyingId === t.id}
-                                title={`Tie the full ${fmtAmount(t.unallocated)} to ${dealLabel(cm.deal)} as ${t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${cm.reason}`}
+                                title={`Tie to ${dealLabel(cm.deal)} as ${cm.candidate?.role === "supplier_payment" ? "a supplier payment" : cm.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${cm.reason}`}
                                 className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap max-w-[220px]"
                               >
                                 {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
-                                <span className="truncate">Tie to {matchLabel(cm.deal)}</span>
+                                <span className="truncate">
+                                  Tie to {matchLabel(cm.deal)}
+                                  {cm.candidate?.supplier_name ? ` · ${cm.candidate.supplier_name}` : ""}
+                                </span>
                               </button>
                             ) : (
                               <button

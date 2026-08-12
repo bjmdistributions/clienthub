@@ -150,7 +150,7 @@ fn note_auth_lost() {
 /// Trade the stored token for a fresh one. The server accepts a recently-expired
 /// token, so a device that was merely closed for a while heals itself. Stores and
 /// returns the new token.
-async fn refresh_token(base: &str, token: &str) -> Result<String> {
+pub(crate) async fn refresh_token(base: &str, token: &str) -> Result<String> {
     let resp = http()
         .post(format!("{}/api/auth/employee/refresh", base))
         .bearer_auth(token)
@@ -192,7 +192,7 @@ fn auth_state() -> &'static str {
     }
 }
 
-fn http() -> reqwest::Client {
+pub(crate) fn http() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()

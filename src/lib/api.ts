@@ -1784,11 +1784,39 @@ export interface TxnRule {
   auto_book: boolean;
 }
 
+// ── Smart linking (R-150) — server-scored txn → deal suggestions ──
+export interface BankSuggestCandidate {
+  txn_id: string;
+  deal_id: string;
+  role: "buyer_payment" | "supplier_payment";
+  client_name: string;
+  client_id: string;
+  supplier_name: string | null;
+  supplier_id: string | null;
+  invoice_number: string;
+  invoice_total: number;
+  leg_amount: number;
+  score: number;
+  tier: "certain" | "strong" | "weak";
+  reason: string;
+}
+
+export interface ReconciliationMissingDeal {
+  deal_id: string;
+  invoice_number: string;
+  client_name: string;
+  missing: {
+    leg: "buyer_payment" | "supplier_payment";
+    supplier_name?: string;
+    target_amount: number;
+    candidates: BankSuggestCandidate[];
+  }[];
+}
+
 export interface SignupRule {
   id: string;
   name: string;
-  sender_pattern: string | null;
-  subject_pattern: string | null;
+  sender_pattern: string | null;  subject_pattern: string | null;
   inbox_source: string | null;
   active: boolean;
   created_at: string;
@@ -2499,6 +2527,18 @@ export const api = {
   deleteTxnRule: (id: string) => invoke<void>("delete_txn_rule", { id }),
   setTxnRuleAuto: (id: string, autoBook: boolean) => invoke<void>("set_txn_rule_auto", { id, autoBook }),
   applyTxnRules: () => invoke<{ updated: number; auto_booked: number }>("apply_txn_rules"),
+  // Smart linking (R-150): the server's read-only matching engine scores unbooked
+  // transactions against deals (names, amounts, dates, invoice-number-in-memo) and
+  // returns ranked candidates per txn. `source: "local"` means the server was
+  // unreachable — the UI keeps its own matcher. Nothing here books money.
+  suggestBankTxnLinks: () =>
+    invoke<{ suggestions: { txn_id: string; candidates: BankSuggestCandidate[] }[]; source?: "server" | "local" }>("suggest_bank_txn_links"),
+  suggestReconciliationMissing: () =>
+    invoke<{ deals: ReconciliationMissingDeal[]; source?: "server" | "local" }>("suggest_reconciliation_missing"),
+  // R-150 phase 4: stamp the supplier/client identity on a transaction so
+  // profiles show payment history even for money never tied to a deal.
+  tagBankTxnCounterparty: (bankTxnId: string, ctype: "supplier" | "client", counterpartyId: string) =>
+    invoke<void>("tag_bank_txn_counterparty", { bankTxnId, ctype, counterpartyId }),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),
