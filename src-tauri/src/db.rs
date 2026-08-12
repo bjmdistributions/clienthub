@@ -1565,4 +1565,20 @@ const MIGRATIONS: &[(u32, &str)] = &[
         );
         "#,
     ),
+    (
+        76,
+        // txn_rule becomes a SYNCED table (R-018 second half) — booking memory must be
+        // org knowledge, not device trivia: a rule taught on the desktop has to fire on
+        // the Mac too, or the same payee re-asks on every machine. org_id at the author
+        // (schema default files every tenant under org_default — same lesson as
+        // add_cash_transaction), auto_book is the per-rule opt-in that books a matched
+        // row outright instead of only pre-filling it, updated_at because synced rows
+        // carry one. Writes go through sync::record_upsert/record_delete from v0.15.139;
+        // rules created before that are emitted once by sync::emit_unsynced_txn_rules.
+        r#"
+        ALTER TABLE txn_rule ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
+        ALTER TABLE txn_rule ADD COLUMN auto_book INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE txn_rule ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+        "#,
+    ),
 ];

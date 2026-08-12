@@ -979,6 +979,7 @@ fn main() {
             create_txn_rule,
             list_txn_rules,
             delete_txn_rule,
+            set_txn_rule_auto,
             apply_txn_rules,
             ai_categorize_bank_txns,
             // Signup rules

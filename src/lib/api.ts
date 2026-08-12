@@ -1779,6 +1779,9 @@ export interface TxnRule {
   loan_name: string;
   created_at: string;
   direction: string; // "" any, "in" money-in only, "out" money-out only
+  // Per-rule opt-in: matched transactions are booked outright (reviewed set),
+  // not just pre-filled. Synced org-wide with the rule.
+  auto_book: boolean;
 }
 
 export interface SignupRule {
@@ -2489,10 +2492,13 @@ export const api = {
   applyLoanRepaymentsToSetAside: (loanId: string) =>
     invoke<number>("apply_loan_repayments_to_set_aside", { loanId }),
   listTxnRules: () => invoke<TxnRule[]>("list_txn_rules"),
-  createTxnRule: (matchCounterparty: string, category: string, targetType: "deal" | "loan" | "expense", targetId: string, role: string, direction: string) =>
-    invoke<string>("create_txn_rule", { matchCounterparty, category, targetType, targetId, role, direction }),
+  // Rules are synced org-wide since v0.15.139. autoBook: matched transactions are
+  // booked outright (category + reviewed) instead of only pre-filled — per-rule opt-in.
+  createTxnRule: (matchCounterparty: string, category: string, targetType: "deal" | "loan" | "expense", targetId: string, role: string, direction: string, autoBook?: boolean) =>
+    invoke<string>("create_txn_rule", { matchCounterparty, category, targetType, targetId, role, direction, autoBook: autoBook ?? false }),
   deleteTxnRule: (id: string) => invoke<void>("delete_txn_rule", { id }),
-  applyTxnRules: () => invoke<{ updated: number }>("apply_txn_rules"),
+  setTxnRuleAuto: (id: string, autoBook: boolean) => invoke<void>("set_txn_rule_auto", { id, autoBook }),
+  applyTxnRules: () => invoke<{ updated: number; auto_booked: number }>("apply_txn_rules"),
 
   // Signup rules
   listSignupRules: () => invoke<SignupRule[]>("list_signup_rules"),

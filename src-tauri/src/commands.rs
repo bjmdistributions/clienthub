@@ -13991,28 +13991,69 @@ pub async fn apply_loan_repayments_to_set_aside(loan_id: String) -> Result<f64, 
 #[tauri::command]
 pub async fn create_txn_rule(
     match_counterparty: String, category: String, target_type: String, target_id: String, role: String,
-    direction: String,
+    direction: String, auto_book: Option<bool>,
 ) -> Result<String, String> {
     if match_counterparty.trim().is_empty() {
         return Err("A rule needs a counterparty to match on".into());
     }
     // '' = any direction, 'in' = money in only, 'out' = money out only.
     let dir = match direction.trim() { "in" => "in", "out" => "out", _ => "" };
+    let auto = if auto_book.unwrap_or(false) { 1i64 } else { 0i64 };
     let id = format!("txnrule_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
+    // Rules are org knowledge since v0.15.139 — stamped at the author, written
+    // through the oplog, so the same payee never has to be re-taught per device.
+    let org = crate::employees::session_org_id();
     let conn = pool().get().map_err(|e| e.to_string())?;
     // One rule per (counterparty, direction): replace any existing so re-tagging
-    // the same payer just updates the rule instead of stacking duplicates.
+    // the same payer just updates the rule instead of stacking duplicates. The
+    // replacement is a synced delete — a bare DELETE resurrects on the next pull.
+    let olds: Vec<String> = conn
+        .prepare("SELECT id FROM txn_rule WHERE lower(trim(match_counterparty))=lower(trim(?1)) AND direction=?2")
+        .and_then(|mut st| st.query_map(rusqlite::params![match_counterparty, dir], |r| r.get::<_, String>(0))
+            .map(|it| it.filter_map(|x| x.ok()).collect()))
+        .map_err(|e| e.to_string())?;
+    for old in &olds {
+        sync::record_delete("txn_rule", old).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM txn_rule WHERE id=?1", [old]).map_err(|e| e.to_string())?;
+    }
+    let mut cols = Map::new();
+    cols.insert("org_id".into(), json!(org));
+    cols.insert("match_counterparty".into(), json!(match_counterparty));
+    cols.insert("category".into(), json!(category));
+    cols.insert("target_type".into(), json!(target_type));
+    cols.insert("target_id".into(), json!(target_id));
+    cols.insert("role".into(), json!(role));
+    cols.insert("direction".into(), json!(dir));
+    cols.insert("auto_book".into(), json!(auto));
+    cols.insert("created_at".into(), json!(now));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("txn_rule", &id, cols).map_err(|e| e.to_string())?;
     conn.execute(
-        "DELETE FROM txn_rule WHERE lower(trim(match_counterparty))=lower(trim(?1)) AND direction=?2",
-        rusqlite::params![match_counterparty, dir],
+        "INSERT INTO txn_rule (id, org_id, match_counterparty, category, target_type, target_id, role, direction, auto_book, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
+        rusqlite::params![id, org, match_counterparty, category, target_type, target_id, role, dir, auto, now],
     ).map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO txn_rule (id, match_counterparty, category, target_type, target_id, role, direction, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        rusqlite::params![id, match_counterparty, category, target_type, target_id, role, dir, now],
-    ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(id)
+}
+
+/// Flip a rule's auto-book flag: 1 = a matched transaction is booked outright
+/// (category applied AND reviewed set), 0 = it is only pre-filled and stays in
+/// the To book queue. Per-rule opt-in by design — R-018.
+#[tauri::command]
+pub async fn set_txn_rule_auto(id: String, auto_book: bool) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let auto = if auto_book { 1i64 } else { 0i64 };
+    let mut cols = Map::new();
+    cols.insert("auto_book".into(), json!(auto));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("txn_rule", &id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE txn_rule SET auto_book=?1, updated_at=?2 WHERE id=?3",
+        rusqlite::params![auto, now, id]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
 }
 
 /// List memorized auto-tag rules, resolving the loan name for loan-target rules.
@@ -14021,7 +14062,7 @@ pub async fn list_txn_rules() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT r.id, r.match_counterparty, r.category, r.target_type, r.target_id, r.role, r.created_at,
-                COALESCE((SELECT name FROM loan WHERE id=r.target_id),''), r.direction
+                COALESCE((SELECT name FROM loan WHERE id=r.target_id),''), r.direction, COALESCE(r.auto_book,0)
          FROM txn_rule r ORDER BY r.created_at",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok(json!({
@@ -14034,15 +14075,18 @@ pub async fn list_txn_rules() -> Result<Vec<Value>, String> {
         "created_at": r.get::<_, String>(6)?,
         "loan_name": r.get::<_, String>(7)?,
         "direction": r.get::<_, String>(8)?,
+        "auto_book": r.get::<_, i64>(9)? != 0,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// Delete a memorized auto-tag rule (device-local).
+/// Delete a memorized auto-tag rule — synced, so it dies on every device.
 #[tauri::command]
 pub async fn delete_txn_rule(id: String) -> Result<(), String> {
+    sync::record_delete("txn_rule", &id).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM txn_rule WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
     Ok(())
 }
 
@@ -14051,12 +14095,30 @@ pub async fn delete_txn_rule(id: String) -> Result<(), String> {
 /// tag with a direction-derived loan_received/loan_repayment category) but LEAVES
 /// reviewed=0 so the row stays in the review queue. The resulting bank_txn edits
 /// are synced; the rules themselves are device-local. Returns the count updated.
-fn apply_txn_rules_impl(override_existing: bool) -> Result<i64, String> {
-    let rules: Vec<(String, String, String, String, String)> = {
-        // (match_counterparty, category, target_type, target_id, direction)
+fn apply_txn_rules_impl(override_existing: bool) -> Result<(i64, i64), String> {
+    let rules: Vec<(String, String, String, String, String, i64)> = {
+        // (match_counterparty, category, target_type, target_id, direction, auto_book)
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT match_counterparty, category, target_type, target_id, direction FROM txn_rule ORDER BY created_at",
+            "SELECT match_counterparty, category, target_type, target_id, direction, COALESCE(auto_book,0) FROM txn_rule ORDER BY created_at",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?, r.get::<_, i64>(5)?,
+        ))).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    if rules.is_empty() { return Ok((0, 0)); }
+    let candidates: Vec<(String, String, String, String, String)> = {
+        // (id, counterparty_name, description, direction, category)
+        // Manual apply (override_existing) re-tags ANY unbooked row so a rule can
+        // overwrite Plaid's auto-guessed category — every import already has a
+        // category, so blank-only matching found nothing. The automatic post-sync
+        // pass reads ALL unbooked rows too, but writes a non-blank category only
+        // for AUTO-BOOK rules (see below) so it can't clobber categories you've set.
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, counterparty_name, description, direction, COALESCE(category,'') FROM bank_txn WHERE reviewed=0",
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
@@ -14064,37 +14126,26 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<i64, String> {
         ))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
-    if rules.is_empty() { return Ok(0); }
-    let candidates: Vec<(String, String, String, String)> = {
-        // (id, counterparty_name, description, direction)
-        // Manual apply (override_existing) re-tags ANY unbooked row so a rule can
-        // overwrite Plaid's auto-guessed category — every import already has a
-        // category, so blank-only matching found nothing. The automatic post-sync
-        // pass keeps blank-only so it can't clobber categories you've set.
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        let sql = if override_existing {
-            "SELECT id, counterparty_name, description, direction FROM bank_txn WHERE reviewed=0"
-        } else {
-            "SELECT id, counterparty_name, description, direction FROM bank_txn WHERE reviewed=0 AND COALESCE(category,'')=''"
-        };
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((
-            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
-        ))).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
     let now = Utc::now().to_rfc3339();
     let mut updated = 0i64;
-    for (id, cp, desc, direction) in candidates {
+    let mut auto_booked = 0i64;
+    for (id, cp, desc, direction, existing_cat) in candidates {
         let cp_l = cp.to_lowercase();
         let desc_l = desc.to_lowercase();
-        let rule = rules.iter().find(|(m, _, _, _, dir)| {
+        let rule = rules.iter().find(|(m, _, _, _, dir, _)| {
             let m = m.trim().to_lowercase();
             // Direction-scoped: '' matches either way, 'in'/'out' must equal the txn's.
             let dir_ok = dir.is_empty() || dir.as_str() == direction.as_str();
             dir_ok && !m.is_empty() && (cp_l == m || desc_l.contains(&m))
         });
-        let (_, rule_cat, target_type, target_id, _) = match rule { Some(r) => r, None => continue };
+        let (_, rule_cat, target_type, target_id, _, rule_auto) = match rule { Some(r) => r, None => continue };
+        let auto = *rule_auto != 0;
+        // The automatic pass only touches a row that already carries a category when
+        // the rule is AUTO-BOOK: opting a payee into automation is explicit consent
+        // to overwrite the machine's guess on that payee. Every Plaid import arrives
+        // with a machine category, so without this carve-out auto-book rules would
+        // never fire on the live feed — the exact reason the old system felt dead.
+        if !override_existing && !auto && !existing_cat.trim().is_empty() { continue; }
         let is_loan = target_type == "loan" && !target_id.is_empty();
         // A category-less non-loan rule has nothing to apply — skipping it keeps a
         // blank rule from mass-clearing categories on every matching transaction.
@@ -14116,30 +14167,37 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<i64, String> {
             cols.insert("counterparty_id".into(), json!(target_id));
             cols.insert("counterparty_name".into(), json!(loan_name));
         }
+        // Auto-book: the per-rule opt-in books the row outright instead of leaving
+        // it in the queue. reviewed is named ONLY on this path — naming it on a
+        // plain re-tag would re-stamp its LWW clock and let a stale device win.
+        if auto { cols.insert("reviewed".into(), json!(1)); }
         cols.insert("updated_at".into(), json!(now));
         if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
         let conn = pool().get().map_err(|e| e.to_string())?;
         let res = if is_loan {
             conn.execute(
-                "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, counterparty_name=?3, updated_at=?4 WHERE id=?5",
-                rusqlite::params![category, target_id, loan_name, now, id],
+                "UPDATE bank_txn SET category=?1, counterparty_type='loan', counterparty_id=?2, counterparty_name=?3, reviewed=(CASE WHEN ?4 THEN 1 ELSE reviewed END), updated_at=?5 WHERE id=?6",
+                rusqlite::params![category, target_id, loan_name, auto, now, id],
             )
         } else {
             conn.execute(
-                "UPDATE bank_txn SET category=?1, updated_at=?2 WHERE id=?3",
-                rusqlite::params![category, now, id],
+                "UPDATE bank_txn SET category=?1, reviewed=(CASE WHEN ?2 THEN 1 ELSE reviewed END), updated_at=?3 WHERE id=?4",
+                rusqlite::params![category, auto, now, id],
             )
         };
-        if res.unwrap_or(0) > 0 { updated += 1; }
+        if res.unwrap_or(0) > 0 {
+            updated += 1;
+            if auto { auto_booked += 1; }
+        }
     }
-    Ok(updated)
+    Ok((updated, auto_booked))
 }
 
-/// Manually apply memorized auto-tag rules now. Returns { updated }.
+/// Manually apply memorized auto-tag rules now. Returns { updated, auto_booked }.
 #[tauri::command]
 pub async fn apply_txn_rules() -> Result<Value, String> {
-    let n = apply_txn_rules_impl(true)?;
-    Ok(json!({ "updated": n }))
+    let (n, a) = apply_txn_rules_impl(true)?;
+    Ok(json!({ "updated": n, "auto_booked": a }))
 }
 
 // ============================================================

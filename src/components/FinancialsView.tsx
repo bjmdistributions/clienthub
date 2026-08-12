@@ -1065,13 +1065,14 @@ export default function FinancialsView() {
   // handles the whole backlog instead of tagging each row by hand.
   const createRule = async (
     matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string,
-    direction: string,
+    direction: string, autoBook = false,
   ): Promise<boolean> => {
     try {
-      await api.createTxnRule(matchCounterparty, category, tType, targetId, "", direction);
+      await api.createTxnRule(matchCounterparty, category, tType, targetId, "", direction, autoBook);
       const r = await api.applyTxnRules();
       const dirWord = direction === "in" ? " money-in" : direction === "out" ? " money-out" : "";
-      toast(`Rule saved — tagged ${r.updated}${dirWord} transaction${r.updated === 1 ? "" : "s"}`);
+      const booked = (r.auto_booked ?? 0) > 0 ? ` — ${r.auto_booked} booked automatically` : "";
+      toast(`Remembered — tagged ${r.updated}${dirWord} transaction${r.updated === 1 ? "" : "s"}${booked}. Applies on every device.`);
       setRules(await api.listTxnRules());
       await refreshAll(false);
       return true;
@@ -1085,10 +1086,18 @@ export default function FinancialsView() {
     } catch (e: any) { toast(errText(e), "error"); }
   };
 
+  const toggleRuleAuto = async (r: TxnRule) => {
+    try {
+      await api.setTxnRuleAuto(r.id, !r.auto_book);
+      setRules(await api.listTxnRules());
+    } catch (e: any) { toast(errText(e), "error"); }
+  };
+
   const applyRules = async () => {
     try {
       const r = await api.applyTxnRules();
-      toast(`Applied to ${r.updated} transaction${r.updated === 1 ? "" : "s"}`);
+      const booked = (r.auto_booked ?? 0) > 0 ? ` — ${r.auto_booked} booked automatically` : "";
+      toast(`Applied to ${r.updated} transaction${r.updated === 1 ? "" : "s"}${booked}`);
       await refreshAll(true);
       setRules(await api.listTxnRules());
     } catch (e: any) { toast(errText(e), "error"); }
@@ -3025,6 +3034,7 @@ export default function FinancialsView() {
           setOpen={setRulesOpen}
           onApply={applyRules}
           onDelete={deleteRule}
+          onToggleAuto={toggleRuleAuto}
           onCreate={(cp, cat, dir) => createRule(cp, cat, "expense", "", dir)}
         />
       )}
@@ -3334,7 +3344,7 @@ function AllocationPanel(props: {
   onSubmit: () => void;
   onRemove: (id: string) => void;
   onUntagLoan: (bankTxnId: string) => void;
-  onCreateRule: (matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string, direction: string) => void;
+  onCreateRule: (matchCounterparty: string, category: string, tType: "deal" | "loan" | "expense", targetId: string, direction: string, autoBook?: boolean) => void;
   newDealBusy: boolean;
   onCreateDeal: (t: BankTxn, name: string, buyer: string, sale: number, note: string) => Promise<boolean>;
 }) {
@@ -3381,12 +3391,15 @@ function AllocationPanel(props: {
   // (recurring lender repayments), otherwise it memorizes the category only — a
   // one-off deal id shouldn't auto-apply to unrelated future transactions.
   const isLoanRule = isLoanTagged || (targetType === "loan" && !!selectedLoan);
+  // Auto-book opt-in for the rule about to be created. Defaults OFF: automation is
+  // per-payee consent, never the ambient behavior (R-018).
+  const [rememberAuto, setRememberAuto] = useState(false);
   const alwaysTag = () => {
     if (!counterparty) return;
     const dir = txn.direction; // scope the rule to this txn's direction (in vs out)
-    if (isLoanTagged && txn.counterparty_id) onCreateRule(counterparty, "", "loan", txn.counterparty_id, dir);
-    else if (targetType === "loan" && selectedLoan) onCreateRule(counterparty, "", "loan", selectedLoan.id, dir);
-    else onCreateRule(counterparty, txn.category || "", "expense", "", dir);
+    if (isLoanTagged && txn.counterparty_id) onCreateRule(counterparty, "", "loan", txn.counterparty_id, dir, rememberAuto);
+    else if (targetType === "loan" && selectedLoan) onCreateRule(counterparty, "", "loan", selectedLoan.id, dir, rememberAuto);
+    else onCreateRule(counterparty, txn.category || "", "expense", "", dir, rememberAuto);
   };
 
   // Booking memory, designed to stay inside its own box: the payee lives in a
@@ -3399,18 +3412,29 @@ function AllocationPanel(props: {
     const dirWord = txn.direction === "in" ? "money in" : "money out";
     const what = isLoanRule ? "books to this loan" : `books as ${catLabel(txn.category || "")}`;
     return (
-      <div className="flex items-center gap-2.5 min-w-0 border border-line-2 rounded-lg pl-3 pr-2 py-2 bg-surface-2/40">
-        <Wand2 size={13} className="text-muted flex-shrink-0" />
-        <div className="min-w-0 flex-1 text-[12px] text-muted truncate" title={counterparty}>
-          Every future {dirWord} from <span className="text-ink-2 font-medium">{counterparty}</span> {what}
+      <div className="min-w-0 border border-line-2 rounded-lg pl-3 pr-2 py-2 bg-surface-2/40 space-y-1.5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Wand2 size={13} className="text-muted flex-shrink-0" />
+          <div className="min-w-0 flex-1 text-[12px] text-muted truncate" title={counterparty}>
+            Every future {dirWord} from <span className="text-ink-2 font-medium">{counterparty}</span> {what}
+          </div>
+          <button
+            onClick={alwaysTag}
+            title="Remember this booking — applies to every matching unbooked transaction now, and to future ones as they arrive. Synced to your other devices."
+            className="flex-shrink-0 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 transition-colors"
+          >
+            Remember
+          </button>
         </div>
-        <button
-          onClick={alwaysTag}
-          title="Remember this booking — applies to every matching unbooked transaction now, and to future ones as they arrive"
-          className="flex-shrink-0 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 transition-colors"
-        >
-          Remember
-        </button>
+        <label className="flex items-center gap-2 pl-[23px] text-[11.5px] text-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={rememberAuto}
+            onChange={(e) => setRememberAuto(e.target.checked)}
+            className="accent-accent"
+          />
+          Book it automatically too — matched transactions skip the queue entirely
+        </label>
       </div>
     );
   };
@@ -3699,13 +3723,14 @@ function AllocationPanel(props: {
 
 // Memorized auto-tag rules — collapsible management home next to the queue they act on.
 function RulesCard({
-  rules, open, setOpen, onApply, onDelete, onCreate,
+  rules, open, setOpen, onApply, onDelete, onToggleAuto, onCreate,
 }: {
   rules: TxnRule[];
   open: boolean;
   setOpen: (v: boolean) => void;
   onApply: () => void;
   onDelete: (id: string) => void;
+  onToggleAuto: (r: TxnRule) => void;
   onCreate: (matchCounterparty: string, category: string, direction: string) => void;
 }) {
   const [cp, setCp]   = useState("");
@@ -3745,9 +3770,10 @@ function RulesCard({
           <p className="text-[11px] text-muted leading-relaxed">
             Booking teaches the app. Once a payee has been booked the same way twice, its unbooked transactions show a
             one-tap "Usually …" suggestion drawn from your own history. "Remember" in the booking sheet goes one step
-            further — it applies the booking to every matching transaction now and to future ones as they arrive. A
-            memory can be limited to money in or money out, so the same payer (e.g. Whatnot) can be a sale one way and
-            an expense the other. Suggested rows stay in To book until you book them.
+            further — it applies the booking to every matching transaction now and to future ones as they arrive, and
+            it reaches every device signed into your workspace. A memory can be limited to money in or money out, so
+            the same payer (e.g. Whatnot) can be a sale one way and an expense the other. "Suggests" rows wait in
+            To book for your click; "Auto-books" rows are booked outright and skip the queue — flip it per rule.
           </p>
 
           {rules.length > 0 && (
@@ -3765,8 +3791,21 @@ function RulesCard({
                     <span className="text-ink-2">{r.target_type === "loan" ? (r.loan_name || "Loan") : catLabel(r.category)}</span>
                   </div>
                   <button
+                    onClick={() => onToggleAuto(r)}
+                    title={r.auto_book
+                      ? "Auto-book is ON — matched transactions are booked outright and skip the queue. Click to turn off."
+                      : "Auto-book is OFF — matched transactions are pre-filled but wait in To book. Click to book them automatically."}
+                    className={`flex-shrink-0 h-6 px-2 rounded-md border text-[11px] font-semibold transition-colors ${
+                      r.auto_book
+                        ? "border-accent/40 bg-accent/10 text-accent"
+                        : "border-line text-muted hover:text-ink-2 hover:border-line-3"
+                    }`}
+                  >
+                    {r.auto_book ? "Auto-books" : "Suggests"}
+                  </button>
+                  <button
                     onClick={() => onDelete(r.id)}
-                    title="Delete rule"
+                    title="Delete rule — on every device"
                     className="flex-shrink-0 text-faint hover:text-danger-ink transition-colors"
                   >
                     <Trash2 size={13} />

@@ -213,7 +213,55 @@ fn ensure_meta_tables() -> Result<()> {
     // NULL. Idempotent — the duplicate-column error on re-run is ignored.
     let _ = conn.execute("ALTER TABLE sync_dead_letters ADD COLUMN event_json TEXT", []);
     sweep_stale_tombstones(&conn);
+    emit_unsynced_txn_rules(&conn);
     Ok(())
+}
+
+/// One-time carry: emit oplog events for txn_rule rows that predate the table
+/// becoming synced (v0.15.139). A rule created while the table was device-local
+/// has no oplog presence, so nothing would ever deliver it to the org's other
+/// devices. Idempotent with no marker to corrupt: record_upsert stamps
+/// row_clocks for every column it carries, so a rule with any clock entry has
+/// already been emitted and is skipped on the next boot.
+pub fn emit_unsynced_txn_rules(conn: &rusqlite::Connection) {
+    // sync::init runs before netsync::ensure_tables in the boot order, and
+    // record_upsert queues into netsync_outbound — make sure the queue exists
+    // (idempotent CREATE IF NOT EXISTS) instead of depending on boot order.
+    if let Err(e) = crate::netsync::ensure_tables() {
+        tracing::warn!("emit_unsynced_txn_rules: outbound queue unavailable, skipping: {e}");
+        return;
+    }
+    let rows: Vec<(String, String, String, String, String, String, String, String, i64, String)> = conn
+        .prepare(
+            "SELECT r.id, COALESCE(r.org_id,'org_default'), r.match_counterparty, r.category, \
+                    r.target_type, r.target_id, r.role, COALESCE(r.direction,''), \
+                    COALESCE(r.auto_book,0), r.created_at \
+               FROM txn_rule r \
+              WHERE NOT EXISTS (SELECT 1 FROM row_clocks c WHERE c.tbl='txn_rule' AND c.row_id=r.id)",
+        )
+        .and_then(|mut st| {
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                                     r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)))
+                .map(|it| it.filter_map(|x| x.ok()).collect())
+        })
+        .unwrap_or_default();
+    if rows.is_empty() { return; }
+    let n = rows.len();
+    for (id, org, cp, cat, tt, tid, role, dir, auto, created) in rows {
+        let mut c = serde_json::Map::new();
+        c.insert("org_id".into(), serde_json::json!(org));
+        c.insert("match_counterparty".into(), serde_json::json!(cp));
+        c.insert("category".into(), serde_json::json!(cat));
+        c.insert("target_type".into(), serde_json::json!(tt));
+        c.insert("target_id".into(), serde_json::json!(tid));
+        c.insert("role".into(), serde_json::json!(role));
+        c.insert("direction".into(), serde_json::json!(dir));
+        c.insert("auto_book".into(), serde_json::json!(auto));
+        c.insert("created_at".into(), serde_json::json!(created));
+        c.insert("updated_at".into(), serde_json::json!(created));
+        let _ = record_upsert("txn_rule", &id, c);
+    }
+    tracing::info!("emit_unsynced_txn_rules: queued {n} pre-sync rule(s) for the org");
 }
 
 /// One-time repair: drop delete records for rows that are demonstrably alive.
@@ -559,7 +607,7 @@ pub fn is_tombstoned(table: &str, row_id: &str) -> bool {
 
 // ---------- Apply remote events ----------
 
-const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers"];
+const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers", "txn_rule"];
 
 /// True if peers will actually apply an event for `table`. Emitting a record for a
 /// table outside this set produces an event the apply side dead-letters (logged and

@@ -46,6 +46,8 @@ const SNAPSHOT_TABLES: &[&str] = &[
     // device that missed events (or a fresh install) could never heal its ledger via
     // Repair sync. Restore is UPSERT-only, so this only ADDS rows, never prunes.
     "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts",
+    // Booking memory (R-018): rules are org knowledge since v0.15.139.
+    "txn_rule",
 ];
 
 pub fn ensure_tables() -> Result<()> {
