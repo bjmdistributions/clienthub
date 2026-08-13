@@ -328,8 +328,20 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                     {r.reason || (r.source === "supplier" ? "Supplier reversal" : "Refund")}
                   </span>
                   <span className="tabular-nums text-ink">{fmtAmount(r.amount)}</span>
-                  {!locked && <button onClick={() => run(async () => { await api.deleteRefund(r.id); })} disabled={busy}
-                    title="Remove refund" className="text-faint hover:text-danger-ink transition-colors"><Trash2 size={12} /></button>}
+                  {/* The two stores are removed differently: a `refunds` row's delete also
+                      tears down its allocation, while a Financials-booked refund IS just
+                      the allocation. Calling deleteRefund on an allocation id would no-op
+                      silently and the line would stay. */}
+                  {!locked && <button
+                    onClick={() => run(async () => {
+                      if (r.origin === "allocation") await api.removeBankAllocation(r.id);
+                      else await api.deleteRefund(r.id);
+                    })}
+                    disabled={busy}
+                    title={r.origin === "allocation"
+                      ? "Unlink this bank refund from the deal"
+                      : "Remove refund"}
+                    className="text-faint hover:text-danger-ink transition-colors"><Trash2 size={12} /></button>}
                 </div>
               ))}
               {refunds.length === 0 && <div className="text-[11.5px] text-muted py-1">No refunds recorded yet.</div>}

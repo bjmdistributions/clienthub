@@ -355,7 +355,23 @@ export default function DealFlowView() {
             <div className="border-t border-line divide-y divide-line-2">
               {refundFlows.length === 0 && (
                 <div className="px-5 py-6 text-[12.5px] text-muted">
-                  Every refund is closed out. Show done to see them.
+                  {doneRefundCount > 0 ? (
+                    <>
+                      {/* Booking the last refund payment closes the deal out, which hides
+                          it — so the drawer looked empty right after the work landed.
+                          Name the count and make the way back a button, not a hint. */}
+                      Every refund is closed out —{" "}
+                      <button
+                        onClick={() => setShowDoneRefunds(true)}
+                        className="font-medium text-accent hover:text-accent-hover"
+                      >
+                        show {doneRefundCount} closed refund{doneRefundCount === 1 ? "" : "s"}
+                      </button>
+                      .
+                    </>
+                  ) : (
+                    "No refunds on any deal."
+                  )}
                 </div>
               )}
               {refundFlows.map((flow) => {

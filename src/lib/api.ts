@@ -1621,6 +1621,12 @@ export interface RefundRow {
   reason: string;
   refunded_at: string;
   bank_txn_id: string; // "" when this refund is a custom amount (not from the bank feed)
+  /** Which store this line came from. "refund" = a `refunds` row (remove with
+   *  deleteRefund, which also tears down its allocation). "allocation" = a bare
+   *  refund_out bank allocation booked from Financials with no refunds row
+   *  (remove with removeBankAllocation). The two are unioned counted-once by
+   *  list_refunds, so a line never appears twice. */
+  origin: "refund" | "allocation";
 }
 export interface DealReceipt {
   id: string;

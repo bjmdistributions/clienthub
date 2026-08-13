@@ -108,11 +108,17 @@ function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
   );
 }
 
-const ROLES: { value: string; label: string }[] = [
-  { value: "buyer_payment",    label: "Buyer payment" },
-  { value: "supplier_payment", label: "Supplier payment" },
-  { value: "refund_out",       label: "Refund out" },
-  { value: "refund_in",        label: "Refund in" },
+// Labels answer "what IS this money?", not "which accounting role?". Jack booked
+// real refunds as supplier payments because "Refund out" reads as jargon next to
+// "Supplier payment" and nothing said which one a refund to a buyer is. The two are
+// NOT interchangeable: deal_bank_actuals puts supplier_payment into cost, while
+// net_profit is deliberately pre-refund and refund_out is excluded from cost
+// entirely — so mis-picking silently moves a deal's recorded profit.
+const ROLES: { value: string; label: string; hint?: string }[] = [
+  { value: "buyer_payment",    label: "Payment from the buyer",       hint: "Money the customer paid you for this deal" },
+  { value: "supplier_payment", label: "Payment to the supplier",      hint: "What the goods cost you — counts as cost of the deal" },
+  { value: "refund_out",       label: "Refund back to the buyer",     hint: "Money returned to your customer — does not change the deal's cost" },
+  { value: "refund_in",        label: "Money back from the supplier", hint: "A supplier reversal — lowers what this deal cost you" },
   { value: "adjustment",       label: "Adjustment" },
 ];
 
@@ -518,6 +524,18 @@ export default function FinancialsView() {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpenId(null); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [openId]);
+
+  // Focus moves into the sheet ONCE when it opens, so keyboard and screen-reader
+  // users land inside the dialog rather than behind it. This has to be an effect
+  // keyed on openId: an inline `ref={(el) => el?.focus()}` is a new function every
+  // render, so React detached and re-attached it on EVERY commit and re-focused
+  // this container — which blew the caret out of the deal search, the amount, the
+  // note and the payee rename after a single keystroke, and out of any field
+  // whenever a background netsync refresh landed. Never focus from a ref callback.
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (openId) sheetRef.current?.focus();
   }, [openId]);
 
   // Stop any in-flight bank-connect polling when this view unmounts.
@@ -3226,7 +3244,7 @@ export default function FinancialsView() {
             aria-modal="true"
             aria-label="Book transaction"
             tabIndex={-1}
-            ref={(el) => el?.focus()}
+            ref={sheetRef}
             className="h-full w-full max-w-[560px] bg-surface border-l border-line shadow-2xl overflow-y-auto p-5 space-y-4 focus:outline-none"
             onClick={(e) => e.stopPropagation()}
           >
@@ -3741,7 +3759,8 @@ function AllocationPanel(props: {
             <select
               value={role}
               onChange={(e) => setRole(e.target.value)}
-              aria-label="Allocation role"
+              aria-label="What this money is"
+              title={ROLES.find((r) => r.value === role)?.hint || ""}
               className="sm:col-span-4 border border-line px-2.5 h-9 rounded-lg text-[13px] w-full bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
             >
               {rolesFor(txn.direction).map((r) => (
@@ -3756,6 +3775,15 @@ function AllocationPanel(props: {
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />} Allocate
             </button>
           </div>
+          {/* Say what the chosen role MEANS for the deal's money, in the row where the
+              choice is made. Picking "Payment to the supplier" for a refund silently
+              adds it to cost of goods and moves recorded profit — the mistake this
+              line exists to stop. */}
+          {ROLES.find((r) => r.value === role)?.hint && (
+            <p className="text-[11.5px] text-muted -mt-0.5">
+              {ROLES.find((r) => r.value === role)?.hint}
+            </p>
+          )}
           {/* Split one payment across multiple deals — allocate a partial amount to
               each; the backend keeps the running total within the transaction. */}
           <label className="flex items-center gap-2 text-[12px] text-ink-2 cursor-pointer mt-1">

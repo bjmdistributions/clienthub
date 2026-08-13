@@ -4717,15 +4717,52 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     Ok(id)
 }
 
+/// Every refund payment on a deal, from BOTH stores.
+///
+/// A refund can exist as a `refunds` row (the workspace path — `create_refund`
+/// writes the allocation AND the row) or as a bare `bank_allocation` with
+/// `role='refund_out'` (the Financials booking path, which writes only the
+/// allocation). Reading the `refunds` table alone made a bank-booked refund
+/// invisible here while it was still counted in every total — so the section
+/// header said −$52,890 over a list of $45,000 and the missing $7,890 looked lost.
+///
+/// The UNION is counted-once by construction: the allocation arm carries
+/// `NOT EXISTS (a matching refunds row)`, which is the exact complement of the
+/// rule every money SUM uses (`COALESCE(bank_txn_id,'')=''` + all `refund_out`).
+/// A bank-linked refund created through the workspace therefore appears exactly
+/// once — as its `refunds` row — never twice.
+///
+/// `origin` tells the UI which store a line came from, because they are removed
+/// differently: `refunds` → `delete_refund` (which also tears down its
+/// allocation), allocation-only → `remove_bank_allocation`.
 #[tauri::command]
 pub async fn list_refunds(deal_flow_id: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, amount, COALESCE(method,''), COALESCE(source,''), COALESCE(source_supplier_ref,''), keep_rep_cut, COALESCE(reason,''), COALESCE(refunded_at,''), COALESCE(bank_txn_id,'') FROM refunds WHERE deal_flow_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, amount, COALESCE(method,''), COALESCE(source,''), COALESCE(source_supplier_ref,''), \
+                keep_rep_cut, COALESCE(reason,''), COALESCE(refunded_at,''), COALESCE(bank_txn_id,''), \
+                'refund' AS origin, COALESCE(created_at,'') AS sort_at \
+           FROM refunds WHERE deal_flow_id=?1 \
+         UNION ALL \
+         SELECT a.id, a.amount, 'Bank', '', '', 0, \
+                CASE WHEN COALESCE(a.note,'')<>'' THEN a.note \
+                     ELSE COALESCE(NULLIF(bt.counterparty_name,''), bt.description, 'Bank refund') END, \
+                COALESCE(bt.posted_at,''), a.bank_txn_id, \
+                'allocation' AS origin, COALESCE(a.created_at,'') AS sort_at \
+           FROM bank_allocation a \
+           JOIN bank_txn bt ON bt.id = a.bank_txn_id \
+          WHERE a.deal_flow_id=?1 AND a.role='refund_out' \
+            AND NOT EXISTS (SELECT 1 FROM refunds rf \
+                             WHERE rf.deal_flow_id = a.deal_flow_id \
+                               AND COALESCE(rf.bank_txn_id,'') = a.bank_txn_id) \
+          ORDER BY sort_at",
+    ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&deal_flow_id], |r| Ok(json!({
         "id": r.get::<_, String>(0)?, "amount": r.get::<_, f64>(1)?, "method": r.get::<_, String>(2)?,
         "source": r.get::<_, String>(3)?, "source_supplier_ref": r.get::<_, String>(4)?,
         "keep_rep_cut": r.get::<_, i64>(5)? != 0, "reason": r.get::<_, String>(6)?, "refunded_at": r.get::<_, String>(7)?,
         "bank_txn_id": r.get::<_, String>(8)?,
+        "origin": r.get::<_, String>(9)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
@@ -11284,7 +11321,18 @@ pub async fn unallocated_bank_txns(deal_flow_id: Option<String>) -> Result<Value
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a
                           WHERE a.bank_txn_id = bt.id), 0) AS total_alloc
          FROM bank_txn bt
-         WHERE bt.category != 'internal_transfer'
+         -- Internal transfers are hidden because moving money between your OWN
+         -- accounts is not deal money. But the category is a machine guess from
+         -- Plaid, and real buyer wires land under it constantly: a $7,890 refund
+         -- wired back to a buyer was categorised 'internal_transfer', so this
+         -- picker could never offer it and the refund had to be booked from
+         -- Financials instead — the one path that writes no `refunds` row.
+         -- Hide the guess, never the human's own work: a transaction the user has
+         -- reviewed, or that is already tied to this deal, is always offered.
+         WHERE (bt.category != 'internal_transfer'
+                OR COALESCE(bt.reviewed,0) = 1
+                OR EXISTS (SELECT 1 FROM bank_allocation a
+                            WHERE a.bank_txn_id = bt.id AND a.deal_flow_id = ?1))
            -- Show a transaction as long as it still has money left to allocate — even
            -- if part of it is already on OTHER deals (so a $40k cash receipt split $20k
            -- to deal A still shows $20k remaining when you open deal B).
