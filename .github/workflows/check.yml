@@ -1,0 +1,80 @@
+name: Check
+
+# Check only. Nothing here builds an installer, signs anything, publishes a release
+# or touches a server — release.yml owns all of that, and it triggers on tags alone.
+# Do not add a deploy step to this file. The point of a check that runs on every push
+# is that it is safe enough to run on every push.
+#
+# Until this existed, the first thing that ever compiled the tree was the release
+# build itself, so a type error surfaced while a version was being cut.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches release.yml. package.json declares no engines field, so the
+          # version that cuts releases is the only meaningful reference.
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+
+      # The same command release.yml runs as half of `npm run build`, minus the
+      # bundling — so a type error fails here instead of mid-release.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Warnings do not fail this step, and that is deliberate: the config holds
+      # every already-clean rule at error and everything with existing violations
+      # at warn, so main exits 0 today. See eslint.config.js for the ratchet.
+      - name: Lint
+        run: npm run lint
+
+  rust:
+    # windows-latest, not ubuntu. This tree has only ever been compiled on Windows
+    # and macOS (release.yml's matrix), and the desktop deps that reach the OS —
+    # keyring, native-tls, imap — would be exercised on Linux here for the first
+    # time. A check that fails for reasons unrelated to the commit teaches everyone
+    # to ignore it.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # No `npm run build` first. dist/ is gitignored so a fresh checkout never has
+      # it, but generate_context! embeds no assets while devUrl is set, so the path
+      # is not read during check or test. Verified by deleting dist/ locally, forcing
+      # a full recompile of the crate, and watching `cargo check --bin clienthub`
+      # still finish clean. If this ever fails on frontendDist, add `npm ci && npm
+      # run build` above rather than deleting this job.
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --bin clienthub
+
+      # --bin clienthub, never --lib. src/lib.rs is a one-line placeholder that
+      # declares no modules, so `cargo test --lib` compiles nothing, runs 0 tests
+      # and reports ok — a green that means nothing. All 45 tests hang off the
+      # binary target.
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --bin clienthub

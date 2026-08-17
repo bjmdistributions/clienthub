@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, lazy, Suspense } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Users,
@@ -41,7 +41,6 @@ import ReceivablesView from "./components/ReceivablesView";
 import PayablesView from "./components/PayablesView";
 import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
-import SettingsView from "./components/SettingsView";
 import DashboardView from "./components/DashboardView";
 import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
@@ -49,11 +48,8 @@ import InventoryView from "./components/InventoryView";
 import ManifestView from "./components/ManifestView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
-import HealthView from "./components/HealthView";
 import BriefView from "./components/BriefView";
-import AnalyticsView from "./components/AnalyticsView";
 import TiersView from "./components/TiersView";
-import GlobeView from "./components/GlobeView";
 import NotesView from "./components/NotesView";
 import PlatformView from "./components/PlatformView";
 import DataSafetyView from "./components/DataSafetyView";
@@ -76,6 +72,45 @@ import AuthView from "./components/AuthView";
 import { useAppStore } from "./lib/store";
 import { api, Me } from "./lib/api";
 import { can, canViewTab, isAdmin } from "./lib/permissions";
+
+// Screens heavy enough that parsing them at launch is felt by every session that
+// never opens them. Globe is the expensive one — it is the only importer of
+// globe.gl, which carries three.js with it, together the largest thing in the
+// build. Analytics pulls the chart families the dashboard does not use, and
+// Settings is the largest screen by code. Each becomes its own chunk, read from
+// local disk the first time its tab is opened.
+const GlobeView     = lazy(() => import("./components/GlobeView"));
+const AnalyticsView = lazy(() => import("./components/AnalyticsView"));
+const SettingsView  = lazy(() => import("./components/SettingsView"));
+
+// Shown while a lazy chunk is read off local disk. It repeats the overlay the
+// globe draws over its own dark ground while it initialises, in the same place,
+// so the chunk arriving changes nothing the eye can catch.
+const globeFallback = (
+  <div className="globe-root relative w-full h-full" style={{ background: "#060610", color: "#eef0f6" }}>
+    <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+      <div className="text-[13px]" style={{ color: "#7E8798" }}>Loading globe…</div>
+    </div>
+  </div>
+);
+
+// The same for the screens that share the padded column: title, subtitle, then
+// content, in the skeleton idiom those screens already use for their own loading
+// state. Sizes match Analytics' skeleton so the top of the page does not move
+// when the real screen takes over.
+const paneFallback = (
+  <div className="space-y-5">
+    <div className="flex items-start justify-between">
+      <div>
+        <div className="h-6 w-28 bg-surface-2 rounded-md animate-pulse" />
+        <div className="h-3.5 w-44 bg-surface-2 rounded animate-pulse mt-2" />
+      </div>
+      <div className="h-8 w-64 bg-surface-2 rounded-lg animate-pulse" />
+    </div>
+    <div className="h-[108px] bg-surface-2 rounded-2xl animate-pulse" />
+    <div className="h-[300px] bg-surface-2 rounded-xl animate-pulse" />
+  </div>
+);
 
 type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
@@ -508,35 +543,40 @@ export default function App() {
   // can be dropped into either the single main area or a split pane.
   const paneContent = (t: Tab) => {
     if (t === "dashboard") return <DashboardView onNavigate={setTab} me={me} />;
-    if (t === "globe") return <GlobeView />;
+    if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
     if (t === "approvals") return <ApprovalsView />;
     if (t === "checkup") return <CheckupView />;
     return (
       <div className="p-7">
         <div className="max-w-[1280px] mx-auto">
-          {t === "clients"    && <ClientsView />}
-          {t === "invoices"   && <InvoicesView />}
-          {t === "archive"    && <ArchiveView />}
-          {t === "receivables" && <ReceivablesView />}
-          {t === "payables"   && <PayablesView />}
-          {t === "quotes"     && <QuotesView onNavigate={setTab} />}
-          {t === "releaseletter" && <ReleaseLetterView />}
-          {t === "dealflow"   && <DealFlowView />}
-          {t === "suppliers"  && <SuppliersView />}
-          {t === "inventory"  && <InventoryView />}
-          {t === "manifest"   && <ManifestView onNavigate={setTab} />}
-          {t === "sheetcopy"  && <SheetCopyView />}
-          {t === "financials" && <FinancialsView />}
-          {t === "deals"      && <CloseoutView />}
-          {t === "analytics"  && <AnalyticsView />}
-          {t === "health"     && <TiersView />}
-          {t === "automation" && <AutomationLogView />}
-          {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
-          {t === "email"      && <EmailView />}
-          {t === "settings"   && <SettingsView me={me} />}
-          {t === "platform"   && <PlatformView />}
-          {t === "datasafety" && <DataSafetyView />}
+          {/* Wraps the whole column rather than the lazy screens individually:
+              the padding and width are already on screen, so only the content
+              area swaps, and any screen made lazy later is covered too. */}
+          <Suspense fallback={paneFallback}>
+            {t === "clients"    && <ClientsView />}
+            {t === "invoices"   && <InvoicesView />}
+            {t === "archive"    && <ArchiveView />}
+            {t === "receivables" && <ReceivablesView />}
+            {t === "payables"   && <PayablesView />}
+            {t === "quotes"     && <QuotesView onNavigate={setTab} />}
+            {t === "releaseletter" && <ReleaseLetterView />}
+            {t === "dealflow"   && <DealFlowView />}
+            {t === "suppliers"  && <SuppliersView />}
+            {t === "inventory"  && <InventoryView />}
+            {t === "manifest"   && <ManifestView onNavigate={setTab} />}
+            {t === "sheetcopy"  && <SheetCopyView />}
+            {t === "financials" && <FinancialsView />}
+            {t === "deals"      && <CloseoutView />}
+            {t === "analytics"  && <AnalyticsView />}
+            {t === "health"     && <TiersView />}
+            {t === "automation" && <AutomationLogView />}
+            {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
+            {t === "email"      && <EmailView />}
+            {t === "settings"   && <SettingsView me={me} />}
+            {t === "platform"   && <PlatformView />}
+            {t === "datasafety" && <DataSafetyView />}
+          </Suspense>
         </div>
       </div>
     );

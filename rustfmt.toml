@@ -1,0 +1,27 @@
+# Rust formatting settings for the desktop crate.
+#
+# DELIBERATELY NOT WIRED TO CI, and `cargo fmt` must not be run across the tree.
+#
+# Measured 2026-08-17: `cargo fmt --check` reports 1,496 diff hunks across 27 files,
+# 986 of them in src-tauri/src/commands.rs alone. Reformatting that is not a tidy-up,
+# it is a rewrite of every line other people are editing right now — concurrent
+# sessions work in this repo simultaneously, and the rule that keeps them from
+# clobbering each other is diffing your own files against the last tag before
+# committing. A whole-tree reformat makes that diff unreadable for everyone at once
+# and would silently swallow in-flight work.
+#
+# So this file records the intended style rather than enforcing it. It is the
+# defaults: nothing here overrides rustfmt, because the existing code was written
+# against the defaults and the goal is to describe what is already true.
+#
+# RATCHET — if formatting is ever adopted:
+#   1. One file per release, smallest first, each in a commit that changes nothing
+#      else, so the reformat is reviewable as a no-op.
+#   2. Never commands.rs, and never while another session has it open.
+#   3. Only after every file is clean does a `cargo fmt --check` step belong in
+#      .github/workflows/check.yml — adding it before then lands CI red, and a
+#      check that is red on arrival is one everyone learns to ignore.
+
+# Stated explicitly so a bare `rustfmt` (which, unlike `cargo fmt`, does not read
+# Cargo.toml) parses async/dyn correctly instead of falling back to the 2015 edition.
+edition = "2021"
