@@ -2553,12 +2553,19 @@ export const api = {
   // unreachable — the UI keeps its own matcher. Nothing here books money.
   suggestBankTxnLinks: () =>
     invoke<{ suggestions: { txn_id: string; candidates: BankSuggestCandidate[] }[]; source?: "server" | "local" }>("suggest_bank_txn_links"),
+  // `checked`/`truncated` describe scan scope: the server caps at the 30 newest
+  // completed deals and flags when older ones were left unscanned. Optional —
+  // an old server omits both, which means not truncated.
   suggestReconciliationMissing: () =>
-    invoke<{ deals: ReconciliationMissingDeal[]; source?: "server" | "local" }>("suggest_reconciliation_missing"),
+    invoke<{ deals: ReconciliationMissingDeal[]; source?: "server" | "local"; checked?: number; truncated?: boolean }>("suggest_reconciliation_missing"),
   // R-150 phase 4: stamp the supplier/client identity on a transaction so
   // profiles show payment history even for money never tied to a deal.
   tagBankTxnCounterparty: (bankTxnId: string, ctype: "supplier" | "client", counterpartyId: string) =>
     invoke<void>("tag_bank_txn_counterparty", { bankTxnId, ctype, counterpartyId }),
+  // Clears only the supplier/client link — never category (a counterparty tag
+  // never set one). Loan tags go through untagBankTxnLoan instead.
+  untagBankTxnCounterparty: (bankTxnId: string) =>
+    invoke<void>("untag_bank_txn_counterparty", { bankTxnId }),
   // R-150: every bank transaction a supplier or client touches — directly
   // tagged rows plus role allocations on their deals, deduped per txn.
   counterpartyPayments: (ctype: "supplier" | "client", id: string, name: string) =>

@@ -14083,6 +14083,10 @@ pub async fn tag_bank_txn_counterparty(bank_txn_id: String, ctype: String, count
         // Validate the row exists so we never create a dangling tag.
         conn.query_row(&format!("SELECT 1 FROM {table} WHERE id=?1"), [&counterparty_id], |_| Ok(()))
             .map_err(|_| "Counterparty not found".to_string())?;
+        // The transaction must exist too — an upsert for a missing id would sync
+        // a skeletal phantom row to every device.
+        conn.query_row("SELECT 1 FROM bank_txn WHERE id=?1", [&bank_txn_id], |_| Ok(()))
+            .map_err(|_| "Transaction not found".to_string())?;
     }
     let now = Utc::now().to_rfc3339();
     let mut cols = Map::new();
@@ -14099,6 +14103,40 @@ pub async fn tag_bank_txn_counterparty(bank_txn_id: String, ctype: String, count
     Ok(())
 }
 
+/// Remove a supplier/client tag from a transaction: clears only the counterparty
+/// link. Unlike `untag_bank_txn_loan` it leaves `category` alone — a counterparty
+/// tag never set one, so there is nothing to reset. Loan tags must go through the
+/// loan untag path instead.
+#[tauri::command]
+pub async fn untag_bank_txn_counterparty(bank_txn_id: String) -> Result<(), String> {
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let ctype: String = conn.query_row(
+            "SELECT COALESCE(counterparty_type,'') FROM bank_txn WHERE id=?1",
+            [&bank_txn_id], |r| r.get(0),
+        ).map_err(|_| "Transaction not found".to_string())?;
+        if ctype == "loan" {
+            return Err("This transaction is tagged to a loan — remove it from the loan instead".into());
+        }
+        if ctype.is_empty() {
+            return Err("This transaction has no supplier or client tag".into());
+        }
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("counterparty_type".into(), json!(""));
+    cols.insert("counterparty_id".into(), json!(""));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert("bank_txn", &bank_txn_id, cols).map_err(|e| e.to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bank_txn SET counterparty_type='', counterparty_id='', updated_at=?1 WHERE id=?2",
+        rusqlite::params![now, bank_txn_id],
+    ).map_err(|e| e.to_string())?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
 /// Payment history for a supplier or client (R-150): every bank transaction
 /// this counterparty touches — rows tagged directly (counterparty_type/id)
 /// plus allocations on deals they own (buyer_payment on the client's invoices;
@@ -14106,15 +14144,21 @@ pub async fn tag_bank_txn_counterparty(bank_txn_id: String, ctype: String, count
 /// Deduped to one row per transaction, the deal-linked row winning. Read-only.
 #[tauri::command]
 pub async fn counterparty_payments(ctype: String, id: String, name: String) -> Result<Value, String> {
-    let (tag_type, role, leg_pat) = match ctype.as_str() {
-        "supplier" => ("supplier", "supplier_payment", Some(format!("%\"supplier_name\":\"{}\"%", name.replace('"', "")))),
-        "client" => ("client", "buyer_payment", None),
+    let (tag_type, role, is_supplier) = match ctype.as_str() {
+        "supplier" => ("supplier", "supplier_payment", true),
+        "client" => ("client", "buyer_payment", false),
         _ => return Err("ctype must be supplier or client".into()),
     };
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let leg_match = match &leg_pat {
-        Some(_) => "df.supplier_payments_json LIKE ?4",
-        None => "i.client_id = ?2",
+    // Supplier legs match by supplier_id or exact name via json_each — a LIKE over
+    // the raw JSON missed escaped characters and let %/_ in a name act as wildcards.
+    // json_valid guards first: the TEXT column can hold '' and json_each throws on
+    // invalid JSON.
+    let leg_match = if is_supplier {
+        "json_valid(df.supplier_payments_json) AND EXISTS (SELECT 1 FROM json_each(df.supplier_payments_json) je \
+         WHERE json_extract(je.value,'$.supplier_id') = ?2 OR json_extract(je.value,'$.supplier_name') = ?4)"
+    } else {
+        "i.client_id = ?2"
     };
     let sql = format!(
         "SELECT t.id, COALESCE(t.posted_at,''), t.amount, t.direction, COALESCE(t.description,''), \
@@ -14139,9 +14183,8 @@ pub async fn counterparty_payments(ctype: String, id: String, name: String) -> R
          ORDER BY posted_at DESC, src DESC LIMIT 100"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String, f64, String, String, String, String, String, String, String, bool, i64)> = if leg_pat.is_some() {
-        let pat = leg_pat.as_deref().unwrap_or("");
-        stmt.query_map(rusqlite::params![tag_type, id, role, pat], |r| Ok((
+    let rows: Vec<(String, String, f64, String, String, String, String, String, String, String, bool, i64)> = if is_supplier {
+        stmt.query_map(rusqlite::params![tag_type, id, role, name], |r| Ok((
             r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
         ))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect()
     } else {
@@ -14149,8 +14192,9 @@ pub async fn counterparty_payments(ctype: String, id: String, name: String) -> R
             r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
         ))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect()
     };
-    // One row per transaction: a deal-linked row wins over a tag-only row and
-    // inherits its tag, so a txn that is both tagged and allocated lists once.
+    // One row per transaction: the tagged-branch row (lower src) wins — it LEFT
+    // JOINs the allocation itself, so it already carries deal info when one exists
+    // — and a kept row inherits the tag flag from any tagged duplicate.
     let mut best: std::collections::BTreeMap<String, (String, String, f64, String, String, String, String, String, String, String, bool, i64)> = Default::default();
     for r in rows {
         best.entry(r.0.clone())
@@ -14160,7 +14204,11 @@ pub async fn counterparty_payments(ctype: String, id: String, name: String) -> R
             })
             .or_insert(r);
     }
-    let out: Vec<Value> = best.into_values().map(|(txn_id, posted_at, amount, direction, description, counterparty_name, deal_flow_id, role, invoice_number, client_name, tagged, _)| json!({
+    // The map is keyed by txn id, so into_values() comes out id-ordered — re-sort
+    // newest first (RFC3339/YYYY-MM-DD strings compare correctly as text).
+    let mut kept: Vec<_> = best.into_values().collect();
+    kept.sort_by(|a, b| b.1.cmp(&a.1));
+    let out: Vec<Value> = kept.into_iter().map(|(txn_id, posted_at, amount, direction, description, counterparty_name, deal_flow_id, role, invoice_number, client_name, tagged, _)| json!({
         "txn_id": txn_id, "posted_at": posted_at, "amount": amount, "direction": direction,
         "description": description, "counterparty_name": counterparty_name,
         "deal_flow_id": deal_flow_id, "role": role, "invoice_number": invoice_number,

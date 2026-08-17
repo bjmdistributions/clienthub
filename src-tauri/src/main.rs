@@ -975,6 +975,7 @@ fn main() {
             tag_bank_txn_to_loan,
             untag_bank_txn_loan,
             tag_bank_txn_counterparty,
+            untag_bank_txn_counterparty,
             suggest_bank_txn_links,
             suggest_reconciliation_missing,
             counterparty_payments,

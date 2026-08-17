@@ -118,6 +118,17 @@ export default function SuppliersView() {
     api.counterpartyPayments("supplier", s.id, s.name).then(setPayments).catch(() => setPayments([]));
   };
 
+  // Remove a wrong supplier tag — the payment itself stays booked. Re-fetch so a
+  // tag-only row disappears and a deal-linked row merely loses its badge.
+  const untagPayment = async (txnId: string) => {
+    if (!selected) return;
+    try {
+      await api.untagBankTxnCounterparty(txnId);
+      const rows = await api.counterpartyPayments("supplier", selected.id, selected.name);
+      setPayments(rows);
+    } catch {}
+  };
+
   const createNew = () => {
     setSelected(null);
     setInput(emptyInput);
@@ -420,6 +431,7 @@ export default function SuppliersView() {
                   payments={payments}
                   dealCount={supplierDeals.length}
                   onOpenDeals={() => setDealsModalOpen(true)}
+                  onUntagPayment={untagPayment}
                 />
               ) : (
                 <Form input={input} setInput={setInput} />
@@ -494,8 +506,8 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   );
 }
 
-function Profile({ s, history, payments, dealCount, onOpenDeals }: {
-  s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[]; dealCount: number; onOpenDeals: () => void;
+function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment }: {
+  s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[]; dealCount: number; onOpenDeals: () => void; onUntagPayment: (txnId: string) => void;
 }) {
   const m = marginOf(s);
   return (
@@ -545,6 +557,15 @@ function Profile({ s, history, payments, dealCount, onOpenDeals }: {
                     {p.description || p.counterparty_name}
                     {p.tagged && (
                       <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
+                    )}
+                    {p.tagged && (
+                      <button
+                        onClick={() => onUntagPayment(p.txn_id)}
+                        title="Remove this tag — the payment itself stays booked"
+                        className="ml-1 inline-flex align-middle items-center justify-center w-4 h-4 rounded text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors"
+                      >
+                        <X size={10} />
+                      </button>
                     )}
                   </div>
                   <div className="text-[11px] text-muted tabular-nums truncate">

@@ -451,6 +451,9 @@ export default function FinancialsView() {
   const [missingLinks, setMissingLinks] = useState<ReconciliationMissingDeal[]>([]);
   const [missingLinksOpen, setMissingLinksOpen] = useState(false);
   const [missingLinksLoading, setMissingLinksLoading] = useState(false);
+  // Scan scope: the server caps at the 30 newest completed deals; `truncated`
+  // means older deals were left unscanned, so an empty list isn't an all-clear.
+  const [missingLinksScope, setMissingLinksScope] = useState<{ checked?: number; truncated?: boolean }>({});
   const [attachBusy, setAttachBusy] = useState<string | null>(null);
 
   // Fetch server-scored suggestions without blocking the ledger load — hints are
@@ -1134,7 +1137,8 @@ export default function FinancialsView() {
     try {
       const r = await api.suggestReconciliationMissing();
       setMissingLinks(r.deals || []);
-    } catch { setMissingLinks([]); }
+      setMissingLinksScope({ checked: r.checked, truncated: r.truncated });
+    } catch { setMissingLinks([]); setMissingLinksScope({}); }
     finally { setMissingLinksLoading(false); }
   };
 
@@ -1148,7 +1152,11 @@ export default function FinancialsView() {
     setAttachBusy(cand.txn_id);
     try {
       const txn = txns.find((x) => x.id === cand.txn_id);
-      const amt = txn ? Math.min(txn.amount, cand.leg_amount) : cand.leg_amount;
+      // Allocate against what is still free on the txn, not its face amount — a
+      // partial allocation already on the row would make the backend reject an
+      // attach sized off `amount`. Same stale-row guard as tieMatch.
+      if (txn && !(txn.unallocated > 0.0001)) { toast("Nothing left to tie on this transaction", "error"); return; }
+      const amt = txn ? Math.min(txn.unallocated, cand.leg_amount) : cand.leg_amount;
       await api.allocateBankTxn(cand.txn_id, cand.deal_id, amt, cand.role, cand.supplier_name || "");
       const cpid = cand.role === "supplier_payment" ? cand.supplier_id : cand.client_id;
       if (cpid) {
@@ -2049,7 +2057,14 @@ export default function FinancialsView() {
               ) : missingLinks.length === 0 ? (
                 <div className="text-center py-8">
                   <div className="text-[13px] text-ink-2 font-medium">Nothing missing</div>
-                  <div className="text-[12px] text-muted mt-1">Every completed deal with recorded payments already has them bank-linked.</div>
+                  {missingLinksScope.truncated ? (
+                    <>
+                      <div className="text-[12px] text-muted mt-1">Nothing missing in the latest {missingLinksScope.checked} completed deals.</div>
+                      <div className="text-[12px] text-muted mt-0.5">Older completed deals weren't scanned.</div>
+                    </>
+                  ) : (
+                    <div className="text-[12px] text-muted mt-1">Every completed deal with recorded payments already has them bank-linked.</div>
+                  )}
                 </div>
               ) : (
                 missingLinks.map((d) => (
@@ -2084,6 +2099,9 @@ export default function FinancialsView() {
                     ))}
                   </div>
                 ))
+              )}
+              {!missingLinksLoading && missingLinks.length > 0 && missingLinksScope.truncated && (
+                <div className="text-[11.5px] text-muted">Scanned the latest {missingLinksScope.checked} completed deals — older completed deals weren't checked.</div>
               )}
             </div>
           </div>

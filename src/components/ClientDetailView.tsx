@@ -182,6 +182,16 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     api.counterpartyPayments("client", clientId, c.name).then(setPayments).catch(() => setPayments([]));
   };
 
+  // Remove a wrong client tag — the payment itself stays booked. Re-fetch so a
+  // tag-only row disappears and a deal-linked row merely loses its badge.
+  const untagPayment = async (txnId: string) => {
+    try {
+      await api.untagBankTxnCounterparty(txnId);
+      const rows = await api.counterpartyPayments("client", clientId, client?.name || "");
+      setPayments(rows);
+    } catch {}
+  };
+
   useEffect(() => { load(); }, [clientId]);
   useEffect(() => { api.listCustomFields().then(setCustomFields).catch(() => {}); }, []);
 
@@ -416,6 +426,15 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                       {p.description || p.counterparty_name}
                       {p.tagged && (
                         <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
+                      )}
+                      {p.tagged && (
+                        <button
+                          onClick={() => untagPayment(p.txn_id)}
+                          title="Remove this tag — the payment itself stays booked"
+                          className="ml-1 inline-flex align-middle items-center justify-center w-4 h-4 rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
+                        >
+                          <X size={10} />
+                        </button>
                       )}
                     </div>
                     <div className="text-[11px] text-muted tabular-nums truncate">
