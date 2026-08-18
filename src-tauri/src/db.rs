@@ -215,6 +215,12 @@ fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             // Run each statement individually so a benign, already-applied change
             // (e.g. a column that exists from a different build lineage) doesn't
             // abort the whole migration — and, via the old code path, the app.
+            //
+            // The split is naive. A ';' anywhere in a migration body — including
+            // inside a `--` comment or a quoted literal — starts a new fragment,
+            // and the leftover text is not valid SQL, which is not a benign error.
+            // Migration 21 carried one from v0.15.14 to v0.15.143 and no fresh
+            // database could get past it. Never put a ';' in a migration comment.
             for stmt in sql.split(';') {
                 let trimmed = stmt.trim();
                 if trimmed.is_empty() { continue; }
@@ -593,7 +599,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (
         21,
         r#"
-        -- (Removed) Payout split is now fully user-configured; we never seed
+        -- (Removed) Payout split is now fully user-configured. We never seed
         -- default percentages or partner names. Unconfigured orgs show no split.
         SELECT 1;
         "#,
@@ -1579,6 +1585,70 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE txn_rule ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default';
         ALTER TABLE txn_rule ADD COLUMN auto_book INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE txn_rule ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+        "#,
+    ),
+    (
+        77,
+        // Shipping lifecycle on a deal (R-154, decided 2026-08-17). The four money
+        // stages say nothing about "agreed, paid for, truck hasn't come yet" — which
+        // is most of the life of a deal. `pickup_date` is when it LEAVES,
+        // `expected_delivery_date` is when it LANDS ('YYYY-MM-DD', the same string
+        // shape the rest of the app parses).
+        //
+        // REAL COLUMNS, deliberately not `metadata`: that is one JSON blob under
+        // per-column LWW, so two devices editing different keys clobber each other,
+        // and a date that gates completion is load-bearing.
+        //
+        // `ships_direct` makes "no pickup / ships direct" an EXPLICIT answer, so an
+        // empty date stays a genuine unanswered question the card can flag instead of
+        // quietly meaning "not applicable".
+        //
+        // `*_prev` keeps the value a reschedule replaced. Pickups slip constantly
+        // here; without it the card silently claims it was always Thursday.
+        //
+        // All nullable with no NOT NULL: a partial upsert that violates a NOT NULL on
+        // a row that does not exist yet is dropped by INSERT OR IGNORE (insert branch)
+        // or errors and rewinds the pull cursor (update branch) — see
+        // architecture/sync-engine §10. Mirrored byte-for-byte in clienthub-api
+        // (schema.sql + sync.rs ensure_meta_tables); the server must be DEPLOYED FIRST
+        // or the mirror logs SCHEMA DRIFT and drops these columns on the floor.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN pickup_date TEXT;
+        ALTER TABLE deal_flows ADD COLUMN expected_delivery_date TEXT;
+        ALTER TABLE deal_flows ADD COLUMN ships_direct INTEGER DEFAULT 0;
+        ALTER TABLE deal_flows ADD COLUMN pickup_date_prev TEXT;
+        ALTER TABLE deal_flows ADD COLUMN expected_delivery_date_prev TEXT;
+        "#,
+    ),
+    (
+        78,
+        // The payment method a HUMAN confirmed (R-157/F1, decided 2026-08-17).
+        //
+        // `rail` cannot carry this and never could. `bank_import::classify` writes
+        // `rail` from a string-match over the raw memo on every statement parse path
+        // (OFX, CSV, PDF) and its own doc comment calls it "a SUGGESTION only".
+        // Replaying that classifier over this ledger's 1,342 rows sets a non-empty
+        // `rail` on 690 of them. Reading `rail` as a confirmation would therefore
+        // render 690 machine guesses as facts and — worse — let the payee memory
+        // teach from them, which is precisely the laundering R-018 forbids: only a
+        // reviewed or confirmed row may teach.
+        //
+        // So `rail` stays the machine's column and this is the human's. Additive, so
+        // the guesses already stored in `rail` are not lost, just correctly demoted to
+        // "likely"; making bank_import stop writing `rail` instead would leave those
+        // rows forever indistinguishable from confirmations.
+        //
+        // Nullable, no NOT NULL, no CHECK: a partial upsert that violates one on a row
+        // that does not exist yet is swallowed with no clock by INSERT OR IGNORE
+        // (insert branch) or errors and rewinds the pull cursor (update branch) — see
+        // architecture/sync-engine §10 failure modes 1 and 2. The value set is
+        // enforced in `valid_method` at the one command that writes it.
+        //
+        // Mirrored in clienthub-api (schema.sql + sync.rs ensure_meta_tables); the
+        // server must be DEPLOYED FIRST or apply_upsert logs SCHEMA DRIFT at warn
+        // level and drops the column out of every bank_txn event.
+        r#"
+        ALTER TABLE bank_txn ADD COLUMN confirmed_method TEXT;
         "#,
     ),
 ];

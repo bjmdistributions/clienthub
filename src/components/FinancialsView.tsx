@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
-  Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ReconciliationMissingDeal,
+  Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, BankPersonCandidate, ReconciliationMissingDeal,
 } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -250,6 +250,164 @@ const rolesFor = (direction: string) =>
     ? ROLES.filter((r) => ["supplier_payment", "refund_out"].includes(r.value))
     : ROLES.filter((r) => ["buyer_payment", "refund_in"].includes(r.value));
 
+// ── Payment method (R-157) ──────────────────────────────────────────────────
+// MEASURED on the live ledger 2026-08-17, 1,342 transactions: Plaid returns NO
+// payment_meta for this institution. 0 rows carry a `pm` block, 0 carry
+// `pm.payment_method`, and `wire_ref` / `check_num` are empty on all 1,342. A
+// field-based method filter would therefore match nothing at all — so this reads
+// the MEMO, and reads a real field only if some future institution supplies one.
+//
+// THREE states, never two:
+//   certain       `confirmed_method` is stored on the row — a human answered — or
+//                 the bank sent a real structured field. The only things treated
+//                 as fact.
+//   likely        the memo matched, or `rail` carries the importer's own memo
+//                 guess, or another transaction from the same payee is confirmed.
+//                 A guess, labelled as one, and NEVER written down.
+//   unclassified  nothing readable. Counted and shown, never quietly dropped.
+//
+// `rail` IS NOT A CONFIRMATION and must never be read as one. `bank_import`'s
+// `classify()` string-matches the raw memo and persists `rail` on every statement
+// parse path (OFX, CSV, PDF) — its own doc comment says "This is a SUGGESTION
+// only". Replaying it over this ledger's 1,342 rows sets a non-empty `rail` on 690
+// of them, disagreeing with the classifier below on 43. Reading `rail` as certain
+// would render those 690 guesses as facts, and `methodMemory` would then teach
+// from them — laundering a guess into "you confirmed this payee pays by wire".
+// That is exactly what R-018 forbids: only a confirmed row may teach. So the
+// human's answer lives in its own column, `confirmed_method` (migration 78).
+//
+// The unclassified count rides in the filter control itself and again in a line
+// under the toolbar whenever a method is selected. A heuristic filter that hides
+// what it could not read is a filter that lies, and money filters that lie have
+// cost real money here before.
+export type BankMethod = "wire" | "ach" | "zelle" | "rtp" | "check" | "card" | "cash" | "transfer";
+
+// MUST stay identical to BANK_METHODS in commands.rs — the backend rejects any
+// value outside it, so a method added on one side alone silently fails to save.
+const METHODS: { value: BankMethod; label: string }[] = [
+  { value: "wire",     label: "Wire" },
+  { value: "ach",      label: "ACH" },
+  { value: "zelle",    label: "Zelle" },
+  { value: "rtp",      label: "Real-time payment" },
+  { value: "check",    label: "Check" },
+  { value: "card",     label: "Card" },
+  { value: "cash",     label: "Cash" },
+  { value: "transfer", label: "Internal transfer" },
+];
+const methodLabel = (v: string) => METHODS.find((m) => m.value === v)?.label ?? v;
+
+// Ordered — the FIRST match wins, so a specific rail beats the generic wording it
+// contains: "ONLINE DOMESTIC WIRE TRANSFER" is a wire, not a transfer, and "REAL
+// TIME PAYMENT CREDIT" is RTP, not a transfer.
+//
+// Counts over the live ledger 2026-08-17 (1,342 rows): wire 188 · rtp 192 ·
+// ach 171 · zelle 85 · transfer 68 · cash 14 · check 3 · unclassified 621.
+//
+// `card` has NO pattern on purpose. This bank prints a card purchase as the
+// merchant alone ("AplPay THORNTONS #22LOCKPORT"), and the only rows containing
+// the word "card" are "Payment to Chase card ending in 2623" — paying a card OFF,
+// not paying BY card. Guessing there would be worse than saying nothing, so card
+// purchases stay unclassified until Jack sets one, and the count says how many.
+const METHOD_PATTERNS: { method: BankMethod; re: RegExp; reason: string }[] = [
+  { method: "wire",     re: /\bFEDWIRE\b/,                     reason: "memo says FEDWIRE" },
+  { method: "wire",     re: /\bWIRE TYPE\b/,                   reason: "memo says WIRE TYPE" },
+  { method: "wire",     re: /\bWIRE TRANSFER\b/,               reason: "memo says WIRE TRANSFER" },
+  { method: "wire",     re: /\bWIRE\b/,                        reason: "memo says WIRE" },
+  { method: "wire",     re: /\bCHIPS\b/,                       reason: "memo says CHIPS, a wire clearing house" },
+  { method: "wire",     re: /\bBOOK TRANSFER\b/,               reason: "memo says BOOK TRANSFER, a same-bank wire" },
+  { method: "zelle",    re: /\bZELLE\b/,                       reason: "memo says ZELLE" },
+  { method: "zelle",    re: /\bQUICKPAY\b/,                    reason: "memo says QUICKPAY" },
+  { method: "rtp",      re: /\bREAL TIME (?:PAYMENT|TRANSFER)\b/, reason: "memo says REAL TIME PAYMENT" },
+  { method: "rtp",      re: /\bRTP\b/,                         reason: "memo says RTP" },
+  { method: "check",    re: /\bCHECK\s*#/,                     reason: "memo carries a check number" },
+  { method: "ach",      re: /\bACH\b/,                         reason: "memo says ACH" },
+  { method: "ach",      re: /\bORIG CO NAME\b/,                reason: "memo carries an ACH originator block" },
+  { method: "ach",      re: /\b(?:PPD|CCD)\b/,                 reason: "memo carries an ACH entry class" },
+  { method: "cash",     re: /\bATM\b/,                         reason: "memo says ATM" },
+  { method: "cash",     re: /\bCASH (?:DEPOSIT|WITHDRAWAL)\b/, reason: "memo says cash" },
+  { method: "cash",     re: /\bTELLER\b/,                      reason: "memo says TELLER" },
+  { method: "transfer", re: /\bONLINE TRANSFER\b/,             reason: "memo says ONLINE TRANSFER" },
+  { method: "transfer", re: /\bTRANSFER (?:TO|FROM)\b/,        reason: "memo says transfer to/from an account" },
+];
+
+// Plaid's `payment_method` is free text and its vocabulary is the institution's,
+// not ours. Anything unrecognised returns null and falls through to the memo —
+// mapping an unknown string onto a method would be inventing a fact.
+const bankFieldMethod = (raw?: string | null): BankMethod | null => {
+  const v = (raw || "").trim().toLowerCase();
+  if (!v) return null;
+  if (v.includes("wire")) return "wire";
+  if (v.includes("zelle")) return "zelle";
+  if (v.includes("ach") || v.includes("standard entry")) return "ach";
+  if (v.includes("check") || v.includes("cheque")) return "check";
+  if (v.includes("card")) return "card";
+  if (v.includes("cash")) return "cash";
+  if (v.includes("rtp") || v.includes("real-time") || v.includes("real time")) return "rtp";
+  if (v.includes("transfer")) return "transfer";
+  return null;
+};
+
+// Payee + direction, the same key `suggestedGroups` clusters by: a Zelle TO
+// "Walmart Loads" must never be pooled with a purchase FROM "Walmart".
+const payeeKey = (t: BankTxn) => `${(t.counterparty_name || "").trim().toLowerCase()}|${t.direction}`;
+
+type MethodRead = { method: BankMethod | ""; state: "certain" | "likely" | "unclassified"; reason: string };
+
+// Read a transaction's payment method. `taught` maps payee+direction → the method
+// its CONFIRMED rows carry (see methodMemory) — per-row memo evidence still wins
+// over it, because a payee rule is a generalisation and the memo is the actual
+// transaction. Correcting a whole payee writes `confirmed_method` on every row,
+// which is `certain` and beats both.
+//
+// Order matters. Only the first two branches are facts; everything below them is
+// evidence, and `rail` sits down there with the rest of the guesswork because that
+// is what it is.
+const readMethod = (t: BankTxn, taught: Map<string, BankMethod>): MethodRead => {
+  if (t.confirmed_method) return { method: t.confirmed_method as BankMethod, state: "certain", reason: "set by hand" };
+  const field = bankFieldMethod(t.bank_method);
+  if (field) return { method: field, state: "certain", reason: "the bank supplied it" };
+  const hay = `${t.description || ""} ${t.counterparty_name || ""}`.toUpperCase();
+  const hit = METHOD_PATTERNS.find((p) => p.re.test(hay));
+  if (hit) return { method: hit.method, state: "likely", reason: hit.reason };
+  // The importer's own memo guess, stored on the row by bank_import::classify.
+  // `likely`, never `certain` — nobody answered this.
+  if (t.rail) return { method: t.rail as BankMethod, state: "likely", reason: "the statement importer read it off the memo" };
+  const learned = taught.get(payeeKey(t));
+  if (learned) return { method: learned, state: "likely", reason: `you confirmed this payee pays by ${methodLabel(learned).toLowerCase()}` };
+  return { method: "", state: "unclassified", reason: "" };
+};
+
+// W2-e — the wire detail. There is no bank field to read: `wire_ref` and
+// `check_num` are empty on all 1,342 rows and there is no payment_meta, so the
+// reference lines are parsed out of the memo the bank does print. Display only;
+// nothing here is stored, and a memo that carries none of it simply shows none.
+// 466 of 1,342 rows yield at least one of these (measured 2026-08-17).
+const MEMO_TAGS = "REF|TRN|VIA|A\\/C|B\\/O|SSN|ORG|BNF|IMAD|OMAD|RFB|TRACE#";
+const memoField = (memo: string, tag: string): string => {
+  const m = new RegExp(`\\b${tag}:\\s*(.+?)(?=\\s+(?:${MEMO_TAGS})\\b\\s*[:=]|$)`, "i").exec(memo);
+  return (m?.[1] || "").trim();
+};
+const wireDetail = (t: BankTxn): { label: string; value: string }[] => {
+  const memo = t.description || "";
+  const out: { label: string; value: string }[] = [];
+  const push = (label: string, value: string) => { if (value) out.push({ label, value }); };
+  push("By order of", memoField(memo, "B\\/O"));
+  push("Account", memoField(memo, "A\\/C"));
+  push("Via", memoField(memo, "VIA"));
+  push("Reference", t.wire_ref?.trim() || memoField(memo, "REF"));
+  push("Trace", memoField(memo, "TRN"));
+  return out;
+};
+
+// ── The person on a transaction (R-156) ─────────────────────────────────────
+// A counterparty tag is IDENTITY, not accounting: it says WHO the money is from
+// or to, while the allocation says WHAT it paid for. Tagging must never move deal
+// profit, cost, Free Cash or any reconciliation figure — nothing in this file
+// reads counterparty_type/id into a total, and nothing here may start.
+type PersonRef = { type: "client" | "supplier"; id: string; name: string };
+const personKey = (p: { type: string; id: string }) => `${p.type}:${p.id}`;
+const personTypeLabel = (t: string) => (t === "supplier" ? "Supplier" : "Client");
+
 const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -353,6 +511,13 @@ export default function FinancialsView() {
   const [dirFilter, setDirFilter]     = useState<"all" | "in" | "out">("all");
   const [acctFilter, setAcctFilter]   = useState("all");
   const [catFilter, setCatFilter]     = useState("all");
+  // Payment method (R-157/W2-a) — "all", one method, or the unclassified pile.
+  // "unclassified" is a first-class choice, not an absence: it is the pile Jack
+  // works down, and it is how the filter stays honest about what it could not read.
+  const [methodFilter, setMethodFilter] = useState<"all" | BankMethod | "unclassified">("all");
+  // The person on a transaction (R-156/W2-f) — "all", "linked" (anyone),
+  // "none" (nobody), or "client:ID" / "supplier:ID" for one party.
+  const [personFilter, setPersonFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<
     "all" | "unclassified" | "unallocated_in" | "unallocated_out"
   >("all");
@@ -422,6 +587,27 @@ export default function FinancialsView() {
     }, 80);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txns]);
+
+  // W2-f — the landing site for "See all in Financials" on a client or supplier
+  // profile. The profile sets
+  //     window.__financialsPerson = { type: "client" | "supplier", id }
+  // and navigates here, the same handoff shape as __pendingBankTxn above.
+  //
+  // Every OTHER filter is opened up at the same time. The ledger defaults to the
+  // current tax year, and a person's payments very often sit outside it — landing
+  // on an empty list after clicking "see all" would read as "there are none",
+  // which is the filter-that-lies failure this plan exists to avoid.
+  useEffect(() => {
+    const p = (window as any).__financialsPerson;
+    if (!p?.type || !p?.id) return;
+    (window as any).__financialsPerson = null;
+    setPersonFilter(personKey(p));
+    setTab("ledger");
+    setQueue("all"); setDirFilter("all"); setAcctFilter("all"); setCatFilter("all");
+    setStatusFilter("all"); setMethodFilter("all"); setSearch("");
+    setFromDate(""); setToDate("");
+  }, []);
+
   const [targetType, setTargetType]   = useState<"deal" | "loan" | "expense">("deal");
   const [dealQuery, setDealQuery]     = useState("");
   const [selectedDeal, setSelectedDeal] = useState<DealFlow | null>(null);
@@ -447,6 +633,24 @@ export default function FinancialsView() {
   // Server-scored smart links (R-150) — txn id → ranked candidate deals. Empty
   // when the server is unreachable; the local matcher stays as the fallback.
   const [serverSugg, setServerSugg] = useState<Map<string, BankSuggestCandidate[]>>(new Map());
+  // R-156/W1-b — the same server pass, read as a PERSON rather than a deal. Empty
+  // until deploy-41 lands; the picker's search works regardless.
+  const [personSugg, setPersonSugg] = useState<Map<string, BankPersonCandidate[]>>(new Map());
+  // Both sides of the address book, for the person picker and the person filter.
+  const [people, setPeople] = useState<PersonRef[]>([]);
+  // Which transaction's person picker is open (W1-a). One modal, two entry points:
+  // the ledger row and the booking sheet.
+  const [personPickerFor, setPersonPickerFor] = useState<string | null>(null);
+  const [personBusy, setPersonBusy] = useState<string | null>(null);
+  // After an inline payee RENAME, offer the link the rename does not make. Renaming
+  // a payee to "Tytan" edits a free-text string and puts nothing on Tytan's profile;
+  // that has actively confused Jack, so the offer says so out loud.
+  const [linkOfferFor, setLinkOfferFor] = useState<string | null>(null);
+  // After a method is set by hand, offer to remember it for the whole payee (W2-d).
+  const [methodOffer, setMethodOffer] = useState<
+    { txnId: string; payee: string; direction: "in" | "out"; method: BankMethod; ids: string[] } | null
+  >(null);
+  const [methodBusy, setMethodBusy] = useState(false);
   // R-150 phase 5 — completed deals whose payments were never bank-linked.
   const [missingLinks, setMissingLinks] = useState<ReconciliationMissingDeal[]>([]);
   const [missingLinksOpen, setMissingLinksOpen] = useState(false);
@@ -462,9 +666,30 @@ export default function FinancialsView() {
     try {
       const r = await api.suggestBankTxnLinks();
       const m = new Map<string, BankSuggestCandidate[]>();
-      for (const row of r.suggestions || []) if (row.candidates.length) m.set(row.txn_id, row.candidates);
+      const p = new Map<string, BankPersonCandidate[]>();
+      for (const row of r.suggestions || []) {
+        if (row.candidates.length) m.set(row.txn_id, row.candidates);
+        // Additive on the server (R-156/W1-b): a server older than deploy-41 sends
+        // no counterparty_candidates and this stays empty, which costs the picker
+        // its shortcut and nothing else.
+        if (row.counterparty_candidates?.length) p.set(row.txn_id, row.counterparty_candidates);
+      }
       setServerSugg(m);
+      setPersonSugg(p);
     } catch { /* offline — the local matcher stays */ }
+  };
+
+  // Both sides of the address book. Loaded once and kept: the picker searches it,
+  // the ledger resolves counterparty_id to a name through it, and the person filter
+  // is built from it. Failure is not fatal — the ledger must still open.
+  const loadPeople = async () => {
+    try {
+      const [cs, ss] = await Promise.all([api.listClients(), api.listSuppliers()]);
+      setPeople([
+        ...cs.map((c): PersonRef => ({ type: "client", id: c.id, name: c.name })),
+        ...ss.filter((s) => !s.archived).map((s): PersonRef => ({ type: "supplier", id: s.id, name: s.name })),
+      ]);
+    } catch { /* the picker falls back to whatever is already tagged */ }
   };
 
   const loadAll = async () => {
@@ -476,6 +701,7 @@ export default function FinancialsView() {
       setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
       // Smart-link hints arrive separately and never block the ledger (R-150).
       loadServerSugg();
+      loadPeople();
       // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
       // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
       api.cleanupGhostDealFlows().then((n) => { if (n > 0) api.listDealFlows().then(setDeals).catch(() => {}); }).catch(() => {});
@@ -521,13 +747,19 @@ export default function FinancialsView() {
   }, []);
 
   // Escape closes the booking sheet (the payee editor stops propagation so its
-  // own Escape doesn't also close the sheet).
+  // own Escape doesn't also close the sheet). The person picker sits ABOVE the
+  // sheet, so while it is open Escape belongs to it — closing the sheet out from
+  // under it would leave the picker floating over nothing.
   useEffect(() => {
-    if (!openId) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpenId(null); };
+    if (!openId && !personPickerFor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (personPickerFor) { setPersonPickerFor(null); return; }
+      setOpenId(null);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openId]);
+  }, [openId, personPickerFor]);
 
   // Focus moves into the sheet ONCE when it opens, so keyboard and screen-reader
   // users land inside the dialog rather than behind it. This has to be an effect
@@ -1066,6 +1298,11 @@ export default function FinancialsView() {
     const next = raw.trim();
     if (!next || next === (t.counterparty_name || "").trim()) return;
     saveReview(t, { counterparty_name: next });
+    // R-156 §5 — this edits a FREE-TEXT label and links nothing. Renaming a payee
+    // to "Tytan" does not put the payment on Tytan's profile, and Jack has been
+    // caught by exactly that. Offer the link the rename did not make; only when
+    // there isn't one already, so a correction to a spelling stays quiet.
+    if (!t.counterparty_type) setLinkOfferFor(t.id);
   };
 
   const submitAlloc = async () => {
@@ -1354,6 +1591,74 @@ export default function FinancialsView() {
     finally { setNewDealBusy(false); }
   };
 
+  // W2-d — the same memory, for payment method. ONLY CONFIRMED ROWS TEACH, and
+  // `confirmed_method` is the ONLY column that carries a confirmation:
+  // `set_bank_txn_review` is its sole writer. It deliberately never reads `rail`
+  // (the statement importer's memo guess) and never the memo classifier, so a guess
+  // cannot be laundered into a stored fact and then re-taught as one — which is the
+  // rule R-018 already enforces for categories.
+  //
+  // A strict majority is required, so a payee whose confirmations disagree teaches
+  // nothing rather than teaching the first one. What it yields is `likely`, never
+  // `certain` — inheriting from a sibling row is a generalisation, and only the row
+  // itself can be certain.
+  const methodMemory = useMemo(() => {
+    const counts = new Map<string, Map<BankMethod, number>>();
+    for (const t of txns) {
+      const m = (t.confirmed_method || "") as BankMethod;
+      if (!m) continue;
+      if (!(t.counterparty_name || "").trim()) continue;
+      const key = payeeKey(t);
+      const inner = counts.get(key) ?? new Map<BankMethod, number>();
+      inner.set(m, (inner.get(m) || 0) + 1);
+      counts.set(key, inner);
+    }
+    const out = new Map<string, BankMethod>();
+    for (const [key, inner] of counts) {
+      let best: BankMethod | "" = "", bestN = 0, total = 0;
+      for (const [m, n] of inner) { total += n; if (n > bestN) { best = m; bestN = n; } }
+      if (best && bestN * 2 > total) out.set(key, best);
+    }
+    return out;
+  }, [txns]);
+
+  const methodOf = useCallback((t: BankTxn) => readMethod(t, methodMemory), [methodMemory]);
+
+  // ── The person on a transaction (R-156) ───────────────────────────────────
+  const peopleByKey = useMemo(() => new Map(people.map((p) => [personKey(p), p])), [people]);
+
+  // The party a transaction is tagged to, resolved to a name. `loan` is deliberately
+  // excluded — a loan tag lives in the same two columns and is a different thing.
+  // A tag whose record has since gone still renders, saying so, rather than
+  // vanishing and making the row look untagged.
+  const personOf = useCallback((t: BankTxn): PersonRef | null => {
+    const ty = t.counterparty_type;
+    if (ty !== "client" && ty !== "supplier") return null;
+    if (!t.counterparty_id) return null;
+    return peopleByKey.get(`${ty}:${t.counterparty_id}`)
+      ?? { type: ty, id: t.counterparty_id, name: "Record not found" };
+  }, [peopleByKey]);
+
+  // W2-a/b — the method facet. "unclassified" is the pile the classifier could not
+  // read; it is a selectable state, never a silent omission.
+  const passesMethod = useCallback((t: BankTxn) => {
+    if (methodFilter === "all") return true;
+    const r = methodOf(t);
+    return methodFilter === "unclassified" ? r.state === "unclassified" : r.method === methodFilter;
+  }, [methodFilter, methodOf]);
+
+  // W2-f — the person facet, and the landing site for "See all in Financials".
+  // A loan tag is not a person: it lives in the same two columns and must not
+  // answer "who is this money from", so `personOf` returns null for it and
+  // loan-tagged rows count as unlinked.
+  const passesPerson = useCallback((t: BankTxn) => {
+    if (personFilter === "all") return true;
+    const p = personOf(t);
+    if (personFilter === "linked") return !!p;
+    if (personFilter === "none") return !p;
+    return !!p && personKey(p) === personFilter;
+  }, [personFilter, personOf]);
+
   // Shared filters — everything except direction + search. Reused by the combined
   // list and both split panes so all three stay consistent.
   // `bypass` = a search term is active: an exact-amount / payee lookup should span
@@ -1361,13 +1666,20 @@ export default function FinancialsView() {
   // otherwise a booked or prior-year transfer is silently hidden even when the
   // amount matches exactly. Account / category / status stay applied (those are
   // deliberate user choices, not defaults).
-  const passesBase = useCallback((t: BankTxn, bypass = false) => {
+  //
+  // `skip` leaves ONE facet out, which is how the counts on the method and person
+  // controls are produced: the number beside a choice is the number of rows
+  // choosing it would actually show. Counting over anything wider is how a filter
+  // ends up claiming "3 wires" over a list of one.
+  const passesBase = useCallback((t: BankTxn, bypass = false, skip?: "method" | "person") => {
     if (!bypass) {
       if (queue === "todo" && t.reviewed) return false;
       if (queue === "booked" && !t.reviewed) return false;
     }
     if (acctFilter !== "all" && t.account_id !== acctFilter) return false;
     if (catFilter !== "all" && (t.category || "") !== catFilter) return false;
+    if (skip !== "method" && !passesMethod(t)) return false;
+    if (skip !== "person" && !passesPerson(t)) return false;
     if (statusFilter === "unclassified" && (t.category || "") !== "") return false;
     if (statusFilter === "unallocated_in" && !(t.direction === "in" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
     if (statusFilter === "unallocated_out" && !(t.direction === "out" && (t.category || "") !== "internal_transfer" && t.unallocated > 0.0001)) return false;
@@ -1377,7 +1689,7 @@ export default function FinancialsView() {
       if (toDate && d > toDate) return false;
     }
     return true;
-  }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate]);
+  }, [queue, acctFilter, catFilter, statusFilter, fromDate, toDate, passesMethod, passesPerson]);
 
   const filtered = useMemo(
     () => txns.filter((t) =>
@@ -1396,6 +1708,20 @@ export default function FinancialsView() {
     () => txns.filter((t) => t.direction === "out" && passesBase(t, !!searchOut.trim()) && matchesQuery(t, searchOut)),
     [txns, passesBase, searchOut],
   );
+
+  // The rows the ledger would show with ONE facet cleared — the same predicate the
+  // visible list uses, split view and per-pane searches included, so a count on a
+  // control and the list it produces can never disagree.
+  const scopeWithout = useCallback((skip: "method" | "person") => (
+    splitView
+      ? txns.filter((t) => (t.direction === "in"
+            ? passesBase(t, !!searchIn.trim(), skip) && matchesQuery(t, searchIn)
+            : passesBase(t, !!searchOut.trim(), skip) && matchesQuery(t, searchOut)))
+      : txns.filter((t) =>
+          passesBase(t, !!search.trim(), skip) &&
+          (dirFilter === "all" || t.direction === dirFilter) &&
+          matchesQuery(t, search))
+  ), [txns, passesBase, splitView, search, searchIn, searchOut, dirFilter]);
 
   // Distinct account ids present in the loaded transactions (for the filter).
   const accounts = useMemo(
@@ -1550,9 +1876,53 @@ export default function FinancialsView() {
   const clearFilters = () => {
     setSearch(""); setSearchIn(""); setSearchOut("");
     setDirFilter("all"); setAcctFilter("all"); setCatFilter("all"); setStatusFilter("all");
+    setMethodFilter("all"); setPersonFilter("all");
     setQueue("all");
     setFromDate(`${new Date().getFullYear()}-01-01`); setToDate(`${new Date().getFullYear()}-12-31`);
   };
+
+  // ── What the method filter is NOT showing (W2-b) ──────────────────────────
+  // Counted over the rows every OTHER filter already admits, so these ARE the
+  // numbers for what would be on screen. They ride in the select's own option
+  // labels, so the size of the pile the classifier could not read is visible
+  // before anything is hidden — and again, in words, once a method is selected.
+  // `confirmed` counts the human's own column, NOT the `certain` state — those two
+  // are not the same set. A row the bank itself supplied a method for is certain and
+  // nobody confirmed it, so counting it under "you confirmed" would put a false
+  // claim in the caption below.
+  const methodCounts = useMemo(() => {
+    const out = { unclassified: 0, confirmed: {} as Record<string, number>, total: {} as Record<string, number> };
+    for (const t of scopeWithout("method")) {
+      const r = methodOf(t);
+      if (r.state === "unclassified") { out.unclassified += 1; continue; }
+      out.total[r.method] = (out.total[r.method] || 0) + 1;
+      if (t.confirmed_method) out.confirmed[r.method] = (out.confirmed[r.method] || 0) + 1;
+    }
+    return out;
+  }, [scopeWithout, methodOf]);
+
+  // People who actually appear in the ledger, plus whoever is selected — so a
+  // profile can deep-link someone with nothing tagged yet and the control still
+  // shows who it is filtered to, with a count of zero, instead of resetting itself.
+  const peopleInLedger = useMemo(() => {
+    const rows = scopeWithout("person");
+    const counts = new Map<string, number>();
+    let linked = 0;
+    for (const t of rows) {
+      const p = personOf(t);
+      if (!p) continue;
+      linked += 1;
+      counts.set(personKey(p), (counts.get(personKey(p)) || 0) + 1);
+    }
+    if (personFilter.includes(":") && !counts.has(personFilter)) counts.set(personFilter, 0);
+    const list = [...counts].map(([key, n]) => ({
+      person: peopleByKey.get(key)
+        ?? { type: key.split(":")[0] as "client" | "supplier", id: key.split(":")[1], name: "Record not found" },
+      n,
+    }));
+    list.sort((a, b) => b.n - a.n || a.person.name.localeCompare(b.person.name));
+    return { rows: list, linked, unlinked: rows.length - linked };
+  }, [scopeWithout, personOf, peopleByKey, personFilter]);
 
   // Tax-year scope (R-145). Every year that appears in the ledger, newest first —
   // so old years stay reachable exactly as the accountant needs them, one at a time.
@@ -1651,6 +2021,83 @@ export default function FinancialsView() {
     return catMemory.get(`${p}|${t.direction}`) ?? null;
   };
 
+  // Tag a transaction to a person. Identity only — it writes counterparty_type/id
+  // and nothing else, so no money figure anywhere can move. Never auto-applied:
+  // every path into this is a click.
+  const tagPerson = async (t: BankTxn, p: PersonRef) => {
+    setPersonBusy(t.id);
+    try {
+      await api.tagBankTxnCounterparty(t.id, p.type, p.id);
+      setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, counterparty_type: p.type, counterparty_id: p.id } : x)));
+      setPersonPickerFor(null);
+      setLinkOfferFor((cur) => (cur === t.id ? null : cur));
+      toast(`Linked to ${p.name}`);
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setPersonBusy(null); }
+  };
+
+  const untagPerson = async (t: BankTxn) => {
+    setPersonBusy(t.id);
+    try {
+      await api.untagBankTxnCounterparty(t.id);
+      setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, counterparty_type: "", counterparty_id: "" } : x)));
+      toast("Link removed");
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setPersonBusy(null); }
+  };
+
+  // The server's top candidate for a transaction with no person yet — one tap to
+  // confirm, the runners-up behind the picker. Loan-tagged rows are never offered
+  // a party: their two counterparty columns are already spoken for.
+  const personSuggestionFor = useCallback((t: BankTxn): BankPersonCandidate | null => {
+    if (t.counterparty_type) return null;
+    return personSugg.get(t.id)?.[0] ?? null;
+  }, [personSugg]);
+
+  // ── Setting the method by hand (W2-c) ─────────────────────────────────────
+  // Writes `confirmed_method` alone. Never touches category, allocation or
+  // `reviewed`, so confirming a wire cannot re-stamp another column's sync clock —
+  // the exact failure `review_cols` was extracted to prevent. It also never touches
+  // `rail`: that column belongs to the statement importer, and overwriting it would
+  // put an answer back into the same field as a guess.
+  const setMethod = async (t: BankTxn, method: BankMethod | "") => {
+    try {
+      await api.setBankTxnReview(t.id, { confirmed_method: method });
+      setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, confirmed_method: method } : x)));
+      const payee = (t.counterparty_name || "").trim();
+      if (!method || !payee) { setMethodOffer(null); return; }
+      // W2-d: offer to remember it for this payee. Only rows not already CONFIRMED
+      // as that method count, so the number offered is the number that will change —
+      // a row whose `rail` happens to agree has still never been answered.
+      const ids = txns
+        .filter((x) => x.id !== t.id && payeeKey(x) === payeeKey(t) && (x.confirmed_method || "") !== method)
+        .map((x) => x.id);
+      setMethodOffer(ids.length ? { txnId: t.id, payee, direction: t.direction, method, ids } : null);
+    } catch (e: any) { toast(errText(e), "error"); }
+  };
+
+  // Apply the confirmed method across the payee, one existing command per row —
+  // the same shape as every other bulk action on this screen (`runBulk`).
+  const applyMethodToPayee = async () => {
+    const offer = methodOffer;
+    if (!offer) return;
+    setMethodBusy(true);
+    let done = 0, failed = 0;
+    for (const id of offer.ids) {
+      try { await api.setBankTxnReview(id, { confirmed_method: offer.method }); done += 1; }
+      catch { failed += 1; }
+      setBulkProgress(`Updating ${done + failed} of ${offer.ids.length}…`);
+    }
+    setBulkProgress("");
+    setMethodBusy(false);
+    setMethodOffer(null);
+    setTxns((prev) => prev.map((x) => (offer.ids.includes(x.id) ? { ...x, confirmed_method: offer.method } : x)));
+    toast(failed
+      ? `${done} set to ${methodLabel(offer.method).toLowerCase()} · ${failed} failed`
+      : `${done} more from ${offer.payee} set to ${methodLabel(offer.method).toLowerCase()}`,
+      failed ? "error" : "success");
+  };
+
   const filteredLoans = useMemo(() => {
     const q = loanQuery.toLowerCase();
     return loans
@@ -1705,6 +2152,7 @@ export default function FinancialsView() {
                 <th className="text-[11px] font-medium text-muted py-2 pr-3 whitespace-nowrap">Date</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3">Payee</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3">Category</th>
+                <th className="text-[11px] font-medium text-muted py-2 pr-3">Method</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3 text-right whitespace-nowrap">Amount</th>
                 <th className="text-[11px] font-medium text-muted py-2 pr-3">Deal</th>
                 <th className="text-[11px] font-medium text-muted py-2 text-center whitespace-nowrap w-12">Book</th>
@@ -1718,6 +2166,9 @@ export default function FinancialsView() {
                 // The obvious-deal suggestion. Hidden while the row is expanded — the
                 // full allocate panel is already open there.
                 const cm = openId === t.id ? null : confidentMatches.get(t.id) ?? null;
+                const mr = methodOf(t);
+                const linked = personOf(t);
+                const psug = personSuggestionFor(t);
                 return (
                 <Fragment key={t.id}>
                   <tr
@@ -1780,6 +2231,72 @@ export default function FinancialsView() {
                         </div>
                       )}
                       {memo && <div className="text-[11px] text-faint truncate" title={memo}>{memo}</div>}
+                      {/* W1-a — the person on this payment, as its own action. Tagging
+                          is identity: it says who the money is from or to and moves no
+                          money figure anywhere. A loan-tagged row is skipped; its two
+                          counterparty columns already mean something else. */}
+                      {t.counterparty_type !== "loan" && (
+                        <div className="flex items-center gap-1.5 mt-0.5 min-w-0" onClick={(e) => e.stopPropagation()}>
+                          {linked ? (
+                            <>
+                              <button
+                                onClick={() => setPersonPickerFor(t.id)}
+                                title={`${personTypeLabel(linked.type)} — click to change`}
+                                className="min-w-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-line-2 text-[11px] text-ink-2 hover:border-line-3 transition-colors"
+                              >
+                                <Building2 size={10} className="text-muted flex-shrink-0" />
+                                <span className="truncate max-w-[150px]">{linked.name}</span>
+                              </button>
+                              <button
+                                onClick={() => untagPerson(t)}
+                                disabled={personBusy === t.id}
+                                title="Remove this link"
+                                aria-label="Remove person link"
+                                className="text-faint hover:text-ink-2 disabled:opacity-50 flex-shrink-0 transition-colors"
+                              >
+                                <X size={11} />
+                              </button>
+                            </>
+                          ) : psug ? (
+                            <>
+                              <button
+                                onClick={() => tagPerson(t, { type: psug.type, id: psug.id, name: psug.name })}
+                                disabled={personBusy === t.id}
+                                title={`Link this payment to ${psug.name} — ${psug.reason}`}
+                                className="min-w-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-accent/40 bg-accent/5 text-accent text-[11px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors"
+                              >
+                                {personBusy === t.id
+                                  ? <Loader2 size={10} className="animate-spin flex-shrink-0" />
+                                  : <Plus size={10} className="flex-shrink-0" />}
+                                <span className="truncate max-w-[150px]">{psug.name}?</span>
+                              </button>
+                              <button
+                                onClick={() => setPersonPickerFor(t.id)}
+                                className="text-[11px] text-muted hover:text-ink-2 flex-shrink-0 transition-colors"
+                              >
+                                Someone else
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => setPersonPickerFor(t.id)}
+                              className="text-[11px] text-faint hover:text-ink-2 transition-colors"
+                            >
+                              Link a person
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {/* The rename trap (R-156 §5): renaming a payee edits a free-text
+                          string and links nothing. Say so, right where it happened. */}
+                      {linkOfferFor === t.id && !linked && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setPersonPickerFor(t.id); }}
+                          className="mt-0.5 block text-[11px] text-accent hover:text-accent-hover text-left transition-colors"
+                        >
+                          Renaming only changed the label — link this to a person too?
+                        </button>
+                      )}
                     </td>
                     <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
                       {t.counterparty_type === "loan" ? (
@@ -1806,6 +2323,40 @@ export default function FinancialsView() {
                         </span>
                       )}
                     </td>
+                    {/* W2-c — set the method by hand, on the row. Three states are
+                        visually distinct: confirmed reads as solid, a guess is faint
+                        and marked "likely", and nothing read is the accent prompt.
+                        The select's value is only ever the CONFIRMED method, so
+                        neither the memo classifier nor the importer's `rail` ever
+                        looks like a decision that was made. */}
+                    <td className="py-3 pr-3 align-top" onClick={(e) => e.stopPropagation()}>
+                      <span className="relative inline-flex items-center">
+                        <select
+                          value={t.confirmed_method || ""}
+                          aria-label="Payment method"
+                          title={mr.state === "unclassified" ? "No payment method could be read from the memo" : `${methodLabel(mr.method)} — ${mr.reason}`}
+                          onChange={(e) => setMethod(t, e.target.value as BankMethod | "")}
+                          className={`appearance-none h-7 pl-2 pr-6 rounded-md border text-[12px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors ${
+                            mr.state === "certain"
+                              ? "bg-transparent border-line text-ink-2 hover:border-line-3"
+                              : mr.state === "likely"
+                                ? "bg-transparent border-line-2 text-muted hover:border-line-3"
+                                : "bg-accent/5 border-accent/40 text-accent font-semibold hover:bg-accent/10"
+                          }`}
+                        >
+                          <option value="">
+                            {mr.state === "likely" ? `${methodLabel(mr.method)} — likely` : "Set method"}
+                          </option>
+                          {METHODS.map((m) => (
+                            <option key={m.value} value={m.value}>{m.label}</option>
+                          ))}
+                        </select>
+                        <ChevronDown
+                          size={12}
+                          className={`pointer-events-none absolute right-1.5 ${mr.state === "unclassified" ? "text-accent" : "text-faint"}`}
+                        />
+                      </span>
+                    </td>
                     <td className={`py-3 pr-3 text-right tabular-nums whitespace-nowrap align-top font-medium ${t.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
                       {t.direction === "in" ? "+" : "−"}{fmtAmount(t.amount)}
                     </td>
@@ -1825,10 +2376,45 @@ export default function FinancialsView() {
                     </td>
                   </tr>
 
+                  {/* W2-d — remember the method for this payee. Only a CONFIRMED row
+                      offers this: the classifier's own guesses never teach, which is
+                      the rule R-018 already enforces for categories. The count is of
+                      rows that will actually change, so the number offered is the
+                      number that moves. */}
+                  {methodOffer?.txnId === t.id && (
+                    <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
+                      <td colSpan={3} />
+                      <td colSpan={6} className="pb-3 pr-3 align-top">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0" onClick={(e) => e.stopPropagation()}>
+                          <span className="text-[11.5px] text-muted min-w-0">
+                            {methodOffer.ids.length} more from{" "}
+                            <span className="text-ink-2 font-medium">{methodOffer.payee}</span>{" "}
+                            ({methodOffer.direction === "in" ? "money in" : "money out"})
+                          </span>
+                          <button
+                            onClick={applyMethodToPayee}
+                            disabled={methodBusy}
+                            className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
+                          >
+                            {methodBusy ? <Loader2 size={11} className="animate-spin" /> : <Wand2 size={11} />}
+                            Set them all to {methodLabel(methodOffer.method).toLowerCase()}
+                          </button>
+                          <button
+                            onClick={() => setMethodOffer(null)}
+                            aria-label="Dismiss"
+                            className="text-muted hover:text-ink-2 transition-colors flex-shrink-0"
+                          >
+                            <X size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+
                   {cm && (
                     <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
                       <td colSpan={3} />
-                      <td colSpan={5} className="pb-3 pr-3 align-top">
+                      <td colSpan={6} className="pb-3 pr-3 align-top">
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
                           <span className="text-[11.5px] text-muted min-w-0">
                             Looks like <span className="text-ink-2 font-medium">{matchLabel(cm.deal)}</span> — {cm.reason}
@@ -2841,6 +3427,42 @@ export default function FinancialsView() {
             <option value="all">All categories</option>
             <CategoryOptions />
           </select>
+          {/* Payment method (R-157). The counts live in the option labels so the
+              size of the pile the classifier could not read is on screen before
+              anything is hidden — not only after. */}
+          <select
+            value={methodFilter}
+            onChange={(e) => setMethodFilter(e.target.value as any)}
+            aria-label="Payment method"
+            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <option value="all">All methods</option>
+            {METHODS.filter((m) => (methodCounts.total[m.value] || 0) > 0 || methodFilter === m.value).map((m) => (
+              <option key={m.value} value={m.value}>{m.label} · {methodCounts.total[m.value] || 0}</option>
+            ))}
+            <option value="unclassified">No method read · {methodCounts.unclassified}</option>
+          </select>
+          {/* The person facet (W2-f) — and where a profile's "See all in
+              Financials" lands. */}
+          <select
+            value={personFilter}
+            onChange={(e) => setPersonFilter(e.target.value)}
+            aria-label="Person"
+            className="bg-surface-2 border border-line text-[12px] text-ink-2 hover:border-line-3 rounded-lg px-2 h-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent/40 max-w-[180px]"
+          >
+            <option value="all">Anyone</option>
+            <option value="linked">Linked to someone · {peopleInLedger.linked}</option>
+            <option value="none">Not linked · {peopleInLedger.unlinked}</option>
+            {peopleInLedger.rows.length > 0 && (
+              <optgroup label="Tagged to">
+                {peopleInLedger.rows.map(({ person, n }) => (
+                  <option key={personKey(person)} value={personKey(person)}>
+                    {person.name} · {n}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
@@ -2882,6 +3504,42 @@ export default function FinancialsView() {
           </div>
         </div>
       </div>
+      )}
+
+      {/* W2-b — what this filter is not showing, in words. Saying that plainly is
+          the whole point: a heuristic filter that quietly drops what it could not
+          read is a filter that lies.
+          The second figure is worded "inferred" rather than "read off the memo"
+          because it covers three different guesses — a memo match, the statement
+          importer's stored `rail`, and a method inherited from the payee — and a
+          caption has to be true for every row it counts. */}
+      {tab === "ledger" && methodFilter !== "all" && (
+        <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[12px] text-muted border-b border-line pb-2.5">
+          {methodFilter === "unclassified" ? (
+            <span>
+              <span className="text-ink font-medium tabular-nums">{methodCounts.unclassified}</span>{" "}
+              transactions with no payment method the memo could name. Set one on any row and it sticks.
+            </span>
+          ) : (
+            <>
+              <span>
+                Showing <span className="text-ink font-medium tabular-nums">{methodCounts.total[methodFilter] || 0}</span>{" "}
+                {methodLabel(methodFilter).toLowerCase()} —{" "}
+                <span className="tabular-nums">{methodCounts.confirmed[methodFilter] || 0}</span> you confirmed,{" "}
+                <span className="tabular-nums">{(methodCounts.total[methodFilter] || 0) - (methodCounts.confirmed[methodFilter] || 0)}</span> inferred, not confirmed.
+              </span>
+              <span>
+                <span className="text-ink font-medium tabular-nums">{methodCounts.unclassified}</span> could not be read and are not in this list.
+              </span>
+              <button
+                onClick={() => setMethodFilter("unclassified")}
+                className="font-medium text-accent hover:text-accent-hover transition-colors"
+              >
+                Show them
+              </button>
+            </>
+          )}
+        </div>
       )}
 
       {/* Smart grouping suggestions — clear look-alike backlogs in one click */}
@@ -3234,6 +3892,24 @@ export default function FinancialsView() {
         />
       )}
 
+      {/* W1-a — one picker, two entry points (the ledger row and the booking
+          sheet), so "whose money is this" is answered the same way from both. */}
+      {personPickerFor && (() => {
+        const t = txns.find((x) => x.id === personPickerFor);
+        if (!t) return null;
+        return (
+          <PersonPickerModal
+            txn={t}
+            people={people}
+            candidates={personSugg.get(t.id) ?? []}
+            current={personOf(t)}
+            busy={personBusy === t.id}
+            onClose={() => setPersonPickerFor(null)}
+            onPick={(p) => tagPerson(t, p)}
+          />
+        );
+      })()}
+
       {/* Auto-tag rules — managed from Setup, next to the tools that act on them */}
       {tab === "setup" && (
         <RulesCard
@@ -3330,6 +4006,126 @@ export default function FinancialsView() {
               </button>
             </div>
 
+            {/* W1-a — the person, as its own field, with no deal involved. This is
+                the thing Jack went looking for and could not find: `counterparty_type`
+                was empty on all 1,342 transactions because the only way to set it was
+                as a side effect of tying money to a deal. Identity, never accounting —
+                nothing written here changes profit, cost or Free Cash. */}
+            {openTxn.counterparty_type !== "loan" && (() => {
+              const linked = personOf(openTxn);
+              const psug = personSuggestionFor(openTxn);
+              return (
+                <div className="border border-line rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12px] font-medium text-ink-2">Person</span>
+                    {linked && (
+                      <button
+                        onClick={() => untagPerson(openTxn)}
+                        disabled={personBusy === openTxn.id}
+                        className="text-[12px] text-muted hover:text-ink-2 disabled:opacity-50 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  {linked ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[13px] font-medium text-ink min-w-0 truncate">{linked.name}</span>
+                      <span className="text-[11px] text-muted">{personTypeLabel(linked.type)}</span>
+                      <button
+                        onClick={() => setPersonPickerFor(openTxn.id)}
+                        className="ml-auto text-[12px] font-medium text-accent hover:text-accent-hover transition-colors"
+                      >
+                        Change
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {psug && (
+                        <button
+                          onClick={() => tagPerson(openTxn, { type: psug.type, id: psug.id, name: psug.name })}
+                          disabled={personBusy === openTxn.id}
+                          className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[13px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors text-left"
+                        >
+                          {personBusy === openTxn.id
+                            ? <Loader2 size={13} className="animate-spin flex-shrink-0" />
+                            : <Plus size={13} className="flex-shrink-0" />}
+                          <span className="truncate">{psug.name}</span>
+                          <span className="ml-auto text-[11px] font-normal text-muted truncate">{psug.reason}</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setPersonPickerFor(openTxn.id)}
+                        className="text-[12px] font-medium text-accent hover:text-accent-hover transition-colors"
+                      >
+                        {psug ? "Choose someone else" : "Choose a person"}
+                      </button>
+                      {linkOfferFor === openTxn.id && (
+                        <p className="text-[11.5px] text-muted">
+                          Renaming the payee changed the label on this transaction only — it does not
+                          put the payment on anyone's profile. Linking a person does.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* W2-a/c/e — the payment method, and the wire detail behind it. */}
+            {(() => {
+              const mr = methodOf(openTxn);
+              const detail = wireDetail(openTxn);
+              return (
+                <div className="border border-line rounded-xl p-3 space-y-2">
+                  <label className="block">
+                    <span className="block text-[12px] font-medium text-ink-2 mb-1">Payment method</span>
+                    <select
+                      value={openTxn.confirmed_method || ""}
+                      onChange={(e) => setMethod(openTxn, e.target.value as BankMethod | "")}
+                      className={`${inp} text-ink-2`}
+                    >
+                      <option value="">
+                        {mr.state === "likely" ? `${methodLabel(mr.method)} — likely, not confirmed` : "Not set"}
+                      </option>
+                      {METHODS.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="text-[11.5px] text-muted">
+                    {mr.state === "certain"
+                      ? `${methodLabel(mr.method)} — ${mr.reason}.`
+                      : mr.state === "likely"
+                        ? `Reads like ${methodLabel(mr.method).toLowerCase()}: ${mr.reason}. Your bank sends no payment method, so this is a guess until you set it.`
+                        : "Your bank sends no payment method and the memo doesn't name one. Set it here and it sticks."}
+                  </p>
+                  {methodOffer?.txnId === openTxn.id && (
+                    <button
+                      onClick={applyMethodToPayee}
+                      disabled={methodBusy}
+                      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-accent/40 bg-accent/5 text-accent text-[12px] font-medium hover:bg-accent/10 disabled:opacity-50 transition-colors max-w-full"
+                    >
+                      {methodBusy ? <Loader2 size={11} className="animate-spin flex-shrink-0" /> : <Wand2 size={11} className="flex-shrink-0" />}
+                      <span className="truncate">
+                        Set the other {methodOffer.ids.length} from {methodOffer.payee} to {methodLabel(methodOffer.method).toLowerCase()}
+                      </span>
+                    </button>
+                  )}
+                  {detail.length > 0 && (
+                    <dl className="pt-1 border-t border-line-2 space-y-1">
+                      {detail.map((d) => (
+                        <div key={d.label} className="flex gap-2 text-[11.5px] min-w-0">
+                          <dt className="text-muted w-[86px] flex-shrink-0">{d.label}</dt>
+                          <dd className="text-ink-2 min-w-0 break-words">{d.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                </div>
+              );
+            })()}
+
             {openTxn.counterparty_type !== "loan" && (
               <label className="block">
                 <span className="block text-[12px] font-medium text-ink-2 mb-1">Category</span>
@@ -3397,6 +4193,132 @@ export default function FinancialsView() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Name the person a payment is from or to — with no deal in sight (R-156/W1-a).
+//
+// The server's candidates sit on top with the reason each was nominated, one tap
+// to confirm; everyone else is one search away. NOTHING is ever auto-applied —
+// R-150's locked decision, and a wrong auto-tag on the wrong buyer is a data error
+// that looks like a fact.
+//
+// This writes counterparty_type / counterparty_id, which is IDENTITY. It says who
+// the money is from or to; the allocation says what it paid for. No total on any
+// screen may move because of it.
+function PersonPickerModal({
+  txn, people, candidates, current, busy, onClose, onPick,
+}: {
+  txn: BankTxn;
+  people: PersonRef[];
+  candidates: BankPersonCandidate[];
+  current: PersonRef | null;
+  busy: boolean;
+  onClose: () => void;
+  onPick: (p: PersonRef) => void;
+}) {
+  const [q, setQ] = useState("");
+  const suggested = candidates.filter((c) => !current || personKey(c) !== personKey(current));
+  const suggestedKeys = new Set(suggested.map(personKey));
+  const matches = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return people
+      .filter((p) => !suggestedKeys.has(personKey(p)))
+      .filter((p) => !s || p.name.toLowerCase().includes(s))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, 60);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [people, q, candidates, current]);
+  const clients = matches.filter((p) => p.type === "client");
+  const suppliers = matches.filter((p) => p.type === "supplier");
+
+  const row = (p: PersonRef, hint?: string) => (
+    <button
+      key={personKey(p)}
+      onClick={() => onPick(p)}
+      disabled={busy}
+      className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-2 disabled:opacity-50 transition-colors flex items-center gap-2 min-w-0"
+    >
+      <span className="text-[13px] text-ink truncate min-w-0">{p.name}</span>
+      {hint && <span className="ml-auto text-[11px] text-muted truncate flex-shrink-0 max-w-[55%]">{hint}</span>}
+    </button>
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Link this payment to a person"
+        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
+          <div className="min-w-0">
+            <h2 className="text-[16px] font-semibold text-ink">Who is this payment with?</h2>
+            <p className="text-[12px] text-muted mt-0.5">
+              {txn.direction === "in" ? "Money in" : "Money out"} · {fmtAmount(txn.amount)} ·{" "}
+              {(txn.posted_at || "").slice(0, 10)}
+            </p>
+            <p className="text-[12px] text-muted mt-1.5">
+              This records who the money is with. It doesn't tie it to a deal and it changes no figure —
+              tie it to a deal below if it belongs to one.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-5 py-3 border-b border-line">
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search clients and suppliers…"
+            className={inp}
+          />
+        </div>
+        <div className="overflow-y-auto p-2">
+          {current && (
+            <div className="px-3 py-2 text-[12px] text-muted">
+              Linked to <span className="text-ink-2 font-medium">{current.name}</span> — picking someone else replaces it.
+            </div>
+          )}
+          {suggested.length > 0 && !q.trim() && (
+            <>
+              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">Suggested from the bank memo</div>
+              {suggested.map((c) => row(
+                { type: c.type, id: c.id, name: c.name },
+                c.reason,
+              ))}
+              <div className="my-1 border-t border-line-2" />
+            </>
+          )}
+          {clients.length > 0 && (
+            <>
+              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">Clients</div>
+              {clients.map((p) => row(p))}
+            </>
+          )}
+          {suppliers.length > 0 && (
+            <>
+              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">Suppliers</div>
+              {suppliers.map((p) => row(p))}
+            </>
+          )}
+          {suggested.length === 0 && matches.length === 0 && (
+            <div className="text-center py-8 text-[12px] text-muted">Nobody matches that name</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

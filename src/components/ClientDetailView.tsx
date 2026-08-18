@@ -3,6 +3,7 @@ import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, 
 import { fmtAmount, fmtPhone } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
 import CreditPanel from "./CreditPanel";
+import PersonPayments from "./PersonPayments";
 import {
   ArrowLeft,
   Mail,
@@ -228,9 +229,11 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   // Invoices sent = actually sent (sent/overdue/paid), voided excluded — always tracked.
   const sentCount = live.filter((i) => ["sent", "overdue", "paid"].includes(i.status)).length;
 
-  // Sales rep — must be shown. Falls back to company name, then "Unassigned".
+  // Sales rep — must be shown. No rep set reads "Unassigned"; it used to fall
+  // back to the CLIENT'S OWN company name, which put the buyer's company beside
+  // a person icon labelled "Rep:" and read as a fact (R-153 finding 6).
   const meta = client.metadata || {};
-  const rep = (meta.lead_representative || meta.sales_rep || client.company || "").toString().trim();
+  const rep = (meta.lead_representative || meta.sales_rep || "").toString().trim();
   const repDisplay = rep || "Unassigned";
   const initials = (client.name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
 
@@ -410,49 +413,20 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
         </div>
 
-        {/* Bank payments — payments from this buyer, tagged or deal-linked (R-150) */}
+        {/* Bank payments — payments from this buyer, tagged or deal-linked (R-150).
+            THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal of
+            their own, which that deal already counts; booked to somebody else's
+            deal, which counts on that deal and not here at all; and tagged to them
+            only, which no deal counts. The middle group is why the split is three
+            and not two — an allocation says the money is booked, never that it is
+            booked to them, so calling it "their deals" put six figures of another
+            client's money in this client's total. */}
         <div className="mt-4 pt-4 border-t border-line-2">
-          <p className="text-[12.5px] font-medium text-muted mb-2">Bank payments</p>
-          {payments.length === 0 ? (
-            <p className="text-[11.5px] text-faint bg-surface-2 border border-line rounded-lg px-3 py-2.5">
-              Nothing linked yet — book a payment from this client in Financials and it shows up here.
-            </p>
-          ) : (
-            <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
-              {payments.slice(0, 12).map((p) => (
-                <div key={p.txn_id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                  <div className="min-w-0">
-                    <div className="text-[12px] text-ink-2 truncate">
-                      {p.description || p.counterparty_name}
-                      {p.tagged && (
-                        <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
-                      )}
-                      {p.tagged && (
-                        <button
-                          onClick={() => untagPayment(p.txn_id)}
-                          title="Remove this tag — the payment itself stays booked"
-                          className="ml-1 inline-flex align-middle items-center justify-center w-4 h-4 rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
-                        >
-                          <X size={10} />
-                        </button>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-muted tabular-nums truncate">
-                      {(() => {
-                        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(p.posted_at || "");
-                        const day = m ? `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m[2]) - 1]} ${Number(m[3])}` : "";
-                        return day;
-                      })()}
-                      {p.invoice_number ? ` · #${p.invoice_number}` : ""}
-                    </div>
-                  </div>
-                  <div className={`text-[12.5px] font-semibold tabular-nums flex-shrink-0 ${p.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
-                    {p.direction === "in" ? "+" : "−"}{fmtAmount(p.amount)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <PersonPayments
+            person={{ type: "client", id: clientId, name: client.name }}
+            payments={payments}
+            onUntag={untagPayment}
+          />
         </div>
 
         {credit && (

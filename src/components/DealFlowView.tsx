@@ -43,6 +43,67 @@ const catLabel = (c?: string | null) =>
   c === "freight" ? "Freight" : c === "wire_in" ? "Wire in" :
   c === "wire_out" ? "Wire out" : c === "other" ? "Other" : "Supplier";
 
+// ─── Shipping lifecycle (R-154) ───────────────────────────────────────────
+// The four stages are all about money, so none of them says "agreed, paid for,
+// truck hasn't come yet" — which is most of the life of a deal and the state
+// nobody could report on when the salesman was out.
+
+const day = (v?: string | null) => (v || "").trim();
+
+/** `pickup_date` / `expected_delivery_date` are bare `YYYY-MM-DD`, which
+ *  `new Date()` reads as UTC midnight — rendered in Central that lands on the
+ *  PREVIOUS day. Parse date-only strings as local (same fix as v0.15.135). */
+const parseDay = (d: string): Date => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(d);
+};
+const dayLabel = (d: string) =>
+  parseDay(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+/** Whole days from today, negative in the past. */
+const daysUntil = (d: string): number => {
+  const n = new Date();
+  const midnight = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  return Math.round((parseDay(d).getTime() - midnight) / 86400000);
+};
+
+type ShipState =
+  | { kind: "direct" }
+  | { kind: "unset" }
+  | { kind: "scheduled" | "overdue"; date: string; basis: "delivery" | "pickup"; days: number };
+
+/** Mirrors `gate_basis` / `shipping_gate` in commands.rs: expected delivery when
+ *  it is set, otherwise pickup — a deal is finished when the goods land, not when
+ *  the truck leaves. `direct` is the explicit "no pickup" answer; `unset` is a
+ *  genuine unanswered question the card has to show, which is the only reason the
+ *  ships-direct flag exists at all. */
+function shipState(f: DealFlow): ShipState {
+  if (f.ships_direct) return { kind: "direct" };
+  const del = day(f.expected_delivery_date), pick = day(f.pickup_date);
+  const date = del || pick;
+  if (!date) return { kind: "unset" };
+  const days = daysUntil(date);
+  return { kind: days < 0 ? "overdue" : "scheduled", date, basis: del ? "delivery" : "pickup", days };
+}
+
+/** The date completion is held for, or null. Today counts as arrived — the same
+ *  rule as the Rust gate, which is the one that actually enforces it. */
+function shipGate(f: DealFlow): { date: string; basis: "delivery" | "pickup" } | null {
+  const s = shipState(f);
+  return s.kind === "scheduled" && s.days > 0 ? { date: s.date, basis: s.basis } : null;
+}
+
+const basisWord = (b: "delivery" | "pickup") => (b === "delivery" ? "expected delivery" : "pickup");
+
+/** What orders the waiting lane: the next thing due to happen, which is the
+ *  earliest date still ahead. Deliberately NOT the gate date — a deal whose truck
+ *  leaves tomorrow but lands in a month belongs above one landing in three weeks.
+ *  When every date has passed, the deal is overdue and sorts to the top on its
+ *  own last date. Only ever called on a deal that has at least one date. */
+function nextDate(f: DealFlow): string {
+  const ds = [day(f.pickup_date), day(f.expected_delivery_date)].filter(Boolean).sort();
+  return ds.find((d) => daysUntil(d) >= 0) ?? ds[ds.length - 1];
+}
+
 // ─── Main view ────────────────────────────────────────────────────────────
 export default function DealFlowView() {
   const [flows,        setFlows]        = useState<DealFlow[]>([]);
@@ -55,6 +116,9 @@ export default function DealFlowView() {
   // Refund mode per deal (refund_owed > 0 OR any refund recorded), at any stage.
   const [refundMap, setRefundMap] = useState<Record<string, { refund_owed: number; refunded: number; remaining: number; done: boolean }>>({});
   // Open by default — refunds are money owed back, not an archive to go looking for.
+  // Open by default — this is the answer to "what is live right now", not an
+  // archive somebody has to go looking for.
+  const [laneOpen, setLaneOpen] = useState(true);
   const [refundsOpen, setRefundsOpen] = useState(true);
   const [showDoneRefunds, setShowDoneRefunds] = useState(false);
   const [expandedRefund, setExpandedRefund] = useState<string | null>(null);
@@ -180,6 +244,29 @@ export default function DealFlowView() {
   // The whole drawer is keyed off every refunded deal, never the filtered list: "Show
   // done" lives INSIDE it, so gating on the filtered list meant closing out the last
   // open refund deleted the only way back to any of them.
+  // ── The waiting lane (R-154) ────────────────────────────────────────────
+  // Pinned above everything else: the active deals that have a pickup or an
+  // expected delivery date and are not complete, soonest first. They are pulled
+  // OUT of the ordinary active list rather than shown twice, so the two counts
+  // stay mutually exclusive — the same rule the Refunds section follows.
+  const lane = active
+    .map((f) => ({ f, s: shipState(f) }))
+    .filter((x): x is { f: DealFlow; s: Extract<ShipState, { date: string }> } =>
+      x.s.kind === "scheduled" || x.s.kind === "overdue")
+    .sort((a, b) => nextDate(a.f).localeCompare(nextDate(b.f)));
+  const laneIds     = new Set(lane.map((x) => x.f.id));
+  const unscheduled = active.filter((f) => !laneIds.has(f.id));
+  const overdueCount = lane.filter((x) => x.s.kind === "overdue").length;
+
+  // This week — counted as EVENTS, not deals, because one deal can both pick up
+  // and land inside the window. Ships-direct deals have no pickup to count.
+  const soon = (d?: string | null) => { const v = day(d); if (!v) return false; const n = daysUntil(v); return n >= 0 && n <= 7; };
+  const pickupsSoon    = active.filter((f) => !f.ships_direct && soon(f.pickup_date)).length;
+  const deliveriesSoon = active.filter((f) => !f.ships_direct && soon(f.expected_delivery_date)).length;
+  // Neither a date nor a ships-direct answer. Named out loud, or nobody fills it
+  // in and the whole feature is dead in a month.
+  const noAnswer = active.filter((f) => shipState(f).kind === "unset").length;
+
   const refundAll   = flows.filter((f) => refundMap[f.id]);
   const refundFlows = refundAll
     .filter((f) => showDoneRefunds || !isRefundDone(f.id))
@@ -248,6 +335,7 @@ export default function DealFlowView() {
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Deal Flow</h2>
           <p className="text-[12px] text-muted mt-0.5">
             {active.length} active deal{active.length !== 1 ? "s" : ""}
+            {lane.length > 0 ? `, ${lane.length} waiting on a date` : ""}
             {totalCompleted > 0 ? ` · ${totalCompleted} completed` : ""}
           </p>
         </div>
@@ -285,6 +373,51 @@ export default function DealFlowView() {
           </button>
         )}
       </div>
+
+      {/* ── Waiting on pickup or delivery (R-154) ───────────────────────── */}
+      {(lane.length > 0 || noAnswer > 0) && (
+        <div className="bg-surface border border-line rounded-xl overflow-hidden">
+          <div className="w-full flex items-center justify-between gap-3 px-5 py-3.5">
+            <button onClick={() => setLaneOpen(!laneOpen)} className="flex items-center gap-2.5 text-left min-w-0">
+              <Truck size={14} className="text-accent flex-shrink-0" />
+              <span className="text-[13px] font-semibold text-ink">Waiting on pickup or delivery</span>
+              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{lane.length}</span>
+              {overdueCount > 0 && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-danger-ink bg-danger-bg px-2 py-0.5 rounded-full">
+                  <AlertTriangle size={10} /> {overdueCount} past {overdueCount === 1 ? "its" : "their"} date
+                </span>
+              )}
+            </button>
+            <button onClick={() => setLaneOpen(!laneOpen)} className="p-1 rounded-lg hover:bg-surface-3 transition-colors">
+              <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${laneOpen ? "rotate-180" : ""}`} />
+            </button>
+          </div>
+          {/* This week. Counted as events among active deals — one deal can both
+              pick up and land inside the window, so these are not deal counts. */}
+          <div className="px-5 pb-3 -mt-1.5 text-[11.5px] text-muted">
+            Next 7 days — {pickupsSoon} pickup{pickupsSoon === 1 ? "" : "s"}, {deliveriesSoon} {deliveriesSoon === 1 ? "delivery" : "deliveries"}.
+            {noAnswer > 0 && ` ${noAnswer} active deal${noAnswer === 1 ? " has" : "s have"} no date and no ships-direct answer.`}
+          </div>
+          {laneOpen && (
+            <div className="border-t border-line p-4 space-y-4">
+              {lane.length === 0 ? (
+                <p className="text-[12.5px] text-muted px-1 py-4">
+                  No deal has a pickup or delivery date set yet.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[11.5px] text-muted px-1">
+                    Deals with a date set that are not complete — soonest first.
+                  </p>
+                  {lane.map(({ f }, i) => (
+                    <DealFlowCard key={f.id} flow={f} onReload={load} refund={refundMap[f.id]} zebra={i % 2 === 1} reconStatus={recon[f.id]} />
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Completed deals drawer ──────────────────────────────────────── */}
       {totalCompleted > 0 && (
@@ -450,9 +583,17 @@ export default function DealFlowView() {
               : "No active deals — deals appear automatically when invoices are sent"}
           </div>
         </div>
-      ) : (
+      ) : unscheduled.length > 0 ? (
         <div className="space-y-4">
-          {active.map((flow, i) => (
+          {/* Only labelled once the lane has taken some cards, so the two lists
+              visibly account for every active deal instead of one silently
+              shrinking. */}
+          {lane.length > 0 && (
+            <p className="text-[11.5px] text-muted">
+              {unscheduled.length} other active deal{unscheduled.length === 1 ? "" : "s"}
+            </p>
+          )}
+          {unscheduled.map((flow, i) => (
             <DealFlowCard
               key={flow.id}
               flow={flow}
@@ -463,7 +604,7 @@ export default function DealFlowView() {
             />
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -667,6 +808,7 @@ function DealFlowCard({
               {NODE_LABELS[flow.stage as Stage]}
             </span>
           )}
+          {!isComplete && <ShipChip flow={flow} />}
           {/* Completed deals: date + which payment link (if any) is potentially missing */}
           {isComplete && flow.completed_at && (
             <span className="text-[11.5px] text-muted tabular-nums flex-shrink-0">
@@ -716,6 +858,11 @@ function DealFlowCard({
             </div>
           ) : (
             <>
+              {/* Schedule — a property of the deal, not one of the money steps,
+                  so it sits above the switcher and is always on screen once the
+                  card is open rather than buried inside a step. */}
+              <ShippingStrip flow={flow} onReload={onReload} locked={locked} />
+
               {/* Section switcher — always visible, click any step */}
               <div className="border-t border-line">
                 <SectionNav current={section} done={done} flash={flash} onGo={go} />
@@ -809,6 +956,146 @@ function DealFlowCard({
             </>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Schedule chip (R-154) ──
+// On the COLLAPSED row, always. An empty date has to be a question you can see
+// without opening anything, or it never gets answered and the gate below it is
+// enforcing nothing.
+function ShipChip({ flow }: { flow: DealFlow }) {
+  const s = shipState(flow);
+  const pick = day(flow.pickup_date), del = day(flow.expected_delivery_date);
+  const moved = [
+    day(flow.pickup_date_prev) && `pickup moved from ${dayLabel(day(flow.pickup_date_prev))}`,
+    day(flow.expected_delivery_date_prev) && `delivery moved from ${dayLabel(day(flow.expected_delivery_date_prev))}`,
+  ].filter(Boolean).join(" · ");
+  const pill = "text-[11.5px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1 flex-shrink-0";
+
+  if (s.kind === "direct") return (
+    <span className={`${pill} border border-line text-muted`}
+      title={`Ships direct — no pickup, so completion is not held for a date.${moved ? ` (${moved})` : ""}`}>
+      <Package size={10} /> Ships direct
+    </span>
+  );
+  if (s.kind === "unset") return (
+    <span className={`${pill} bg-warning-bg text-warning-ink`}
+      title="No pickup date, no expected delivery, and no ships-direct answer — this deal has no schedule">
+      <AlertTriangle size={10} /> No date set
+    </span>
+  );
+
+  const label = s.kind === "overdue"
+    ? `${s.basis === "delivery" ? "Delivery" : "Pickup"} was ${dayLabel(s.date)}`
+    : [pick && `Picks up ${dayLabel(pick)}`, del && `lands ${dayLabel(del)}`].filter(Boolean).join(" · ");
+  const detail = [pick && `pickup ${dayLabel(pick)}`, del && `expected delivery ${dayLabel(del)}`].filter(Boolean).join(" · ");
+
+  return (
+    <span
+      className={`${pill} ${s.kind === "overdue" ? "bg-danger-bg text-danger-ink" : "bg-info-bg text-info-ink"}`}
+      title={s.kind === "overdue"
+        ? `${detail}. That date has passed and the deal is not complete.${moved ? ` (${moved})` : ""}`
+        : `${detail}. Completion is held until ${dayLabel(s.date)}.${moved ? ` (${moved})` : ""}`}
+    >
+      <Truck size={10} /> {label}
+    </span>
+  );
+}
+
+// ── Schedule editor (R-154) ──
+function ShippingStrip({ flow, onReload, locked }: { flow: DealFlow; onReload: () => void; locked: boolean }) {
+  const [pickup,   setPickup]   = useState(day(flow.pickup_date));
+  const [delivery, setDelivery] = useState(day(flow.expected_delivery_date));
+  const [direct,   setDirect]   = useState(!!flow.ships_direct);
+  const [saving,   setSaving]   = useState(false);
+
+  // Re-seed when the deal reloads underneath — a save here, or another device.
+  useEffect(() => {
+    setPickup(day(flow.pickup_date));
+    setDelivery(day(flow.expected_delivery_date));
+    setDirect(!!flow.ships_direct);
+  }, [flow.pickup_date, flow.expected_delivery_date, flow.ships_direct]);
+
+  const dirty = pickup !== day(flow.pickup_date)
+    || delivery !== day(flow.expected_delivery_date)
+    || direct !== !!flow.ships_direct;
+  const s    = shipState(flow);
+  const gate = shipGate(flow);
+  const prevPick = day(flow.pickup_date_prev), prevDel = day(flow.expected_delivery_date_prev);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.setDealFlowShipping(flow.id, pickup || null, delivery || null, direct);
+      toast("Schedule saved");
+      onReload();
+    } catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const reset = () => {
+    setPickup(day(flow.pickup_date));
+    setDelivery(day(flow.expected_delivery_date));
+    setDirect(!!flow.ships_direct);
+  };
+
+  const lbl = "block text-[11px] text-muted font-medium mb-1";
+  return (
+    <div className="border-t border-line px-5 py-3.5 bg-surface">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Truck size={13} className="text-muted flex-shrink-0" />
+        <span className="text-[12.5px] font-semibold text-ink-2">Schedule</span>
+        {s.kind === "unset" && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-warning-ink">
+            <AlertTriangle size={11} /> Not answered yet — set a date, or say it ships direct
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-end gap-3 flex-wrap mt-2.5">
+        <div className="w-40">
+          <label className={lbl}>Pickup date</label>
+          <input type="date" className={inp} value={pickup} disabled={locked}
+            onChange={(e) => setPickup(e.target.value)} />
+        </div>
+        <div className="w-40">
+          <label className={lbl}>Expected delivery</label>
+          <input type="date" className={inp} value={delivery} disabled={locked}
+            onChange={(e) => setDelivery(e.target.value)} />
+        </div>
+        <button type="button" onClick={() => setDirect((v) => !v)} disabled={locked}
+          title="The explicit 'there is no pickup' answer. A deal that ships direct is never held for a date."
+          className={`h-9 px-3 rounded-lg border text-[12px] font-medium inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors ${
+            direct ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
+          {direct ? <Check size={12} /> : <Package size={12} />} No pickup — ships direct
+        </button>
+        {dirty && !locked && (
+          <div className="flex items-center gap-1.5">
+            <button onClick={save} disabled={saving}
+              className="h-9 px-4 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">
+              Save
+            </button>
+            <button onClick={reset} className="h-9 px-2.5 rounded-lg text-[12px] text-muted hover:text-ink-2 hover:bg-surface-3 transition-colors">
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+
+      {(prevPick || prevDel) && (
+        <div className="text-[11px] text-muted mt-2">
+          {[prevPick && `Pickup moved from ${dayLabel(prevPick)}`,
+            prevDel && `delivery moved from ${dayLabel(prevDel)}`].filter(Boolean).join(" · ")}
+        </div>
+      )}
+      {gate && (
+        <div className="text-[11px] text-muted mt-1.5">
+          Completing this deal is held until {dayLabel(gate.date)} — its {basisWord(gate.basis)} date. You can override it in Review &amp; complete, with a reason.
+        </div>
+      )}
+      {s.kind === "direct" && (
+        <div className="text-[11px] text-muted mt-1.5">Ships direct — completion is not held for a date.</div>
       )}
     </div>
   );
@@ -1462,8 +1749,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const [shipHold,   setShipHold]   = useState<ShippingHold>("idle");
   const [carrier,      setCarrier]      = useState("");
   const [tracking,     setTracking]     = useState("");
-  const [pickupDate,   setPickupDate]   = useState("");
-  const [deliveryDate, setDeliveryDate] = useState("");
+  // R-154 gate. Blocked until the goods land; the escape hatch is deliberate,
+  // because a gate with no override just teaches people to type a fake date —
+  // and a fake date destroys the data the gate was protecting.
+  const gate = shipGate(flow);
+  const [overrideOn,     setOverrideOn]     = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+  const overrideReady = overrideReason.trim().length > 0;
+  const gateBlocks    = !!gate && !(overrideOn && overrideReady);
   const todayStr = new Date().toISOString().slice(0, 10);
   const [completedDate, setCompletedDate] = useState(todayStr);
   const [payoutIncluded, setPayoutIncluded] = useState(true);
@@ -1503,12 +1796,22 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
 
   // Fail-proof record: transactions snapshotted onto the deal at completion.
   let snapshot: any[] = [];
-  try { const m = JSON.parse((flow as any).metadata || "{}"); if (Array.isArray(m.bank_snapshot)) snapshot = m.bank_snapshot; } catch {}
+  let overrides: any[] = [];
+  try {
+    const m = JSON.parse((flow as any).metadata || "{}");
+    if (Array.isArray(m.bank_snapshot)) snapshot = m.bank_snapshot;
+    // Every time the gate was overridden on this deal, kept across reopens.
+    if (Array.isArray(m.gate_overrides)) overrides = m.gate_overrides;
+  } catch {}
+
+  // Only sent when the gate is actually blocking — an override recorded on a deal
+  // that was never held would be a lie in the audit trail.
+  const reasonArg = () => (gate && overrideOn ? overrideReason.trim() : null);
 
   const runComplete = async () => {
     setSaving(true);
     try {
-      const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
+      const result = await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg());
       if (result.is_loss && result.warning) toast(result.warning, "error");
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
@@ -1528,11 +1831,14 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const handleShippingComplete = async () => {
     setSaving(true);
     try {
+      // Carrier and tracking only. The deal's pickup / delivery dates live on
+      // `deal_flows` since R-154 and are edited on the card — writing them here
+      // too would leave two copies to disagree. `invoices.pickup_date` /
+      // `delivery_date` still exist and keep whatever they already hold.
       await api.saveInvoiceShipping(flow.invoice_id, {
-        carrier: carrier || undefined, tracking_number: tracking || undefined,
-        pickup_date: pickupDate || undefined, delivery_date: deliveryDate || undefined, is_complete: true,
+        carrier: carrier || undefined, tracking_number: tracking || undefined, is_complete: true,
       });
-      await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded);
+      await api.completeDealFlow(flow.id, "none", completedDate || null, payoutIncluded, reasonArg());
       onReload();
     } catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
@@ -1613,6 +1919,26 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
         </div>
       )}
 
+      {/* Who overrode the date gate, when, and why — the record that makes the
+          escape hatch safe to have. */}
+      {overrides.length > 0 && (
+        <div className="rounded-lg border border-warning bg-warning-bg/50 px-3 py-2.5">
+          <div className="text-[12px] font-medium text-warning-ink mb-1.5">
+            Completed before its {overrides.length === 1 ? "date" : "dates"}
+          </div>
+          <div className="space-y-1">
+            {overrides.map((o: any, i: number) => (
+              <div key={i} className="text-[11.5px] text-ink-2">
+                <span className="font-medium">{o.by || "Unknown"}</span>
+                {o.at ? ` · ${new Date(o.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                {o.blocked_until ? ` · held until ${dayLabel(o.blocked_until)}` : ""}
+                {o.reason ? ` — ${o.reason}` : ""}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Profit split (completed + profitable) */}
       {split.length > 0 && (
         <div className="rounded-lg border border-line bg-surface px-4 py-3">
@@ -1645,6 +1971,36 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
                 className={`flex-1 h-8 rounded-md text-[12px] font-medium transition-colors ${!payoutIncluded ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>Business keeps 100%</button>
             </div>
           </div>
+          {gate && (
+            <div className="rounded-lg border border-warning bg-warning-bg px-3 py-2.5 space-y-2">
+              <div className="flex items-start gap-2 text-[12.5px] text-warning-ink">
+                <Truck size={14} className="mt-0.5 flex-shrink-0" />
+                <span>
+                  Held until {dayLabel(gate.date)} — this deal's {basisWord(gate.basis)} date has not arrived yet.
+                </span>
+              </div>
+              {!overrideOn ? (
+                <button type="button" onClick={() => setOverrideOn(true)}
+                  className="text-[11.5px] font-medium text-warning-ink border border-warning px-2.5 h-8 rounded-lg hover:bg-warning/10 transition-colors">
+                  Complete it anyway
+                </button>
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-medium text-warning-ink">Why is this being completed early?</label>
+                  <input className={inp} value={overrideReason} autoFocus
+                    placeholder="Picked up early, date was keyed wrong…"
+                    onChange={(e) => setOverrideReason(e.target.value)} />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-warning-ink">Saved on the deal with your name and the time.</span>
+                    <button type="button" onClick={() => { setOverrideOn(false); setOverrideReason(""); }}
+                      className="text-[11px] text-muted hover:text-ink-2 px-2 h-7 rounded-lg hover:bg-surface-3 transition-colors">
+                      Cancel override
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <button type="button" onClick={() => setMoneyLinked((v) => !v)}
             className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${moneyLinked ? "border-success bg-success-bg" : "border-line bg-surface hover:border-accent/40"}`}>
             {moneyLinked ? <CheckCircle2 size={16} className="text-success-ink flex-shrink-0" /> : <AlertTriangle size={16} className="text-warning-ink flex-shrink-0" />}
@@ -1652,10 +2008,13 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
               This is all the money that will ever be linked to this deal
             </span>
           </button>
-          <button onClick={handleCompleteClick} disabled={saving || !moneyLinked}
-            title={!moneyLinked ? "Confirm all money is linked first" : undefined}
+          <button onClick={handleCompleteClick} disabled={saving || !moneyLinked || gateBlocks}
+            title={gateBlocks ? `Held until ${dayLabel(gate!.date)} — override above with a reason`
+              : !moneyLinked ? "Confirm all money is linked first" : undefined}
             className="w-full bg-accent hover:bg-accent-hover text-on-accent h-10 rounded-lg text-[14px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            {moneyLinked ? `Complete deal — record ${fmtAmount(recNet)} profit` : "Complete deal — confirm money linked above"}
+            {gateBlocks ? `Complete deal — held until ${dayLabel(gate!.date)}`
+              : !moneyLinked ? "Complete deal — confirm money linked above"
+              : `Complete deal — record ${fmtAmount(recNet)} profit`}
           </button>
         </div>
       )}
@@ -1684,11 +2043,16 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
           <div className="grid grid-cols-2 gap-3">
             <div><label className="block text-[11px] text-muted font-medium mb-1">Carrier</label><input className={inp} placeholder="FedEx, UPS…" value={carrier} onChange={(e) => setCarrier(e.target.value)} /></div>
             <div><label className="block text-[11px] text-muted font-medium mb-1">Tracking #</label><input className={inp} placeholder="Tracking number" value={tracking} onChange={(e) => setTracking(e.target.value)} /></div>
-            <div><label className="block text-[11px] text-muted font-medium mb-1">Pickup date</label><input type="date" className={inp} value={pickupDate} onChange={(e) => setPickupDate(e.target.value)} /></div>
-            <div><label className="block text-[11px] text-muted font-medium mb-1">Delivery date</label><input type="date" className={inp} value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} /></div>
+          </div>
+          {/* Pickup and expected delivery moved to Schedule at the top of this
+              card (R-154) — one copy, synced, and it is what the gate reads. */}
+          <div className="text-[11px] text-muted">
+            Pickup and expected delivery are set under Schedule at the top of this card.
           </div>
           <div className="flex items-center gap-2 pt-1">
-            <button onClick={handleShippingComplete} disabled={saving} className="flex items-center gap-1.5 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"><Check size={13} /> Confirm delivery &amp; complete</button>
+            <button onClick={handleShippingComplete} disabled={saving || gateBlocks}
+              title={gateBlocks ? `Held until ${dayLabel(gate!.date)} — override in the step before this` : undefined}
+              className="flex items-center gap-1.5 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all"><Check size={13} /> Confirm delivery &amp; complete</button>
             <button onClick={() => setShipHold("idle")} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
           </div>
         </div>

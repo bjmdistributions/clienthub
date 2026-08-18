@@ -3,6 +3,7 @@ import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, Phone,
 import { api, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsModal from "./SupplierDealsModal";
+import PersonPayments from "./PersonPayments";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -541,46 +542,18 @@ function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment 
         <ChevronRight size={14} className="text-muted flex-shrink-0" />
       </button>
 
-      {/* Bank payments this supplier touches — tagged rows plus supplier legs on deals */}
-      <div className="space-y-2">
-        <p className="text-[12.5px] font-medium text-muted">Bank payments</p>
-        {payments.length === 0 ? (
-          <p className="text-[11.5px] text-faint bg-surface-2 border border-line rounded-lg px-3 py-2.5">
-            Nothing linked yet — book a payment to this supplier in Financials and it shows up here.
-          </p>
-        ) : (
-          <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
-            {payments.slice(0, 12).map((p) => (
-              <div key={p.txn_id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-[12px] text-ink-2 truncate">
-                    {p.description || p.counterparty_name}
-                    {p.tagged && (
-                      <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
-                    )}
-                    {p.tagged && (
-                      <button
-                        onClick={() => onUntagPayment(p.txn_id)}
-                        title="Remove this tag — the payment itself stays booked"
-                        className="ml-1 inline-flex align-middle items-center justify-center w-4 h-4 rounded text-faint hover:text-ink-2 hover:bg-surface-3 transition-colors"
-                      >
-                        <X size={10} />
-                      </button>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-muted tabular-nums truncate">
-                    {shortDate(p.posted_at)}
-                    {p.invoice_number ? ` · #${p.invoice_number}${p.client_name ? ` · ${p.client_name}` : ""}` : ""}
-                  </div>
-                </div>
-                <div className={`text-[12.5px] font-semibold tabular-nums flex-shrink-0 ${p.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
-                  {p.direction === "in" ? "+" : "−"}{fmtAmount(p.amount)}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Bank payments this supplier touches — tagged rows plus supplier legs on
+          deals. THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal
+          that names them, which that deal already counts; booked to a deal that
+          does not, which counts on that deal and not here at all; and tagged to
+          them only, which no deal counts. The middle group is why the split is
+          three and not two — one $279,500 supplier wire in this ledger is split
+          across deals belonging to four different clients. */}
+      <PersonPayments
+        person={{ type: "supplier", id: s.id, name: s.name }}
+        payments={payments}
+        onUntag={onUntagPayment}
+      />
 
       {/* Contact */}
       {(s.phone || s.email || s.address) && (

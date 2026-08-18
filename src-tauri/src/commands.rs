@@ -3160,6 +3160,31 @@ pub async fn save_invoice_costs(invoice_id: String, cost_items: Vec<CostItem>) -
     Ok(())
 }
 
+/// The deal-flow metadata a completed shipment writes back: the blob the deal
+/// already has, with `shipping_status` set. Split out so a test runs the exact
+/// statement the command runs.
+///
+/// It MERGES, and that is the whole point. This wrote `{"shipping_status":
+/// "shipped"}` over the entire object, and "Confirm delivery & complete" calls
+/// `save_invoice_shipping` immediately BEFORE `complete_deal_flow` — which then
+/// read `gate_overrides` out of an object this line had just emptied. Two
+/// completion buttons, two audit outcomes: "Complete deal" kept the override
+/// history, the shipping path silently dropped it. The same replace also dropped
+/// `refund_done` (live today: deal flow 4cf120bf / INV-0163 carries exactly
+/// `{"refund_done":true}` and nothing else), `no_buyer_link` and
+/// `no_supplier_link`. Every other `deal_flows.metadata` writer in this file
+/// already merges; this was the one that did not.
+fn shipped_deal_metadata(conn: &rusqlite::Connection, flow_id: &str) -> Result<String, String> {
+    let mut meta = conn
+        .query_row("SELECT COALESCE(metadata,'{}') FROM deal_flows WHERE id=?1", [flow_id], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    meta.insert("shipping_status".into(), Value::String("shipped".into()));
+    serde_json::to_string(&Value::Object(meta)).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Result<(), String> {
     let has_shipping = info.carrier.as_deref().map_or(false, |s| !s.is_empty())
@@ -3167,25 +3192,39 @@ pub async fn save_invoice_shipping(invoice_id: String, info: ShippingInfo) -> Re
         && info.pickup_date.as_deref().map_or(false, |s| !s.is_empty());
     let is_complete = info.is_complete || has_shipping;
 
+    // Merge-on-write for the two date columns. R-154 moved the deal's real pickup
+    // and delivery dates onto `deal_flows`, so the deal card stopped sending these
+    // — and an omitted field must mean "leave the invoice's own value alone", not
+    // "write NULL over it". Writing NULL over an unshown field is the narrow-form
+    // data loss, and these columns are never re-derivable once blanked. An explicit
+    // `Some("")` still clears, so a caller that means it can still say so.
+    let (cur_pickup, cur_delivery): (Option<String>, Option<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT pickup_date, delivery_date FROM invoices WHERE id=?1",
+            [&invoice_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((None, None))
+    };
+    let pickup_date = info.pickup_date.clone().or(cur_pickup);
+    let delivery_date = info.delivery_date.clone().or(cur_delivery);
+
     let mut cols = Map::new();
     cols.insert("carrier".into(), to_value(info.carrier.clone()));
     cols.insert("tracking_number".into(), to_value(info.tracking_number.clone()));
     cols.insert("shipping_charged".into(), json!(info.shipping_charged.unwrap_or(0.0)));
-    cols.insert("pickup_date".into(), to_value(info.pickup_date.clone()));
-    cols.insert("delivery_date".into(), to_value(info.delivery_date.clone()));
+    cols.insert("pickup_date".into(), to_value(pickup_date.clone()));
+    cols.insert("delivery_date".into(), to_value(delivery_date.clone()));
     cols.insert("is_complete".into(), json!(is_complete));
     sync::record_upsert("invoices", &invoice_id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE invoices SET carrier=?1, tracking_number=?2, shipping_charged=?3, pickup_date=?4, delivery_date=?5, is_complete=?6 WHERE id=?7",
-        rusqlite::params![info.carrier, info.tracking_number, info.shipping_charged.unwrap_or(0.0), info.pickup_date, info.delivery_date, is_complete as i64, invoice_id],
+        rusqlite::params![info.carrier, info.tracking_number, info.shipping_charged.unwrap_or(0.0), pickup_date, delivery_date, is_complete as i64, invoice_id],
     ).map_err(|e| e.to_string())?;
     if is_complete {
         let flow_id: Option<String> = conn.query_row("SELECT id FROM deal_flows WHERE invoice_id=?1", [&invoice_id], |r| r.get(0)).ok();
         if let Some(flow_id) = flow_id {
             let now = Utc::now().to_rfc3339();
-            let meta_json = serde_json::to_string(&json!({"shipping_status": "shipped"})).map_err(|e| e.to_string())?;
+            let meta_json = shipped_deal_metadata(&conn, &flow_id)?;
             let mut df_cols = Map::new();
             df_cols.insert("metadata".into(), Value::String(meta_json.clone()));
             df_cols.insert("updated_at".into(), Value::String(now.clone()));
@@ -3628,6 +3667,24 @@ pub struct DealFlow {
     pub client_id: Option<String>,
     pub client_name: Option<String>,
     pub invoice_total: f64,
+    /// Shipping lifecycle (R-154, migration 77). `pickup_date` is when it LEAVES,
+    /// `expected_delivery_date` is when it LANDS — both bare `YYYY-MM-DD`, the same
+    /// string shape the rest of the app parses (never a UTC datetime; see the
+    /// `parseDay` fix in v0.15.135, where a bare date rendered one day early).
+    #[serde(default)]
+    pub pickup_date: Option<String>,
+    #[serde(default)]
+    pub expected_delivery_date: Option<String>,
+    /// The explicit "no pickup / ships direct" answer, so an empty date stays a real
+    /// unanswered question the card can flag rather than quietly meaning "n/a".
+    #[serde(default)]
+    pub ships_direct: bool,
+    /// The value a reschedule replaced. Pickups slip constantly here; without this
+    /// the card silently claims it was always Thursday.
+    #[serde(default)]
+    pub pickup_date_prev: Option<String>,
+    #[serde(default)]
+    pub expected_delivery_date_prev: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3668,6 +3725,15 @@ fn map_deal_flow_row(r: &rusqlite::Row) -> rusqlite::Result<DealFlow> {
         client_id: r.get("client_id").ok(),
         client_name: r.get("client_name").ok(),
         invoice_total: r.get("invoice_total").unwrap_or(0.0),
+        // Read tolerantly. `DF_JOIN` is `SELECT df.*` plus explicitly aliased invoice
+        // and client columns, so these resolve to the deal_flows copies unambiguously
+        // — but a device that has not yet run migration 77 must still list its deals
+        // rather than have every row fail to map.
+        pickup_date: r.get("pickup_date").unwrap_or(None),
+        expected_delivery_date: r.get("expected_delivery_date").unwrap_or(None),
+        ships_direct: r.get::<_, Option<i64>>("ships_direct").unwrap_or(None).unwrap_or(0) != 0,
+        pickup_date_prev: r.get("pickup_date_prev").unwrap_or(None),
+        expected_delivery_date_prev: r.get("expected_delivery_date_prev").unwrap_or(None),
     })
 }
 
@@ -4271,9 +4337,33 @@ pub async fn unmark_supplier_payment_paid(id: String, payment_id: String) -> Res
 }
 
 #[tauri::command]
-pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>, payout_included: Option<bool>) -> Result<Value, String> {
+pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, completed_date: Option<String>, payout_included: Option<bool>, override_reason: Option<String>) -> Result<Value, String> {
     let df = read_df(&id)?;
     if df.stage != "supplier_paid" && df.stage != "payment_received" { return Err("Can only complete after payment is received".into()); }
+
+    // R-154 completion gate. Blocked until the goods have landed, with an override
+    // that records who overrode it and why — a gate with no escape hatch gets
+    // defeated by typing a fake date, and a fake date is worse than an early
+    // completion because nothing afterwards can tell it was fake.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let reason = override_reason.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let gate_entry: Option<Value> = match shipping_gate(
+        df.ships_direct, df.pickup_date.as_deref(), df.expected_delivery_date.as_deref(), &today,
+    ) {
+        None => None,
+        Some((date, basis)) => match reason {
+            None => return Err(format!(
+                "This deal's {} date is {} — it has not arrived yet. Complete it on or after that date, or override with a reason.",
+                basis, date)),
+            Some(reason) => {
+                let (by_id, by) = actor_identity();
+                Some(json!({
+                    "at": Utc::now().to_rfc3339(), "by": by, "by_id": by_id,
+                    "blocked_until": date, "basis": basis, "reason": reason,
+                }))
+            }
+        },
+    };
 
     let split = read_profit_split()?;
     let include_payout = payout_included.unwrap_or(false);
@@ -4319,7 +4409,19 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
         let conn = pool().get().map_err(|e| e.to_string())?;
         bank_snapshot_value(&conn, &id)
     };
-    let meta_json = serde_json::to_string(&json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout, "payout_recipients": breakdown, "bank_snapshot": bank_snapshot})).map_err(|e| e.to_string())?;
+    // Completing rewrites this whole blob, so any gate override already recorded is
+    // carried forward and the new one appended. An audit record that a reopen-and-
+    // recomplete could erase would not be an audit record.
+    let mut gate_overrides: Vec<Value> = df.metadata.as_deref()
+        .and_then(|m| serde_json::from_str::<Value>(m).ok())
+        .and_then(|v| v.get("gate_overrides").and_then(|a| a.as_array()).cloned())
+        .unwrap_or_default();
+    if let Some(entry) = gate_entry { gate_overrides.push(entry); }
+    let mut meta = json!({"is_loss": is_loss, "shipping_status": shipping_status, "payout_included": include_payout, "payout_recipients": breakdown, "bank_snapshot": bank_snapshot});
+    if !gate_overrides.is_empty() {
+        if let Some(o) = meta.as_object_mut() { o.insert("gate_overrides".into(), Value::Array(gate_overrides)); }
+    }
+    let meta_json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
 
     let mut cols = Map::new();
     cols.insert("stage".into(), Value::String("complete".into()));
@@ -4656,6 +4758,120 @@ pub async fn update_deal_flow_name(id: String, name: Option<String>) -> Result<(
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("UPDATE deal_flows SET name=?1, updated_at=?2 WHERE id=?3", rusqlite::params![name, now, id]).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ──────────────────────── Shipping lifecycle (R-154) ────────────────────────
+
+/// A bare `YYYY-MM-DD`, or nothing. Trims, reads `""` as unset, and refuses
+/// anything else: the completion gate compares these as plain strings, so a
+/// datetime or `MM/DD/YYYY` would compare wrong and silently mis-gate rather
+/// than fail where someone can see it.
+fn norm_day(v: Option<String>) -> Result<Option<String>, String> {
+    let s = match v { Some(s) => s.trim().to_string(), None => return Ok(None) };
+    if s.is_empty() { return Ok(None); }
+    let shaped = s.len() == 10 && s.char_indices().all(|(i, c)|
+        if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() });
+    if !shaped { return Err(format!("Date must be YYYY-MM-DD, got '{}'", s)); }
+    Ok(Some(s))
+}
+
+/// What to store in the matching `*_prev` column. Pickups slip constantly here,
+/// so the value a reschedule replaced is kept and the card can say "moved from
+/// Aug 12" instead of quietly claiming it was always Thursday. Clearing a date
+/// keeps it too — nothing a reschedule replaces is thrown away — and an edit
+/// that changes nothing leaves the existing `*_prev` exactly as it was.
+fn carry_prev(old: Option<&str>, old_prev: Option<&str>, new: Option<&str>) -> Option<String> {
+    let keep = |v: Option<&str>| v.filter(|s| !s.is_empty()).map(|s| s.to_string());
+    let (old, new) = (keep(old), keep(new));
+    if old == new { return keep(old_prev); }
+    old.or_else(|| keep(old_prev))
+}
+
+/// The date completion is gated on: expected delivery when it is set, otherwise
+/// pickup. A deal is not finished when the truck leaves, it is finished when the
+/// goods land (R-154, decided 2026-08-17).
+fn gate_basis(pickup: Option<&str>, delivery: Option<&str>) -> Option<(String, &'static str)> {
+    let keep = |v: Option<&str>| v.filter(|s| !s.is_empty()).map(|s| s.to_string());
+    keep(delivery).map(|d| (d, "expected delivery"))
+        .or_else(|| keep(pickup).map(|d| (d, "pickup")))
+}
+
+/// `Some((date, basis))` when completion must be blocked, `None` when it may run.
+///
+/// Two deliberate non-blocks. `ships_direct` is the explicit "no pickup" answer,
+/// so it is never gated. And a deal with **no** date at all is never gated either:
+/// a missing date is an unanswered question the card flags, and blocking on it
+/// would only teach people to type a fake date — which destroys exactly the data
+/// this gate exists to protect. Today itself counts as passed; goods that land
+/// this morning are landed, and refusing them until tomorrow is how fake dates
+/// get typed too.
+fn shipping_gate(
+    ships_direct: bool, pickup: Option<&str>, delivery: Option<&str>, today: &str,
+) -> Option<(String, &'static str)> {
+    if ships_direct { return None; }
+    gate_basis(pickup, delivery).filter(|(d, _)| d.as_str() > today)
+}
+
+/// Who is acting on this device — the staff session if there is one, otherwise
+/// the selected user account. An override that cannot be attributed to a person
+/// is not an audit record.
+fn actor_identity() -> (Option<String>, String) {
+    if let Some((id, name)) = crate::employees::session_actor() { return (Some(id), name); }
+    let named = pool().get().ok().and_then(|c| c.query_row(
+        "SELECT u.id, u.name FROM users u JOIN settings s ON s.value = u.id
+         WHERE s.key = 'current_user_id' AND u.is_active = 1",
+        [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ).ok());
+    match named { Some((id, name)) => (Some(id), name), None => (None, "Unknown".to_string()) }
+}
+
+/// Set the deal's pickup / expected-delivery dates, or answer "ships direct".
+///
+/// Every column this touches is named in the `record_upsert` map below. An Upsert
+/// carries only the columns its caller names, so a column left out of that map is
+/// written locally and never reaches another device — which for a date that gates
+/// completion would mean one machine blocking and another not.
+#[tauri::command]
+pub async fn set_deal_flow_shipping(
+    id: String,
+    pickup_date: Option<String>,
+    expected_delivery_date: Option<String>,
+    ships_direct: bool,
+) -> Result<DealFlow, String> {
+    let pickup = norm_day(pickup_date)?;
+    let delivery = norm_day(expected_delivery_date)?;
+
+    let (old_pickup, old_delivery, old_pickup_prev, old_delivery_prev):
+        (Option<String>, Option<String>, Option<String>, Option<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT pickup_date, expected_delivery_date, pickup_date_prev, expected_delivery_date_prev
+             FROM deal_flows WHERE id=?1",
+            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).map_err(|e| e.to_string())?
+    };
+    let pickup_prev = carry_prev(old_pickup.as_deref(), old_pickup_prev.as_deref(), pickup.as_deref());
+    let delivery_prev = carry_prev(old_delivery.as_deref(), old_delivery_prev.as_deref(), delivery.as_deref());
+
+    let now = Utc::now().to_rfc3339();
+    let mut cols = Map::new();
+    cols.insert("pickup_date".into(), to_value(pickup.clone()));
+    cols.insert("expected_delivery_date".into(), to_value(delivery.clone()));
+    cols.insert("ships_direct".into(), json!(ships_direct as i64));
+    cols.insert("pickup_date_prev".into(), to_value(pickup_prev.clone()));
+    cols.insert("expected_delivery_date_prev".into(), to_value(delivery_prev.clone()));
+    cols.insert("updated_at".into(), Value::String(now.clone()));
+    sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE deal_flows SET pickup_date=?1, expected_delivery_date=?2, ships_direct=?3,
+             pickup_date_prev=?4, expected_delivery_date_prev=?5, updated_at=?6 WHERE id=?7",
+            rusqlite::params![pickup, delivery, ships_direct as i64, pickup_prev, delivery_prev, now, id],
+        ).map_err(|e| e.to_string())?;
+    }
+    read_df(&id)
 }
 
 // ──────────────────────── Refunds, customer credits, rep payouts ────────────────────────
@@ -10746,7 +10962,20 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
                 bt.counterparty_name, bt.counterparty_type, bt.counterparty_id, bt.wire_ref, bt.reviewed, bt.account_id,
                 COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id), 0) AS allocated,
                 (SELECT COUNT(*) FROM bank_allocation a WHERE a.bank_txn_id=bt.id) AS alloc_count,
-                bt.balance, CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.dt') END
+                bt.balance, CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.dt') END,
+                -- The method a HUMAN confirmed (R-157/F1). Nullable column, flattened
+                -- to '' so the UI has one not-set value. This is the ONLY field the
+                -- screen may read as certain: `rail` above is a memo guess written by
+                -- bank_import::classify, not an answer anybody gave.
+                COALESCE(bt.confirmed_method, '') AS confirmed_method,
+                -- The bank's OWN payment method, when it supplies one (R-157/W2-a).
+                -- Nothing supplies one today: 0 of 1,342 rows carry a `pm` block,
+                -- measured 2026-08-17. Read anyway so the method facet is field-first
+                -- the day an institution starts sending it, and only falls back to the
+                -- memo classifier when it doesn't. `json_valid` guard is mandatory —
+                -- a bare json_extract over empty raw_json threw and blanked the whole
+                -- financials screen in v0.15.116.
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pm.payment_method') END
          FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -10758,6 +10987,8 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
             "amount": amount,
             "direction": r.get::<_, String>(3)?,
             "description": r.get::<_, String>(4)?,
+            // The importer's memo guess. Kept so the screen can show it as `likely`;
+            // it is NEVER read as a confirmation. See `confirmed_method` below.
             "rail": r.get::<_, String>(5)?,
             "category": r.get::<_, String>(6)?,
             "counterparty_name": r.get::<_, String>(7)?,
@@ -10771,6 +11002,8 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
             "unallocated": ((amount - allocated) * 100.0).round() / 100.0,
             "balance": r.get::<_, Option<f64>>(15)?,
             "posted_dt": r.get::<_, Option<String>>(16)?,
+            "confirmed_method": r.get::<_, String>(17)?,
+            "bank_method": r.get::<_, Option<String>>(18)?,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -10834,18 +11067,34 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
 fn review_cols(
     category: &Option<String>, counterparty_name: &Option<String>,
     counterparty_type: &Option<String>, counterparty_id: &Option<String>,
-    flag: Option<i64>, now: &str,
+    confirmed_method: &Option<String>, flag: Option<i64>, now: &str,
 ) -> Option<Map<String, Value>> {
     let mut cols = Map::new();
     if let Some(v) = category { cols.insert("category".into(), json!(v)); }
     if let Some(v) = counterparty_name { cols.insert("counterparty_name".into(), json!(v)); }
     if let Some(v) = counterparty_type { cols.insert("counterparty_type".into(), json!(v)); }
     if let Some(v) = counterparty_id { cols.insert("counterparty_id".into(), json!(v)); }
+    // Named here on purpose: an Upsert carries only the columns its caller puts in
+    // this map, so a column that exists on every device but is never named is stored
+    // locally and never replicates.
+    if let Some(v) = confirmed_method { cols.insert("confirmed_method".into(), json!(v)); }
     if let Some(v) = flag { cols.insert("reviewed".into(), json!(v)); }
     if cols.is_empty() { return None; }
     cols.insert("updated_at".into(), json!(now));
     Some(cols)
 }
+
+/// The payment methods `confirmed_method` may hold (R-157/W2-c). Kept as one list
+/// because it is a synced free-text column: an unvalidated write puts a typo into
+/// every device's ledger and the method filter then silently never matches it.
+/// `wire`/`ach`/`zelle`/`cash`/`card`/`rtp` are also the values
+/// `bank_import::classify` guesses into `rail`; `check` and `transfer` are added
+/// here. Empty means "not set" — which is a real state (unclassified), not a value.
+///
+/// MUST stay identical to `METHODS` in `FinancialsView.tsx`.
+pub const BANK_METHODS: &[&str] = &["wire", "ach", "zelle", "rtp", "check", "card", "cash", "transfer"];
+
+fn valid_method(m: &str) -> bool { m.is_empty() || BANK_METHODS.contains(&m) }
 
 /// Mirrors `review_cols` locally: a NULL (omitted) field COALESCEs to the column's
 /// current value, so the local row changes exactly what the sync event does. Named
@@ -10853,26 +11102,43 @@ fn review_cols(
 const REVIEW_UPDATE_SQL: &str =
     "UPDATE bank_txn SET category=COALESCE(?1,category), counterparty_name=COALESCE(?2,counterparty_name),
        counterparty_type=COALESCE(?3,counterparty_type), counterparty_id=COALESCE(?4,counterparty_id),
-       reviewed=COALESCE(?5,reviewed), updated_at=?6 WHERE id=?7";
+       confirmed_method=COALESCE(?5,confirmed_method), reviewed=COALESCE(?6,reviewed), updated_at=?7 WHERE id=?8";
 
-/// Set a transaction's classification (category + counterparty) and/or reviewed
-/// flag. Every field is optional and only the ones supplied are written, like
-/// `tag_bank_txn_to_loan`. An explicit un-book/re-classify still works: it sends
-/// `reviewed` alone.
+/// Set a transaction's classification (category + counterparty + payment method)
+/// and/or reviewed flag. Every field is optional and only the ones supplied are
+/// written, like `tag_bank_txn_to_loan`. An explicit un-book/re-classify still
+/// works: it sends `reviewed` alone.
+///
+/// `confirmed_method` is the payment method a HUMAN answered, and this command is
+/// the only writer of it (R-157/F1). It is a SEPARATE column from `rail` because
+/// **`rail` is a machine guess**: `bank_import::classify` string-matches the raw
+/// memo and persists `rail` on every statement parse path (OFX, CSV, PDF), and its
+/// own doc comment says "This is a SUGGESTION only". Replaying that classifier over
+/// the live ledger's 1,342 rows sets a non-empty `rail` on 690 of them, so reading
+/// `rail` as a confirmation would render 690 guesses as facts.
+///
+/// Plaid supplies no `payment_meta` for this institution — 0 of 1,342 rows carry
+/// one, measured 2026-08-17 — so what a human sets here is the only certain answer
+/// this ledger holds. The memo classifier's guesses are computed at read time and
+/// deliberately never persisted.
 #[tauri::command]
 pub async fn set_bank_txn_review(
     id: String, category: Option<String>, counterparty_name: Option<String>,
-    counterparty_type: Option<String>, counterparty_id: Option<String>, reviewed: Option<bool>,
+    counterparty_type: Option<String>, counterparty_id: Option<String>,
+    confirmed_method: Option<String>, reviewed: Option<bool>,
 ) -> Result<(), String> {
+    if let Some(m) = &confirmed_method {
+        if !valid_method(m) { return Err(format!("\"{m}\" is not a payment method")); }
+    }
     let now = Utc::now().to_rfc3339();
     let flag = reviewed.map(|r| if r { 1i64 } else { 0i64 });
-    let Some(cols) = review_cols(&category, &counterparty_name, &counterparty_type, &counterparty_id, flag, &now)
+    let Some(cols) = review_cols(&category, &counterparty_name, &counterparty_type, &counterparty_id, &confirmed_method, flag, &now)
     else { return Ok(()); };
     sync::record_upsert("bank_txn", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
         REVIEW_UPDATE_SQL,
-        rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, flag, now, id],
+        rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, confirmed_method, flag, now, id],
     ).map_err(|e| e.to_string())?;
     // Booking a transaction must reach the other admins immediately: waiting for the
     // 20s poll leaves a window where two people work the same queue and both see the
@@ -14137,84 +14403,188 @@ pub async fn untag_bank_txn_counterparty(bank_txn_id: String) -> Result<(), Stri
     Ok(())
 }
 
-/// Payment history for a supplier or client (R-150): every bank transaction
-/// this counterparty touches — rows tagged directly (counterparty_type/id)
-/// plus allocations on deals they own (buyer_payment on the client's invoices;
-/// supplier_payment on flows whose legs name the supplier by id or name).
-/// Deduped to one row per transaction, the deal-linked row winning. Read-only.
-#[tauri::command]
-pub async fn counterparty_payments(ctype: String, id: String, name: String) -> Result<Value, String> {
-    let (tag_type, role, is_supplier) = match ctype.as_str() {
-        "supplier" => ("supplier", "supplier_payment", true),
-        "client" => ("client", "buyer_payment", false),
-        _ => return Err("ctype must be supplier or client".into()),
-    };
-    let conn = pool().get().map_err(|e| e.to_string())?;
+/// One allocation-shaped row of a counterparty's payment history, before dedupe.
+/// A transaction split across several deals arrives here once per allocation.
+struct CpHit {
+    txn_id: String,
+    posted_at: String,
+    amount: f64,
+    direction: String,
+    description: String,
+    counterparty_name: String,
+    deal_flow_id: String,
+    role: String,
+    invoice_number: String,
+    client_name: String,
+    alloc_id: String,
+    alloc_amount: f64,
+    /// The allocation's deal belongs to the person being viewed — derived by
+    /// joining the deal back to the party, never assumed from the allocation.
+    mine: bool,
+    tagged: bool,
+    /// The three method fields, exactly as `list_bank_txns` returns them, so the
+    /// profile and the ledger read the same transaction the same way (R-157/F1).
+    /// `confirmed_method` is the only one a human answered; `rail` is the
+    /// importer's memo guess and is never a confirmation.
+    confirmed_method: String,
+    rail: String,
+    bank_method: Option<String>,
+}
+
+fn read_cp_hit(r: &rusqlite::Row) -> rusqlite::Result<CpHit> {
+    Ok(CpHit {
+        txn_id: r.get(0)?, posted_at: r.get(1)?, amount: r.get(2)?, direction: r.get(3)?,
+        description: r.get(4)?, counterparty_name: r.get(5)?, deal_flow_id: r.get(6)?,
+        role: r.get(7)?, invoice_number: r.get(8)?, client_name: r.get(9)?,
+        alloc_id: r.get(10)?, alloc_amount: r.get(11)?, mine: r.get(12)?, tagged: r.get(13)?,
+        confirmed_method: r.get(14)?, rail: r.get(15)?, bank_method: r.get(16)?,
+    })
+}
+
+/// Their deal beats somebody else's deal, which beats no deal at all — the kept
+/// row is the one that decides which group the profile files the payment under.
+fn cp_rank(h: &CpHit) -> u8 {
+    if h.mine { 2 } else if !h.deal_flow_id.is_empty() { 1 } else { 0 }
+}
+
+/// The statement behind `counterparty_payments`. Split out so a test runs the
+/// exact SQL the command runs.
+///
+/// Params are `?1` tag type, `?2` party id, and — supplier only — `?3` name.
+/// No ORDER BY: in a compound SELECT every ORDER BY term has to name an output
+/// column, and `COALESCE(t.posted_at,'')` names none, so `ORDER BY posted_at`
+/// made the whole statement fail to prepare. The sort happens in Rust below,
+/// after the dedupe, which is where it has to happen anyway.
+fn counterparty_payments_sql(is_supplier: bool) -> String {
     // Supplier legs match by supplier_id or exact name via json_each — a LIKE over
     // the raw JSON missed escaped characters and let %/_ in a name act as wildcards.
     // json_valid guards first: the TEXT column can hold '' and json_each throws on
     // invalid JSON.
     let leg_match = if is_supplier {
         "json_valid(df.supplier_payments_json) AND EXISTS (SELECT 1 FROM json_each(df.supplier_payments_json) je \
-         WHERE json_extract(je.value,'$.supplier_id') = ?2 OR json_extract(je.value,'$.supplier_name') = ?4)"
+         WHERE json_extract(je.value,'$.supplier_id') = ?2 OR json_extract(je.value,'$.supplier_name') = ?3)"
     } else {
         "i.client_id = ?2"
     };
-    let sql = format!(
+    // The roles that are this party's own side of a deal. The tagged leg takes
+    // every role; this one must not, because here the person is inferred from the
+    // deal and nothing else. One $279,500 supplier wire in this ledger is split
+    // across seven deals belonging to four different clients — with every role it
+    // would show, in full, on all four of those client profiles.
+    let own_roles = if is_supplier {
+        "('supplier_payment','refund_in')"
+    } else {
+        "('buyer_payment','refund_out')"
+    };
+    // The same three method fields `list_bank_txns` selects, read off the same
+    // columns, so a transaction cannot say "wire" on the ledger and something else
+    // on the profile. `json_valid` guards the extract — a bare json_extract over an
+    // empty raw_json threw and blanked the whole financials screen in v0.15.116.
+    let method_cols = "COALESCE(t.confirmed_method,''), COALESCE(t.rail,''), \
+                       CASE WHEN json_valid(t.raw_json) THEN json_extract(t.raw_json,'$.pm.payment_method') END";
+    format!(
+        // Leg 1 — tagged to this person. Identity is settled, so the allocation
+        // join is NOT filtered by role: a refund or a fee on their deal is booked
+        // money. Whether the deal is theirs is decided by `mine`, not by the join.
         "SELECT t.id, COALESCE(t.posted_at,''), t.amount, t.direction, COALESCE(t.description,''), \
                 COALESCE(t.counterparty_name,''), COALESCE(a.deal_flow_id,''), COALESCE(a.role,''), \
-                COALESCE(i.number,''), COALESCE(c.name,''), 1 AS tagged, 1 AS src \
+                COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(a.id,''), COALESCE(a.amount,0), \
+                CASE WHEN a.id IS NOT NULL AND ({leg_match}) THEN 1 ELSE 0 END AS mine, 1 AS tagged, \
+                {method_cols} \
          FROM bank_txn t \
-         LEFT JOIN bank_allocation a ON a.bank_txn_id = t.id AND a.role = ?3 \
-         LEFT JOIN deal_flows df ON a.deal_flow_id = df.id \
-         LEFT JOIN invoices i ON df.invoice_id = i.id \
-         LEFT JOIN clients c ON i.client_id = c.id \
+         LEFT JOIN bank_allocation a ON a.bank_txn_id = t.id \
+         LEFT JOIN deal_flows df ON df.id = a.deal_flow_id \
+         LEFT JOIN invoices i ON i.id = df.invoice_id \
+         LEFT JOIN clients c ON c.id = i.client_id \
          WHERE t.counterparty_type = ?1 AND t.counterparty_id = ?2 \
          UNION ALL \
          SELECT t.id, COALESCE(t.posted_at,''), t.amount, t.direction, COALESCE(t.description,''), \
                 COALESCE(t.counterparty_name,''), COALESCE(a.deal_flow_id,''), COALESCE(a.role,''), \
-                COALESCE(i.number,''), COALESCE(c.name,''), 0 AS tagged, 2 AS src \
+                COALESCE(i.number,''), COALESCE(c.name,''), COALESCE(a.id,''), COALESCE(a.amount,0), \
+                1 AS mine, 0 AS tagged, \
+                {method_cols} \
          FROM bank_allocation a \
-         JOIN bank_txn t ON a.bank_txn_id = t.id \
-         JOIN deal_flows df ON a.deal_flow_id = df.id \
-         LEFT JOIN invoices i ON df.invoice_id = i.id \
-         LEFT JOIN clients c ON i.client_id = c.id \
-         WHERE a.role = ?3 AND ({leg_match}) \
-         ORDER BY posted_at DESC, src DESC LIMIT 100"
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows: Vec<(String, String, f64, String, String, String, String, String, String, String, bool, i64)> = if is_supplier {
-        stmt.query_map(rusqlite::params![tag_type, id, role, name], |r| Ok((
-            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
-        ))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect()
-    } else {
-        stmt.query_map(rusqlite::params![tag_type, id, role], |r| Ok((
-            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
-        ))).map_err(|e| e.to_string())?.filter_map(|x| x.ok()).collect()
+         JOIN bank_txn t ON t.id = a.bank_txn_id \
+         JOIN deal_flows df ON df.id = a.deal_flow_id \
+         LEFT JOIN invoices i ON i.id = df.invoice_id \
+         LEFT JOIN clients c ON c.id = i.client_id \
+         WHERE a.role IN {own_roles} AND ({leg_match})"
+    )
+}
+
+/// Payment history for a supplier or client (R-150, R-156/W1-d), in the three
+/// states the profile must keep apart: booked to a deal that is genuinely
+/// theirs, booked to somebody else's deal, or tagged to them and booked nowhere.
+///
+/// `deal_is_theirs` is derived by joining the allocation's deal back to the
+/// party — invoice → client for a client, the flow's supplier legs for a
+/// supplier. An allocation on its own only ever says "booked", never "booked to
+/// them" (R-157/F2), and a role that is not the profile's own side is still
+/// booked money, not money that counts towards nothing (R-157/F3).
+///
+/// `booked_amount` is the part of the transaction that actually sits on their
+/// deals; it is smaller than `amount` when one payment was split across deals.
+///
+/// `confirmed_method`, `rail` and `bank_method` ride along so the profile reads a
+/// method exactly the way the ledger does (R-157/F1). Without them the profile
+/// fell back to the memo and told Jack a different answer than Financials for the
+/// same transaction, and its "you confirmed" count could only ever be zero.
+///
+/// One row per transaction. Read-only, and nothing here feeds a money total.
+fn counterparty_payment_rows(conn: &rusqlite::Connection, ctype: &str, id: &str, name: &str) -> Result<Vec<Value>, String> {
+    let (tag_type, is_supplier) = match ctype {
+        "supplier" => ("supplier", true),
+        "client" => ("client", false),
+        _ => return Err("ctype must be supplier or client".into()),
     };
-    // One row per transaction: the tagged-branch row (lower src) wins — it LEFT
-    // JOINs the allocation itself, so it already carries deal info when one exists
-    // — and a kept row inherits the tag flag from any tagged duplicate.
-    let mut best: std::collections::BTreeMap<String, (String, String, f64, String, String, String, String, String, String, String, bool, i64)> = Default::default();
-    for r in rows {
-        best.entry(r.0.clone())
-            .and_modify(|e| {
-                if r.11 < e.11 { *e = r.clone(); }
-                else if r.10 { e.10 = true; }
-            })
-            .or_insert(r);
+    let sql = counterparty_payments_sql(is_supplier);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    // Collected, never `filter_map(ok)`: a row that fails to map is schema drift,
+    // and a swallowed row here is a payment the profile silently stops showing.
+    let hits: Vec<CpHit> = if is_supplier {
+        stmt.query_map(rusqlite::params![tag_type, id, name], read_cp_hit)
+            .map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
+    } else {
+        stmt.query_map(rusqlite::params![tag_type, id], read_cp_hit)
+            .map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
+    };
+    let mut best: std::collections::BTreeMap<String, CpHit> = Default::default();
+    let mut tagged: std::collections::HashSet<String> = Default::default();
+    let mut booked: std::collections::HashMap<String, f64> = Default::default();
+    let mut summed: std::collections::HashSet<String> = Default::default();
+    for h in hits {
+        if h.tagged { tagged.insert(h.txn_id.clone()); }
+        // Both legs can return the same allocation; sum each one once.
+        if h.mine && !h.alloc_id.is_empty() && summed.insert(h.alloc_id.clone()) {
+            *booked.entry(h.txn_id.clone()).or_insert(0.0) += h.alloc_amount;
+        }
+        match best.entry(h.txn_id.clone()) {
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                if cp_rank(&h) > cp_rank(e.get()) { e.insert(h); }
+            }
+            std::collections::btree_map::Entry::Vacant(e) => { e.insert(h); }
+        }
     }
     // The map is keyed by txn id, so into_values() comes out id-ordered — re-sort
-    // newest first (RFC3339/YYYY-MM-DD strings compare correctly as text).
-    let mut kept: Vec<_> = best.into_values().collect();
-    kept.sort_by(|a, b| b.1.cmp(&a.1));
-    let out: Vec<Value> = kept.into_iter().map(|(txn_id, posted_at, amount, direction, description, counterparty_name, deal_flow_id, role, invoice_number, client_name, tagged, _)| json!({
-        "txn_id": txn_id, "posted_at": posted_at, "amount": amount, "direction": direction,
-        "description": description, "counterparty_name": counterparty_name,
-        "deal_flow_id": deal_flow_id, "role": role, "invoice_number": invoice_number,
-        "client_name": client_name, "tagged": tagged,
-    })).collect();
-    Ok(json!(out))
+    // newest first (RFC3339/YYYY-MM-DD strings compare correctly as text), then cap
+    // at 100 TRANSACTIONS, which is what the profile says it is showing.
+    let mut kept: Vec<CpHit> = best.into_values().collect();
+    kept.sort_by(|a, b| b.posted_at.cmp(&a.posted_at));
+    kept.truncate(100);
+    Ok(kept.into_iter().map(|h| json!({
+        "txn_id": h.txn_id, "posted_at": h.posted_at, "amount": h.amount, "direction": h.direction,
+        "description": h.description, "counterparty_name": h.counterparty_name,
+        "deal_flow_id": h.deal_flow_id, "role": h.role, "invoice_number": h.invoice_number,
+        "client_name": h.client_name, "tagged": tagged.contains(&h.txn_id),
+        "deal_is_theirs": h.mine, "booked_amount": r2(booked.get(&h.txn_id).copied().unwrap_or(0.0)),
+        "confirmed_method": h.confirmed_method, "rail": h.rail, "bank_method": h.bank_method,
+    })).collect())
+}
+
+#[tauri::command]
+pub async fn counterparty_payments(ctype: String, id: String, name: String) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    Ok(json!(counterparty_payment_rows(&conn, &ctype, &id, &name)?))
 }
 
 /// The transactions tagged to one loan, plus received / repaid totals (kind is
@@ -17400,7 +17770,7 @@ mod payout_tests {
 
 #[cfg(test)]
 mod review_cols_tests {
-    use super::{review_cols, REVIEW_UPDATE_SQL};
+    use super::{review_cols, valid_method, REVIEW_UPDATE_SQL};
 
     fn s(v: &str) -> Option<String> { Some(v.to_string()) }
     const NONE: Option<String> = None;
@@ -17411,7 +17781,7 @@ mod review_cols_tests {
     // device would then win with reviewed=0 and un-book it.
     #[test]
     fn category_save_cannot_touch_reviewed() {
-        let cols = review_cols(&s("supplier_payment"), &NONE, &NONE, &NONE, None, "T").unwrap();
+        let cols = review_cols(&s("supplier_payment"), &NONE, &NONE, &NONE, &NONE, None, "T").unwrap();
         assert!(!cols.contains_key("reviewed"), "category save must never emit reviewed");
         let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
         keys.sort();
@@ -17421,20 +17791,56 @@ mod review_cols_tests {
     // Jack's requirement: un-booking / re-classifying by hand must still work.
     #[test]
     fn explicit_unbook_emits_reviewed_alone() {
-        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, Some(0), "T").unwrap();
+        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, Some(0), "T").unwrap();
         let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
         keys.sort();
         assert_eq!(keys, vec!["reviewed", "updated_at"]);
         assert_eq!(cols["reviewed"], 0);
         // ...and booking it, which must not disturb the classification.
-        let booked = review_cols(&NONE, &NONE, &NONE, &NONE, Some(1), "T").unwrap();
+        let booked = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, Some(1), "T").unwrap();
         assert_eq!(booked["reviewed"], 1);
         assert!(!booked.contains_key("category"));
     }
 
     #[test]
     fn nothing_supplied_emits_nothing() {
-        assert!(review_cols(&NONE, &NONE, &NONE, &NONE, None, "T").is_none());
+        assert!(review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, None, "T").is_none());
+    }
+
+    // R-157/W2-c. Setting the payment method is the same per-column discipline:
+    // it names `confirmed_method` and nothing else, so confirming a wire on this
+    // device can never re-stamp `reviewed` or `category` and undo another device's
+    // booking.
+    //
+    // R-157/F1: the column named here is `confirmed_method`, NOT `rail`.
+    // `bank_import::classify` writes `rail` from a memo string-match on every
+    // statement parse path, so a human's answer written there would be
+    // indistinguishable from a machine's guess. Naming it in this map is also what
+    // makes it travel — an Upsert carries only the columns its caller names.
+    #[test]
+    fn method_save_emits_confirmed_method_alone() {
+        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &s("wire"), None, "T").unwrap();
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["confirmed_method", "updated_at"]);
+        assert_eq!(cols["confirmed_method"], "wire");
+        assert!(!cols.contains_key("rail"), "a human's answer must never be written into the machine's column");
+        // Clearing it back to unclassified is an explicit empty string, which is a
+        // real value — not an omission, which would mean "don't touch it".
+        let cleared = review_cols(&NONE, &NONE, &NONE, &NONE, &s(""), None, "T").unwrap();
+        assert_eq!(cleared["confirmed_method"], "");
+    }
+
+    // `confirmed_method` is a synced free-text column: an unvalidated write puts a
+    // typo on every device and the method filter then silently never matches it.
+    #[test]
+    fn only_known_methods_are_accepted() {
+        for m in ["wire", "ach", "zelle", "rtp", "check", "card", "cash", "transfer", ""] {
+            assert!(valid_method(m), "{m} must be a valid method");
+        }
+        assert!(!valid_method("Wire"), "the stored value is lowercase");
+        assert!(!valid_method("fedwire"));
+        assert!(!valid_method("wire "));
     }
 
     // The local write must agree with the event: re-classifying leaves the row
@@ -17443,35 +17849,55 @@ mod review_cols_tests {
     fn coalesce_update_leaves_unsupplied_columns_alone() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
+            // `confirmed_method` is nullable here exactly as migration 78 declares it —
+            // a NOT NULL would be a partial-upsert hazard (sync-engine §10.1/§10.2).
             "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '',
                counterparty_name TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '',
-               counterparty_id TEXT NOT NULL DEFAULT '', reviewed INTEGER NOT NULL DEFAULT 0,
-               updated_at TEXT NOT NULL DEFAULT '');
-             INSERT INTO bank_txn (id,category,counterparty_name,reviewed) VALUES ('t1','wire_fee','ACME',1);",
+               counterparty_id TEXT NOT NULL DEFAULT '', rail TEXT NOT NULL DEFAULT '',
+               confirmed_method TEXT,
+               reviewed INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '');
+             INSERT INTO bank_txn (id,category,counterparty_name,rail,confirmed_method,reviewed)
+               VALUES ('t1','wire_fee','ACME','ach','wire',1);",
         ).unwrap();
 
-        // Re-classify only — reviewed and counterparty_name must survive.
+        // Re-classify only — reviewed, counterparty_name and the confirmed method
+        // must survive.
         conn.execute(
             REVIEW_UPDATE_SQL,
-            rusqlite::params![s("supplier_payment"), NONE, NONE, NONE, None::<i64>, "T2", "t1"],
+            rusqlite::params![s("supplier_payment"), NONE, NONE, NONE, NONE, None::<i64>, "T2", "t1"],
         ).unwrap();
-        let (cat, name, rev): (String, String, i64) = conn
-            .query_row("SELECT category,counterparty_name,reviewed FROM bank_txn WHERE id='t1'", [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        let (cat, name, confirmed, rail, rev): (String, String, String, String, i64) = conn
+            .query_row("SELECT category,counterparty_name,confirmed_method,rail,reviewed FROM bank_txn WHERE id='t1'", [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
         assert_eq!(cat, "supplier_payment");
         assert_eq!(name, "ACME", "an untouched field must not be blanked");
+        assert_eq!(confirmed, "wire", "a confirmed payment method must survive a re-classify");
+        assert_eq!(rail, "ach", "the importer's guess is not the human's answer and is never overwritten by it");
         assert_eq!(rev, 1, "re-classifying must not un-book the transaction");
 
         // Explicit un-book — clears the flag, keeps the new classification.
         conn.execute(
             REVIEW_UPDATE_SQL,
-            rusqlite::params![NONE, NONE, NONE, NONE, Some(0i64), "T3", "t1"],
+            rusqlite::params![NONE, NONE, NONE, NONE, NONE, Some(0i64), "T3", "t1"],
         ).unwrap();
         let (cat2, rev2): (String, i64) = conn
             .query_row("SELECT category,reviewed FROM bank_txn WHERE id='t1'", [],
                 |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(cat2, "supplier_payment");
         assert_eq!(rev2, 0);
+
+        // Correcting the method by hand writes ONLY confirmed_method (R-157/W2-c),
+        // and leaves the importer's `rail` guess exactly where it was (R-157/F1).
+        conn.execute(
+            REVIEW_UPDATE_SQL,
+            rusqlite::params![NONE, NONE, NONE, NONE, s("zelle"), None::<i64>, "T4", "t1"],
+        ).unwrap();
+        let (confirmed2, rail3, cat3): (String, String, String) = conn
+            .query_row("SELECT confirmed_method,rail,category FROM bank_txn WHERE id='t1'", [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(confirmed2, "zelle");
+        assert_eq!(rail3, "ach", "setting a method must not touch the importer's guess");
+        assert_eq!(cat3, "supplier_payment", "setting a method must not touch the category");
     }
 }
 
@@ -17578,5 +18004,369 @@ mod settle_twin_tests {
         // The v0.15.116 guard: empty raw_json must not throw.
         assert!(found("btpl_legacy", "CONN1", "Amex ··1004"),
             "a row with raw_json='' must resolve by account_id without throwing");
+    }
+}
+
+#[cfg(test)]
+mod counterparty_payment_tests {
+    use super::{counterparty_payment_rows, counterparty_payments_sql};
+    use serde_json::Value;
+
+    /// A ledger shaped like the live one: two clients, two suppliers, and the
+    /// four cases the profile has to tell apart. The amounts and invoice numbers
+    /// are the real rows this fix was verified against.
+    fn ledger() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE clients (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+            CREATE TABLE invoices (id TEXT PRIMARY KEY, number TEXT NOT NULL DEFAULT '',
+              client_id TEXT NOT NULL DEFAULT '');
+            CREATE TABLE deal_flows (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL DEFAULT '',
+              supplier_payments_json TEXT NOT NULL DEFAULT '');
+            -- `confirmed_method` is nullable exactly as migration 78 declares it, and
+            -- raw_json holds '' on real rows — both are what the query has to survive.
+            CREATE TABLE bank_txn (id TEXT PRIMARY KEY, posted_at TEXT NOT NULL DEFAULT '',
+              amount REAL NOT NULL DEFAULT 0, direction TEXT NOT NULL DEFAULT '',
+              description TEXT NOT NULL DEFAULT '', counterparty_name TEXT NOT NULL DEFAULT '',
+              counterparty_type TEXT NOT NULL DEFAULT '', counterparty_id TEXT NOT NULL DEFAULT '',
+              rail TEXT NOT NULL DEFAULT '', confirmed_method TEXT, raw_json TEXT NOT NULL DEFAULT '');
+            CREATE TABLE bank_allocation (id TEXT PRIMARY KEY, bank_txn_id TEXT NOT NULL DEFAULT '',
+              deal_flow_id TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0,
+              role TEXT NOT NULL DEFAULT '');
+
+            INSERT INTO clients VALUES ('cl_ali','Ali Rehman'), ('cl_dylan','Dylan Taylor');
+            INSERT INTO invoices VALUES ('inv_a','INV-0176','cl_ali'), ('inv_d','INV-0181','cl_dylan');
+            INSERT INTO deal_flows VALUES
+              ('deal_a','inv_a','[{"supplier_id":"sup_arabe","supplier_name":"ARABE LLC"}]'),
+              ('deal_d','inv_d','[{"supplier_id":"sup_todd","supplier_name":"Todd Yohman"}]');
+
+            -- A buyer payment on ALI's deal, tagged to DYLAN. Neither theirs-and-booked
+            -- nor un-booked: it is somebody else's deal.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_100k','2026-07-28',100000,'in','BOOK TRANSFER CREDIT B/O: TYTAN MARKET LLC','','client','cl_dylan');
+            INSERT INTO bank_allocation VALUES ('al_100k','txn_100k','deal_a',100000,'buyer_payment');
+
+            -- A refund back to the buyer on Ali's own deal. Not a buyer_payment, so
+            -- the shipped query returned it with no deal at all.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_63k','2026-06-26',63000,'out','ONLINE DOMESTIC WIRE TRANSFER','','client','cl_ali');
+            INSERT INTO bank_allocation VALUES ('al_63k','txn_63k','deal_a',63000,'refund_out');
+
+            -- One supplier wire split across two deals owned by two different clients.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_split','2026-07-29',279500,'out','ONLINE DOMESTIC WIRE TRANSFER','','client','cl_dylan');
+            INSERT INTO bank_allocation VALUES
+              ('al_split_a','txn_split','deal_a',181625,'supplier_payment'),
+              ('al_split_d','txn_split','deal_d',43620,'supplier_payment');
+
+            -- Tagged to Dylan, booked nowhere.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_plain','2026-08-01',5000,'in','ZELLE FROM DYLAN','','client','cl_dylan');
+
+            -- A wire fee on Ali's deal, tagged to nobody.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_fee','2026-06-09',25,'out','ONLINE DOMESTIC WIRE FEE','','','');
+            INSERT INTO bank_allocation VALUES ('al_fee','txn_fee','deal_a',25,'fee');
+
+            -- Tagged to a supplier and booked nowhere. The supplier leg reads the
+            -- flow's JSON, and this row reaches it with no allocation and so no
+            -- flow at all — json_each over that must not throw.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_sup_plain','2026-08-05',900,'out','WIRE TO ARABE','','supplier','sup_arabe');
+        "#).unwrap();
+        conn
+    }
+
+    fn rows(conn: &rusqlite::Connection, ctype: &str, id: &str, name: &str) -> Vec<Value> {
+        counterparty_payment_rows(conn, ctype, id, name).unwrap()
+    }
+    fn row<'a>(rows: &'a [Value], id: &str) -> &'a Value {
+        rows.iter().find(|r| r["txn_id"] == id)
+            .unwrap_or_else(|| panic!("{id} is missing from the payment history"))
+    }
+    fn has(rows: &[Value], id: &str) -> bool { rows.iter().any(|r| r["txn_id"] == id) }
+
+    /// The group the profile files a row under. MUST stay identical to the split
+    /// in PersonPayments.tsx — the caption there makes a different claim per group.
+    fn group(r: &Value) -> &'static str {
+        if r["deal_flow_id"].as_str().unwrap_or("").is_empty() { "tagged only" }
+        else if r["deal_is_theirs"].as_bool().unwrap_or(false) { "theirs" }
+        else { "someone else's" }
+    }
+
+    // R-157/F2. The allocation says the money is booked; only the deal says whose
+    // it is. A $100,000 buyer payment on Ali Rehman's #INV-0176, tagged to Dylan
+    // Taylor, must not read as booked to a deal of Dylan's.
+    #[test]
+    fn booked_means_a_deal_of_their_own() {
+        let conn = ledger();
+        let rs = rows(&conn, "client", "cl_dylan", "Dylan Taylor");
+        let r = row(&rs, "txn_100k");
+        assert_eq!(group(r), "someone else's");
+        assert_eq!(r["deal_is_theirs"], false);
+        assert_eq!(r["tagged"], true);
+        // The row has to name the deal it really belongs to, or the label is a
+        // claim the reader cannot check.
+        assert_eq!(r["deal_flow_id"], "deal_a");
+        assert_eq!(r["invoice_number"], "INV-0176");
+        assert_eq!(r["client_name"], "Ali Rehman");
+        assert_eq!(r["booked_amount"].as_f64().unwrap(), 0.0, "none of it sits on a deal of theirs");
+        // ...and it is nowhere near the group whose caption says the deal already
+        // counts this money.
+        let theirs_in: f64 = rs.iter().filter(|r| group(r) == "theirs" && r["direction"] == "in")
+            .map(|r| r["amount"].as_f64().unwrap()).sum();
+        assert_eq!(theirs_in, 0.0, "$100,000 of Ali's money must not land in Dylan's booked total");
+    }
+
+    // R-157/F3. Every allocation role on their OWN deal is booked money. A refund
+    // to the buyer is not a buyer_payment, and the shipped query answered that by
+    // returning no deal — which filed $63,000 under "counts towards nothing".
+    #[test]
+    fn every_role_on_their_own_deal_counts_as_booked() {
+        let conn = ledger();
+        let rs = rows(&conn, "client", "cl_ali", "Ali Rehman");
+        let r = row(&rs, "txn_63k");
+        assert_eq!(group(r), "theirs");
+        assert_eq!(r["role"], "refund_out");
+        assert_eq!(r["deal_flow_id"], "deal_a");
+        assert_eq!(r["booked_amount"].as_f64().unwrap(), 63000.0);
+
+        // The same transaction reached without a tag: the discovery leg carries the
+        // party's own side of the deal, refunds included.
+        conn.execute("UPDATE bank_txn SET counterparty_type='', counterparty_id='' WHERE id='txn_63k'", []).unwrap();
+        let untagged = rows(&conn, "client", "cl_ali", "Ali Rehman");
+        assert_eq!(group(row(&untagged, "txn_63k")), "theirs");
+        assert_eq!(row(&untagged, "txn_63k")["tagged"], false);
+
+        // But it does NOT carry money that is somebody else's side of their deal.
+        // A supplier wire split over several clients' deals would otherwise appear,
+        // in full, on every one of those client profiles.
+        assert!(!has(&untagged, "txn_split"), "a supplier payment is not the client's money");
+        assert!(!has(&untagged, "txn_fee"), "a bank fee on their deal is not a payment of theirs");
+    }
+
+    // One payment, several deals. The row shows the whole transaction — it is a
+    // statement line — so it must also say how much of it landed on their deals,
+    // or the group's caption overstates by the rest.
+    #[test]
+    fn a_split_payment_reports_only_the_part_on_their_deals() {
+        let conn = ledger();
+        let dylan = row(&rows(&conn, "client", "cl_dylan", "Dylan Taylor"), "txn_split").clone();
+        assert_eq!(group(&dylan), "theirs");
+        assert_eq!(dylan["amount"].as_f64().unwrap(), 279500.0);
+        assert_eq!(dylan["booked_amount"].as_f64().unwrap(), 43620.0);
+
+        // The supplier side of the same wire, reached with no tag at all.
+        let arabe = rows(&conn, "supplier", "sup_arabe", "ARABE LLC");
+        let r = row(&arabe, "txn_split");
+        assert_eq!(group(r), "theirs");
+        assert_eq!(r["tagged"], false);
+        assert_eq!(r["booked_amount"].as_f64().unwrap(), 181625.0, "only the leg on a deal that names them");
+        // A supplier who is on neither deal sees none of it.
+        assert!(!has(&rows(&conn, "supplier", "sup_none", "Nobody"), "txn_split"));
+        // ...and a supplier row with no allocation at all still comes back, filed
+        // under the group that claims nothing about a deal.
+        assert_eq!(group(row(&arabe, "txn_sup_plain")), "tagged only");
+        assert_eq!(row(&arabe, "txn_sup_plain")["booked_amount"].as_f64().unwrap(), 0.0);
+    }
+
+    // Counted once: the three groups partition the list, so no payment can be read
+    // twice on one profile.
+    #[test]
+    fn every_payment_lands_in_exactly_one_group() {
+        let conn = ledger();
+        for (ctype, id, name) in [("client", "cl_dylan", "Dylan Taylor"), ("client", "cl_ali", "Ali Rehman"),
+                                  ("supplier", "sup_arabe", "ARABE LLC")] {
+            let rs = rows(&conn, ctype, id, name);
+            assert!(!rs.is_empty(), "{name} should have payments");
+            let mut ids: Vec<&str> = rs.iter().map(|r| r["txn_id"].as_str().unwrap()).collect();
+            let n = ids.len();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), n, "{name}: one row per transaction");
+            let counted: usize = ["theirs", "someone else's", "tagged only"].iter()
+                .map(|g| rs.iter().filter(|r| group(r) == *g).count()).sum();
+            assert_eq!(counted, n, "{name}: every row belongs to exactly one group");
+        }
+    }
+
+    // R-157/F1 on the profile. Jack sets "Zelle" by hand on a transaction whose memo
+    // says WIRE TRANSFER; the profile has to see the answer he gave, not re-guess it
+    // off the memo. Before this the query returned no method fields at all, so the
+    // two screens disagreed about the same transaction and the profile's "you
+    // confirmed" count could only ever be zero.
+    #[test]
+    fn the_profile_gets_the_method_a_human_confirmed() {
+        let conn = ledger();
+        conn.execute("UPDATE bank_txn SET confirmed_method='zelle', rail='wire' WHERE id='txn_63k'", []).unwrap();
+        let r = row(&rows(&conn, "client", "cl_ali", "Ali Rehman"), "txn_63k").clone();
+        assert_eq!(r["confirmed_method"], "zelle", "the human's answer reaches the profile");
+        // `rail` comes too, and comes SEPARATELY: it is the importer's memo guess, so
+        // the screen can only ever show it as likely. Handing it over as the method
+        // would launder a guess into a confirmation.
+        assert_eq!(r["rail"], "wire");
+        assert_eq!(r["bank_method"], Value::Null, "no institution supplies one; raw_json='' must not throw");
+
+        // The other leg carries them too — a row reached with no tag at all, through
+        // the supplier's own deal, must read identically.
+        conn.execute("UPDATE bank_txn SET rail='wire' WHERE id='txn_split'", []).unwrap();
+        let s = row(&rows(&conn, "supplier", "sup_arabe", "ARABE LLC"), "txn_split").clone();
+        assert_eq!(s["tagged"], false);
+        assert_eq!(s["rail"], "wire");
+        assert_eq!(s["confirmed_method"], "", "nobody answered this one");
+
+        // And the bank's own field, on the day an institution sends one.
+        conn.execute(r#"UPDATE bank_txn SET raw_json='{"pm":{"payment_method":"Fedwire"}}' WHERE id='txn_plain'"#, []).unwrap();
+        assert_eq!(row(&rows(&conn, "client", "cl_dylan", "Dylan Taylor"), "txn_plain")["bank_method"], "Fedwire");
+    }
+
+    // The shipped statement never ran at all: in a compound SELECT every ORDER BY
+    // term has to name an output column, and `COALESCE(t.posted_at,'')` names none,
+    // so `ORDER BY posted_at DESC` failed at prepare() and both profiles got an
+    // error string instead of a payment list.
+    #[test]
+    fn the_statement_prepares_on_both_branches() {
+        let conn = ledger();
+        for is_supplier in [false, true] {
+            conn.prepare(&counterparty_payments_sql(is_supplier))
+                .unwrap_or_else(|e| panic!("supplier={is_supplier} must prepare: {e}"));
+        }
+        let shipped_order_by = counterparty_payments_sql(false) + " ORDER BY posted_at DESC LIMIT 100";
+        assert!(conn.prepare(&shipped_order_by).is_err(),
+            "the ORDER BY the shipped code used still cannot prepare — the sort belongs in Rust");
+    }
+}
+
+#[cfg(test)]
+mod shipping_gate_tests {
+    use super::{carry_prev, gate_basis, norm_day, shipping_gate};
+
+    fn s(v: &str) -> Option<String> { Some(v.to_string()) }
+
+    #[test]
+    fn only_a_bare_day_is_accepted() {
+        assert_eq!(norm_day(s("2026-08-20")).unwrap(), s("2026-08-20"));
+        assert_eq!(norm_day(s("  2026-08-20  ")).unwrap(), s("2026-08-20"));
+        assert_eq!(norm_day(s("")).unwrap(), None);
+        assert_eq!(norm_day(s("   ")).unwrap(), None);
+        assert_eq!(norm_day(None).unwrap(), None);
+        // A datetime string-compares AFTER the same day, so it would let a deal
+        // complete a day early — refuse it where it can be seen instead.
+        assert!(norm_day(s("2026-08-20T00:00:00Z")).is_err());
+        assert!(norm_day(s("08/20/2026")).is_err());
+        assert!(norm_day(s("2026-8-20")).is_err());
+    }
+
+    #[test]
+    fn delivery_beats_pickup_as_the_gate_basis() {
+        assert_eq!(gate_basis(Some("2026-08-20"), Some("2026-08-22")),
+            Some(("2026-08-22".into(), "expected delivery")));
+        assert_eq!(gate_basis(Some("2026-08-20"), None),
+            Some(("2026-08-20".into(), "pickup")));
+        assert_eq!(gate_basis(Some("2026-08-20"), Some("")),
+            Some(("2026-08-20".into(), "pickup")));
+        assert_eq!(gate_basis(None, None), None);
+    }
+
+    #[test]
+    fn future_date_blocks_and_today_or_earlier_does_not() {
+        let today = "2026-08-17";
+        assert!(shipping_gate(false, Some("2026-08-20"), None, today).is_some(), "future pickup blocks");
+        assert!(shipping_gate(false, None, Some("2026-08-18"), today).is_some(), "future delivery blocks");
+        assert!(shipping_gate(false, Some("2026-08-17"), None, today).is_none(), "today has arrived");
+        assert!(shipping_gate(false, Some("2026-08-12"), None, today).is_none(), "past date is clear");
+        // Delivery is the basis, so an already-passed pickup does NOT unblock a
+        // deal whose goods have not landed.
+        assert_eq!(shipping_gate(false, Some("2026-08-12"), Some("2026-08-22"), today),
+            Some(("2026-08-22".into(), "expected delivery")));
+    }
+
+    #[test]
+    fn ships_direct_and_no_date_at_all_are_never_gated() {
+        let today = "2026-08-17";
+        assert!(shipping_gate(true, Some("2026-12-31"), Some("2026-12-31"), today).is_none(),
+            "ships direct is the explicit no-pickup answer — never gated");
+        assert!(shipping_gate(false, None, None, today).is_none(),
+            "an unanswered date must not block, or people type fake ones");
+        assert!(shipping_gate(false, Some(""), Some(""), today).is_none());
+    }
+
+    #[test]
+    fn a_reschedule_keeps_what_it_replaced() {
+        // Slip: Aug 12 → Aug 20, prev remembers Aug 12.
+        assert_eq!(carry_prev(Some("2026-08-12"), None, Some("2026-08-20")), s("2026-08-12"));
+        // Slipping again overwrites prev with the date actually replaced.
+        assert_eq!(carry_prev(Some("2026-08-20"), Some("2026-08-12"), Some("2026-08-25")), s("2026-08-20"));
+        // Clearing keeps the old date too — nothing a reschedule replaces is lost.
+        assert_eq!(carry_prev(Some("2026-08-20"), None, None), s("2026-08-20"));
+        // Setting a date for the first time invents no history.
+        assert_eq!(carry_prev(None, None, Some("2026-08-20")), None);
+        // Re-saving the same date must not overwrite prev with itself.
+        assert_eq!(carry_prev(Some("2026-08-20"), Some("2026-08-12"), Some("2026-08-20")), s("2026-08-12"));
+        // And an unrelated edit while the date is blank keeps the history it had.
+        assert_eq!(carry_prev(None, Some("2026-08-12"), None), s("2026-08-12"));
+    }
+}
+
+#[cfg(test)]
+mod shipping_metadata_tests {
+    use super::shipped_deal_metadata;
+    use serde_json::Value;
+
+    /// One deal flow holding the blob a real one holds. `gate_overrides` is the
+    /// shape `complete_deal_flow` appends; `refund_done` is live today on deal
+    /// flow 4cf120bf (INV-0163), whose whole metadata is `{"refund_done":true}`.
+    fn flow_with(meta: &str) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE deal_flows (id TEXT PRIMARY KEY, metadata TEXT);",
+        ).unwrap();
+        conn.execute("INSERT INTO deal_flows (id, metadata) VALUES ('df1', ?1)", [meta]).unwrap();
+        conn
+    }
+
+    const OVERRIDDEN: &str = r#"{"payout_included":true,"refund_done":true,"gate_overrides":[
+        {"at":"2026-08-15T14:02:11Z","by":"Jack","by_id":"u_jack",
+         "blocked_until":"2026-08-22","basis":"expected delivery","reason":"buyer took it off the dock early"}]}"#;
+
+    #[test]
+    fn shipping_completion_keeps_the_override_history() {
+        let conn = flow_with(OVERRIDDEN);
+        let out: Value = serde_json::from_str(&shipped_deal_metadata(&conn, "df1").unwrap()).unwrap();
+
+        // What the write is for.
+        assert_eq!(out["shipping_status"], "shipped");
+        // What it must never cost. `complete_deal_flow` reads gate_overrides out of
+        // this blob AFTER this write, so an emptied blob is an erased audit trail.
+        let ov = out["gate_overrides"].as_array().expect("gate_overrides survived");
+        assert_eq!(ov.len(), 1);
+        assert_eq!(ov[0]["reason"], "buyer took it off the dock early");
+        assert_eq!(ov[0]["blocked_until"], "2026-08-22");
+        assert_eq!(ov[0]["by"], "Jack");
+        // And the rest of the blob with it — a refunded deal must not walk back
+        // into the active pipeline because someone confirmed delivery.
+        assert_eq!(out["refund_done"], true);
+        assert_eq!(out["payout_included"], true);
+    }
+
+    #[test]
+    fn a_second_shipping_save_is_idempotent_and_still_additive() {
+        let conn = flow_with(OVERRIDDEN);
+        let first = shipped_deal_metadata(&conn, "df1").unwrap();
+        conn.execute("UPDATE deal_flows SET metadata=?1 WHERE id='df1'", [&first]).unwrap();
+        let second: Value = serde_json::from_str(&shipped_deal_metadata(&conn, "df1").unwrap()).unwrap();
+        assert_eq!(second["shipping_status"], "shipped");
+        assert_eq!(second["gate_overrides"].as_array().unwrap().len(), 1, "no duplication, no loss");
+        assert_eq!(second["refund_done"], true);
+    }
+
+    #[test]
+    fn an_empty_or_broken_blob_still_writes_the_status() {
+        // NULL, '' and malformed JSON all reach this on real rows; none may throw,
+        // and none may be turned into a reason to skip the write.
+        for meta in ["", "{}", "not json", "[1,2,3]"] {
+            let conn = flow_with(meta);
+            let out: Value = serde_json::from_str(&shipped_deal_metadata(&conn, "df1").unwrap()).unwrap();
+            assert_eq!(out["shipping_status"], "shipped", "meta was {meta:?}");
+        }
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE deal_flows (id TEXT PRIMARY KEY, metadata TEXT);").unwrap();
+        conn.execute("INSERT INTO deal_flows (id, metadata) VALUES ('df1', NULL)", []).unwrap();
+        let out: Value = serde_json::from_str(&shipped_deal_metadata(&conn, "df1").unwrap()).unwrap();
+        assert_eq!(out["shipping_status"], "shipped");
     }
 }

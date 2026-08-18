@@ -822,6 +822,17 @@ export interface DealFlow {
   client_id: string | null;
   client_name: string | null;
   invoice_total: number;
+  /** Shipping lifecycle (R-154). pickup_date = when it leaves, expected_delivery_date
+   *  = when it lands. Bare 'YYYY-MM-DD' — parse with parseDay, never `new Date(s)`,
+   *  or it renders one day early in Central. */
+  pickup_date?: string | null;
+  expected_delivery_date?: string | null;
+  /** The explicit "no pickup / ships direct" answer — an empty date is an unanswered
+   *  question, this is the answer "there isn't one". */
+  ships_direct?: boolean;
+  /** What a reschedule replaced, so a slipped date does not rewrite history. */
+  pickup_date_prev?: string | null;
+  expected_delivery_date_prev?: string | null;
 }
 
 export interface BuyerTier {
@@ -1530,7 +1541,21 @@ export interface BankTxn {
   amount: number;
   direction: "in" | "out";
   description: string;
+  /** A MACHINE GUESS at the payment method, never a confirmation.
+   *  `bank_import::classify` string-matches the raw memo and persists `rail` on
+   *  every statement parse path (OFX, CSV, PDF); its own doc comment says "This is
+   *  a SUGGESTION only". Replaying it over the live ledger's 1,342 rows sets a
+   *  non-empty `rail` on 690 of them. So this may be shown as `likely` and must
+   *  NEVER be read as `certain` or taught to the payee memory — use
+   *  `confirmed_method` for that. */
   rail: string;
+  /** The payment method a HUMAN confirmed — one of BANK_METHODS, or "" for not
+   *  set. `set_bank_txn_review` is its only writer. Plaid supplies no payment_meta
+   *  for this institution (0 of 1,342 rows, measured 2026-08-17), so this is the
+   *  only certain answer the ledger holds. The memo classifier's guesses are
+   *  computed at read time and never written, which is what keeps "certain" and
+   *  "likely" apart. */
+  confirmed_method: string;
   category: string;
   counterparty_name: string;
   counterparty_type: string;
@@ -1543,11 +1568,19 @@ export interface BankTxn {
   unallocated: number;
   balance?: number | null;      // running balance — populated for statement imports, not Plaid
   posted_dt?: string | null;    // exact timestamp from the bank when available (Plaid datetime)
+  /** The bank's OWN payment method from raw_json.pm.payment_method, when it sends
+   *  one. Null on every row today (Plaid sends no payment_meta for this
+   *  institution) — read anyway so the method facet is field-first the day some
+   *  institution starts supplying it. */
+  bank_method?: string | null;
 }
 /// The fields a review save may change. Every one is optional because a save
 /// sends only what the user actually edited (see setBankTxnReview).
+/// `confirmed_method` is the human's payment method (R-157) — see BankMethod.
+/// `rail` is deliberately NOT here: it is the importer's guess and no UI action
+/// may overwrite it, or a guess and an answer become indistinguishable again.
 export type BankTxnReviewPatch = Partial<
-  Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "reviewed">
+  Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "confirmed_method" | "reviewed">
 >;
 export interface BankTxnSummary {
   total: number;
@@ -1802,6 +1835,22 @@ export interface BankSuggestCandidate {
   invoice_number: string;
   invoice_total: number;
   leg_amount: number;
+  score: number;
+  tier: "certain" | "strong" | "weak";
+  reason: string;
+}
+
+/// A PERSON the server thinks a transaction belongs to (R-156/W1-b) — the same
+/// name match that nominates a deal, read as a party instead. Returned alongside
+/// `candidates` on /api/bank/suggestions, additively: a server that predates
+/// deploy-41 simply omits it and the picker falls back to search.
+///
+/// Identity, never accounting. Applying one writes counterparty_type/id and
+/// moves no money figure. Never auto-applied — R-150's locked decision.
+export interface BankPersonCandidate {
+  type: "client" | "supplier";
+  id: string;
+  name: string;
   score: number;
   tier: "certain" | "strong" | "weak";
   reason: string;
@@ -2100,8 +2149,17 @@ export const api = {
     invoke<void>("unmark_supplier_payment_paid", { id, paymentId }),
   setSupplierPaymentKept: (id: string, paymentId: string, kept: boolean) =>
     invoke<void>("set_supplier_payment_kept", { id, paymentId, kept }),
-  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean) =>
-    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded }),
+  /** R-154 shipping lifecycle. Writes all five deal_flows columns in one upsert,
+   *  and keeps the value a reschedule replaced in the matching `*_prev` column.
+   *  Returns the refreshed deal. */
+  setDealFlowShipping: (
+    id: string, pickupDate: string | null, expectedDeliveryDate: string | null, shipsDirect: boolean,
+  ) => invoke<DealFlow>("set_deal_flow_shipping", { id, pickupDate, expectedDeliveryDate, shipsDirect }),
+  /** `overrideReason` is required only when the R-154 gate blocks — completing
+   *  before the expected delivery (or, unset, the pickup) date. It is recorded on
+   *  the deal with who overrode it and when. */
+  completeDealFlow: (id: string, shippingStatus?: string | null, completedDate?: string | null, payoutIncluded?: boolean, overrideReason?: string | null) =>
+    invoke<CompleteDealResult>("complete_deal_flow", { id, shippingStatus, completedDate, payoutIncluded, overrideReason }),
   uncompleteDealFlow: (id: string) => invoke<void>("uncomplete_deal_flow", { id }),
   recalcDealFromBank: (id: string) => invoke<any>("recalc_deal_from_bank", { id }),
   cleanupOrphanAllocations: () => invoke<number>("cleanup_orphan_allocations"),
@@ -2469,6 +2527,7 @@ export const api = {
       counterpartyName: patch.counterparty_name,
       counterpartyType: patch.counterparty_type,
       counterpartyId: patch.counterparty_id,
+      confirmedMethod: patch.confirmed_method,
       reviewed: patch.reviewed,
     }),
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>
@@ -2551,8 +2610,20 @@ export const api = {
   // transactions against deals (names, amounts, dates, invoice-number-in-memo) and
   // returns ranked candidates per txn. `source: "local"` means the server was
   // unreachable — the UI keeps its own matcher. Nothing here books money.
+  // `counterparty_candidates` (R-156/W1-b) names the PERSON rather than the deal,
+  // so a payment that belongs to nobody's deal can still be tagged. Optional: a
+  // server older than deploy-41 omits it and the person picker falls back to
+  // searching clients/suppliers by hand.
   suggestBankTxnLinks: () =>
-    invoke<{ suggestions: { txn_id: string; candidates: BankSuggestCandidate[] }[]; source?: "server" | "local" }>("suggest_bank_txn_links"),
+    invoke<{
+      suggestions: {
+        txn_id: string;
+        candidates: BankSuggestCandidate[];
+        counterparty?: BankPersonCandidate | null;
+        counterparty_candidates?: BankPersonCandidate[];
+      }[];
+      source?: "server" | "local";
+    }>("suggest_bank_txn_links"),
   // `checked`/`truncated` describe scan scope: the server caps at the 30 newest
   // completed deals and flags when older ones were left unscanned. Optional —
   // an old server omits both, which means not truncated.

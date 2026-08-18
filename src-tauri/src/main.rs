@@ -701,6 +701,7 @@ fn main() {
             update_deal_completed_at,
             update_deal_flow_notes,
             update_deal_flow_name,
+            set_deal_flow_shipping,
             delete_deal_flow,
             set_deal_flow_fell_through,
             // Archive (soft-delete + fell-through) + restore
