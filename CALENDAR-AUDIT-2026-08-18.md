@@ -113,6 +113,7 @@ Fix: add one calendar month, clamp the day (Jan 31 → Feb 28). Weekly (+7d) is 
 
 - **D-1 Server timezone**: the droplet serves the PWA; "this month" there needs a timezone. Options: hardcode America/Chicago (simple, right for BJM; wrong for future multi-tenant), or have the PWA always send its local date (right long-term; touches every call site). Recommendation: hardcode Central now via one shared helper, noted for SaaS revisit.
 - **D-2 Historical data**: rows whose `completed_at`/`paid_at` were UTC-evening-stamped sit in the wrong month today (R-131's $47,920 case). Fixing the filters does not move them. Backfill/re-derive is a separate, data-touching job — propose auditing counts first.
+  **[CORRECTED 2026-08-19, measured against the live DB]:** mostly moot — all 36 completed deals with a buyer bank leg already have `completed_at` == the leg's bank date (repaired by a 2026-08-12 "Sync from bank" pass; the $47,920 case is FIXED — do not re-quote it). Only residue: `posted_at` rows UTC-stamped within hours of a month boundary, a handful at most. No book-wide migration.
 - **D-3 Rolling filters labeled in days**: "Last 7 days" etc. are honest. Keep them rolling (recommended — aging/staleness is inherently rolling), or convert to calendar blocks too?
 - **D-4 Monthly recurrence day**: calendar-month advance clamps Jan 31 → Feb 28. OK?
 
