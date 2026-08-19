@@ -15,7 +15,7 @@ pub struct ManifestGroup {
 /// format is worthless if a mis-detected price column is wrong in silence.
 #[derive(Debug, Serialize)]
 pub struct ManifestDetection {
-    /// "csv" | "tsv" | "xlsx" | "pdf" | "pdf (AI)"
+    /// "csv" | "tsv" | "xlsx" | "pdf" — with " (AI)" appended when Claude read it.
     pub format: String,
     /// Spreadsheet tab the rows were read from.
     pub sheet: Option<String>,
@@ -413,7 +413,195 @@ fn analyze_grid(grid: Grid) -> Result<ManifestAnalysis> {
     analyze_grid_with_margin(grid, avg_completed_margin())
 }
 
+/// Header-row analysis first; when the file simply has no header row, fall back to
+/// inferring which columns hold the description, quantity and price from the data
+/// itself. A manifest without headers still gets a breakdown — with the guess
+/// spelled out in the detection so it is never wrong in silence.
 fn analyze_grid_with_margin(grid: Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis> {
+    let had_header = find_header_row(&grid.rows).is_some();
+    let first_err = match analyze_rows(&grid, overall_margin_pct) {
+        Ok(a) => return Ok(a),
+        Err(e) => e,
+    };
+    // A file WITH a header row that still failed has a data problem — guessing
+    // columns over it would produce confident nonsense. Only headerless files
+    // fall through to inference.
+    if had_header {
+        return Err(first_err);
+    }
+    let Some(inf) = infer_columns(&grid.rows) else { return Err(first_err) };
+    let mut rows = vec![synthetic_header(false)];
+    for r in &grid.rows {
+        let cell = |i: usize| r.get(i).map(|s| s.trim().to_string()).unwrap_or_default();
+        let desc = cell(inf.desc);
+        if desc.is_empty() {
+            continue;
+        }
+        let qty = match inf.qty {
+            Some(i) => cell(i),
+            None => "1".to_string(),
+        };
+        rows.push(vec![desc, qty, cell(inf.price)]);
+    }
+    let col = |i: usize| format!("column {}", i + 1);
+    let inferred = format!(
+        "No header row — the columns were inferred from the data itself (description: {}, \
+         quantity: {}, price: {}). Check the totals against the file.",
+        col(inf.desc),
+        inf.qty.map(col).unwrap_or_else(|| "none found, 1 unit per line".to_string()),
+        col(inf.price)
+    );
+    let note = Some(match &grid.note {
+        Some(n) => format!("{} {}", n, inferred),
+        None => inferred,
+    });
+    let inferred_grid = Grid {
+        rows,
+        format: grid.format.clone(),
+        sheet: grid.sheet.clone(),
+        note,
+        header_in_file: false,
+    };
+    analyze_rows(&inferred_grid, overall_margin_pct).map_err(|_| first_err)
+}
+
+/// Columns picked out of the data itself for a file with no header row.
+struct InferredCols {
+    desc: usize,
+    qty: Option<usize>,
+    price: usize,
+}
+
+/// Work out which columns hold the description, quantity and price by looking at
+/// the data: the wordiest column is the description, and the numeric columns are
+/// read by shape — `qty × unit ≈ extended` pins all three at once, a whole-number
+/// column is a quantity, and a 12-digit column is a UPC, not money.
+fn infer_columns(rows: &[Vec<String>]) -> Option<InferredCols> {
+    #[derive(Default, Clone)]
+    struct Tally {
+        nonempty: usize,
+        numeric: usize,
+        ints: usize,
+        big: usize,
+        texty: usize,
+        alpha: usize,
+        sum: f64,
+    }
+
+    let data: Vec<&Vec<String>> = rows
+        .iter()
+        .filter(|r| r.iter().filter(|c| !c.trim().is_empty()).count() >= 2)
+        .take(500)
+        .collect();
+    if data.len() < 2 {
+        return None;
+    }
+    let ncols = data.iter().map(|r| r.len()).max()?;
+    let mut cols = vec![Tally::default(); ncols];
+    for r in &data {
+        for (i, t) in cols.iter_mut().enumerate() {
+            let c = r.get(i).map(|s| s.trim()).unwrap_or("");
+            if c.is_empty() {
+                continue;
+            }
+            t.nonempty += 1;
+            if let Some(v) = parse_money(c) {
+                t.numeric += 1;
+                t.sum += v;
+                if v.fract() == 0.0 {
+                    t.ints += 1;
+                }
+                if v.abs() >= 1e8 {
+                    t.big += 1; // UPC/EAN-sized — a barcode, not money or a count
+                }
+            } else {
+                let letters = c.chars().filter(|ch| ch.is_alphabetic()).count();
+                if letters >= 3 {
+                    t.texty += 1;
+                    t.alpha += letters;
+                }
+            }
+        }
+    }
+
+    // Description: most letters overall (not most rows), so a short brand column
+    // never beats the real description column.
+    let desc = (0..ncols)
+        .filter(|&i| cols[i].texty >= 2 && cols[i].texty * 2 > cols[i].nonempty)
+        .max_by_key(|&i| cols[i].alpha)?;
+
+    // Numeric candidates: mostly numbers, and not a column of barcodes.
+    let nums: Vec<usize> = (0..ncols)
+        .filter(|&i| {
+            i != desc
+                && cols[i].numeric >= 2
+                && cols[i].numeric * 2 > cols[i].nonempty
+                && cols[i].big * 2 < cols[i].numeric
+        })
+        .collect();
+    let mean = |c: usize| cols[c].sum / cols[c].numeric as f64;
+    let all_int = |c: usize| cols[c].ints == cols[c].numeric;
+
+    // `qty × unit ≈ extended` holding across the rows pins all three columns.
+    for a in 0..nums.len() {
+        for b in (a + 1)..nums.len() {
+            for &e in &nums {
+                let (i, j) = (nums[a], nums[b]);
+                if e == i || e == j {
+                    continue;
+                }
+                let (mut tried, mut hit) = (0usize, 0usize);
+                for r in &data {
+                    let get = |c: usize| r.get(c).and_then(|s| parse_money(s));
+                    if let (Some(x), Some(y), Some(z)) = (get(i), get(j), get(e)) {
+                        if x <= 0.0 || y <= 0.0 {
+                            continue;
+                        }
+                        tried += 1;
+                        if (x * y - z).abs() <= 0.02 * z.abs().max(1.0) {
+                            hit += 1;
+                        }
+                    }
+                }
+                if tried >= 2 && hit * 5 >= tried * 4 {
+                    // x·y = y·x, so the product can't say which one is the quantity —
+                    // whole numbers and the smaller average can.
+                    let (q, p) = match (all_int(i), all_int(j)) {
+                        (true, false) => (i, j),
+                        (false, true) => (j, i),
+                        _ if mean(i) <= mean(j) => (i, j),
+                        _ => (j, i),
+                    };
+                    return Some(InferredCols { desc, qty: Some(q), price: p });
+                }
+            }
+        }
+    }
+
+    match nums.len() {
+        0 => None,
+        1 => Some(InferredCols { desc, qty: None, price: nums[0] }),
+        _ => {
+            // A quantity is whole numbers with the smallest average.
+            let qty = nums
+                .iter()
+                .copied()
+                .filter(|&c| all_int(c) && mean(c) < 100_000.0)
+                .min_by(|&x, &y| mean(x).partial_cmp(&mean(y)).unwrap_or(std::cmp::Ordering::Equal));
+            match qty {
+                Some(q) => {
+                    let price = nums.iter().copied().filter(|&c| c != q).last()?;
+                    Some(InferredCols { desc, qty: Some(q), price })
+                }
+                // Two money columns and no whole-number one: the rightmost is the
+                // amount, and every line counts as 1 unit.
+                None => Some(InferredCols { desc, qty: None, price: *nums.last()? }),
+            }
+        }
+    }
+}
+
+fn analyze_rows(grid: &Grid, overall_margin_pct: f64) -> Result<ManifestAnalysis> {
     let header_idx = find_header_row(&grid.rows).ok_or_else(|| {
         anyhow::anyhow!(
             "Couldn't find the column names in this {}. It needs a row of headers with \
@@ -579,7 +767,7 @@ fn analyze_grid_with_margin(grid: Grid, overall_margin_pct: f64) -> Result<Manif
             .map(|h| h.trim().to_string())
             .filter(|h| !h.is_empty())
     };
-    let mut note = grid.note;
+    let mut note = grid.note.clone();
     if price_is_extended {
         let extra = "Price column holds an extended amount, so it was not multiplied by the quantity.";
         note = Some(match note {
@@ -596,8 +784,8 @@ fn analyze_grid_with_margin(grid: Grid, overall_margin_pct: f64) -> Result<Manif
     }
 
     let detection = ManifestDetection {
-        format: grid.format,
-        sheet: grid.sheet,
+        format: grid.format.clone(),
+        sheet: grid.sheet.clone(),
         // 1-based, and 0 for the synthesised PDF grids whose header is not in the file.
         header_row: if grid.header_in_file { header_idx + 1 } else { 0 },
         description_col: label(Some(desc_idx)),
@@ -652,11 +840,18 @@ async fn analyze_pdf(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
         }
     }
 
-    let (ai_rows, truncated) = crate::ai::extract_manifest(&text)
+    analyze_via_ai(&text, "pdf (AI)", None).await
+}
+
+/// Last resort for any format: have Claude read the raw text and return product
+/// lines. Used when a PDF's layout defeats the heuristic, and when a spreadsheet
+/// or CSV defeats both the header scan and column inference.
+async fn analyze_via_ai(text: &str, format_label: &str, sheet: Option<String>) -> Result<ManifestAnalysis> {
+    let (ai_rows, truncated) = crate::ai::extract_manifest(text)
         .await
-        .map_err(|e| anyhow::anyhow!("Couldn't read product lines out of this PDF's layout. {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Couldn't read product lines out of this document's layout. {}", e))?;
     if ai_rows.is_empty() {
-        anyhow::bail!("Read the PDF's text but found no product lines in it.");
+        anyhow::bail!("Read the document's text but found no product lines in it.");
     }
 
     let field = |v: &serde_json::Value, k: &str| -> String {
@@ -682,12 +877,12 @@ async fn analyze_pdf(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
         ]);
     }
 
-    let mut note = format!("Read by AI from the PDF's text — {} lines. Spot-check the totals against the document.", rows.len() - 1);
+    let mut note = format!("Read by AI from the document's text — {} lines. Spot-check the totals against the document.", rows.len() - 1);
     if truncated {
         note.push_str(" The document was longer than one pass could cover, so the tail was NOT read — totals are incomplete.");
     }
     let mut a = analyze_grid(Grid {
-        rows, format: "pdf (AI)".into(), sheet: None, note: Some(note), header_in_file: false,
+        rows, format: format_label.to_string(), sheet, note: Some(note), header_in_file: false,
     })?;
     // The AI is told to return a category only when the manifest states one, so an
     // empty column means the manifest had none — fall back to the keyword guess.
@@ -697,15 +892,33 @@ async fn analyze_pdf(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
     Ok(a)
 }
 
+/// Spreadsheets and delimited text: the grid path first (header scan, then column
+/// inference), and Claude as the last resort — an unrecognizable layout gets a
+/// breakdown instead of a refusal. `force_ai` skips straight to the AI read.
+async fn analyze_tabular(grid: Grid, force_ai: bool) -> Result<ManifestAnalysis> {
+    let flat: String = grid.rows.iter().map(|r| r.join("\t")).collect::<Vec<_>>().join("\n");
+    let label = format!("{} (AI)", grid.format);
+    let sheet = grid.sheet.clone();
+    if force_ai {
+        return analyze_via_ai(&flat, &label, sheet).await;
+    }
+    let err = match analyze_grid(grid) {
+        Ok(a) => return Ok(a),
+        Err(e) => e,
+    };
+    analyze_via_ai(&flat, &label, sheet)
+        .await
+        .map_err(|ai| anyhow::anyhow!("{} The AI fallback couldn't read it either: {}", err, ai))
+}
+
 /// Analyze a manifest in whatever form it arrived: CSV, TSV, plain text, Excel, or
-/// PDF. `force_ai` re-reads a PDF through Claude when the text-layer heuristic got
-/// it wrong.
+/// PDF. `force_ai` re-reads the file through Claude when the heuristics got it wrong.
 pub async fn analyze(path: &str, force_ai: bool) -> Result<ManifestAnalysis> {
     match extension(path).as_str() {
-        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => analyze_grid(grid_from_excel(path)?),
+        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => analyze_tabular(grid_from_excel(path)?, force_ai).await,
         "pdf" => analyze_pdf(path, force_ai).await,
         // csv / tsv / txt / tab / dat / no extension — all delimited text.
-        _ => analyze_grid(grid_from_delimited(path)?),
+        _ => analyze_tabular(grid_from_delimited(path)?, force_ai).await,
     }
 }
 
@@ -801,11 +1014,53 @@ Mixed apparel carton,24,1200.00\n";
     }
 
     #[test]
-    fn a_file_with_no_header_row_is_rejected_with_a_reason() {
+    fn a_file_of_bare_numbers_is_still_rejected_with_a_reason() {
+        // Nothing here can be a description, so inference must refuse too — turning
+        // pure figures into a confident breakdown would be worse than the error.
         let err = analyze_grid_with_margin(grid_from_text("4,5,6\n7,8,9\n").unwrap(), 30.0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("column names"), "err={}", err);
+    }
+
+    #[test]
+    fn a_headerless_manifest_is_inferred_from_the_data() {
+        // The R-160 file shape: no header row anywhere, straight into product lines.
+        let csv = "Apple AirPods Pro 2nd Gen,4,249.00\n\
+Nike Air Max 90 sz 10,2,130.00\n\
+Ninja Blender BN701,3,1099.50\n";
+        let a = analyze_csv(csv);
+        assert_eq!(a.detection.header_row, 0, "an inferred header is not in the file");
+        assert_eq!(a.total_items, 3);
+        assert_eq!(a.total_quantity, 9.0);
+        assert!((a.total_retail - 4554.50).abs() < 0.01, "retail={}", a.total_retail);
+        let note = a.detection.note.unwrap();
+        assert!(note.contains("inferred"), "note must say the columns were guessed: {}", note);
+    }
+
+    #[test]
+    fn headerless_inference_reads_upc_qty_unit_ext_by_shape() {
+        // A UPC column parses as a huge number — it must never be read as the price,
+        // and qty x unit = ext pins the three money columns.
+        let csv = "085911253007,Ninja Blender BN701,3,99.00,297.00\n\
+194512345678,Nike Air Max 90 sz 10,2,130.00,260.00\n";
+        let a = analyze_csv(csv);
+        assert_eq!(a.total_items, 2);
+        assert_eq!(a.total_quantity, 5.0);
+        assert!((a.total_retail - 557.0).abs() < 0.01, "retail={}", a.total_retail);
+    }
+
+    #[test]
+    fn a_headered_file_that_fails_on_data_is_not_guessed_over() {
+        // Header found but every price cell empty: the error must be the honest one —
+        // inference over a file like this would invent a price column.
+        let err = analyze_grid_with_margin(
+            grid_from_text("Description,Qty,Price\nBroken pallet,3,\nBent pallet,2,\n").unwrap(),
+            30.0,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no priced product lines"), "err={}", err);
     }
 
     #[test]
