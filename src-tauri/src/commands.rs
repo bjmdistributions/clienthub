@@ -8,6 +8,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
+/// R-159: every week/month boundary anchors on America/Chicago, never UTC.
+/// The UTC clock is already "tomorrow" from 6/7pm Central, which flipped
+/// "this week"/"this month" stats to the next (empty) period every evening.
+pub(crate) fn central_today() -> chrono::NaiveDate {
+    Utc::now().with_timezone(&chrono_tz::America::Chicago).date_naive()
+}
+
+/// Monday of the calendar week containing `central_today()` (weeks are Mon–Sun).
+pub(crate) fn central_week_start() -> chrono::NaiveDate {
+    let today = central_today();
+    today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)
+}
+
 // ============================================================
 //  Clients
 // ============================================================
@@ -1321,7 +1334,7 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     let total_clients: i64 = conn.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0)).unwrap_or(0);
     let total_invoices: i64 = conn.query_row("SELECT COUNT(*) FROM invoices WHERE COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0);
     let outstanding: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
-    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND issue_date >= ?1", [format!("{}-01-01",Utc::now().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
+    let paid_ytd: f64 = conn.query_row("SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND issue_date >= ?1", [format!("{}-01-01",central_today().format("%Y"))], |r| r.get(0)).unwrap_or(0.0);
     let pipeline_val: f64 = conn.query_row("SELECT COALESCE(SUM(asking_price),0) FROM deals WHERE stage NOT IN ('won','lost') AND COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0.0);
     let pipeline_cnt: i64 = conn.query_row("SELECT COUNT(*) FROM deals WHERE stage NOT IN ('won','lost') AND COALESCE(archived,0)=0", [], |r| r.get(0)).unwrap_or(0);
 
@@ -2945,24 +2958,19 @@ pub async fn generate_recurring_invoices() -> Result<u32, String> {
     Ok(count)
 }
 
+// R-159: "monthly" advances one CALENDAR month (day clamped, Jan 31 → Feb 28),
+// not +30 days — the fixed hop drifted the due day backwards every cycle.
 fn compute_next_recurring(current_date: &str, freq: &str) -> String {
     let dt = chrono::DateTime::parse_from_rfc3339(current_date).unwrap_or_else(|_| Utc::now().fixed_offset());
-    let next = match freq {
-        "monthly" => dt + chrono::Duration::days(30),
-        "quarterly" => dt + chrono::Duration::days(90),
-        "annually" => dt + chrono::Duration::days(365),
-        _ => dt + chrono::Duration::days(30),
-    };
+    let months = match freq { "quarterly" => 3, "annually" => 12, _ => 1 };
+    let next = dt.checked_add_months(chrono::Months::new(months)).unwrap_or(dt);
     next.to_rfc3339()
 }
 
 fn compute_next_due(freq: &str) -> String {
     let now = Utc::now();
-    let next = match freq {
-        "monthly" => now + chrono::Duration::days(30),
-        "quarterly" => now + chrono::Duration::days(90),
-        _ => now + chrono::Duration::days(30),
-    };
+    let months = match freq { "quarterly" => 3, _ => 1 };
+    let next = now.checked_add_months(chrono::Months::new(months)).unwrap_or(now);
     next.to_rfc3339()
 }
 
@@ -9094,7 +9102,7 @@ pub struct ProfitForecast {
 #[tauri::command]
 pub async fn get_profit_forecast() -> Result<ProfitForecast, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().date_naive();
+    let now = central_today();
     let month_start = format!("{}-01", now.format("%Y-%m"));
 
     let profit_mtd: f64 = conn.query_row(
@@ -9216,32 +9224,34 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         .query_row(
             "SELECT COALESCE(SUM(total),0) FROM invoices
              WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND issue_date >= ?1",
-            [format!("{}-01-01", Utc::now().format("%Y"))],
+            [format!("{}-01-01", central_today().format("%Y"))],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
 
+    // R-159: "this week" is the Mon–Sun calendar week (week-to-date), not rolling 7 days.
+    let week_start = central_week_start().format("%Y-%m-%d").to_string();
     let revenue_this_week: f64 = conn
         .query_row(
             "SELECT COALESCE(SUM(total),0) FROM invoices
-             WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND paid_at >= date('now', '-7 days')",
-            [],
+             WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND paid_at >= ?1",
+            [&week_start],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
 
     let clients_this_week: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM clients WHERE created_at >= date('now', '-7 days')",
-            [],
+            "SELECT COUNT(*) FROM clients WHERE created_at >= ?1",
+            [&week_start],
             |r| r.get(0),
         )
         .unwrap_or(0);
 
     let interactions_this_week: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM interactions WHERE created_at >= date('now', '-7 days')",
-            [],
+            "SELECT COUNT(*) FROM interactions WHERE created_at >= ?1",
+            [&week_start],
             |r| r.get(0),
         )
         .unwrap_or(0);
@@ -9337,7 +9347,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     let completed_this_month: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND strftime('%Y-%m', completed_at) = ?1",
-            [Utc::now().format("%Y-%m").to_string()], |r| r.get(0),
+            [central_today().format("%Y-%m").to_string()], |r| r.get(0),
         ).unwrap_or(0);
 
     let incomplete_shipping: i64 = conn
@@ -9399,15 +9409,15 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    let month_start = format!("{}-01", Utc::now().format("%Y-%m"));
+    let month_start = format!("{}-01", central_today().format("%Y-%m"));
 
     // Hero Revenue + Profit with [This month | All time] toggle + prev-month delta.
     // Revenue = PAID invoice totals (non-void, non-archived), month-matched on
     // paid_at with an issue_date fallback for old rows that never set paid_at.
     // Profit = completed deal_flows net_profit (non-archived) by completed_at.
-    let this_month = Utc::now().format("%Y-%m").to_string();
+    let this_month = central_today().format("%Y-%m").to_string();
     let prev_month = {
-        let now = Utc::now().date_naive();
+        let now = central_today();
         let (y, m) = (now.year(), now.month());
         if m == 1 { format!("{}-12", y - 1) } else { format!("{}-{:02}", y, m - 1) }
     };
@@ -10184,15 +10194,14 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let rep_join = rep_name.as_ref().map(|_| "JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id").unwrap_or("");
     let rep_filter = rep_name.as_ref().map(|r| { let e = r.replace('\'', "''"); format!(" AND (json_extract(c.metadata,'$.lead_representative')='{e}' OR json_extract(c.metadata,'$.source_rep')='{e}')") }).unwrap_or_default();
 
-    // Use caller-supplied date or today to anchor the week
+    // Use caller-supplied date or today (Central, R-159) to anchor the week
     let anchor: chrono::NaiveDate = match for_date.as_deref() {
-        Some(d) if !d.is_empty() => d.parse().unwrap_or_else(|_| Utc::now().date_naive()),
-        _ => Utc::now().date_naive(),
+        Some(d) if !d.is_empty() => d.parse().unwrap_or_else(|_| central_today()),
+        _ => central_today(),
     };
     let now_date = anchor;
 
-    // Brief period length is user-configurable (default weekly). The window is a
-    // rolling `period_days`-day span ending on the anchor day (inclusive).
+    // Brief period length is user-configurable (default weekly).
     let period_days: i64 = conn
         .query_row("SELECT value FROM settings WHERE key='brief_frequency_days'", [], |r| r.get::<_, String>(0))
         .ok()
@@ -10266,7 +10275,8 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         &margin_q(" AND df.completed_at >= ?1 AND df.completed_at < ?2"), [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
 
-    let month_start = format!("{}-01", now.format("%Y-%m"));
+    // Month stats follow the browsed anchor's calendar month (Central), not UTC-now.
+    let month_start = format!("{}-01", now_date.format("%Y-%m"));
 
     // Explicit margins per bucket (Jack's ask): calendar month + all-time.
     let avg_margin_this_month: f64 = conn.query_row(&margin_q(" AND df.completed_at >= ?1"), [&month_start], |r| r.get(0)).unwrap_or(0.0);
@@ -10414,11 +10424,11 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     };
 
     let new_clients_this_week: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM clients WHERE created_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+        "SELECT COUNT(*) FROM clients WHERE created_at >= ?1 AND created_at < ?2", [&week_start, &end_excl], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
 
     let interactions_this_week: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM interactions WHERE created_at >= ?1", [&week_start], |r| r.get::<_,i64>(0)
+        "SELECT COUNT(*) FROM interactions WHERE created_at >= ?1 AND created_at < ?2", [&week_start, &end_excl], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
 
     // Refunds on deals completed in the period (rep-filtered) — "deals that fell through".
@@ -11654,7 +11664,7 @@ pub async fn add_cash_transaction(
     }
     let dir = if direction == "out" { "out" } else { "in" };
     let date = if posted_at.trim().is_empty() {
-        Utc::now().format("%Y-%m-%d").to_string()
+        central_today().format("%Y-%m-%d").to_string()
     } else {
         posted_at
     };
@@ -15553,7 +15563,8 @@ fn nl_compute_next_run(from: chrono::DateTime<Utc>, interval_type: &str, interva
     let step = interval_value.max(1);
     let mut next = match interval_type {
         "daily" => from + chrono::Duration::days(step),
-        "monthly" => from + chrono::Duration::days(30 * step),
+        // R-159: calendar months (day clamped), not 30-day hops that drift.
+        "monthly" => from.checked_add_months(chrono::Months::new(step.min(120) as u32)).unwrap_or(from + chrono::Duration::days(30 * step)),
         _ => from + chrono::Duration::weeks(step),
     };
     let hour = send_hour.clamp(0, 23) as u32;

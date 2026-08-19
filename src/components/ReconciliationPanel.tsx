@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, AlertTriangle, Trash2, Plus, X, Search } from "lucide-react";
 import { api, DealFlow, DealAllocation, BankTxn } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 
 // ─── Payments & reconciliation ────────────────────────────────────────────
@@ -18,7 +18,7 @@ import { toast } from "./Toast";
 
 const fmtShortDate = (s?: string | null) => {
   if (!s) return "";
-  const d = new Date(s);
+  const d = parseLocalDay(s); // bank dates are bare YYYY-MM-DD — UTC parse rendered them a day early (R-159)
   return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 };
 
@@ -502,7 +502,7 @@ function ManualLineForm({ leg, busy, defaultWho, onAdd, onCancel }: {
   onCancel: () => void;
 }) {
   const [amt,  setAmt]  = useState("");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => localDay());
   const [who,  setWho]  = useState(defaultWho);
   const [note, setNote] = useState("");
   const val = parseFloat(amt);

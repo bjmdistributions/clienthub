@@ -7,7 +7,7 @@ import {
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
 } from "../lib/api";
-import { fmtAmount, primarySupplierLabel } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
@@ -812,7 +812,7 @@ function DealFlowCard({
           {/* Completed deals: date + which payment link (if any) is potentially missing */}
           {isComplete && flow.completed_at && (
             <span className="text-[11.5px] text-muted tabular-nums flex-shrink-0">
-              {new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+              {parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
             </span>
           )}
           {isComplete && reconStatus?.needs_review && (
@@ -873,7 +873,7 @@ function DealFlowCard({
                 <div className="mx-5 mt-1 mb-1 flex items-center justify-between gap-2 rounded-lg bg-success-bg/60 border border-success/30 px-3 py-2">
                   <div className="flex items-center gap-2 text-[12px] text-success-ink font-medium">
                     <CheckCircle2 size={13} />
-                    Completed{flow.completed_at ? ` ${new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""} — every section stays editable
+                    Completed{flow.completed_at ? ` ${parseLocalDay(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""} — every section stays editable
                   </div>
                   <button
                     onClick={() => setEditMode((v) => !v)}
@@ -1757,7 +1757,7 @@ function PanelComplete({ flow, onReload }: { flow: DealFlow; onReload: () => voi
   const [overrideReason, setOverrideReason] = useState("");
   const overrideReady = overrideReason.trim().length > 0;
   const gateBlocks    = !!gate && !(overrideOn && overrideReady);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = localDay();
   const [completedDate, setCompletedDate] = useState(todayStr);
   const [payoutIncluded, setPayoutIncluded] = useState(true);
   const [moneyLinked, setMoneyLinked] = useState(false);

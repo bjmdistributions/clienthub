@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, DashboardStats, FinancialsOverview } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay, localMonth, parseLocalDay } from "../lib/format";
 import { RefreshCw, FileDown, TrendingUp, TrendingDown } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -95,14 +95,16 @@ function useCountUp(target: number, duration = 900) {
 }
 
 // ─── Date presets ─────────────────────────────────────────────────
-const today = new Date().toISOString().slice(0, 10);
-const firstDayOfMonth = today.slice(0, 7) + "-01";
-const firstDayOfYear  = today.slice(0, 4) + "-01-01";
-const PRESETS = [
-  { label: "All time",    start: "", end: "" },
-  { label: "This year",   start: firstDayOfYear, end: today },
-  { label: "This month",  start: firstDayOfMonth, end: today },
-] as const;
+// R-159: local (Central) day, computed per call — the old module-level UTC
+// constants flipped "This month" to the next month on month-end evenings and
+// went stale if the app stayed open past midnight.
+const PRESETS = ["All time", "This year", "This month"] as const;
+function presetRange(label: string): { start: string; end: string } {
+  const today = localDay();
+  if (label === "This year") return { start: today.slice(0, 4) + "-01-01", end: today };
+  if (label === "This month") return { start: today.slice(0, 7) + "-01", end: today };
+  return { start: "", end: "" };
+}
 
 // ─── Main view ───────────────────────────────────────────────────
 export default function AnalyticsView() {
@@ -140,10 +142,11 @@ export default function AnalyticsView() {
   };
 
   const applyPreset = (p: typeof PRESETS[number]) => {
-    setPreset(p.label);
-    setStartDate(p.start);
-    setEndDate(p.end);
-    loadRange(p.start, p.end);
+    const { start, end } = presetRange(p);
+    setPreset(p);
+    setStartDate(start);
+    setEndDate(end);
+    loadRange(start, end);
   };
 
   const applyCustomRange = () => {
@@ -201,13 +204,15 @@ export default function AnalyticsView() {
   const monthlySource = rangeData?.monthly_profit ?? stats.monthly_profit;
   const monthly = monthlySource.map((m: any) => ({
     ...m,
-    month: new Date(m.month + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+    // R-159: local parse — new Date("YYYY-MM-01") is UTC midnight and labeled
+    // every bucket one month early when rendered in Central.
+    month: parseLocalDay(m.month).toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
   }));
 
   // Month-over-month movement for the lead stats — derived from data we already
   // have (monthly_profit). The in-progress current month is skipped: comparing a
   // half-finished month against a complete one always reads as a fake drop.
-  const curMonth = new Date().toISOString().slice(0, 7);
+  const curMonth = localMonth();
   const momSource = monthlySource.filter((m: any) => m.month !== curMonth);
   const momLast = momSource.length > 1 ? momSource[momSource.length - 1] : null;
   const momPrev = momSource.length > 1 ? momSource[momSource.length - 2] : null;
@@ -242,15 +247,15 @@ export default function AnalyticsView() {
           {/* Preset pills */}
           {PRESETS.map((p) => (
             <button
-              key={p.label}
+              key={p}
               onClick={() => applyPreset(p)}
               className={`px-3 h-8 rounded-lg text-[12px] font-medium transition-colors ${
-                preset === p.label
+                preset === p
                   ? "bg-accent text-on-accent"
                   : "bg-surface border border-line text-muted hover:border-accent hover:text-accent"
               }`}
             >
-              {p.label}
+              {p}
             </button>
           ))}
           {/* Custom range */}

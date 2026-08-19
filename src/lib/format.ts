@@ -45,6 +45,24 @@ export function primarySupplierLabel(
   return `${names[0]} +${names.length - 1}`;
 }
 
+/** Today as YYYY-MM-DD in LOCAL time (R-159). toISOString() is UTC — from
+ *  6/7pm Central it is already tomorrow, so evening defaults landed entries
+ *  on the wrong day (and, at month-end, in the wrong month). */
+export function localDay(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Current month as YYYY-MM in LOCAL time (R-159). */
+export const localMonth = (): string => localDay().slice(0, 7);
+
+/** Parse a bare YYYY-MM-DD or YYYY-MM at LOCAL midnight (R-159) —
+ *  new Date("YYYY-MM-DD") parses UTC midnight, which renders one day/month
+ *  early in Central. Full timestamps fall through to normal parsing. */
+export function parseLocalDay(s: string): Date {
+  const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec((s || "").slice(0, 10));
+  return m ? new Date(+m[1], +m[2] - 1, m[3] ? +m[3] : 1) : new Date(s);
+}
+
 export function fmtCompactCurrency(n: number): string {
   n = safeNum(n);
   const abs = Math.abs(n);

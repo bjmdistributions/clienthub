@@ -1,0 +1,944 @@
+﻿### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:19
+LABEL: Brief cadence dropdown: Weekly / Biweekly / Monthly
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: { label: "Weekly", days: 7 }, { label: "Biweekly", days: 14 }, { label: "Monthly", days: 30 }
+WHY: Looks like the classic label->day-count rolling pitfall, but `days` is only a cadence key. The backend (commands.rs:10208-10222) snaps it to calendar blocks: 7 -> current Mon-Sun week, 14 -> this + previous calendar week, >=28 -> the current calendar month (1st to next 1st), and 'last period' is the equal-length calendar block immediately before. So 'Monthly' genuinely means the calendar month despite the 30 in the map. Caveat: the anchor day is UTC (see commands.rs:10190 entry).
+
+### [AMBIGUOUS] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:18
+LABEL: Brief cadence dropdown: Daily
+CLASS: other | week=monday | tz=utc | review=CONFIRMED
+MECH: { label: "Daily", days: 1 } -> backend `let weeks = (period_days / 7).max(1);` (commands.rs:10216)
+WHY: period_days=1 integer-divides to 0 weeks, then .max(1) forces one whole calendar week â€” a 'Daily brief' actually shows the full current Mon-Sun week. Inverse of the R-159 pattern (a day label delivering a week window) rather than a week/month label lying, but the bucket is still mislabeled; the header dates reveal the real range.
+
+### [AMBIGUOUS] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:105
+LABEL: Cadence dropdown fallback option 'N-day'
+CLASS: labeled-rolling | week=monday | tz=n/a | review=CONFIRMED
+MECH: {!FREQ_PRESETS.some((p) => p.days === freq) && (<option value={freq}>{freq}-day</option>)}
+WHY: Label reads as a rolling N-day span, but the backend snaps any freq<28 to floor(N/7) whole calendar weeks (commands.rs:10216-10221), so e.g. a stored 10 shows one Mon-Sun week labeled '10-day'. Only reachable if a non-preset value was ever stored in brief_frequency_days.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:63
+LABEL: Previous-period chevron (week/month navigation anchor)
+CLASS: tz-hazard | week=monday | tz=utc | review=CONFIRMED
+MECH: const anchor = anchorDate ?? new Date().toISOString().slice(0, 10);
+WHY: 'Today' is the UTC date: from 7 PM CDT (6 PM CST) to midnight Central it is tomorrow. On Sunday evenings the anchor is UTC-Monday, so the prev step lands in what Jack still considers the current week; the whole prev/next chain runs one calendar week ahead of Central reality (coherent with the backend's own UTC anchor at commands.rs:10190, but both are wrong). Safe form: build the local date via getFullYear/getMonth/getDate.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:64
+LABEL: Previous/next navigation step under Monthly cadence
+CLASS: rolling-window | week=n/a | tz=utc | review=CONFIRMED
+MECH: const prev = addDays(anchor, -freq); // freq=30 for 'Monthly'
+WHY: Month navigation is implemented as a rolling +/-30-day step; the backend then snaps to the calendar month containing the result. From a day-31 anchor (e.g. Aug 31 -> Aug 1) 'Previous' re-shows the SAME month, so the button appears dead and needs two clicks; repeated steps drift across month lengths. Weekly/Biweekly (7/14) steps are exact week multiples and always land in the adjacent calendar week â€” those are fine. Correct fix: step by one calendar month (or anchor to week_start - 1 day).
+
+### [AMBIGUOUS] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:71
+LABEL: Next-period clamp back to 'Current'
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: const today = new Date().toISOString().slice(0, 10); if (next >= today) { setAnchorDate(null); ... }
+WHY: Same UTC-'today' as line 63; here it only makes the clamp back to the live brief trip up to ~5-6 hours early on Central evenings, which is a benign direction, but it should be fixed together with line 63.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:14
+LABEL: internal (addDays helper used by prev/next navigation)
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: new Date(dateStr + "T12:00:00Z"); d.setUTCDate(...); d.toISOString().slice(0, 10)
+WHY: Uses toISOString (a flagged pitfall) but is internally consistent: parses at UTC noon, adds days in UTC, slices in UTC â€” the noon buffer means no boundary shift. Safe as written.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:176
+LABEL: This week at a glance â€” Revenue / Profit / Deals closed / Win rate hero cells
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: revenue_this_week etc. from `df.completed_at >= ?1 AND df.completed_at < ?2` over [week_start, end_excl) where this_monday = now_date - days(weekday().num_days_from_monday()) (commands.rs:10217, 10241-10267, 10361-10372)
+WHY: The window itself is a true Monday-start calendar block with an exclusive upper bound, and the vs-last-period deltas compare the equal-length calendar block immediately before. Two cross-referenced caveats: the anchor day is Utc::now (commands.rs:10190, reported as VIOLATION) and some completed_at stamps are full UTC timestamps (commands.rs:4428 entry).
+
+### [AMBIGUOUS] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:173
+LABEL: Hardcoded 'This week' headings under non-weekly cadence
+CLASS: other | week=monday | tz=n/a | review=CONFIRMED
+MECH: <h2>This week at a glance</h2> (also 'lost money this week' L296, 'This week's highlights' L357, 'Activity this week' L392)
+WHY: These headings say 'week' regardless of cadence: with Biweekly or Monthly selected, a two-week or calendar-month window is presented under 'This week ...' wording. Not rolling and not Sunday-start, but a month presented as a week is still a mislabel; other strings in the same view already say 'this period' (L218, L307, L316). The header date range (L165) shows the true window.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:218
+LABEL: Each recipient's cut this period (payout split boxes)
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: split_week bounded [week_start, end_excl) (commands.rs:10329-10332); label prints brief.week_start â€“ brief.week_end
+WHY: Honest label ('this period' plus the actual dates) over the calendar-aligned window. Note: the comment at L214-216 still claims the boxes are 'the ROLLING brief period' â€” stale, the backend is calendar-aligned now; worth deleting so nobody 'fixes' it back.
+
+### [AMBIGUOUS] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:240
+LABEL: '{Month} so far' month-to-date profit line (+ per-recipient MTD, L246)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: new Date().toLocaleString("en-US", { month: "long" }) label over net_profit_this_month from `completed_at >= month_start` where month_start = format!("{}-01", Utc::now().format("%Y-%m")) (commands.rs:10269, 10308-10312, 10333-10336)
+WHY: The month start is a genuine calendar 1st, but it is the UTC month while the label is the LOCAL month name: on the last evening of every month (7 PM-midnight CDT) the data flips to the new, empty UTC month while the label still names the old month. Also uses `now`, not the browsed anchor, so a past brief shows the current month's MTD (arguably intended, and labeled with the current month).
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:270
+LABEL: Margin â€” 'This month'
+CLASS: strict-calendar | week=n/a | tz=utc | review=CONFIRMED
+MECH: avg_margin_this_month = margin_q(" AND df.completed_at >= ?1"), [&month_start] (commands.rs:10272)
+WHY: Calendar month-to-date (1st onward, open-ended upper bound is fine for MTD). Same UTC month_start caveat as the MTD line â€” carried by the commands.rs:10269 entry.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:280
+LABEL: 'Every month you've closed deals' â€” per-month row labels
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: new Date(m.month + "-01").toLocaleString("en-US", { month: "short", year: "numeric" })
+WHY: new Date("2026-08-01") parses as UTC midnight; toLocaleString renders it in Central, i.e. 7 PM the previous day â€” so EVERY row in the month history is labeled one month early (the '2026-08' bucket displays as 'Jul 2026'). This is the exact bug class already shipped here (R-131: month labels one month early, UTC parse + Central render). Fix: split the string and use new Date(y, m-1, 1), or pass timeZone:'UTC' to toLocaleString.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:276
+LABEL: 'Every month you've closed deals' â€” month bucketing
+CLASS: strict-calendar | week=n/a | tz=mixed | review=CONFIRMED
+MECH: strftime('%Y-%m', df.completed_at) AS m ... GROUP BY m (commands.rs:10281)
+WHY: Grouping by %Y-%m of the stored stamp is calendar-month bucketing with no 'now' involvement. Bucket membership inherits the mixed completed_at stamp hazard (commands.rs:4428 entry): completions stamped with UTC now between 7 PM and midnight Central land in the next month's bucket.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:194
+LABEL: 'N deals completed' chip (deal-flow section header)
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: completed_deals_this_week = df_this_week.count, bounded [week_start, end_excl) (commands.rs:10293-10297)
+WHY: Same calendar-aligned window as the hero row.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:296
+LABEL: 'N deals lost money this week' warning
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: loss_deals/loss_total from df_this_week CASE WHEN net_profit < 0, bounded [week_start, end_excl) (commands.rs:10294)
+WHY: Bounded calendar window; the 'this week' wording under Biweekly/Monthly cadence is covered by the L173 wording entry.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:307
+LABEL: 'N deals refunded this period' warning
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: refunds JOIN deal_flows WHERE df.completed_at >= ?1 AND df.completed_at < ?2 (commands.rs:10425-10428)
+WHY: Bounded calendar window, honest 'this period' label.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:316
+LABEL: 'Your earnings this period' (rep brief)
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: df.completed_at >= ?2 AND df.completed_at < ?3 with params [sid, week_start, end_excl] (commands.rs:10446-10449)
+WHY: Bounded calendar window, honest 'this period' label.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:357
+LABEL: 'This week's highlights' â€” best/lowest margin + biggest invoice cards
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: margin deals: completed_at >= ?1 AND < ?2 (commands.rs:10394-10397); biggest invoice: issue_date >= ?1 AND < ?2 (commands.rs:10409-10411)
+WHY: All three highlight queries are bounded to the calendar window (biggest invoice keys on issue_date rather than completion, a semantic choice, not a boundary bug). Wording caveat under non-weekly cadence covered at L173.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:401
+LABEL: Activity this week â€” 'new clients' count
+CLASS: other | week=monday | tz=mixed | review=CONFIRMED
+MECH: SELECT COUNT(*) FROM clients WHERE created_at >= ?1 â€” [&week_start], NO upper bound (commands.rs:10416-10418)
+WHY: Open-ended window presented as the week: for the live brief it happens to match (nothing is created in the future), but browse ANY past period and this counts every client created from that period's start until today, labeled as that week's activity. Additionally created_at is a full UTC timestamp compared against a local-calendar date string, so clients added 7 PM-midnight Central count into the next day/week. Needs `AND created_at < ?2` with end_excl.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src/components/BriefView.tsx:412
+LABEL: Activity this week â€” 'interactions logged' count
+CLASS: other | week=monday | tz=mixed | review=CONFIRMED
+MECH: SELECT COUNT(*) FROM interactions WHERE created_at >= ?1 â€” [&week_start], NO upper bound (commands.rs:10420-10422)
+WHY: Same defect as the new-clients count at L401: no upper bound, so past briefs show since-then-to-now totals labeled as that week, plus the UTC-timestamp-vs-local-boundary shift.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10190
+LABEL: internal (anchor date for every window in the brief BriefView renders)
+CLASS: tz-hazard | week=monday | tz=utc | review=CONFIRMED
+MECH: let anchor: chrono::NaiveDate = match for_date { Some(d) => d.parse().unwrap_or_else(|_| Utc::now().date_naive()), _ => Utc::now().date_naive() };
+WHY: The anchor that all calendar snapping hangs off is the UTC date, not Central. Every evening 7 PM-midnight CDT it is tomorrow: on Sunday evenings the 'Current' weekly brief snaps to NEXT week's Monday and shows an empty week; on the last evening of a month the Monthly brief flips to the new month. Should be Local::now().date_naive() (or an explicit America/Chicago conversion). This single line poisons otherwise-correct calendar windows.
+
+### [OK] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10217
+LABEL: internal (week/month window construction for the brief)
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: let this_monday = now_date - chrono::Duration::days(now_date.weekday().num_days_from_monday() as i64); ... month: first = with_day(1), end = next month's 1st (10208-10222)
+WHY: Correct calendar mechanics: num_days_from_monday gives Monday-start weeks, months run 1st to next 1st with exclusive upper bounds, and the comparison period is the equal-length calendar block immediately before. Note the function-level comment at 10194-10195 still describes the OLD rolling behavior and contradicts the code and the comment at 10203 â€” stale, should be removed.
+
+### [VIOLATION] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10269
+LABEL: internal (month_start feeding BriefView's MTD line, per-recipient MTD, and 'This month' margin)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let month_start = format!("{}-01", now.format("%Y-%m")); // now = Utc::now()
+WHY: Calendar 1st-of-month, but of the UTC month: from 7 PM CDT to midnight on the last day of each month, MTD profit, per-recipient MTD, and 'This month' margin all reset to the new month while Jack is still in the old one â€” and the UI label (BriefView L240) names the LOCAL month, so the number and its label disagree during that window.
+
+### [AMBIGUOUS] [brief] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:4428
+LABEL: internal (completed_at stamp written by the deal-completion path; determines week/month bucket membership for every brief stat)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: cols.insert("completed_at".into(), Value::String(now.clone())) â€” full UTC timestamp; vs date-only `format!("{}T00:00:00Z", date)` at 4723
+WHY: completed_at is stored in two shapes: a full UTC RFC3339 timestamp here, and a date-only midnight-Z stamp (the buyer's bank payment date) at 4723. Rows carrying the UTC timestamp shift into the next day's week/month bucket when completed 7 PM-midnight Central, so brief buckets built on completed_at (hero row, MTD, month history) can misplace evening deals; date-only rows are calendar-safe. Flagged AMBIGUOUS because the manual/resync path (4723) is the canonical one per the closed-date rule, but the mixed formats are a real boundary hazard.
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:93
+LABEL: Cumulative month chart â€” initial month selection (header shows e.g. "August 2026" / "Cumulative profit this month")
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: useState(() => new Date().toISOString().slice(0, 7))
+WHY: toISOString() converts to UTC before slicing the YYYY-MM key. From 19:00 CDT (18:00 CST) on the last day of any month, UTC is already the 1st of the next month, so the dashboard opens with the chart on the NEXT month (empty, 'No closed deals this month yet') while it is still this month in Chicago. Exact bug class that shipped here before (month labels one month early). Safe form: build the key from local getFullYear()/getMonth().
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:220
+LABEL: Performance hero toggle "This month" â€” Revenue ("paid invoices this month") and Profit ("completed deals this month")
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: heroRange === "month" ? (stats?.revenue_mtd ?? 0) : ... â€” backend: strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = Utc::now().format("%Y-%m")
+WHY: Correctly a strict calendar month (not rolling), but computed entirely in UTC in commands.rs dashboard_stats (this_month at line 9408 from Utc::now(); REV_MONTH_SQL line 9417, PROFIT_MONTH_SQL line 9431). Two real shifts for Central usage: (1) the current-month key flips to the next month at 18:00/19:00 CT on the last local day, so the hero shows an empty new month for the rest of the evening; (2) paid_at/completed_at are stamped Utc::now().to_rfc3339() on the auto paths, so evening payments/completions bucket into the next UTC day and, at month edges, the wrong month. Manually set dates (stored as YYYY-MM-DD or {date}T00:00:00Z) are unaffected â€” hence tz: mixed.
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:235
+LABEL: DeltaChip "vs last month" percentage on hero Revenue (line 235) and Profit (line 247)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: prev={stats?.revenue_prev_month ?? 0} â€” backend: let now = Utc::now().date_naive(); if m == 1 { format!("{}-12", y - 1) } else { format!("{}-{:02}", y, m - 1) }
+WHY: Previous-month arithmetic itself is calendar-correct (proper January rollover, commands.rs:9409-9413), but it is anchored to Utc::now(). During the 5-6 hour month-end window where UTC has rolled a month ahead of Central, the chip compares next month (empty) vs the still-in-progress current month â€” a nonsense delta from Jack's calendar perspective.
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:266
+LABEL: Stat card "Completed this month"
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: { label: "Completed this month", value: completedThisMonth } â€” backend: strftime('%Y-%m', completed_at) = ?1 with Utc::now().format("%Y-%m")
+WHY: Strict calendar month, but both sides UTC (commands.rs:9337-9341). The count drops to 0 at 18:00/19:00 Central on the last day of every month (UTC key moves to next month), and deals auto-completed after 18:00/19:00 CT carry a next-UTC-day completed_at, so month-end evening completions are counted in the wrong month. Rows whose completed_at was set via the manual closed-date path ({date}T00:00:00Z, commands.rs:4723) bucket correctly.
+
+### [OK] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:121
+LABEL: Cumulative month chart â€” x-axis span (days in selected month / cut at today)
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: const daysInMonth = new Date(y, mo, 0).getDate(); ... const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === mo
+WHY: Local Date constructor forms â€” correct last-day-of-month computation and a local-time comparison for isCurrentMonth (lines 121-130). Mechanically sound; it only inherits a wrong month when line 93 hands it a UTC-shifted profitMonth key.
+
+### [OK] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:152
+LABEL: Cumulative month chart â€” prev/next month arrows (changeMonth)
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: const d = new Date(y, m - 1 + dir, 1); const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+WHY: Calendar-month navigation via the local Date(y, m, d) constructor with correct year rollover, read back with local getters. This is the safe form; no UTC round-trip.
+
+### [OK] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DashboardView.tsx:158
+LABEL: Cumulative month chart â€” header month label (e.g. "August 2026")
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: new Date(Number(profitMonth.split("-")[0]), Number(profitMonth.split("-")[1]) - 1).toLocaleString(...{ month: "long", year: "numeric" })
+WHY: Labels the bucket using the local Date(y, m) constructor â€” correctly avoids the new Date("YYYY-MM-DD") UTC-parse bug that previously shipped month labels one month early. Label matches the selected key.
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9622
+LABEL: Cumulative month chart data (get_monthly_profit) â€” "Cumulative profit/revenue this month", daily buckets
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: SELECT date(df.completed_at) as d ... AND strftime('%Y-%m', df.completed_at) = ?1 GROUP BY d
+WHY: Month filter and per-day buckets are strict calendar blocks, but date()/strftime() run on stored completed_at with no 'localtime' modifier. Auto-completed deals are stamped Utc::now().to_rfc3339() (commands.rs:4443), so a deal completed at 8 PM CT plots on the next day, and one completed month-end evening drops out of the selected month entirely. Manually dated rows ({date}T00:00:00Z, commands.rs:4723) are fine. Serves DashboardView.tsx:119 (api.getMonthlyProfit).
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9408
+LABEL: internal â€” current-month key for hero revenue_mtd/profit_mtd (rendered as "This month" in DashboardView)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let this_month = Utc::now().format("%Y-%m").to_string();
+WHY: The "this month" anchor is the UTC month, not the Central calendar month. Every month-end from 18:00/19:00 CT to midnight, this key names the next month, emptying the hero and shifting the prev-month delta. Fix is Local::now() (or an explicit America/Chicago conversion). Same UTC anchor at line 9402 (month_start) and 9410 (prev_month).
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9417
+LABEL: internal â€” REV_MONTH_SQL for revenue_mtd / revenue_prev_month (hero "paid invoices this month")
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: AND strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = ?1
+WHY: Strict calendar-month match, but paid_at is a mix of plain dates and Utc::now().to_rfc3339() stamps (e.g. commands.rs:4286) with no localtime conversion, so invoices marked paid after 18:00/19:00 CT bucket to the next UTC day and month-boundary ones to the wrong month. issue_date fallback is a plain date and safe.
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9431
+LABEL: internal â€” PROFIT_MONTH_SQL for profit_mtd / profit_prev_month (hero "completed deals this month")
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: AND strftime('%Y-%m', df.completed_at) = ?1
+WHY: Same pattern as REV_MONTH_SQL: strict calendar month over completed_at, where the auto-complete path stamps UTC rfc3339 (commands.rs:4443) â€” evening completions shift a day, month-end evening completions shift a month. Known real-data consequence in this codebase: completed_at never re-derived after v0.15.128 left $47,920 of August sitting in July (brief audit R-131).
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9339
+LABEL: internal â€” completed_this_month count (rendered as "Completed this month" card in DashboardView:266)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: strftime('%Y-%m', completed_at) = ?1 with param Utc::now().format("%Y-%m")
+WHY: Strict calendar month; UTC-anchored key plus UTC-stamped completed_at. Reads 0 for the final 5-6 hours of every Central month and miscounts evening month-boundary completions. Backend twin of the DashboardView.tsx:266 site.
+
+### [AMBIGUOUS] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9402
+LABEL: internal â€” month_start feeding deals_mtd (in dashboard_stats payload, typed at api.ts:1173; NOT rendered by DashboardView)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let month_start = format!("{}-01", Utc::now().format("%Y-%m")); ... df.completed_at >= ?1 (line 9443)
+WHY: Calendar month-start (1st of month, open-ended upward â€” acceptable for a current-month-to-date count) but anchored to the UTC month with UTC-stamped completed_at, same shift as the mtd fields. Marked AMBIGUOUS only because no UI in src/ renders deals_mtd today; if surfaced as "this month" it is a violation.
+
+### [AMBIGUOUS] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9227
+LABEL: internal â€” revenue_this_week in dashboard_stats payload (api.ts:1155; NOT rendered by DashboardView or any src/ component)
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND paid_at >= date('now', '-7 days')
+WHY: Field is NAMED this_week but computes a rolling now-minus-7-days window, with date('now') in UTC (no 'localtime'). Currently dead weight in the desktop UI â€” nothing in src/ renders it (BriefView's revenue_this_week comes from a different endpoint). If any surface ever labels it "this week" it becomes a straight VIOLATION: rolling, and neither Monday-anchored nor Central-anchored.
+
+### [AMBIGUOUS] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9235
+LABEL: internal â€” clients_this_week in dashboard_stats payload (api.ts:1156; not rendered anywhere in src/)
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: WHERE created_at >= date('now', '-7 days')
+WHY: Same as revenue_this_week: a rolling 7-day UTC window under a calendar-week field name, currently unrendered on desktop. Flagged so the name/semantics mismatch doesn't silently become a violation when someone wires it into a UI.
+
+### [AMBIGUOUS] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9243
+LABEL: internal â€” interactions_this_week in dashboard_stats payload (api.ts:1157; not rendered anywhere in src/)
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: WHERE created_at >= date('now', '-7 days')
+WHY: Third of the trio: rolling 7-day UTC window named this_week, unrendered in the desktop UI.
+
+### [VIOLATION] [dashboard] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9273
+LABEL: internal â€” monthly_profit series in dashboard_stats (rendered by AnalyticsView.tsx:201, NOT DashboardView)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CORRECTED
+MECH: SELECT strftime('%Y-%m', df.completed_at) as m ... GROUP BY m
+WHY: By-month bucketing over the same mixed UTC/plain-date completed_at stamps with no localtime conversion â€” evening completions bucket into the next UTC day/month. Found while tracing dashboard_stats for this cluster; the consuming UI (AnalyticsView) is outside this cluster, so verdict left AMBIGUOUS here rather than double-adjudicating its labels.
+REVIEWNOTE: Site and mechanism verified: strftime('%Y-%m', df.completed_at) GROUP BY m at 9273-9277, no localtime, over mixed UTC/plain-date stamps. But the finder's reason for AMBIGUOUS (consuming UI outside cluster) doesn't survive inspection: AnalyticsView.tsx:201-204 demonstrably renders this series and labels every bucket as a named calendar month (toLocaleDateString month/year), so the calendar-month label maps directly to this UTC-boundary computation â€” that is the mislabeled class the requirement calls a VIOLATION. (Incidentally AnalyticsView:204's new Date(m.month + "-01") is a UTC-midnight parse that can shift the displayed month name, and :210 repeats the toISOString month-key bug â€” same family, outside these findings.)
+
+### [VIOLATION] [analytics] C:/Users/Jack/Desktop/BUSINESS APP/src/components/AnalyticsView.tsx:104
+LABEL: "This month" preset pill (Analytics header)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: const today = new Date().toISOString().slice(0, 10); const firstDayOfMonth = today.slice(0, 7) + "-01"; ... { label: "This month", start: firstDayOfMonth, end: today }
+WHY: Calendar-anchored intent (1st of month) but the boundary is derived from UTC 'today' via toISOString(). From 19:00 CDT / 18:00 CST to midnight, toISOString() yields tomorrow's UTC date; on the last day of any month those evening hours flip firstDayOfMonth to NEXT month's 1st, so "This month" queries an empty next month while Jack is still inside the current one (recurring ~5-6h window every month-end). Server side (commands.rs:9821) compares date(df.completed_at) â€” a UTC timestamp â€” against this string, so both ends are UTC while Jack's calendar is Central. Bonus defect: lines 98-100 are module-level constants evaluated once at bundle load, so an app left open past midnight/month-end keeps serving stale preset boundaries until reload. Fix: build the boundary from local parts (new Date(y, m, 1)) at click time.
+
+### [VIOLATION] [analytics] C:/Users/Jack/Desktop/BUSINESS APP/src/components/AnalyticsView.tsx:204
+LABEL: Month tick labels on "Monthly revenue vs profit" bar chart (line 338) and "Net profit by month" area chart (line 426)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: month: new Date(m.month + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" })
+WHY: m.month is a "YYYY-MM" bucket key from the server. new Date("YYYY-MM-01") parses as UTC midnight; toLocaleDateString with no timeZone renders in local Central time, i.e. the previous evening â€” so EVERY month bucket is labeled one month early (an "2026-08" bucket renders "Jul 26"), unconditionally, on every render. This is the exact shipped bug class flagged in the R-131 brief audit ("month labels one month early â€” UTC parse, Central render"), still live in this view. Both monthly charts share this mapped array (dataKey "month" at lines 354 and 437). Safe form: split the string and use new Date(y, m-1, 1) (local) before formatting.
+
+### [AMBIGUOUS] [analytics] C:/Users/Jack/Desktop/BUSINESS APP/src/components/AnalyticsView.tsx:210
+LABEL: Month-over-month movement chips on the Revenue/Profit lead stats (MomChip, title "vs prior month", rendered lines 304/315)
+CLASS: tz-hazard (mixed-frame current-month exclusion; failure window is real but the claimed harm cannot meaningfully occur) | week=n/a | tz=utc | review=CORRECTED
+MECH: const curMonth = new Date().toISOString().slice(0, 7); const momSource = monthlySource.filter((m: any) => m.month !== curMonth);
+WHY: The exclusion of the in-progress month (to avoid comparing a half-finished month against a complete one â€” the comment at 207-209 states this intent) computes the current month in UTC. On the last day of every month after 19:00 CDT / 18:00 CST, toISOString() is already in next month, so curMonth no longer matches the actual in-progress bucket, nothing is filtered out, and the "vs prior month" chips compare the partial current month against the complete prior month â€” exactly the fake drop the code claims to prevent. Recurs several hours every month-end. Should derive the current month from local date parts.
+REVIEWNOTE: Code exists as quoted, but the failure scenario is overstated on two counts. (1) For rows auto-stamped Utc::now() the UTC curMonth matches the UTC strftime bucket keys exactly â€” the exclusion is internally self-consistent in that frame, not broken. (2) Most completed_at values are NOT Utc::now(): commands.rs:4374-4381 prefers buyer_bank_paid_date (bank_txn.posted_at, a Plaid calendar date, 4581-4587) or a pinned T00:00:00Z date; against those bucket keys the UTC curMonth only diverges during the month-end evening window, at which point the month it fails to exclude is hours from complete â€” so the 'partial vs complete fake drop' the code guards against is negligible, not 'exactly the fake drop'. A genuine mixed-frame inconsistency worth fixing alongside the presets, but not a VIOLATION of the calendar-month rule; note the finder's fix (local date parts) is only safe because bucket keys are mostly bank calendar dates â€” for pure UTC-stamped rows it would introduce the very mismatch it claims to remove unless server bucketing moves to localtime in the same pass.
+
+### [AMBIGUOUS] [analytics] C:/Users/Jack/Desktop/BUSINESS APP/src/components/AnalyticsView.tsx:201
+LABEL: Month bucketing feeding both monthly charts ("Monthly revenue vs profit", "Net profit by month")
+CLASS: tz-hazard | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: const monthlySource = rangeData?.monthly_profit ?? stats.monthly_profit; â€” buckets built server-side as strftime('%Y-%m', df.completed_at) (commands.rs:9856, no 'localtime' modifier)
+WHY: The buckets ARE strict calendar months â€” but UTC calendar months, not Central. completed_at is auto-stamped Utc::now().to_rfc3339() on deal completion (commands.rs:4428 via now at e.g. commands.rs:301), so a deal completed after ~7pm Central on the last day of a month carries next month's UTC date and lands in the wrong bar relative to Jack's calendar (same family as the known "$47,920 of August sits in July" finding). Manually-set closed dates are pinned 'YYYY-MM-DDT00:00:00Z' (commands.rs:4723) and bucket to the chosen calendar date correctly. AMBIGUOUS rather than VIOLATION from this file's perspective: the boundary shift depends on which write path stamped the row, and the query itself lives in commands.rs (another cluster's file) â€” flagging here so the frontend consequence is on record.
+
+### [AMBIGUOUS] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DealFlowView.tsx:398
+LABEL: Next 7 days â€” N pickups, N deliveries (shipping lane subheader)
+CLASS: labeled-rolling | week=n/a | tz=local | review=CONFIRMED
+MECH: const soon = (d) => { ... const n = daysUntil(v); return n >= 0 && n <= 7; }  â†’  "Next 7 days â€” {pickupsSoon} pickup(s), {deliveriesSoon} deliveries."
+WHY: Rolling forward window computed at line 263, displayed at line 398. The UI text honestly says 'Next 7 days', so it is not lying â€” but the code comments at lines 261 and 395 both call it 'This week', so it was conceived as a week and Jack may expect Mondayâ€“Sunday. Two nits: (1) `n >= 0 && n <= 7` spans 8 calendar days (today plus the next 7), so even as a rolling window the label undercounts by a day; (2) tz handling is correct â€” daysUntil (line 63-66) measures from LOCAL midnight and parseDay (line 56-58) parses bare YYYY-MM-DD as local, explicitly avoiding the UTC-midnight parse bug.
+
+### [AMBIGUOUS] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/DealFlowView.tsx:1760
+LABEL: Completed date input default (complete-deal form)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: const todayStr = new Date().toISOString().slice(0, 10);
+WHY: 'Today' for the completion-date default is the UTC day: from 18:00 CST / 19:00 CDT the default is TOMORROW's date, and on the last evening of a month it lands the deal's completed_at in the NEXT calendar month â€” completed_at is exactly the field whose month attribution already caused the '$47,920 of August sits in July' incident. AMBIGUOUS rather than VIOLATION because the value is shown in an editable date input, and the effect at lines 1770-1776 usually overwrites it with the buyer's bank payment date; but whenever no allocation/payment date exists and the deal is completed in the evening, the wrong day is one click from being persisted. Safe form is the localDay pattern FinancialsView already has at its line 1840.
+
+### [OK] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/FinancialsView.tsx:1832
+LABEL: "$X tied to deals this month across N transactions" (To-book caught-up state, line 3686)
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: const pfx = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`; ... if (!(t.posted_at || "").startsWith(pfx)) continue;
+WHY: 'This month' is a strict calendar month: prefix built from LOCAL getFullYear/getMonth (new Date(), lines 1828-1829) and string-prefix-matched against posted_at. posted_at is a date-only YYYY-MM-DD string from the bank (Plaid `date` field, commands.rs:10895), so no UTC conversion can shift the comparison. Correct.
+
+### [OK] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/FinancialsView.tsx:526
+LABEL: Ledger date-range default (current tax year)
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: useState(`${new Date().getFullYear()}-01-01`) / useState(`${new Date().getFullYear()}-12-31`)
+WHY: Default from/to bounds are the current LOCAL calendar year, Jan 1 through Dec 31. getFullYear() on new Date() is local, so the year never flips early on New Year's Eve evening. Calendar-strict at year granularity; no week/month presets exist in this filter (options are tax years / All time / Custom, lines 3480-3488).
+
+### [OK] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/FinancialsView.tsx:1948
+LABEL: Tax year dropdown (e.g. "2026", "All time", "Custom range")
+CLASS: strict-calendar | week=n/a | tz=n/a | review=CONFIRMED
+MECH: setFromDate(`${v}-01-01`); setToDate(`${v}-12-31`);  applied as: const d = (t.posted_at || "").slice(0, 10); if (fromDate && d < fromDate) ... if (toDate && d > toDate) ...
+WHY: Picking a tax year sets exact calendar-year bounds; applied at lines 1687-1690 (ledger queue) and 1768-1770 (rangeSummary stat row) by lexicographic comparison on the date-only slice of posted_at. Because both sides are date-only strings, `d > toDate` correctly keeps the whole of Dec 31 â€” inclusive calendar block, no tz math anywhere. Year label detection (lines 1939-1944) only recognizes exact Jan1/Dec31 pairs, so a hand-edited bound honestly relabels itself 'Custom range'.
+
+### [VIOLATION] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/FinancialsView.tsx:1575
+LABEL: internal (backfilled invoice issue_date/due_date in createDealFromTxn)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: const today = new Date().toISOString().slice(0, 10); ... createInvoice({ issue_date: today, due_date: today, ... })
+WHY: The 'New deal from this receipt' backfill silently stamps the invoice's issue_date and due_date with the UTC day â€” from 18:00 CST / 19:00 CDT that is tomorrow, and on a month's last evening it is the NEXT calendar month. Unlike the editable date-input defaults, there is no UI here to see or correct the date before it is persisted, and invoice dates feed month-bucketed reporting elsewhere. The boundary actually shifts for Central usage every evening, so this is a violation, not just a hazard. Fix is the file's own localDay() (line 1840).
+
+### [AMBIGUOUS] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/FinancialsView.tsx:2618
+LABEL: Record cash â€” date input default
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}  (same default as fallback at line 815)
+WHY: The cash-transaction form defaults its date to the UTC day: a cash entry recorded after 18:00/19:00 Central defaults to tomorrow's date, and on the last evening of a month to the next month â€” that date becomes bank_txn.posted_at, which the 'this month' stat (line 1832) and the tax-year range filter bucket on. AMBIGUOUS rather than VIOLATION because the date sits in a visible, editable input before saving; but the default is wrong every evening. Line 815 reuses the same UTC 'today' when the field is somehow empty.
+
+### [OK] [dealflow+financials] C:/Users/Jack/Desktop/BUSINESS APP/src/components/PersonPayments.tsx:232
+LABEL: internal (no time filters in this file)
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: return read.filter(({ m }) => (method === "unclassified" ? m.state === "unclassified" : m.method === method));
+WHY: Audited whole file (new untracked, ~400 lines): the only facet is payment METHOD; there is no week/month/rolling time range computed, filtered, or bucketed anywhere. Date handling is display-only (line 156-164 parses YYYY-MM-DD safely without new Date(string) and renders 'Jan 5'-style labels), which does not mislabel any bucket. Nothing to flag under R-159.
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/AutomationLogView.tsx:72
+LABEL: Automation log filter: "Last 7 days" / "Last 30 days" / "Last 90 days" (options at lines 182-184)
+CLASS: labeled-rolling | week=n/a | tz=local | review=CONFIRMED
+MECH: const sinceDate = () => { const d = new Date(); if (since !== "all") d.setDate(d.getDate() - parseInt(since)); return d.toISOString(); }; ... e.triggered_at < sinceDate()
+WHY: Rolling now-minus-N-days window, honestly labeled as such â€” not lying to the user. Note it compares full ISO instants (now minus N days to the second), not midnight-anchored days, so 'Last 7 days' means 168 hours back from this moment. Fine as labeled; flagged only because Jack may want calendar-strict options.
+
+### [VIOLATION] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ReceivablesView.tsx:97
+LABEL: Record payment modal â€” "Date received" default value
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: useState(new Date().toISOString().slice(0, 10))
+WHY: toISOString() converts local now to UTC before slicing the date: from 19:00 CDT (18:00 CST) until midnight the default is TOMORROW's date. On the last evening of a month the payment defaults into the NEXT month, and payment dates drive the month buckets in financials (the exact bug family already shipped here). It is an editable default, but the wrong-by-default window is 5-7 hours of every day. Safe form: format from local getFullYear/getMonth/getDate.
+
+### [VIOLATION] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/InvoicesView.tsx:83
+LABEL: Mark-paid modal â€” payment date default (re-set at line 129 on modal open)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10)); ... setPayDate(new Date().toISOString().slice(0, 10))
+WHY: Same UTC-date-slice default as ReceivablesView:97: after ~7pm Central the default payment date is tomorrow, so an evening month-end payment defaults into the wrong calendar month, feeding month-bucketed revenue/profit downstream. markInvoicePaid(id, payDate, ...) persists this value.
+
+### [VIOLATION] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/InvoicesView.tsx:491
+LABEL: Invoice form â€” due date default (issue date default identical at line 492)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: useState(() => initial ? initial.due_date.slice(0, 10) : new Date().toISOString().slice(0, 10))
+WHY: Same evening-shift mechanism for new-invoice due/issue date defaults: after ~7pm Central both default to tomorrow's date. Issue date feeds invoice aging and which month the invoice belongs to. Editable defaults, but wrong for hours every evening. (The edit path, initial.due_date.slice(0,10), and the preview formatter at line 538 using new Date(`${d}T00:00:00`) are the safe local forms â€” only the toISOString default is hazardous.)
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ReceivablesView.tsx:256
+LABEL: Stat chip: "{amount} lands in the next 7 days"
+CLASS: labeled-rolling | week=n/a | tz=n/a | review=CONFIRMED
+MECH: const dueSoon = data.summary.due_soon; ... {fmtAmount(dueSoon)} lands in the next 7 days
+WHY: Forward rolling 7-day window, honestly labeled as 7 days (not 'this week'). The window itself is computed server-side in Rust (get_receivables summary.due_soon) â€” the Rust cluster should confirm it really is now+7d and check its timezone; the label in this file matches a rolling window.
+
+### [OK] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ReceivablesView.tsx:9
+LABEL: AR aging buckets: "1-30 days" / "31-60 days" / "61-90 days" / "90+ days"
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: { key: "d1_30", label: "1-30 days", ... } bucketed from it.days_overdue (server-provided)
+WHY: Aging buckets labeled as literal day ranges, keyed off server-computed days_overdue â€” no week/month presentation, label matches mechanism.
+
+### [OK] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/PayablesView.tsx:8
+LABEL: AP aging buckets: "<= 30 days" / "31-60" / "61-90" / "90+ days"
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: { key: "d0_30", label: "â‰¤ 30 days", ... } bucketed from it.days (server-provided)
+WHY: Same honest day-range aging buckets as ReceivablesView; only week/month-adjacent content in this file. No week/month filters exist in PayablesView.
+
+### [OK] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/FreeCashView.tsx:404
+LABEL: Alert: "N incoming payments unallocated over 7 days"
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: {ov.alerts.stale_unallocated_in} incoming payment{...} unallocated over 7 days
+WHY: Aging threshold honestly labeled in days; the 7-day cutoff is computed server-side (free-cash overview alerts). Not presented as a week. No other week/month sites in FreeCashView ("3x monthly operating expenses" at line 469 is hint copy, runway_months is a duration stat).
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/RecurringView.tsx:168
+LABEL: Recurring invoice frequency select: "Weekly" / "Monthly"
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: <option value="weekly">Weekly</option> <option value="monthly">Monthly</option> -> frequency string passed to api.createRecurringInvoice/updateRecurringInvoice
+WHY: Recurrence cadence, not a filter/bucket â€” but 'Monthly' promises a calendar-month cadence. The next-due math is in Rust (recurring invoice generation in commands.rs, outside this cluster): if it advances by +30 days rather than a calendar month, or +7 days for weekly starting from a UTC 'now', the label lies. Needs Rust-side verification.
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/InvoicesView.tsx:729
+LABEL: Invoice form Recurring select: "Monthly" / "Quarterly" / "Annually"
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: <option value="monthly">Monthly</option> <option value="quarterly">Quarterly</option> <option value="annually">Annually</option>
+WHY: Same cadence-label situation as RecurringView: the string is stored and the schedule math happens in Rust. Verify in the Rust cluster that 'monthly' means calendar-month advance (e.g. add 1 month), not +30 days.
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/components/EmailView.tsx:1470
+LABEL: Newsletter schedule cadence: "every week" / "every month" (options "Weekly"/"Monthly" at lines 1570-1571)
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: const unit = s.interval_type === "daily" ? "day" : s.interval_type === "monthly" ? "month" : "week"; ... next run {new Date(s.next_run_at).toLocaleString()}
+WHY: Newsletter send cadence labeled in weeks/months; next_run_at is computed server-side (newsletter scheduler in Rust). If 'monthly' advances +30 days the label is wrong â€” verify in the Rust/server cluster. All other date code in EmailView is instants (scheduledAt = toISOString() of a chosen datetime, correct) or pure display.
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/lib/api.ts:2318
+LABEL: internal
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: generateWeeklyBrief: (forDate?, repName?) => invoke<WeeklyBrief>("generate_weekly_brief", ...) â€” WeeklyBrief carries week_start/week_end, revenue_this_week/_last_week, net_profit_this_month, monthly_breakdown, PayoutTotal.this_week/this_month
+WHY: Pure invoke wrapper + type declarations (lines 961-1015, 714-720): every this_week/this_month boundary is computed in Rust generate_weekly_brief (commands.rs, outside this cluster). Whether the brief's week is Monday-start local calendar must be verified there; nothing in this file computes it.
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/lib/api.ts:1141
+LABEL: internal
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: export interface DashboardStats { completed_this_month; revenue_this_week; clients_this_week; monthly_profit: { month: string; ... }[]; loss_deals_this_month; revenue_mtd; ... }
+WHY: Type declaration only â€” the dashboard's this_week/this_month/mtd/monthly_profit buckets are computed in the Rust get_dashboard_stats command. Prior audit (R-131) already found month bucketing shifted by UTC parsing here, so the Rust cluster is where the verdict lands; no boundary math exists in api.ts.
+
+### [AMBIGUOUS] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/lib/api.ts:2482
+LABEL: internal
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: getMonthlyProfit: (month: string) => invoke<{ day: string; profit: number; revenue: number }[]>("get_monthly_profit", { month })
+WHY: Wrapper passing a "YYYY-MM" month key to Rust; the month-to-day-range expansion (and its timezone) happens in get_monthly_profit in commands.rs â€” verify there. No computation in this file.
+
+### [OK] [desktop-misc-a] C:/Users/Jack/Desktop/BUSINESS APP/src/App.tsx:1
+LABEL: internal
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: no week/month range computation in file â€” navigation shell only (only date use is lastSync toLocaleTimeString at line 733)
+WHY: Audited (850 lines, grepped for all date/range/filter patterns): App.tsx contains no time filters, buckets, or week/month presentation.
+
+### [VIOLATION] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/CloseoutView.tsx:237
+LABEL: Completed Date editor default (closeout deal breakdown; caption: 'Change to backlog a sale into the correct month/week for analytics.')
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const todayStr = new Date().toISOString().slice(0, 10);
+WHY: The fallback 'today' for the completed-date editor is the UTC date. Every evening after 6/7 PM Central, toISOString() is already tomorrow, so the default completion date is one day ahead â€” and on the last evening of a month it lands in the NEXT month. This field is exactly what drives month/week analytics bucketing (the on-screen caption says so), and the value is saved via api.updateDealCompletedAt unless the user notices and edits it. Safe form: build the string from local getFullYear/getMonth/getDate.
+
+### [VIOLATION] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/CloseoutView.tsx:170
+LABEL: 'Completed <date>' line on each closeout row
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: new Date(flow.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+WHY: deal_flows.completed_at is a bare YYYY-MM-DD (confirmed by the comment at SuppliersView.tsx:56). new Date("YYYY-MM-DD") parses as UTC midnight, so toLocaleDateString in Central renders the PREVIOUS day for every row â€” a deal stored 2026-08-01 displays 'Jul 31, 2026', i.e. the wrong month. This is the exact bug class that shipped before (month labels one month early), on the very screen used to verify/correct which month a deal buckets into. The correct local-anchor parse already exists in the same repo (SuppliersView.tsx:62, LoansView.tsx:14).
+
+### [VIOLATION] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/SupplierDealsModal.tsx:108
+LABEL: Deal completed date column in the supplier deals modal
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: new Date(d.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+WHY: Same defect as CloseoutView.tsx:170: bare YYYY-MM-DD completed_at parsed as UTC midnight then rendered in Central shows one day early, mislabeling the completion day (and the month for 1st-of-month deals). SuppliersView in the same feature area already has the safe parseDay helper (SuppliersView.tsx:56-62) â€” this modal bypasses it.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/SettingsView.tsx:4691
+LABEL: Rep payouts panel From/To date inputs â€” default period = current month (Settings > Team > Payouts)
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: const monthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10); }; const monthEnd = () => ... new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().slice(0, 10);
+WHY: Default range is the strict current calendar month: local-constructed 1st of this month through 1st of next month, and the backend (commands.rs:5426) filters completed_at >= start AND completed_at < end, i.e. end-EXCLUSIVE, so the pair is exactly the calendar month. Two caveats: (1) the local-Date -> toISOString().slice(0,10) pattern only stays on the right day for negative UTC offsets â€” correct for Central, but it is the hazard pattern; (2) the visible 'To' input shows the 1st of NEXT month while acting exclusively, so a user who manually types the last day of a month expecting inclusive behavior silently drops that day's deals.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/SettingsView.tsx:4916
+LABEL: 'Pay out every: Week / 2 weeks / Month / Custom' select (rep payout cadence, Settings > Team)
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: <option value="weekly">Week</option> ... <option value="monthly">Month</option> -> saveRp({ period }) -> settings key rep_payout_period
+WHY: Traced rep_payout_period through commands.rs (5479 read-back, 5496 store) and netsync.rs:1971 (sync allowlist): the value is stored and displayed but NEVER used in any date-boundary computation anywhere in the codebase â€” payout ranges come only from the manual From/To inputs above. So 'Week'/'Month' here does not hide a rolling window; it is currently an inert preference (matches the rep-payouts-spec 'desktop pending' state). If a scheduler is ever built on it, it must use Monday-start weeks and calendar months per R-159.
+
+### [AMBIGUOUS] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/SuppliersView.tsx:158
+LABEL: Supplier activity filter: 'Used in 30 days' / 'Used in 90 days' / 'Never used'
+CLASS: labeled-rolling | week=n/a | tz=local | review=CONFIRMED
+MECH: if (act.days > 0 && daysSince(s.last_deal_date) > act.days) return false; // daysSince = (Date.now() - parseDay(d).getTime()) / 86400000
+WHY: Rolling now-minus-N-days window over last_deal_date, but the labels honestly say '30 days'/'90 days' (SuppliersView.tsx:42-45), not 'month'. Timezone handling is correct: parseDay anchors the bare YYYY-MM-DD to local midnight. Reported per the labeled-rolling rule in case Jack wants these calendar-strict.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/SuppliersView.tsx:62
+LABEL: internal â€” parseDay helper feeding the activity filter and date display
+CLASS: other | week=n/a | tz=local | review=CONFIRMED
+MECH: return m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(d); // comment at :56 â€” 'completed_at is a bare YYYY-MM-DD, which new Date() reads as UTC'
+WHY: This is the correct pattern for the whole codebase: bare date strings constructed with the local new Date(y,m,d) form so day boundaries never slip in Central. Cited as the reference fix for the CloseoutView.tsx:170 and SupplierDealsModal.tsx:108 violations.
+
+### [AMBIGUOUS] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ClientsView.tsx:617
+LABEL: Client 'Last contact' filter: '30+ days' / '60+ days' / '90+ days' (chip: 'Last contact: N+ days'; 'Never contacted' quick-filter at :442 sets stale_days=9999)
+CLASS: labeled-rolling | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: updateFilter({ stale_days: Number(e.target.value) }) -> commands.rs:1730 HAVING MAX(i.created_at) IS NULL OR MAX(i.created_at) < datetime('now', '-N days')
+WHY: Rolling now-minus-N-days cutoff computed with SQLite 'now' (UTC, no localtime modifier) against invoice created_at timestamps. Labels are honest day counts, never 'month', so not lying to the user; the UTC 'now' skews the threshold by 5-6 hours versus Central, which is immaterial for a 30+/60+/90+ day staleness filter but is the utc-'now' pattern to watch. Reported as labeled-rolling in case Jack wants calendar semantics.
+
+### [AMBIGUOUS] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ReconciliationPanel.tsx:505
+LABEL: Manual cash line form â€” date input default (reconciliation 'money that never hit the bank statement')
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+WHY: Default date for a manual cash transaction is the UTC date â€” after 6/7 PM Central it pre-fills TOMORROW, and on a month-end evening it pre-fills the next month. The date is visible and editable, and the field itself isn't a week/month filter, but the saved manual_cash transaction date feeds monthly financial bucketing downstream, so an unnoticed evening default shifts a booking into the wrong month. Should use local date parts.
+
+### [AMBIGUOUS] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/LoansView.tsx:8
+LABEL: Loan form 'received' date default
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const today = () => new Date().toISOString().slice(0, 10); // used at :30 useState(today())
+WHY: Same UTC-today default: after 6/7 PM Central the loan received_at defaults to tomorrow's date (next month at month-end). Visible and editable, not itself a week/month filter, but a wrong stored date mis-buckets any period-based reporting. Ironically the same file already fixed the read direction (see :14) but not the write-default direction.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/LoansView.tsx:14
+LABEL: internal â€” loan received_at date rendering
+CLASS: other | week=n/a | tz=local | review=CONFIRMED
+MECH: const d = new Date(s.length <= 10 ? s + "T00:00:00" : s); // comment: 'anchor it to local midnight so it doesn't slip a day in negative timezones'
+WHY: Correct local-midnight anchoring of bare YYYY-MM-DD before rendering â€” no day/month slip in Central. Another in-repo reference fix for the CloseoutView/SupplierDealsModal display violations.
+
+### [AMBIGUOUS] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/RefundWorkspace.tsx:23
+LABEL: internal â€” bank transaction date shown next to refund/receipt link rows (used at :97 and :247)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const d = new Date(s); ... d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) â€” called as fmtDate(t.posted_at)
+WHY: bank_txn.posted_at is a bare YYYY-MM-DD (populated from the import 'date' field, commands.rs:10895), so new Date() parses UTC midnight and Central rendering shows every transaction date one day early. Pure display in a picker (no week/month bucket driven off it), so ambiguous rather than a bucketing violation â€” but it's the same shipped-before bug class and should use the local-anchor parse.
+
+### [AMBIGUOUS] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ReconciliationPanel.tsx:21
+LABEL: internal â€” fmtShortDate for bank transaction dates in reconciliation rows/picker (used at :475, :778, :817)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const d = new Date(s); return ... d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); â€” called as fmtShortDate(t.posted_at)
+WHY: Identical to RefundWorkspace.tsx:23 â€” bare posted_at parsed as UTC midnight renders one day early in Central everywhere this panel shows a transaction date. Display-only (the panel has no week/month filter), so ambiguous, but the fix is the same local-anchor parse.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ClientsView.tsx:32
+LABEL: internal â€” relative-age label ('Nd ago' / 'Nmo ago' / 'Ny ago') on client rows
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: const months = Math.floor(days / 30); if (months < 12) return `${months}mo ago`;
+WHY: Relative-age display that approximates a month as 30 days. It is not a filter or bucket and never claims a calendar month; conventional and acceptable. (Same helper duplicated in GlobeView and PlatformView, listed below.)
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/GlobeView.tsx:60
+LABEL: internal â€” relTime relative-age label on globe point details
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: const months = Math.floor(days / 30); if (months < 12) return `${months}mo ago`;
+WHY: Display-only relative-age approximation (month = 30 days); GlobeView computes no week/month ranges or filters at all â€” its only filters are tier/high-value (passesFilter at :46).
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/ClientDetailView.tsx:249
+LABEL: internal â€” relative-age label in client detail header/stats
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+WHY: Display-only month-approximation in an 'ago' label. ClientDetailView otherwise contains no week/month range computation, filter, or bucket (timeline at :735-741 sorts and renders raw timestamps; link expiry at :180/:463 is an honest 30-day expiry, not a period filter).
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/PlatformView.tsx:19
+LABEL: internal â€” relTime relative-age label in the platform admin tables
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: const mo = Math.floor(d / 86400000-days / 30); return mo < 12 ? `${mo}mo ago` : ... (line 19-20: Math.floor(d / 30))
+WHY: Display-only relative-age approximation (month = 30 days). No week/month filters or buckets exist in PlatformView.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/TiersView.tsx:73
+LABEL: Buying-frequency filter ('weekly' / 'bi-weekly' / 'monthly' / 'quarterly' / 'annually') on the Client tiers screen
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: .filter((t) => !freqFilter || (t.purchase_frequency || "").toLowerCase() === freqFilter);
+WHY: Despite the weekly/monthly wording (FREQUENCIES at :31), this filters a stored client-metadata attribute (how often the client buys) by exact string match â€” no time range is computed, so no calendar/rolling question arises. TiersView has no other date logic.
+
+### [OK] [desktop-misc-b] C:/Users/Jack/Desktop/BUSINESS APP/src/components/NotesView.tsx:54
+LABEL: internal â€” note staleness badge thresholds (urgent 2d / high 5d / normal 14d)
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: const isStale = (n: Note) => noteAge(n) >= urg(n).staleDays; // ageDays = (Date.now() - t) / 86_400_000
+WHY: Rolling day-count staleness thresholds surfaced as '{d} days' (staleLabel at :55) â€” never presented as a week or month, so honest by construction. NotesView, SettingsView (sync/backup 'ago' labels at :806-813, :2882, :4166-4172) and the invite 7-day expiry (:5150, :5156) contain no other week/month range computations; notably, this entire 13-file cluster computes NO week boundaries anywhere, so no Sunday-start risk exists in it.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9227
+LABEL: dashboard_stats field revenue_this_week (dashboard 'this week' revenue stat)
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND paid_at >= date('now', '-7 days')
+WHY: Named 'this week' but computed as a rolling 7-day window ending now. Also uses SQLite date('now') which is UTC, so the window edge sits at 6/7pm Central, and paid_at is a UTC entry stamp. Should be Monday 00:00 local through now.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9235
+LABEL: dashboard_stats field clients_this_week (new clients 'this week')
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: WHERE created_at >= date('now', '-7 days')
+WHY: Presented as 'this week', computed as now-minus-7-days rolling, in UTC. Same defect as revenue_this_week.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9243
+LABEL: dashboard_stats field interactions_this_week
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: WHERE created_at >= date('now', '-7 days')
+WHY: Presented as 'this week', computed as now-minus-7-days rolling, in UTC. Same defect as revenue_this_week.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9339
+LABEL: dashboard_stats field completed_this_month (hero 'deals completed this month')
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: strftime('%Y-%m', completed_at) = ?1 with [Utc::now().format("%Y-%m")]
+WHY: Correct calendar-month bucketing, but the 'current month' anchor is Utc::now(): from 6/7pm Central on the last day of every month, ?1 becomes NEXT month and the card drops to next month's (near-zero) count while Jack is still in the old month. Data side is mostly safe (completed_at is pinned to the chosen close date as YYYY-MM-DDT00:00:00Z, commands.rs:4375/4723), with a Utc::now().to_rfc3339() fallback at :4380 when a deal has no payment date.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9402
+LABEL: dashboard_stats month_start â€” feeds deals_mtd (:9440), loss_deals_this_month (:9475), loss_total_this_month (:9481)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let month_start = format!("{}-01", Utc::now().format("%Y-%m"));
+WHY: Calendar month start ('YYYY-MM-01') but derived from the UTC clock: on month-end evenings Central, the whole month window flips to the next month. Queries use completed_at >= month_start with no upper bound, which is fine for a current-month stat once the anchor is local.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9417
+LABEL: Dashboard hero [This month | All time] revenue toggle (revenue_mtd, revenue_prev_month)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = ?1 with this_month = Utc::now().format("%Y-%m") (:9408)
+WHY: Calendar-month match, but both sides are UTC: the anchor flips to next month at 6/7pm Central on the last day, and paid_at/issue_date are UTC entry stamps (paid_at set via Utc::now().to_rfc3339() at :4286, issue_date default at :2204), so payments recorded 6pm-midnight Central carry the next UTC day and land in the wrong month at month edges. prev_month delta shifts identically.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9431
+LABEL: Dashboard hero [This month | All time] profit toggle (profit_mtd, profit_prev_month)
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: AND strftime('%Y-%m', df.completed_at) = ?1 with this_month = Utc::now().format("%Y-%m")
+WHY: Calendar-month bucketing over date-pinned completed_at (safe), but the 'this month' anchor is UTC â€” the hero shows next month's profit (zero) during month-end evenings Central.
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9273
+LABEL: dashboard_stats monthly_profit (revenue/cost/profit by month chart)
+CLASS: strict-calendar | week=n/a | tz=mixed | review=CONFIRMED
+MECH: SELECT strftime('%Y-%m', df.completed_at) as m ... GROUP BY m
+WHY: True calendar-month buckets. completed_at is pinned to the chosen close date (YYYY-MM-DDT00:00:00Z), so buckets match Jack's calendar; only deals that fell back to Utc::now().to_rfc3339() (:4380, no payment date recorded) can misbucket if completed 6pm-midnight Central on a month edge.
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9622
+LABEL: get_monthly_profit(month) â€” daily profit series inside a selected month (cumulative chart)
+CLASS: strict-calendar | week=n/a | tz=mixed | review=CONFIRMED
+MECH: AND strftime('%Y-%m', df.completed_at) = ?1 GROUP BY date(df.completed_at)
+WHY: Strict calendar month: the 'YYYY-MM' comes from the caller (the month the user picked), rows bucket by completed_at's calendar date. Same minor data-side caveat as monthly_profit for fallback-stamped completions.
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9856
+LABEL: get_analytics_range monthly_profit buckets (Analytics bar chart, within the UI-chosen range)
+CLASS: strict-calendar | week=n/a | tz=mixed | review=CONFIRMED
+MECH: SELECT strftime('%Y-%m', df.completed_at) as m ... GROUP BY m (range: date(df.completed_at) >= ?1 / <= ?2, :9821)
+WHY: Calendar-month grouping over date-pinned completed_at; range endpoints ?1/?2 are YYYY-MM-DD strings supplied by the frontend (whether the frontend derives them as strict calendar weeks/months is that cluster's audit).
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10217
+LABEL: generate_weekly_brief week window (Brief 'this week' / 'last week' stats)
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: let this_monday = now_date - chrono::Duration::days(now_date.weekday().num_days_from_monday() as i64); end_excl = this_monday + 7 days
+WHY: Week structure is correct: Monday-start (num_days_from_monday), whole calendar weeks with exclusive upper bound, and period_days>=28 correctly switches to 1st-to-1st calendar months (:10208-10214). The remaining defect is only the anchor (see the :10190 entry).
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10190
+LABEL: generate_weekly_brief anchor date (decides WHICH week/month the Brief shows)
+CLASS: tz-hazard | week=monday | tz=utc | review=CONFIRMED
+MECH: _ => Utc::now().date_naive() (also :10181 let now = Utc::now(); :10189 fallback)
+WHY: The otherwise-correct Monday-Sunday / calendar-month windows are anchored on the UTC date: every Sunday from 6/7pm Central to midnight the Brief flips to the next (empty) week, and on the last day of a month a monthly Brief flips to next month. Should anchor on Local::now().date_naive() (Central). Data side inside the window: completed_at is date-pinned (safe); voided_at (:10369) and issue_date (:10409) are UTC stamps, so evening events can slide one day.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10269
+LABEL: Brief calendar-month stats (avg_margin_this_month, revenue_this_month, net_profit_this_month, payout this_month)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let month_start = format!("{}-01", now.format("%Y-%m")); â€” now = Utc::now() (:10181)
+WHY: Calendar month start, but from the UTC clock, and it ignores the for_date anchor entirely â€” a Brief generated for a past date still reports the CURRENT UTC month here. Flips to next month during month-end evenings Central.
+
+### [AMBIGUOUS] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:10417
+LABEL: Brief 'New clients' and 'Interactions' cards (new_clients_this_week, interactions_this_week :10421)
+CLASS: other | week=monday | tz=mixed | review=CONFIRMED
+MECH: WHERE created_at >= ?1 with [&week_start] â€” no upper bound
+WHY: Lower bound is the correct Monday week start, but there is no < end_excl upper bound (unlike every other weekly stat in this function): for today's Brief it is week-to-date (fine), but a Brief anchored on a past for_date counts everything from that Monday to now â€” not a week. created_at is also a UTC entry stamp, so 6pm-midnight Central activity slides a day.
+
+### [VIOLATION] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9101
+LABEL: get_profit_forecast actual_profit_mtd (Forecast card 'actual profit MTD')
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: completed_at >= ?1 with month_start = format!("{}-01", now.format("%Y-%m")), now = chrono::Utc::now().date_naive() (:9097-9098)
+WHY: Month-to-date from the 1st (calendar) but anchored on the UTC date â€” flips to next month during month-end evenings Central. (Also unrelated to R-159: this MTD sum lacks the archived/voided/refund guards every other profit stat has.)
+
+### [AMBIGUOUS] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:1349
+LABEL: export_analytics_xlsx 'Revenue by Month' sheet
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: SELECT strftime('%Y-%m',issue_date) as month ... GROUP BY month
+WHY: Calendar-month buckets, but over issue_date, which is a UTC RFC3339 entry stamp (default Utc::now().to_rfc3339(), :2204, :2916, :3537): an invoice issued 6pm-midnight Central carries the next UTC day, so month-end-evening invoices bucket into the following month. This is the same family as the shipped month-shift bugs. Boundary itself is calendar-correct; only evening rows at month edges shift.
+
+### [AMBIGUOUS] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:1324
+LABEL: export_analytics_xlsx 'Paid YTD' summary cell
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: issue_date >= ?1 with [format!("{}-01-01",Utc::now().format("%Y"))]
+WHY: Year bucket, not week/month (reported for completeness): calendar year start but UTC year â€” wrong only on Dec 31 evenings Central; issue_date UTC stamps shift New Year's Eve evening invoices into the next year.
+
+### [AMBIGUOUS] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9219
+LABEL: dashboard_stats paid_this_year ('paid this year' stat)
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: issue_date >= ?1 with [format!("{}-01-01", Utc::now().format("%Y"))]
+WHY: Same UTC-year pattern as the export's Paid YTD; year-scope so outside R-159's week/month letter, boundary only shifts Dec 31 evening Central.
+
+### [AMBIGUOUS] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:13907
+LABEL: financials_overview year_profit (basis for tax_reserve / refund_reserve shown on Financials)
+CLASS: other | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND df.completed_at >= date('now','start of year')
+WHY: Year bucket via SQLite date('now') without 'localtime' â€” UTC year start; shifts only on Dec 31 evenings Central. Reported for completeness (year, not week/month).
+
+### [AMBIGUOUS] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:2951
+LABEL: Recurring invoices frequency 'Monthly' (compute_next_recurring; also compute_next_due :2962)
+CLASS: rolling-window | week=n/a | tz=utc | review=CONFIRMED
+MECH: "monthly" => dt + chrono::Duration::days(30) ("quarterly" => 90, "annually" => 365)
+WHY: Not a filter/bucket, but a recurrence the user configures as 'Monthly' that actually advances 30 days â€” it drifts backwards through the calendar (12 cycles = 360 days) instead of firing the same day each month. Flagging since it presents 'monthly' but computes a fixed 30-day hop; Jack should decide if calendar-month recurrence is intended.
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:13957
+LABEL: financials_overview trailing monthly opex -> runway_months
+CLASS: other | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: WHERE date >= date('now','-90 days') ... / 3.0
+WHY: A trailing 90-day average divided by 3 to estimate monthly burn for the runway figure â€” a rate, not a calendar-month bucket presented to the user; rolling is the right tool here. UTC date('now') can only wobble the 90-day edge by a day.
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:13981
+LABEL: internal â€” financials_overview stale_unallocated alert ('money in untied after a week')
+CLASS: other | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
+WHY: An 'older than 7 days' aging threshold for an alert, not something presented as a calendar week. Rolling is correct for aging.
+
+### [OK] [desktop-rust] C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:7339
+LABEL: internal â€” local backup pruning (delete backups older than 30 days)
+CLASS: other | week=n/a | tz=local | review=CONFIRMED
+MECH: let cutoff = chrono::Local::now() - chrono::Duration::days(30);
+WHY: Housekeeping retention window, not user-facing week/month; uses Local time correctly.
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:134
+LABEL: Mobile dashboard stat served as revenue_this_week (rendered as a 'this week' card)
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND paid_at >= date('now','-7 days')
+WHY: Presented as 'this week' but computed as a rolling last-7-days window ending at UTC now. On a Wednesday this includes last Wed-Sun and excludes nothing of this week; it is never the Monday-Sunday calendar week R-159 requires. Boundary is also UTC (date('now') has no 'localtime' modifier).
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:135
+LABEL: Mobile dashboard stat clients_this_week ('new clients this week')
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND created_at >= date('now','-7 days')
+WHY: Same pattern as revenue_this_week: rolling 7 days from UTC now, presented as 'this week'. Not a Monday-start calendar week.
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:136
+LABEL: Mobile dashboard stat interactions_this_week ('interactions this week')
+CLASS: rolling-window | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: AND created_at >= date('now','-7 days')
+WHY: Rolling 7 days from UTC now presented as 'this week'. Note the same three stats are computed correctly (calendar Monday-Sunday) in weekly_brief lines 690/694 of this file â€” dashboard_stats and the brief will disagree.
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:127
+LABEL: Mobile dashboard hero completed_this_month ('deals completed this month')
+CLASS: tz-hazard | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: strftime('%Y-%m', completed_at) = strftime('%Y-%m','now')
+WHY: Calendar-month match, but 'now' is UTC: from ~18:00/19:00 Central on the last day of each month until midnight, strftime('%Y-%m','now') is already the NEXT month, so the card drops to the empty new month while Jack is still in the old one. Real boundary shift for Central usage (~5-6 h every month).
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:225
+LABEL: Mobile dashboard hero Revenue/Profit '[This month | All time]' toggle + prev-month delta (revenue_mtd, revenue_prev_month, profit_mtd, profit_prev_month)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let this_month = now.format("%Y-%m") ... strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = ?1 (now = chrono::Utc::now(), line 91)
+WHY: Calendar-month matching is correct in shape (lines 230-243), but this_month/prev_month come from Utc::now(): on the last evening of a Central month the hero flips to the new (empty) month and the prev-month delta compares the wrong pair. Same UTC-month bug class that already shipped here (brief audit R-131).
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:93
+LABEL: Mobile dashboard deals_mtd (line 247) and loss_deals_this_month / loss_total_this_month (lines 271-272)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let month_start = now.format("%Y-%m-01") ... AND completed_at >= ?1 (now = chrono::Utc::now(), line 91)
+WHY: Month-to-date lower bound is the calendar 1st, but derived from the UTC clock: during the last ~5-6 evening hours of a Central month, month_start jumps to the next month's 1st and all three 'this month' figures zero out early. No upper bound (fine for MTD).
+
+### [AMBIGUOUS] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:65
+LABEL: Mobile dashboard monthly profit chart default month (GET /api/dashboard/monthly-profit)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: q.month.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m")) ... AND strftime('%Y-%m', completed_at)=?1 (line 71)
+WHY: The per-day bucketing inside the chosen month is strictly calendar (strftime match on completed_at). But when the client omits ?month, the default is the UTC month, which on month-end evenings Central is the next month â€” the chart would render the wrong (empty) month. Whether the mobile app always passes ?month from a local date is in the UI cluster; flag for cross-check.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:147
+LABEL: Mobile dashboard monthly revenue/cost/profit table (JSON 'monthly_profit', bucket key 'month')
+CLASS: strict-calendar | week=n/a | tz=mixed | review=CONFIRMED
+MECH: SELECT strftime('%Y-%m',df.completed_at) as m ... GROUP BY m ORDER BY m
+WHY: True calendar-month buckets on the stored value; no 'now' involved. Residual caveat: completed_at is mixed storage (RFC3339 UTC stamps on pre-v0.15.128 rows, plain bank-payment dates since), so an old row stamped late-evening Central can sit in the next UTC month â€” a data-storage hazard, not a boundary-computation bug at this site.
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:483
+LABEL: Weekly brief window (GET /api/weekly-brief, Weekly/Biweekly/Monthly picker): all *_this_week and *_last_week figures
+CLASS: tz-hazard | week=monday | tz=utc | review=CORRECTED
+MECH: period_days >= 28 -> first = anchor.with_day(1) / next_first; else this_monday = anchor - Duration::days(anchor.weekday().num_days_from_monday() as i64); end_excl = this_monday + 7d
+WHY: Model implementation of R-159: Monday-start whole calendar weeks (num_days_from_monday), calendar month for the 'Monthly' (>=28d) picker choice, exclusive upper bounds, equal-length previous window. Sole hazard: anchor defaults to chrono::Utc::now().date_naive() (lines 456, 471-473) when ?date is absent â€” on Sunday evenings Central the UTC date is already Monday, flipping the entire brief to the new empty week (and likewise at month-end for the monthly view). If the mobile client passes a local ?date this is moot â€” cross-check in the UI cluster.
+REVIEWNOTE: Window math verified exactly as described (Monday via num_days_from_monday, calendar month for >=28d, exclusive upper bounds). But the finder's open question is now settled against the app: the PWA's default brief view calls loadBrief(null) and only sends ?date when paging to past periods (app.js:6844, 6856-6857), so the common current-period view anchors on chrono::Utc::now().date_naive() (lines 456/471-473). On Sunday evenings Central (18:00/19:00-midnight) the UTC date is already Monday and the entire default brief flips to the new empty week; same at month-end for the monthly picker. Calendar-shaped but UTC-anchored in the default path â†’ same class as the other tz-hazard VIOLATIONs.
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:503
+LABEL: Weekly brief month stats: net_profit_this_month, profit_jack/ben/business_this_month, avg_margin_this_month, revenue_this_month, split_month payouts
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: let month_start = format!("{}-01", now.format("%Y-%m")); ... AND completed_at >= ?1 (consumers at 541, 543, 597-609, 623-625)
+WHY: Unlike the week window, month_start ignores the ?date anchor entirely and is built from Utc::now() â€” no client-side override possible. On the last evening of a Central month every 'this month' figure in the brief (including the payout split) resets to the new month early. Calendar-shaped but UTC-anchored.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/dashboard.rs:550
+LABEL: Weekly brief 'monthly_breakdown' all-time per-month history
+CLASS: strict-calendar | week=n/a | tz=mixed | review=CONFIRMED
+MECH: SELECT strftime('%Y-%m', completed_at) AS m, COUNT(*), ... GROUP BY m
+WHY: Calendar-month grouping on the stored completed_at; no 'now' boundary. Same mixed-storage caveat as the dashboard monthly table (old UTC-stamped rows near month ends can bucket one month late).
+
+### [AMBIGUOUS] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/deals.rs:450
+LABEL: Pipeline analytics timeframe filter (GET pipeline_analytics, query param timeframe_days) â€” scopes the funnel counts/values
+CLASS: labeled-rolling | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: Some(d) if d > 0 => format!(" AND created_at >= date('now','-{} days')", d)
+WHY: Rolling N-days window from UTC now; the param is honestly day-denominated. Verdict depends on the UI option labels feeding timeframe_days (other cluster): if a picker option says 'This month' or 'Week' and sends 30/7, this becomes a violation; if options say 'Last 30 days' it is merely rolling-as-labeled. Flag for the UI cluster to trace.
+
+### [AMBIGUOUS] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/deals.rs:526
+LABEL: Pipeline analytics win_rate_30 / won_30 (30-day win rate)
+CLASS: labeled-rolling | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: won_at >= date('now','-30 days')
+WHY: Rolling 30 days from UTC now. JSON field names (won_30, win_rate_30) suggest a 'last 30 days' presentation, which is honest rolling â€” but if the UI captions it 'this month' or 'monthly win rate' it violates R-159. Needs the UI-side label to settle; reported separately per instructions.
+
+### [AMBIGUOUS] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/deals.rs:530
+LABEL: Pipeline analytics win_rate_90 / won_90 (90-day win rate)
+CLASS: labeled-rolling | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: won_at >= date('now','-90 days')
+WHY: Rolling 90 days from UTC now. Same reasoning as win_rate_30; if the UI presents it as 'last quarter'/'3 months' it drifts toward violation, as '90 days' it is honest rolling.
+
+### [AMBIGUOUS] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/clients.rs:707
+LABEL: Clients list dormant/stale filter (query param stale_days: 'no invoice in N days')
+CLASS: labeled-rolling | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: MAX(i.created_at) IS NULL OR MAX(i.created_at) < datetime('now','-{days} days')
+WHY: Rolling N-days dormancy threshold from UTC now â€” appropriate for a dormancy filter, which is inherently rolling. Only a violation if the UI presents the options as '1 month'/'3 months' rather than day counts; trace stale_days option labels in the UI cluster.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/staff_api.rs:1288
+LABEL: Staff receivables AR aging buckets: current / d1_30 / d31_60 / d61_90 / d90_plus
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: let idx = if days <= 0 { 0 } else if days <= 30 { 1 } else if days <= 60 { 2 } ... (days from today - due_date; today = chrono::Utc::now().date_naive(), line 1271)
+WHY: Conventional AR aging in day bins, labeled in days (d1_30 etc.), not presented as weeks/months â€” out of R-159 scope. Minor day-level hazard only: 'today' is the UTC date, so between ~18:00/19:00 Central and midnight an invoice can age one day early; never shifts a week/month bucket.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/staff_api.rs:1380
+LABEL: Staff payables AP aging buckets: d0_30 / d31_60 / d61_90 / d90_plus
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: let idx = if days <= 30 { 0 } else if days <= 60 { 1 } else if days <= 90 { 2 } else { 3 }; (today = chrono::Utc::now().date_naive(), line 1367)
+WHY: Day-denominated aging bins, honestly labeled in days. Same one-day UTC-evening skew as the AR buckets; not a week/month calendar site.
+
+### [VIOLATION] [server] C:/Users/Jack/Desktop/clienthub-api/src/scheduler.rs:96
+LABEL: Scheduled sends 'Monthly' interval (compute_next_run for interval_type='monthly') â€” caught by the recursive grep, file not in the cluster list
+CLASS: rolling-window | week=n/a | tz=utc | review=CONFIRMED
+MECH: "monthly" => from + ChronoDuration::days(30 * step)
+WHY: A schedule the user configures as 'monthly' advances by 30-day hops, so the send day drifts: Jan 1 -> Jan 31 -> Mar 2 -> Apr 1... In 31-day and February months it lands on a different day-of-month every cycle. Should add one calendar month (clamping the day). The 'weekly' default (line 98, ChronoDuration::weeks) is fine â€” every-7-days keeps the weekday, which is what a weekly recurrence means.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/quotes.rs:262
+LABEL: internal â€” default quote valid_until when the client omits one
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: (chrono::Utc::now() + chrono::Duration::days(30)).format("%Y-%m-%d")
+WHY: A 30-days-out expiry default, not a week/month filter or bucket; nothing presents it as 'a month'. Only week/month-adjacent site in quotes.rs.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/employees.rs:2173
+LABEL: internal â€” staff invite expiry (also line 2245, 14-day refresh)
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: (chrono::Utc::now() + chrono::Duration::days(days)).to_rfc3339()
+WHY: Invite-token expiry windows in days; not presented as week/month. employees.rs contains no week/month range or bucketing sites.
+
+### [OK] [server] C:/Users/Jack/Desktop/clienthub-api/src/routes/invoices.rs:622
+LABEL: internal â€” overdue sweep selecting invoices with due_date < today
+CLASS: other | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: WHERE status='sent' AND due_date < date('now')
+WHY: Day-level overdue check, not a week/month range â€” out of R-159 scope. (date('now') is UTC, so an invoice flips overdue up to 6 hours early Central; day-level hazard only. Same pattern at dashboard.rs:327/676/680.) invoices.rs contains no week/month sites.
+
+### [OK] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:6816
+LABEL: Brief interval selector: Weekly / Biweekly / Monthly
+CLASS: strict-calendar | week=monday | tz=utc | review=CONFIRMED
+MECH: <option value="7">Weekly</option><option value="14">Biweekly</option><option value="30">Monthly</option> -> params.push('days=' + ...) (line 6858)
+WHY: Option values are day-counts, which looks like the classic rolling-window trap, but the server (dashboard.rs:482-497) converts them to strict calendar blocks: days>=28 -> the anchor's calendar month (1st to last, exclusive next-1st upper bound); otherwise N whole Monday-Sunday weeks via anchor - weekday().num_days_from_monday(). 'Monthly'=30 therefore delivers a true calendar month, and 'Weekly' a true Mon-Sun week. The displayed range label (lines 6866, 6885) shows the server's week_start - week_end, which matches. Only residual risk is the UTC anchor, reported separately.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:6829
+LABEL: Weekly Brief 'This period' anchor + prev/next paging (internal)
+CLASS: tz-hazard | week=monday | tz=utc | review=CONFIRMED
+MECH: const anchor = _briefAnchorDate || today(); with today() = new Date().toISOString().slice(0,10) (line 135); also `if (next >= today())` (line 6840)
+WHY: today() is the UTC date: after 6/7pm Central it is tomorrow. On any Sunday evening Central, today() returns Monday, so the brief anchors to the NEXT Mon-Sun week â€” the current 'This period' brief shows a week that has not started yet in Jack's calendar, and prev-paging is off by a full week. The server has the same defect independently: dashboard.rs:456/473 anchors on chrono::Utc::now().date_naive() when no date param is sent. Both sides need a Central (local) 'today'.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:6831
+LABEL: Weekly Brief prev/next arrows (period stepping)
+CLASS: other | week=monday | tz=utc | review=CORRECTED
+MECH: d.setUTCDate(d.getUTCDate() - (parseInt(localStorage.getItem('ec_brief_days')||'7',10)||7)); _briefAnchorDate = d.toISOString().slice(0,10)
+WHY: Steps the anchor by the raw day-count (7/14/30). The noon-UTC anchoring trick (new Date(anchor+'T12:00:00Z')) makes the arithmetic itself tz-safe, and for 7/14 every step lands in the adjacent calendar week(s). But in 'Monthly' mode stepping 30 days back from an anchor on the 31st lands on the 1st of the SAME month, so the server re-renders the identical month â€” the prev arrow appears dead until pressed twice. Month paging should step by calendar month (like shiftMonth at line 4210), not 30 days.
+REVIEWNOTE: Site and mechanism verified (6828-6841), but the verdict is understated. Beyond the dead-arrow case (31st anchor - 30 = 1st of the SAME month, re-rendering it), 30-day stepping can SKIP a calendar month entirely: anchor Mar 1 - 30 days = Jan 30, so prev jumps March -> January and February is unreachable from that path (next from Jan 31 + 30 = Mar 2 skips it forward too). A 'Monthly' pager computed by rolling 30-day steps that repeats and skips months is a VIOLATION under the rubric; AMBIGUOUS is reserved for honestly-labeled rolling ranges, which this is not. Fix reference (shiftMonth at 4210) is correct.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:6878
+LABEL: Weekly Brief 'Monthly history' row labels
+CLASS: tz-hazard | week=n/a | tz=mixed | review=CONFIRMED
+MECH: const d = new Date(Date.UTC(+y, (+mo||1)-1, 1)); ... d.toLocaleDateString(undefined,{month:'short',year:'numeric'})
+WHY: Constructs UTC midnight of the 1st, then renders it in the LOCAL timezone: in Central, 2026-07-01T00:00Z is Jun 30 7pm, so every Monthly-history row is labeled one month early ('2026-07' renders as 'Jun 2026') â€” the exact bug class that already shipped here once. The safe local-constructor pattern exists 6700 lines up at line 120 (monLabel). Fix: new Date(+y, +mo-1, 1) or pass timeZone:'UTC' to the formatter.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:6909
+LABEL: Weekly Brief 'This month' margin/revenue tile + rep-earnings 'MTD' row (line 6965)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: brief.avg_margin_this_month / brief.revenue_this_month / brief.net_profit_this_month <- dashboard.rs:503 month_start = format!("{}-01", now.format("%Y-%m")) with now = chrono::Utc::now()
+WHY: The month lower bound is a strict calendar 1st (good, no upper bound needed for MTD), but the 'current month' is derived from UTC now. From 6/7pm Central to midnight on the last day of every month, the tile flips to the new (empty) month five to six hours before Jack's calendar does.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:7092
+LABEL: Weekly Brief 'Activity this week' cards (new clients / interactions logged)
+CLASS: other | week=monday | tz=utc | review=CONFIRMED
+MECH: brief.new_clients_this_week / brief.interactions_this_week <- dashboard.rs:690/694: "... WHERE created_at >= ?1" with only [&week_start] â€” no upper bound
+WHY: The server bounds these two counts only from below (created_at >= week_start) with no end_excl, unlike every other brief aggregate. Viewing the current week it happens to be correct, but paging back to any past period shows counts labeled 'this week' that actually cover everything from that Monday through today â€” inflated for every historical week.
+
+### [OK] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:6981
+LABEL: Weekly Brief 'Monthly history' bucketing
+CLASS: strict-calendar | week=n/a | tz=n/a | review=CONFIRMED
+MECH: brief.monthly_breakdown <- dashboard.rs:548-550 GROUP BY strftime('%Y-%m', completed_at)
+WHY: Rows are grouped by the calendar month of the stored completed_at (a date string â€” the buyer's bank payment date), so the buckets themselves are strict calendar months with no 'now' involvement. The only defect in this section is the label rendering (line 6878, reported separately as VIOLATION).
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4071
+LABEL: Dashboard Performance hero 'This month' toggle (revenue/profit + 'vs last month' delta)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: s.revenue_mtd / s.profit_mtd / s.*_prev_month <- dashboard.rs:225 this_month = now.format("%Y-%m") (now = chrono::Utc::now(), line 91) matched via strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = ?1
+WHY: Month matching is strict calendar (strftime %Y-%m equality), but the current-month key is the UTC month: on every month-end evening Central the hero labeled 'This month' switches to the next month 5-6 hours early, showing ~zero with a huge 'vs last month' delta. Compounding it, paid_at is written as a UTC ISO stamp (e.g. app.js:5340 new Date().toISOString()), so a payment recorded after 6/7pm Central on the last day of a month is permanently bucketed into the NEXT month â€” the same class as the shipped '$47,920 of August sits in July' bug.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4082
+LABEL: Dashboard hero count 'completed this month'
+CLASS: tz-hazard | week=n/a | tz=sqlite-utc | review=CONFIRMED
+MECH: s.completed_this_month <- dashboard.rs:127: strftime('%Y-%m', completed_at) = strftime('%Y-%m','now')
+WHY: SQLite 'now' without the 'localtime' modifier is UTC, so the 'current month' flips 5-6 hours early on month-end evenings Central; the count drops to 0 while it is still the old month on Jack's calendar. Needs strftime('%Y-%m','now','localtime') or a Central-derived month key.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4121
+LABEL: Dashboard alert card 'Loss deals this month'
+CLASS: other | week=n/a | tz=utc | review=CONFIRMED
+MECH: (s.loss_deals||0)>0 ... but the API returns loss_deals_this_month/loss_total_this_month (dashboard.rs:305-306), computed with completed_at >= month_start where month_start = Utc now.format("%Y-%m-01") (dashboard.rs:93,271)
+WHY: Two defects. (1) Dead card: app.js reads s.loss_deals / s.loss_total but the stats endpoint serializes those values as loss_deals_this_month / loss_total_this_month, so the alert can never render even when loss deals exist. (2) If wired up, the window is a calendar month start derived from UTC now â€” same month-end-evening tz-hazard as the other MTD stats.
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4187
+LABEL: Dashboard chart 'cumulative this month' â€” initial month selection
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: if (!_dashMonth) _dashMonth = new Date().toISOString().slice(0,7);
+WHY: toISOString() converts to UTC before slicing the YYYY-MM key. From 6/7pm Central to midnight on the last day of any month, the dashboard opens on the NEXT month â€” empty chart ('No data for this month') with next month's name in the sub-label â€” while it is still this month in Central. Safe form: build the key from local getFullYear()/getMonth() like bkLocalDay (line 2532) does.
+
+### [AMBIGUOUS] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4241
+LABEL: Dashboard chart next-month arrow clamp (internal)
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: const thisMonth = new Date().toISOString().slice(0,7); ... nx.disabled = _dashMonth >= thisMonth;
+WHY: Same UTC slice(0,7) pattern as line 4187, used only to disable the forward arrow. On month-end evenings Central it lets the user page one month past the real current month (into an empty next month). Boundary shift is real but the impact is navigation-only.
+
+### [OK] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4210
+LABEL: Dashboard chart month prev/next stepping (internal)
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: function shiftMonth(m, dir) { const [y, mo] = m.split('-').map(Number); const d = new Date(y, mo - 1 + dir, 1); ... }
+WHY: Correct calendar-month arithmetic: local-time Date constructor anchored on day 1, so no UTC parse, no day-31 rollover, and December/January wrap handled by the constructor. This is the pattern the brief's monthly paging (line 6831) should use.
+
+### [OK] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:4245
+LABEL: Dashboard chart daily bucketing within the selected month
+CLASS: strict-calendar | week=n/a | tz=local | review=CONFIRMED
+MECH: const daysInMonth = new Date(y, mo, 0).getDate(); const isCurrent = today.getFullYear()===y && today.getMonth()+1===mo; ... const ds = `${_dashMonth}-${String(d).padStart(2,'0')}`
+WHY: Given a month key, the series is built strictly over days 1..last-day of that calendar month using local-time Date math, matched against server day buckets (dashboard.rs:69-71 GROUP BY date(completed_at) within strftime('%Y-%m', completed_at)=?1). The only flaw is the UTC-derived initial key feeding it (line 4187, reported separately).
+
+### [VIOLATION] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:2167
+LABEL: Analytics hero 'Profit Â· this month' + 'vs last month' delta chip
+CLASS: tz-hazard | week=n/a | tz=utc | review=CONFIRMED
+MECH: fmtK(s.profit_mtd) with deltaVs(mLast.profit||0, mPrev.profit, 'vs last month') where mLast/mPrev = last two entries of s.monthly_profit
+WHY: Same UTC this_month key as the dashboard hero (dashboard.rs:225), so the headline flips months early on Central month-end evenings. Additionally the delta baseline is wrong whenever the current month has no completed deals yet: monthly_profit only contains months WITH data, so mLast/mPrev can be July/June while the headline shows August MTD â€” the chip then reads 'vs last month' but compares two older months.
+
+### [OK] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/app.js:2180
+LABEL: Analytics 'Monthly revenue' chart + 'Monthly breakdown' table (line 2184)
+CLASS: strict-calendar | week=n/a | tz=n/a | review=CONFIRMED
+MECH: monthly.map(m=>({label:monLabel(m.month), ...})) <- dashboard.rs:147 GROUP BY strftime('%Y-%m', df.completed_at); monLabel (line 120) = new Date(+p[0], +p[1]-1, 1).toLocaleString('default',{month:'short'})
+WHY: Buckets are strict calendar months of the stored completed_at date string (no 'now' involved), and monLabel parses the YYYY-MM key with the local Date constructor â€” the safe form â€” so labels match their buckets. Minor copy nit only: the chart's empty state (line 3663) says 'No profit data for this month' even though this chart spans all months.
+
+### [OK] [mobile-pwa] C:/Users/Jack/Desktop/clienthub-api/www/landing.html:467
+LABEL: Marketing mockup copy ('This month Â· live as deals close', 'Revenue by week' at line 473)
+CLASS: other | week=n/a | tz=n/a | review=CONFIRMED
+MECH: static HTML in the product-screenshot mockup; only script is document.getElementById('yr').textContent = new Date().getFullYear() (line 783)
+WHY: landing.html computes no time ranges â€” the week/month strings are decorative mockup copy and the only date code is the footer copyright year. Nothing to audit under R-159.
+
+===== MISSED BY SWEEP (coverage critic) =====
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:8816
+EVIDENCE: Follow-up rules engine: `let cutoff = (now - chrono::Duration::days(rule.trigger_value)).to_rfc3339();` â€” rolling N-day window (no_order / no_contact / stale_deal / overdue_invoice triggers) that selects which clients get automated follow-ups. A real configurable day-range filter; nearest catalogued commands.rs entries (9101, 7339) are a different function entirely.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src/components/SettingsView.tsx:2727
+EVIDENCE: Follow-up rule config UI: `trigger_value: 30` default and numeric days input at :2908, rendered as 'No order > 30d' at :2946. The UI that defines the N-day windows the rules engine (commands.rs:8816) filters by. Catalogued SettingsView entries are 4691/4916 â€” far away, different feature.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9666
+EVIDENCE: get_receivables backend: `if days >= -7 && days <= 0 { due_soon += amt; }` (next-7-days window feeding the ReceivablesView:256 'lands in the next 7 days' chip) plus the AR aging bucketing at :9668 (`days <= 30 / 60 / 90` â†’ current/d1_30/d31_60/d61_90/d90_plus). The UI chip and label array were catalogued, the desktop backend computation was not (nearest catalogued commands.rs line 9622 is get_monthly_profit, 44+ lines away in a different function).
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9763
+EVIDENCE: get_payables backend: AP aging bucketing `["d0_30", "d31_60", "d61_90", "d90_plus"]` computed from days-overdue. Desktop backend twin of the catalogued staff_api.rs:1380 server buckets and PayablesView.tsx:8 labels; this site itself is uncatalogued (141 lines from the nearest catalogued entry, separate function).
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:15556
+EVIDENCE: nl_compute_next_run: `"monthly" => from + chrono::Duration::days(30 * step)` (weekly default via `Duration::weeks(step)` at :15557) â€” desktop newsletter-schedule cadence stepping. The server analog scheduler.rs:96 was explicitly catalogued as caught; this desktop twin was not (nearest catalogued commands.rs entry is 13981).
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src/components/DealFlowView.tsx:263
+EVIDENCE: `const soon = (d) => { ... const n = daysUntil(v); return n >= 0 && n <= 7; };` computing pickupsSoon/deliveriesSoon â€” the actual next-7-days window computation behind the 'Next 7 days' subheader catalogued at :398 (135 lines away, beyond drift). Comment at :261 confirms: 'This week â€” counted as EVENTS, not deals'.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src/components/CompletedBreakdown.tsx:49
+EVIDENCE: Editable deal closing-date editor: `const today = new Date().toISOString().slice(0, 10);` + `api.updateDealCompletedAt(flow.id, dateStr)` at :56 â€” rewrites completed_at, which determines week/month bucket membership for every dashboard/brief/analytics stat. Direct analog of the catalogued CloseoutView.tsx:237 editor; this file appears nowhere in the catalogue.
+
+### MISSED C:/Users/Jack/Desktop/clienthub-api/src/routes/clients.rs:796
+EVIDENCE: Client health/risk score: `(now - then).num_days()` on last_contact_at, then `if d > 90 { score -= 30 } else if d > 30 { score -= 15 }` with 'No contact in N days' risk strings â€” 30/90-day rolling-window thresholds. 89 lines from the catalogued clients.rs:707 stale_days filter and a different feature.
+
+### MISSED C:/Users/Jack/Desktop/clienthub-api/www/app.js:2314
+EVIDENCE: Mobile receivables summary chip: `` `${fmt(d.summary.due_soon)} lands within 7 days` `` â€” mobile twin of the catalogued desktop ReceivablesView.tsx:256 next-7-days chip; nearest catalogued app.js entry (2184) is 130 lines away in the Analytics section.
+
+### MISSED C:/Users/Jack/Desktop/clienthub-api/www/app.js:2223
+EVIDENCE: Mobile PWA AR/AP aging bucket definitions: AR_BUCKETS ['current','1â€“30d','31â€“60d','61â€“90d','90+d'] and AP_BUCKETS at :2224, driving the mobile receivables/payables aging charts and re-summing under the committed-only toggle. Desktop label arrays (ReceivablesView:9, PayablesView:8) and server bucketing (staff_api) were catalogued; this mobile surface site was not.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src/components/QuotesView.tsx:382
+EVIDENCE: Quote form valid_until default: `new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)` â€” 30-day validity window default. The server analog (quotes.rs:262 default valid_until) was catalogued; the desktop form default was not.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/employees.rs:693
+EVIDENCE: Desktop staff-invite expiry: `Utc::now() + Duration::days(days)` plus the 14-day refresh `Duration::days(14)` at :729 â€” twin of the catalogued server employees.rs:2173/2245 invite-expiry sites; desktop file absent from the catalogue.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:8946
+EVIDENCE: Follow-up log retention: `let old_cutoff = (now - chrono::Duration::days(90)).to_rfc3339();` then DELETE FROM followup_log WHERE triggered_at < cutoff â€” 90-day rolling cutoff. Same class as the catalogued 30-day backup pruning at commands.rs:7339, 130+ lines from any catalogued entry.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/main.rs:76
+EVIDENCE: prune_logs: `(Local::now() - Duration::days(LOG_KEEP_DAYS))` with LOG_KEEP_DAYS = 7 (main.rs:49) â€” 7-day rolling cutoff deleting day-stamped log files. Same retention-pruning class the audit catalogued at commands.rs:7339; main.rs appears nowhere in the catalogue.
+
+### MISSED C:/Users/Jack/Desktop/BUSINESS APP/src-tauri/src/commands.rs:9029
+EVIDENCE: Client portal token: `let expires = (Utc::now() + Duration::days(30)).to_rfc3339();` â€” 30-day access-expiry window. Same class as the catalogued server invite expiry (employees.rs:2173 'internal OK'); nearest catalogued commands.rs entry (9101) is a different function.
+

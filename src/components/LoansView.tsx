@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2, RotateCcw, RefreshCw, AlertTriangle } from "lucide-react";
 import { api, Loan, LoanLedger } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay } from "../lib/format";
 import { toast } from "./Toast";
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localDay();
 
 // received_at is a "YYYY-MM-DD" date string; anchor it to local midnight so it
 // doesn't slip a day in negative timezones.

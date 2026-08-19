@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Quote, Client, LineItem } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay } from "../lib/format";
 import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban, Search } from "lucide-react";
 import { toast } from "./Toast";
 
@@ -379,7 +379,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
   const blankItem = (): LineItem => ({ description: "", qty: 1, rate: 0, amount: 0 });
   const [clientId, setClientId] = useState(initial?.client_id ?? "");
   const [validUntil, setValidUntil] = useState(
-    initial?.valid_until?.slice(0, 10) ?? new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)
+    initial?.valid_until?.slice(0, 10) ?? localDay(new Date(Date.now() + 30 * 864e5))
   );
   const [items, setItems] = useState<LineItem[]>(() => {
     try { const a = JSON.parse(initial?.line_items_json ?? "[]"); return a.length ? a : [blankItem()]; }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { RotateCcw, Trash2, Pencil, Check, X } from "lucide-react";
 import { api, DealFlow, SupplierPayment, SupplierPaymentInput } from "../lib/api";
-import { fmtAmount, primarySupplierLabel } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, localDay } from "../lib/format";
 import { toast } from "./Toast";
 import RefundPanel from "./RefundPanel";
 import ReconciliationPanel from "./ReconciliationPanel";
@@ -46,7 +46,7 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
   }, [flow.invoice_id]);
 
   // Editable closing date — replaces the reopen→recomplete dance that re-stamped a new date.
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
   const savedDate = flow.completed_at?.slice(0, 10) || "";
   const [dateStr, setDateStr] = useState(savedDate);
   useEffect(() => { setDateStr(flow.completed_at?.slice(0, 10) || ""); }, [flow.completed_at]);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
-import { fmtAmount, primarySupplierLabel } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import {
   CheckCircle2, RefreshCw, ChevronDown, RotateCcw, Trash2,
@@ -167,7 +167,7 @@ export default function CloseoutView() {
                         </span>
                         {flow.completed_at && (
                           <span>
-                            Completed {new Date(flow.completed_at).toLocaleDateString("en-US", {
+                            Completed {parseLocalDay(flow.completed_at).toLocaleDateString("en-US", {
                               month: "short", day: "numeric", year: "numeric",
                             })}
                           </span>
@@ -234,7 +234,7 @@ function DealBreakdown({
   const margin   = pct(flow.net_profit, flow.gross_revenue);
 
   // Editable completion date for backlogs
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = localDay();
   const initialDate = flow.completed_at ? flow.completed_at.slice(0, 10) : todayStr;
   const [editDate, setEditDate] = useState(initialDate);
   const [dateSaving, setDateSaving] = useState(false);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, WeeklyBrief } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay, localMonth, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 import {
   TrendingUp, TrendingDown, Minus, RefreshCw, Send, Printer,
@@ -59,17 +59,21 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
     load(anchorDate);
   };
 
+  // R-159: step from the server-computed period bounds — the day before the
+  // period start / after the period end always lands in the adjacent calendar
+  // block, whatever the cadence (the old ±30-day hop repeated or skipped months).
   const goToPrevWeek = () => {
-    const anchor = anchorDate ?? new Date().toISOString().slice(0, 10);
-    const prev = addDays(anchor, -freq);
+    const prev = brief ? addDays(brief.week_start, -1) : addDays(anchorDate ?? localDay(), -freq);
     setAnchorDate(prev);
     load(prev);
   };
   const goToNextWeek = () => {
-    if (!anchorDate) return;
-    const next = addDays(anchorDate, freq);
-    const today = new Date().toISOString().slice(0, 10);
-    if (next >= today) { setAnchorDate(null); load(null); }
+    if (!anchorDate || !brief) return;
+    const next = addDays(brief.week_end, 1);
+    const today = localDay();
+    const nextIsCurrent = next >= today
+      || (freq >= 28 ? next.slice(0, 7) === localMonth() : addDays(next, freq - 1) >= today);
+    if (nextIsCurrent) { setAnchorDate(null); load(null); }
     else { setAnchorDate(next); load(next); }
   };
   const isCurrentWeek = !anchorDate;
@@ -170,7 +174,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Section 1: At-a-glance hero — one calm divided row (mirrors the dashboard) */}
           <div>
-            <h2 className="text-[15px] font-semibold text-ink mb-3">This week at a glance</h2>
+            <h2 className="text-[15px] font-semibold text-ink mb-3">This {freq >= 28 ? "month" : freq === 7 ? "week" : "period"} at a glance</h2>
             <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
               <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
                 <HeroCell label="Revenue" value={fmtAmount(brief.revenue_this_week)} extra={changePct(brief.revenue_change_pct)} />
@@ -211,9 +215,6 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   Never assumes a split or shows partner names. */}
               {brief.payout_totals && brief.payout_totals.length > 0 ? (
                 <>
-                  {/* The boxes are the ROLLING brief period (can span a month boundary),
-                      the line below is the calendar month — label both so a 14-day period
-                      exceeding month-to-date reads correctly instead of looking broken. */}
                   <div className="text-[11px] text-muted">
                     Each recipient's cut this period ({brief.week_start} – {brief.week_end})
                   </div>
@@ -237,7 +238,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                     <div className="flex items-center justify-between gap-3 flex-wrap text-[12px] text-muted pt-3"
                       style={{ borderTop: "1px solid var(--t-b1)" }}>
                       <span>
-                        {new Date().toLocaleString("en-US", { month: "long" })} so far: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
+                        {parseLocalDay(brief.week_start).toLocaleString("en-US", { month: "long" })} so far: <span className="font-semibold text-ink-2">{fmtAmount(brief.net_profit_this_month)}</span> profit
                       </span>
                       <span className="text-right">
                         {brief.payout_totals.map((r, i) => (
@@ -277,7 +278,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                   <div className="space-y-1">
                     {[...brief.monthly_breakdown].reverse().map((m) => (
                       <div key={m.month} className="flex items-center gap-3 text-[12px]">
-                        <span className="w-24 text-ink-2 font-medium">{new Date(m.month + "-01").toLocaleString("en-US", { month: "short", year: "numeric" })}</span>
+                        <span className="w-24 text-ink-2 font-medium">{parseLocalDay(m.month).toLocaleString("en-US", { month: "short", year: "numeric" })}</span>
                         <span className="text-muted w-16 tabular-nums">{m.count} deal{m.count !== 1 ? "s" : ""}</span>
                         <span className="text-muted tabular-nums flex-1">{fmtAmount(m.revenue)}</span>
                         <span className={`tabular-nums font-medium ${m.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(m.net_profit)}</span>
@@ -293,7 +294,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
                 <div className="flex items-center gap-2 bg-warning-bg border border-warning rounded-lg px-4 py-2.5">
                   <AlertCircle size={14} className="text-warning-ink flex-shrink-0" />
                   <span className="text-[12px] text-warning-ink">
-                    {brief.loss_deals_this_week} deal{brief.loss_deals_this_week !== 1 ? "s" : ""} lost money this week:{" "}
+                    {brief.loss_deals_this_week} deal{brief.loss_deals_this_week !== 1 ? "s" : ""} lost money this period:{" "}
                     <span className="font-semibold">{fmtAmount(brief.loss_total_this_week)}</span>
                   </span>
                 </div>
@@ -354,7 +355,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           {/* Section 4: Highlights */}
           {(brief.best_margin_deal || brief.worst_margin_deal || brief.biggest_invoice) && (
             <div>
-              <h2 className="text-[15px] font-semibold text-ink mb-3">This week's highlights</h2>
+              <h2 className="text-[15px] font-semibold text-ink mb-3">This {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}'s highlights</h2>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                 {brief.best_margin_deal && (
                   <HighlightCard
@@ -389,7 +390,7 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 
           {/* Section 5: Activity */}
           <div>
-            <h2 className="text-[15px] font-semibold text-ink mb-3">Activity this week</h2>
+            <h2 className="text-[15px] font-semibold text-ink mb-3">Activity this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="rounded-xl p-4 flex items-center gap-4"
                 style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>

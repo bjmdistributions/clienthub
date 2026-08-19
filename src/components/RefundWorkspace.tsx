@@ -4,7 +4,7 @@ import {
   CheckCircle2, AlertTriangle, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
 import { api, DealAllocation, DealReceipt, RefundRow, UnallocatedTxn } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 
 // ─── Refund workspace ───────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ import { toast } from "./Toast";
 
 const fmtDate = (s?: string) => {
   if (!s) return "";
-  const d = new Date(s);
+  const d = parseLocalDay(s); // bank dates are bare YYYY-MM-DD — UTC parse rendered them a day early (R-159)
   return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
 

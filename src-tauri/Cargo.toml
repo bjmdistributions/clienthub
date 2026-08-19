@@ -40,6 +40,7 @@ r2d2_sqlite = "0.25"
 
 # Time + IDs
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 bcrypt = "0.15"
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, ChevronRight, Loader2 } from "lucide-react";
 import { api, Supplier, DealFlow } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, parseLocalDay } from "../lib/format";
 import CompletedBreakdown from "./CompletedBreakdown";
 
 // Large-screen browser for a supplier's completed deals. Launched from the
@@ -105,7 +105,7 @@ export default function SupplierDealsModal({
                           )}
                           {d.completed_at && (
                             <span>
-                              {new Date(d.completed_at).toLocaleDateString("en-US", {
+                              {parseLocalDay(d.completed_at).toLocaleDateString("en-US", {
                                 month: "short", day: "numeric", year: "numeric",
                               })}
                             </span>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, ReceivablesAging, ARItem, ARClient, Client, PaymentMethod } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay } from "../lib/format";
 import { RefreshCw, ArrowUpRight, CalendarClock, Inbox, X, Check } from "lucide-react";
 
 // Aging buckets, oldest-money on the right; a calm → alarming ramp.
@@ -94,7 +94,7 @@ function deriveFromItems(items: ARItem[]): { total: number; buckets: Record<stri
 
 // Record a payment against an invoice — same flow the Invoices view uses.
 function RecordPaymentModal({ item, onClose, onSaved }: { item: ARItem; onClose: () => void; onSaved: () => void }) {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(localDay());
   const [method, setMethod] = useState("");
   const [reference, setReference] = useState("");
   const [methods, setMethods] = useState<PaymentMethod[]>([]);

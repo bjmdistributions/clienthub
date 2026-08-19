@@ -7,7 +7,7 @@ import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, BankPersonCandidate, ReconciliationMissingDeal,
 } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
@@ -131,7 +131,7 @@ const dealLabel = (d: DealFlow) =>
 
 const fmtShortDate = (s?: string | null) => {
   if (!s) return "";
-  const d = new Date(s);
+  const d = parseLocalDay(s); // bare bank dates parse at local midnight (R-159 — UTC parse rendered them a day early)
   return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 };
 
@@ -812,7 +812,7 @@ export default function FinancialsView() {
     if (!(amt > 0)) { toast("Enter a cash amount greater than zero", "error"); return; }
     setCashSaving(true);
     try {
-      await api.addCashTransaction(amt, cashDir, cashDate || new Date().toISOString().slice(0, 10), cashCp.trim() || undefined, cashNote.trim() || undefined);
+      await api.addCashTransaction(amt, cashDir, cashDate || localDay(), cashCp.trim() || undefined, cashNote.trim() || undefined);
       setCashOpen(false); setCashAmount(""); setCashCp(""); setCashNote("");
       await refreshAll(false);
       toast(`Cash ${cashDir === "out" ? "payment" : "receipt"} recorded — allocate it to deals below`);
@@ -1572,7 +1572,7 @@ export default function FinancialsView() {
     setNewDealBusy(true);
     try {
       const client = await api.createClient({ name: buyerName });
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDay();
       const invoiceId = await api.createInvoice({
         client_id: client.id,
         issue_date: today,
@@ -1835,10 +1835,8 @@ export default function FinancialsView() {
     return { amt, n };
   }, [txns]);
 
-  // Local-constructed date (never `new Date("YYYY-MM-DD")` — that parses as UTC
-  // and renders a day early in Central time).
-  const localDay = (dt: Date) =>
-    `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  // localDay comes from lib/format (never `new Date("YYYY-MM-DD")` — that
+  // parses as UTC and renders a day early in Central time).
   const dayHeading = (iso: string) => {
     if (!iso) return "No date";
     if (iso === localDay(new Date())) return "Today";
@@ -2615,7 +2613,7 @@ export default function FinancialsView() {
               <Wand2 size={14} /> Find missing links
             </button>
             <button
-              onClick={() => { setCashDate(new Date().toISOString().slice(0, 10)); setCashOpen(true); }}
+              onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
               className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-line text-ink-2 rounded-lg text-[13px] font-medium hover:bg-surface-2 transition-colors"
             >
               <Plus size={14} /> Record cash

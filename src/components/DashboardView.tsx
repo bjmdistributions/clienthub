@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, DashboardStats, Client, Invoice, ReceivablesAging, PayablesAging, Me } from "../lib/api";
-import { fmtCompactCurrency, fmtFullAmount, fmtAmount } from "../lib/format";
+import { fmtCompactCurrency, fmtFullAmount, fmtAmount, localMonth } from "../lib/format";
 import {
   Users, FileText, Mail, ArrowRight, CheckCircle2, GitBranch,
   ChevronLeft, ChevronRight, Package, CalendarClock, Clock,
@@ -90,7 +90,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
   const [recentInvoices, setRecent]     = useState<Invoice[]>([]);
   const [clients, setClients]           = useState<Client[]>([]);
-  const [profitMonth, setProfitMonth]   = useState(() => new Date().toISOString().slice(0, 7));
+  const [profitMonth, setProfitMonth]   = useState(() => localMonth());
   const [dailyProfit, setDailyProfit]   = useState<{ day: string; profit: number; revenue: number }[]>([]);
   const [chartMetric, setChartMetric]   = useState<"profit" | "revenue">("profit");
   // Hero range toggle — persisted so the dashboard opens how Jack left it.

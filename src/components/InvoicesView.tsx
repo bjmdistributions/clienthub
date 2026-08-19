@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, localDay } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
 import RecurringView from "./RecurringView";
@@ -80,7 +80,7 @@ export default function InvoicesView() {
   // Completed invoices are hidden by default to cut list bloat.
   const [showCompleted, setShowCompleted] = useState(false);
   const [payModal, setPayModal]         = useState<string | null>(null);
-  const [payDate, setPayDate]           = useState(new Date().toISOString().slice(0, 10));
+  const [payDate, setPayDate]           = useState(localDay());
   const [payMethod, setPayMethod]       = useState("");
   const [payRef, setPayRef]             = useState("");
   const [payMethods, setPayMethods]     = useState<PaymentMethod[]>([]);
@@ -126,7 +126,7 @@ export default function InvoicesView() {
 
   const handleMarkPaid = (id: string) => {
     setPayModal(id);
-    setPayDate(new Date().toISOString().slice(0, 10));
+    setPayDate(localDay());
     setPayMethod(""); setPayRef("");
     api.listPaymentMethods().then((m) => setPayMethods(m.filter((p) => p.active))).catch(() => {});
   };
@@ -488,8 +488,8 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const [showClientPicker, setShowClientPicker] = useState(true);
   const [createNew, setCreateNew]   = useState(false);
   const [newClient, setNewClient]   = useState({ name: "", email: "", phone: "", company: "" });
-  const [dueDate, setDueDate]       = useState(() => initial ? initial.due_date.slice(0, 10) : new Date().toISOString().slice(0, 10));
-  const [issueDate, setIssueDate]   = useState(() => initial ? initial.issue_date.slice(0, 10) : new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate]       = useState(() => initial ? initial.due_date.slice(0, 10) : localDay());
+  const [issueDate, setIssueDate]   = useState(() => initial ? initial.issue_date.slice(0, 10) : localDay());
   const [taxRate, setTaxRate]       = useState<number>(initial && initial.subtotal > 0 ? Math.round((initial.tax / initial.subtotal) * 10000) / 100 : 0);
   const [notes, setNotes]           = useState(initial?.notes ?? "");
   const [recurring, setRecurring]   = useState("");
