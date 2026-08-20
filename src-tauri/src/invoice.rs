@@ -137,7 +137,9 @@ fn parse_hex_color(s: &str) -> Color {
 ///     from `company_info.show_company_name` (backwards-compatible migration).
 /// Never fails — returns defaults on any error.
 pub fn load_template() -> InvoiceTemplate {
-    let raw: Option<String> = pool().get().ok().and_then(|conn| {
+    // `pool_opt`: this function documents "never fails", but bare `pool()` panics when the
+    // pool is not up, which is the opposite of that promise.
+    let raw: Option<String> = crate::db::pool_opt().and_then(|p| p.get().ok()).and_then(|conn| {
         conn.query_row("SELECT value FROM settings WHERE key='invoice_template'", [], |r| r.get::<_, String>(0)).ok()
     });
     // The template's own `show_company_name` default is true; migrate from
@@ -194,7 +196,9 @@ fn flag(conn: &rusqlite::Connection, key: &str) -> bool {
 /// Quotes pass `""` — the return policy is an invoice-level term.
 pub fn document_clauses(return_policy: &str) -> Vec<Clause> {
     let mut out: Vec<Clause> = Vec::new();
-    if let Ok(conn) = pool().get() {
+    // `pool_opt`, not `pool()`: a render must never panic because this optional lookup had
+    // no database. The frozen per-invoice policy below still prints either way.
+    if let Some(conn) = crate::db::pool_opt().and_then(|p| p.get().ok()) {
         if flag(&conn, "email_notice_24h_enabled") {
             let t = setting(&conn, "email_notice_24h_text");
             if !t.trim().is_empty() { out.push(("Notice", t.trim().to_string())); }
@@ -222,7 +226,7 @@ pub fn clause_email_block(return_policy: &str) -> String {
 /// The return-policy text frozen on an invoice row. Empty for a row that predates
 /// R-162 or was finalized with the clause switched off.
 pub fn invoice_return_policy(invoice_id: &str) -> String {
-    pool().get().ok()
+    crate::db::pool_opt().and_then(|p| p.get().ok())
         .and_then(|conn| conn.query_row(
             "SELECT COALESCE(return_policy,'') FROM invoices WHERE id=?1",
             [invoice_id],
@@ -247,7 +251,7 @@ pub fn save_template(tpl: &InvoiceTemplate) -> Result<()> {
 /// difference is the default title: quotes read "QUOTE" (not "INVOICE") when the key is
 /// absent or the saved JSON never specified a title. Never fails — defaults on any error.
 pub fn load_quote_template() -> InvoiceTemplate {
-    let raw: Option<String> = pool().get().ok().and_then(|conn| {
+    let raw: Option<String> = crate::db::pool_opt().and_then(|p| p.get().ok()).and_then(|conn| {
         conn.query_row("SELECT value FROM settings WHERE key='quote_template'", [], |r| r.get::<_, String>(0)).ok()
     });
     match raw {
@@ -319,7 +323,9 @@ pub fn render_sample_quote_pdf() -> Result<String> {
 // ---------- Settings loaders ----------
 
 pub fn load_company() -> Result<CompanyInfo> {
-    let conn = pool().get()?;
+    let conn = crate::db::pool_opt()
+        .ok_or_else(|| anyhow::anyhow!("DB pool not initialized"))?
+        .get()?;
     let json: rusqlite::Result<String> = conn.query_row(
         "SELECT value FROM settings WHERE key='company_info'",
         [],
@@ -415,6 +421,51 @@ fn char_width(ch: char, bold: bool) -> f32 {
     if code >= 32 && code < 128 { table[code - 32] } else { 556.0 }
 }
 
+/// Walks the clause block down the page, rolling onto a new page instead of running out
+/// of room (R-162). Pure arithmetic so the page-break rule is unit-testable; the renderer
+/// turns each `page` increment into a real PDF page.
+///
+/// This exists because the first cut of the clause block simply stopped at the footer
+/// floor, silently cutting contract terms off mid-sentence — and it did so precisely on
+/// the long, item-heavy invoices where the money is biggest. A truncated warranty
+/// disclaimer is worse than no disclaimer: it reads as though the seller said less than
+/// they did. Nothing here ever drops a row.
+pub(crate) struct ClauseCursor {
+    pub(crate) y: f32,
+    /// 0 = the page the block started on; every increment is one added page.
+    pub(crate) page: usize,
+    floor: f32,
+    top: f32,
+}
+
+impl ClauseCursor {
+    pub(crate) fn new(y: f32, floor: f32, top: f32) -> Self {
+        ClauseCursor { y, page: 0, floor, top }
+    }
+
+    /// Reserve `h` mm and return the baseline to draw at, breaking the page first when
+    /// this row plus `keep_with` (rows that must not be orphaned from it, e.g. the first
+    /// lines that belong under a heading) would fall below the floor.
+    ///
+    /// Never breaks twice in a row: if we are already at the top of a fresh page the row
+    /// is emitted regardless, so a clause taller than a whole page cannot loop forever.
+    pub(crate) fn take(&mut self, h: f32, keep_with: f32) -> f32 {
+        if self.y - (h + keep_with) < self.floor && self.y < self.top {
+            self.page += 1;
+            self.y = self.top;
+        }
+        let at = self.y;
+        self.y -= h;
+        at
+    }
+
+    /// Blank space between clauses. Never triggers a break on its own — trailing
+    /// whitespace at a page foot is not worth a page.
+    pub(crate) fn gap(&mut self, h: f32) {
+        self.y -= h;
+    }
+}
+
 /// Greedy word-wrap for a clause body (R-162), at `max_chars` per line. Blank lines in
 /// the source are preserved so a multi-paragraph policy keeps its shape. A single word
 /// longer than the limit is emitted on its own line rather than split, which is what the
@@ -478,6 +529,39 @@ fn text_center(
 
 // ---------- PDF builder ----------
 
+/// Add a page for clause overflow (R-162) and return its layer, carrying the same mini
+/// header the item continuation pages use so a terms page is identifiable on its own.
+///
+/// Registers the page in `page_layers` and bumps `total_pages`, which is what keeps the
+/// "Page n of m" footer and the paid/overdue watermark correct — both loop `page_layers`
+/// after this runs. An empty item-index list marks it as a non-table page.
+fn start_clause_page(
+    doc: &PdfDocumentReference,
+    page_layers: &mut Vec<(PdfPageIndex, PdfLayerIndex, Vec<usize>)>,
+    total_pages: &mut usize,
+    title: &str,
+    number: &str,
+    font_bold: &IndirectFontRef,
+    font_regular: &IndirectFontRef,
+) -> PdfLayerReference {
+    let (pi, li) = doc.add_page(Mm(PAGE_W), Mm(PAGE_H), "Layer");
+    page_layers.push((pi, li, Vec::new()));
+    *total_pages += 1;
+    let l = doc.get_page(pi).get_layer(li);
+    l.use_text(title, 14.0, Mm(MARGIN_L), Mm(PAGE_H - 20.0), font_bold);
+    l.use_text(format!("# {}", number), 9.0, Mm(MARGIN_L), Mm(PAGE_H - 30.0), font_regular);
+    let div = Line {
+        points: vec![
+            (Point::new(Mm(MARGIN_L), Mm(PAGE_H - 35.0)), false),
+            (Point::new(Mm(CONTENT_R), Mm(PAGE_H - 35.0)), false),
+        ],
+        is_closed: false,
+    };
+    l.set_outline_thickness(0.3);
+    l.add_line(div);
+    l
+}
+
 pub fn build_pdf_bytes(
     number: &str,
     issue: &str,
@@ -538,7 +622,9 @@ pub fn build_pdf_bytes(
 
     let rows_continuation = ((CONT_START_Y - CONT_BOTTOM_Y) / ROW_HEIGHT).floor() as usize;
 
-    let total_pages = if items.len() <= rows_page1 {
+    // `mut` because the clause block may add pages of its own after the item pages are
+    // laid out; the page-number footer below reads this, so it has to stay truthful.
+    let mut total_pages = if items.len() <= rows_page1 {
         1
     } else {
         let remaining = items.len() - rows_page1;
@@ -694,7 +780,7 @@ pub fn build_pdf_bytes(
 
     // ----- Totals + Payment + Notes + Footer (on last page) -----
     let last_page_idx = page_layers.len() - 1;
-    let last_layer = if last_page_idx == 0 {
+    let mut last_layer = if last_page_idx == 0 {
         layer.clone()
     } else {
         let (pi, li, _) = &page_layers[last_page_idx];
@@ -749,7 +835,9 @@ pub fn build_pdf_bytes(
         );
         next_y -= 8.0;
     } else {
-        let pm = load_active_payment_methods()?;
+        // A payment-method read that fails means "no payment block", not "no invoice".
+        // Propagating here would abort the whole render over an optional section.
+        let pm = load_active_payment_methods().unwrap_or_default();
         if !pm.is_empty() {
             let mut pay_y = next_y;
             last_layer.use_text("Payment Options", 10.0, Mm(MARGIN_L), Mm(pay_y), &font_bold);
@@ -783,18 +871,53 @@ pub fn build_pdf_bytes(
 
     // Standing policy clauses (R-162), below the notes and above the footer. Kept
     // visually separate from Notes on purpose: notes are per-shipment instructions,
-    // these are terms. Long clauses wrap at the page width and stop at the footer
-    // rather than overprinting it — same 25.0 floor the notes block uses.
-    for (heading, body) in document_clauses(return_policy) {
-        if next_y < 25.0 { break; }
-        last_layer.use_text(format!("{}:", heading), 9.0, Mm(MARGIN_L), Mm(next_y), &font_bold);
-        next_y -= 5.0;
-        for ln in wrap_clause(&body, 108) {
-            if next_y < 25.0 { break; }
-            last_layer.use_text(&ln, 8.0, Mm(MARGIN_L + 5.0), Mm(next_y), &font_regular);
-            next_y -= 3.5;
+    // these are terms.
+    //
+    // These CONTINUE ONTO A NEW PAGE rather than truncating at the footer floor. The
+    // first cut of this block just stopped, cutting the warranty disclaimer off
+    // mid-sentence on exactly the item-heavy invoices where the amounts are largest.
+    // Terms that stop halfway are worse than no terms, so nothing here is ever dropped.
+    let clauses = document_clauses(return_policy);
+    if !clauses.is_empty() {
+        const CLAUSE_FLOOR: f32 = 25.0;
+        const LINE_H: f32 = 3.5;
+        const HEAD_H: f32 = 5.0;
+        let mut cur = ClauseCursor::new(next_y, CLAUSE_FLOOR, CONT_START_Y);
+        let mut clause_layer = last_layer.clone();
+        let mut spilled = false;
+
+        for (heading, body) in clauses {
+            let lines = wrap_clause(&body, 108);
+            // Keep a heading with its first two lines so it never orphans at a page foot.
+            let keep = LINE_H * (lines.len().min(2) as f32);
+
+            let was = cur.page;
+            let hy = cur.take(HEAD_H, keep);
+            if cur.page != was {
+                clause_layer = start_clause_page(&doc, &mut page_layers, &mut total_pages,
+                                                 title, number, &font_bold, &font_regular);
+                spilled = true;
+            }
+            clause_layer.use_text(format!("{}:", heading), 9.0, Mm(MARGIN_L), Mm(hy), &font_bold);
+
+            for ln in lines {
+                let was = cur.page;
+                let ly = cur.take(LINE_H, 0.0);
+                if cur.page != was {
+                    clause_layer = start_clause_page(&doc, &mut page_layers, &mut total_pages,
+                                                     title, number, &font_bold, &font_regular);
+                    spilled = true;
+                }
+                clause_layer.use_text(&ln, 8.0, Mm(MARGIN_L + 5.0), Mm(ly), &font_regular);
+            }
+            cur.gap(4.0);
         }
-        next_y -= 4.0;
+
+        // The closing footer belongs under the terms, on whatever page they ended on.
+        if spilled {
+            last_layer = clause_layer;
+        }
+        next_y = cur.y;
     }
 
     // Footer
@@ -1020,7 +1143,11 @@ pub(crate) fn render_logo(
 // ---------- Payment methods loader ----------
 
 fn load_active_payment_methods() -> Result<Vec<(String, String)>> {
-    let conn = pool().get()?;
+    // Errors here are already handled by the caller as "no payment block"; a missing pool
+    // must take the same path rather than panicking mid-render.
+    let conn = crate::db::pool_opt()
+        .ok_or_else(|| anyhow::anyhow!("DB pool not initialized"))?
+        .get()?;
     let mut stmt = conn
         .prepare(
             "SELECT kind, details FROM payment_methods
@@ -1343,7 +1470,161 @@ pub fn compute_totals(items: &[LineItem], tax_rate: f64) -> (f64, f64, f64) {
 
 #[cfg(test)]
 mod clause_tests {
-    use super::wrap_clause;
+    use super::{wrap_clause, ClauseCursor};
+
+    // The layout the real renderer uses: 25mm footer floor, continuation pages start at
+    // 219.4mm (PAGE_H - 60).
+    const FLOOR: f32 = 25.0;
+    const TOP: f32 = 279.4 - 60.0;
+    const LINE: f32 = 3.5;
+
+    // Plenty of room: the block stays where it started and adds no pages.
+    #[test]
+    fn a_block_that_fits_never_breaks() {
+        let mut c = ClauseCursor::new(200.0, FLOOR, TOP);
+        for _ in 0..10 { c.take(LINE, 0.0); }
+        assert_eq!(c.page, 0);
+    }
+
+    // The defect this replaced: rows below the floor used to be dropped on the floor.
+    // Every requested row must come back with a baseline at or above the floor.
+    #[test]
+    fn rows_past_the_floor_move_to_a_new_page_instead_of_vanishing() {
+        let mut c = ClauseCursor::new(40.0, FLOOR, TOP);
+        let ys: Vec<f32> = (0..20).map(|_| c.take(LINE, 0.0)).collect();
+        assert_eq!(ys.len(), 20, "no row may be dropped");
+        assert!(ys.iter().all(|y| *y >= FLOOR), "every row sits above the footer floor");
+        assert_eq!(c.page, 1, "one page was enough for 20 rows");
+    }
+
+    // A heading stranded at the foot of a page with its text overleaf reads as a defect,
+    // so `keep_with` moves it down with the first lines that belong to it.
+    #[test]
+    fn a_heading_is_never_orphaned_from_its_first_lines() {
+        // Room for the heading alone, but not for the heading plus two lines.
+        let mut c = ClauseCursor::new(FLOOR + 6.0, FLOOR, TOP);
+        let heading_y = c.take(5.0, LINE * 2.0);
+        let first_line_y = c.take(LINE, 0.0);
+        assert_eq!(c.page, 1, "the heading moved to the next page");
+        assert!(heading_y > first_line_y, "the first line still sits under its heading");
+    }
+
+    // Termination guard: at the top of a fresh page a row is emitted even if it somehow
+    // still does not fit, so a clause taller than a page cannot loop forever.
+    #[test]
+    fn a_fresh_page_never_breaks_again_immediately() {
+        let mut c = ClauseCursor::new(TOP, FLOOR, TOP);
+        c.take(500.0, 500.0);
+        assert_eq!(c.page, 0, "already at the top — emit rather than add an empty page");
+    }
+
+    // ---- End-to-end: render a real PDF and count the pages in the bytes ----
+    // The unit tests above prove the arithmetic; this proves the arithmetic is actually
+    // wired to printpdf. Renders the same invoice twice, once with terms and once without,
+    // and asserts the terms bought a page. Without the fix the clause block truncated in
+    // silence and the page count was identical.
+    use super::{build_pdf_bytes, CompanyInfo, LineItem};
+
+    fn page_count(pdf: &[u8]) -> usize {
+        // `/Count n` in the page-tree node is the page total. Read the first one; printpdf
+        // emits a single flat Pages node. Falls back to counting `/Type/Page` markers.
+        let hay = pdf.to_vec();
+        if let Some(i) = hay.windows(7).position(|w| w == b"/Count ") {
+            let mut n = 0usize;
+            for b in &hay[i + 7..] {
+                if b.is_ascii_digit() { n = n * 10 + (b - b'0') as usize; } else { break; }
+            }
+            if n > 0 { return n; }
+        }
+        hay.windows(10).filter(|w| *w == b"/Type/Page" ).count()
+    }
+
+    #[test]
+    fn page_count_helper_can_actually_read_a_pdf() {
+        // Guards the guard: if this returns 0 the assertions below would pass vacuously.
+        assert!(page_count(&render(2, "")) >= 1, "page_count must find pages in a real PDF");
+    }
+
+    fn render(items: usize, policy: &str) -> Vec<u8> {
+        let li: Vec<LineItem> = (0..items).map(|i| LineItem {
+            description: format!("Mixed pallet lot {}", i),
+            qty: 1.0, rate: 100.0, amount: 100.0,
+        }).collect();
+        build_pdf_bytes(
+            "INV-9001", "2026-08-20", "2026-09-20", &li,
+            100.0 * items as f64, 0.0, 100.0 * items as f64,
+            "Test Buyer", &None, &None, &None,
+            &CompanyInfo {
+                name: "BJM DISTRIBUTIONS".into(),
+                address: "699 Green Garden Place".into(),
+                email: "test@example.com".into(),
+                phone: None, tax_id: None, logo_path: None, show_company_name: Some(true),
+            },
+            "", policy, "sent", "invoice",
+        ).expect("render must succeed")
+    }
+
+    const REAL_POLICY: &str = "All sales are final. No returns, refunds, exchanges, or cancellations are accepted once payment is made or the goods are removed, whichever occurs first. All goods are sold AS-IS, WHERE-IS and WITH ALL FAULTS. SELLER DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. Manifests, piece counts, condition codes, and stated retail values are estimates provided for reference only and are not warranted; Buyer is responsible for its own inspection and relies solely on its own judgment in purchasing. Where Seller accepts a timely claim under the notice provision, Buyer's sole and exclusive remedy is, at Seller's option, replacement or a credit not to exceed the purchase price of the affected lot. Seller is not liable for incidental, consequential, special, or lost-profit damages. Payment of this invoice or removal of the goods constitutes acceptance of these terms.";
+
+    // 13 items is the boundary measured on this layout: the table still fits on one page,
+    // and the leftover space below it is smaller than the terms. Before the fix this
+    // rendered as a single page with the warranty disclaimer cut off mid-sentence.
+    #[test]
+    fn a_cramped_invoice_gains_a_page_rather_than_losing_its_terms() {
+        let without = page_count(&render(13, ""));
+        let with = page_count(&render(13, REAL_POLICY));
+        assert_eq!(without, 1, "13 items alone still fit on one page");
+        assert_eq!(with, 2, "the terms did not fit under them, so they took a page");
+    }
+
+    // The band either side of that boundary must behave: no spurious page when there is
+    // room, and never fewer pages with terms than without, at any length.
+    #[test]
+    fn terms_never_shrink_a_document_and_never_pad_one_that_had_room() {
+        for n in 0..24 {
+            let without = page_count(&render(n, ""));
+            let with = page_count(&render(n, REAL_POLICY));
+            assert!(with >= without, "items={} lost a page ({} -> {})", n, without, with);
+            assert!(with <= without + 1, "items={} added more than one page ({} -> {})", n, without, with);
+        }
+    }
+
+    // The common case must not sprout a spurious page.
+    #[test]
+    fn a_short_invoice_with_terms_stays_on_one_page() {
+        assert_eq!(page_count(&render(2, REAL_POLICY)), 1);
+    }
+
+    // No clauses configured: byte-identical to the pre-R-162 document.
+    #[test]
+    fn no_clauses_means_no_extra_page() {
+        assert_eq!(page_count(&render(2, "")), 1);
+    }
+
+    // Whitespace between clauses must not be worth a page of its own.
+    #[test]
+    fn a_trailing_gap_does_not_add_a_page() {
+        let mut c = ClauseCursor::new(FLOOR + 1.0, FLOOR, TOP);
+        c.gap(10.0);
+        assert_eq!(c.page, 0);
+    }
+
+    // The full real block — the 972-char return policy and the 570-char notice at the
+    // measured wrap of 108 chars — starting from a cramped position on a busy invoice.
+    // Before the fix this silently lost most of the disclaimer.
+    #[test]
+    fn the_real_two_clause_block_survives_a_cramped_invoice() {
+        let counts = [9usize, 6];
+        let mut c = ClauseCursor::new(60.0, FLOOR, TOP);
+        let mut emitted = 0;
+        for n in counts {
+            c.take(5.0, LINE * 2.0);
+            for _ in 0..n { assert!(c.take(LINE, 0.0) >= FLOOR); emitted += 1; }
+            c.gap(4.0);
+        }
+        assert_eq!(emitted, 15, "every wrapped line of both clauses is placed");
+        assert!(c.page >= 1, "it did not fit on the cramped page, so it spilled");
+    }
 
     // A clause is one long sentence in practice; the renderer has a fixed page width, so
     // wrapping is the only thing standing between a real policy and text running off the

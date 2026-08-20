@@ -18,6 +18,14 @@ pub fn pool() -> &'static DbPool {
     POOL.get().expect("DB pool not initialized")
 }
 
+/// The pool only if it has been initialized. For paths that must degrade rather than
+/// abort: rendering an invoice PDF should not panic because an optional settings lookup
+/// had no database (R-162 clause lookup). Also what lets the PDF renderer be exercised
+/// in a unit test, where no pool exists.
+pub fn pool_opt() -> Option<&'static DbPool> {
+    POOL.get()
+}
+
 pub fn app_data_dir() -> &'static PathBuf {
     APP_DATA_DIR.get().expect("app data dir not initialized")
 }
