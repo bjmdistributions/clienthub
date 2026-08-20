@@ -44,35 +44,122 @@ const matchesQuery = (t: BankTxn, q: string): boolean => {
 // Chart of accounts (QuickBooks-style). Legacy values (receipt/payment/fee/
 // owner_draw/shipping/software/internal_transfer/cash_in/cash_out) are kept so
 // existing rows keep their category. Grouped for scannable <optgroup> dropdowns.
-const CATEGORIES: { value: string; label: string; group: string }[] = [
-  { value: "",                 label: "Uncategorized",             group: "" },
-  { value: "receipt",          label: "Sale / buyer payment",      group: "Income" },
-  { value: "other_income",     label: "Other income",              group: "Income" },
-  { value: "payment",          label: "Supplier payment",          group: "Cost of goods" },
-  { value: "merchandise",      label: "Inventory / merchandise",   group: "Cost of goods" },
-  { value: "shipping",         label: "Shipping & freight",        group: "Cost of goods" },
-  { value: "meals",            label: "Meals & food",              group: "Operating expenses" },
-  { value: "auto",             label: "Fuel & auto",               group: "Operating expenses" },
-  { value: "travel",           label: "Travel & lodging",          group: "Operating expenses" },
-  { value: "office",           label: "Office & supplies",         group: "Operating expenses" },
-  { value: "utilities",        label: "Utilities & phone",         group: "Operating expenses" },
-  { value: "rent",             label: "Rent & warehouse",          group: "Operating expenses" },
-  { value: "software",         label: "Software & subscriptions",  group: "Operating expenses" },
-  { value: "advertising",      label: "Advertising & marketing",   group: "Operating expenses" },
-  { value: "insurance",        label: "Insurance",                 group: "Operating expenses" },
-  { value: "professional",     label: "Professional & legal fees", group: "Operating expenses" },
-  { value: "payroll",          label: "Payroll & contractors",     group: "Operating expenses" },
-  { value: "fee",              label: "Bank & card fees",          group: "Operating expenses" },
-  { value: "taxes",            label: "Taxes",                     group: "Operating expenses" },
-  { value: "other_expense",    label: "Other expense",             group: "Operating expenses" },
-  { value: "internal_transfer",label: "Internal transfer",         group: "Transfers & owner" },
-  { value: "card_payment",     label: "Credit card payment",       group: "Transfers & owner" },
-  { value: "owner_draw",       label: "Owner draw",                group: "Transfers & owner" },
-  { value: "cash_in",          label: "Cash deposit",              group: "Transfers & owner" },
-  { value: "cash_out",         label: "Cash withdrawal",           group: "Transfers & owner" },
+//
+// R-187 widened this to a chart a tax return can actually be filed from. Four
+// movements have to be separable or the year's numbers are wrong: money earned,
+// money handed back out of a sale, what things cost, and what a supplier handed
+// back. Sales reductions and cost reductions had NO home before this — a refund
+// to a buyer had to be filed as a supplier payment, which reads as cost of goods.
+//
+// It also carries the buckets a Schedule C names in its own words (interest,
+// repairs, licences, retirement, health insurance) and, most importantly, the
+// kinds of money that are NOT deductible and must never sit in an expense
+// bucket: an owner draw, the owner's personal estimated tax, sales tax being
+// held for the state, and a capitalised asset purchase.
+//
+// `hidden` entries are written by the backend (loan tagging derives its category
+// from direction) and must render with a real label, but are never hand-picked.
+const CATEGORIES: { value: string; label: string; group: string; hidden?: boolean }[] = [
+  { value: "",                    label: "Uncategorized",                   group: "" },
+
+  { value: "receipt",             label: "Sale / buyer payment",            group: "Income" },
+  { value: "service_income",      label: "Commission & service income",     group: "Income" },
+  { value: "shipping_income",     label: "Shipping billed to a customer",   group: "Income" },
+  { value: "interest_income",     label: "Interest earned",                 group: "Income" },
+  { value: "other_income",        label: "Other income",                    group: "Income" },
+
+  { value: "customer_refund",     label: "Refund to a customer",            group: "Sales reductions" },
+  { value: "sales_discount",      label: "Discount or allowance given",     group: "Sales reductions" },
+  { value: "chargeback",          label: "Chargeback or dispute lost",      group: "Sales reductions" },
+  { value: "bad_debt",            label: "Bad debt written off",            group: "Sales reductions" },
+
+  { value: "payment",             label: "Supplier payment",                group: "Cost of goods" },
+  { value: "merchandise",         label: "Inventory / merchandise",         group: "Cost of goods" },
+  { value: "shipping",            label: "Shipping & freight",              group: "Cost of goods" },
+  { value: "customs",             label: "Customs, duties & tariffs",       group: "Cost of goods" },
+  { value: "packaging",           label: "Packaging & shipping supplies",   group: "Cost of goods" },
+  { value: "storage",             label: "Storage, 3PL & pallet fees",      group: "Cost of goods" },
+
+  { value: "supplier_refund",     label: "Refund from a supplier",          group: "Cost reductions" },
+  { value: "purchase_discount",   label: "Supplier discount or rebate",     group: "Cost reductions" },
+
+  { value: "meals",               label: "Meals & food",                    group: "Operating expenses" },
+  { value: "auto",                label: "Fuel & auto",                     group: "Operating expenses" },
+  { value: "travel",              label: "Travel & lodging",                group: "Operating expenses" },
+  { value: "office",              label: "Office & supplies",               group: "Operating expenses" },
+  { value: "utilities",           label: "Utilities & phone",               group: "Operating expenses" },
+  { value: "rent",                label: "Rent & warehouse",                group: "Operating expenses" },
+  { value: "repairs",             label: "Repairs & maintenance",           group: "Operating expenses" },
+  { value: "equipment",           label: "Small equipment & tools",         group: "Operating expenses" },
+  { value: "software",            label: "Software & subscriptions",        group: "Operating expenses" },
+  { value: "advertising",         label: "Advertising & marketing",         group: "Operating expenses" },
+  { value: "insurance",           label: "Business insurance",              group: "Operating expenses" },
+  { value: "health_insurance",    label: "Health insurance premiums",       group: "Operating expenses" },
+  { value: "professional",        label: "Professional & legal fees",       group: "Operating expenses" },
+  { value: "payroll",             label: "Payroll & contractors",           group: "Operating expenses" },
+  { value: "commissions",         label: "Sales commissions & rep payouts", group: "Operating expenses" },
+  { value: "retirement",          label: "Retirement contributions",        group: "Operating expenses" },
+  { value: "education",           label: "Training & education",            group: "Operating expenses" },
+  { value: "gifts",               label: "Client gifts",                    group: "Operating expenses" },
+  { value: "charity",             label: "Charitable contributions",        group: "Operating expenses" },
+  { value: "fee",                 label: "Bank & wire fees",                group: "Operating expenses" },
+  { value: "merchant_fees",       label: "Card & processing fees",          group: "Operating expenses" },
+  { value: "interest_expense",    label: "Loan & credit card interest",     group: "Operating expenses" },
+  { value: "other_expense",       label: "Other expense",                   group: "Operating expenses" },
+
+  { value: "taxes",               label: "Business & franchise taxes",      group: "Taxes & licences" },
+  { value: "payroll_taxes",       label: "Payroll taxes",                   group: "Taxes & licences" },
+  { value: "sales_tax_collected", label: "Sales tax collected",             group: "Taxes & licences" },
+  { value: "sales_tax_remitted",  label: "Sales tax paid to the state",     group: "Taxes & licences" },
+  { value: "licenses",            label: "Licences, permits & filings",     group: "Taxes & licences" },
+  { value: "estimated_tax",       label: "Owner estimated tax (personal)",  group: "Taxes & licences" },
+
+  { value: "internal_transfer",   label: "Internal transfer",               group: "Transfers, owner & assets" },
+  { value: "card_payment",        label: "Credit card payment",             group: "Transfers, owner & assets" },
+  { value: "owner_draw",          label: "Owner draw",                      group: "Transfers, owner & assets" },
+  { value: "owner_contribution",  label: "Owner contribution",              group: "Transfers, owner & assets" },
+  { value: "asset_purchase",      label: "Equipment or vehicle bought",     group: "Transfers, owner & assets" },
+  { value: "cash_in",             label: "Cash deposit",                    group: "Transfers, owner & assets" },
+  { value: "cash_out",            label: "Cash withdrawal",                 group: "Transfers, owner & assets" },
+  // Backend-written: tag a transaction to a loan and the category follows the
+  // direction. Shown with a real label, never offered in a picker.
+  { value: "loan_received",       label: "Loan received",                   group: "Transfers, owner & assets", hidden: true },
+  { value: "loan_repayment",      label: "Loan repayment",                  group: "Transfers, owner & assets", hidden: true },
 ];
 
-const CAT_GROUP_ORDER = ["Income", "Cost of goods", "Operating expenses", "Transfers & owner"];
+// What a category means at filing time, for the ones where picking the wrong
+// neighbour changes the return. Shown under the picker in the detail pane, so
+// the distinction is readable at the moment of choosing rather than in a manual.
+const CAT_HINTS: Record<string, string> = {
+  service_income:      "Brokerage or commission you earned, not goods you sold",
+  shipping_income:     "Freight you charged the customer — income, not a cost offset",
+  customer_refund:     "Money back to a buyer. Reduces sales, never counts as cost of goods",
+  sales_discount:      "A price break or allowance granted after the sale",
+  bad_debt:            "An invoice you have given up on collecting",
+  customs:             "Duty, tariff and customs-broker charges on an imported lot",
+  packaging:           "Boxes, pallets, labels and shipping materials",
+  storage:             "3PL, pallet and warehousing charges tied to stock",
+  supplier_refund:     "A supplier reversal or credit. Lowers what the goods cost you",
+  purchase_discount:   "A rebate or early-payment discount from a supplier",
+  health_insurance:    "Your own premiums — deducted separately from business expenses",
+  retirement:          "SEP or solo 401(k) contributions — deducted on the personal return",
+  commissions:         "What you paid a rep or partner out of a deal",
+  merchant_fees:       "Stripe, Shopify, PayPal and card-processing charges",
+  interest_expense:    "Interest only. The principal of a loan repayment is not an expense",
+  gifts:               "Deductible up to $25 per recipient per year",
+  equipment:           "Cheap, short-lived tools. Anything lasting years is an asset purchase",
+  taxes:               "Business taxes only. Your own income tax is Owner estimated tax",
+  sales_tax_collected: "Not income — you are holding it for the state",
+  sales_tax_remitted:  "Handing the state what you collected. Not an expense",
+  estimated_tax:       "Your personal income tax. NOT a business deduction",
+  owner_draw:          "Money you took out. Not a deduction",
+  owner_contribution:  "Money you put in. Not income",
+  asset_purchase:      "Something with years of life — depreciated, not expensed this year",
+  card_payment:        "Paying down a card. The charges themselves are the expense",
+};
+
+const CAT_GROUP_ORDER = ["Income", "Sales reductions", "Cost of goods", "Cost reductions",
+                         "Operating expenses", "Taxes & licences", "Transfers, owner & assets"];
 
 // The ONLY categories whose money can belong to a deal. Everything else — every
 // operating expense, every transfer, owner draw, card payment — is fully booked by
@@ -84,7 +171,8 @@ const CAT_GROUP_ORDER = ["Income", "Cost of goods", "Operating expenses", "Trans
 // `financials_overview.stale_unallocated` (`commands.rs`). All three must move
 // together or the queue count, the summary figure and the Overview alert start
 // disagreeing about the same rows, which is the bug this replaced.
-const DEAL_CAPABLE_CATEGORIES = ["", "receipt", "payment", "merchandise", "shipping", "cash_in", "cash_out"];
+const DEAL_CAPABLE_CATEGORIES = ["", "receipt", "payment", "merchandise", "shipping", "customs",
+                                 "customer_refund", "supplier_refund", "cash_in", "cash_out"];
 
 // Does this transaction still owe someone a link to a deal?
 const needsADeal = (t: BankTxn) =>
@@ -100,7 +188,7 @@ function CategoryOptions({ includeUncat = true }: { includeUncat?: boolean }) {
       {includeUncat && <option value="">Uncategorized</option>}
       {CAT_GROUP_ORDER.map((g) => (
         <optgroup key={g} label={g}>
-          {CATEGORIES.filter((c) => c.group === g).map((c) => (
+          {CATEGORIES.filter((c) => c.group === g && !c.hidden).map((c) => (
             <option key={c.value} value={c.value}>{c.label}</option>
           ))}
         </optgroup>
@@ -424,6 +512,43 @@ const survivorDeals = (deals: DealFlow[]): DealFlow[] => {
   return Object.values(byInv);
 };
 
+// R-019. What the last bank sync declined to load, and why. The feed can never be made
+// infallible — the bank decides what it hands over — so the contract is that a miss is
+// never silent. These fields ride on the sync result; they are declared here rather than
+// on PlaidSyncSummary because api.ts is owned elsewhere this cycle.
+type SyncSkip = {
+  date?: string; amount?: number; direction?: string;
+  account?: string; description?: string; reference?: string;
+};
+type SyncSkips = {
+  already_held: number;
+  skipped_duplicate: SyncSkip[];
+  skipped_no_id: string[];
+  skipped_unsaved: string[];
+  amend_unknown: number;
+  page_capped: string[];
+  possible_duplicates: SyncSkip[];
+};
+const readSkips = (r: PlaidSyncSummary): SyncSkips => {
+  const x = r as PlaidSyncSummary & Partial<SyncSkips>;
+  return {
+    already_held: x.already_held ?? 0,
+    skipped_duplicate: x.skipped_duplicate ?? [],
+    skipped_no_id: x.skipped_no_id ?? [],
+    skipped_unsaved: x.skipped_unsaved ?? [],
+    amend_unknown: x.amend_unknown ?? 0,
+    page_capped: x.page_capped ?? [],
+    possible_duplicates: x.possible_duplicates ?? [],
+  };
+};
+// Anything worth showing at all. `already_held` alone is an ordinary replay, not a miss.
+const anySkips = (s: SyncSkips): boolean =>
+  s.skipped_duplicate.length > 0 || s.skipped_no_id.length > 0 || s.skipped_unsaved.length > 0 ||
+  s.amend_unknown > 0 || s.page_capped.length > 0 || s.possible_duplicates.length > 0;
+const skipLine = (s: SyncSkip): string =>
+  [s.date, s.amount === undefined ? "" : fmtAmount(s.amount), s.description, s.account]
+    .filter(Boolean).join(" · ");
+
 export default function FinancialsView() {
   const [txns, setTxns]       = useState<BankTxn[]>([]);
   const [summary, setSummary] = useState<BankTxnSummary | null>(null);
@@ -490,6 +615,10 @@ export default function FinancialsView() {
   // Did the last importing sync carry Plaid's pending_transaction_id? Drives the
   // one-line health note in Setup; "unknown" until a sync actually imports something.
   const [pendingRefSeen, setPendingRefSeen] = useState<"unknown" | "yes" | "no">("unknown");
+  // R-019: what the last sync declined to load. Kept on screen rather than only in a
+  // toast — a transaction that never arrived is exactly the thing you find out about
+  // hours later, and a notice that has already faded is no notice at all.
+  const [syncSkips, setSyncSkips] = useState<SyncSkips | null>(null);
   // Plaid is still extracting a freshly-linked bank's history (a 2-year pull can
   // take ~a minute) — keep re-syncing in the background until transactions land.
   const [plaidPreparing, setPlaidPreparing] = useState(false);
@@ -897,6 +1026,19 @@ export default function FinancialsView() {
     // Surface the actual per-bank Plaid error so a silent empty result is never a mystery.
     for (const x of r.results.filter((x) => x.status === "error")) {
       toast(`${x.institution || "A bank"} couldn't sync: ${x.error}`, "error");
+    }
+    // R-019. Four paths used to drop a transaction with no trace anywhere. They are
+    // counted now, so keep the tally on screen and shout about the ones that lost money.
+    const skips = readSkips(r);
+    setSyncSkips(anySkips(skips) ? skips : null);
+    if (skips.skipped_unsaved.length) {
+      toast(`${skips.skipped_unsaved.length} transaction${skips.skipped_unsaved.length === 1 ? "" : "s"} couldn't be saved and your bank won't offer ${skips.skipped_unsaved.length === 1 ? "it" : "them"} again: ${skips.skipped_unsaved.join("; ")}. Use "Re-pull all" in Setup to get ${skips.skipped_unsaved.length === 1 ? "it" : "them"} back.`, "error");
+    }
+    if (skips.skipped_no_id.length) {
+      toast(`Your bank sent ${skips.skipped_no_id.length} transaction${skips.skipped_no_id.length === 1 ? "" : "s"} with no id, so ${skips.skipped_no_id.length === 1 ? "it couldn't" : "they couldn't"} be stored: ${skips.skipped_no_id.join("; ")}. Add ${skips.skipped_no_id.length === 1 ? "it" : "them"} by hand if ${skips.skipped_no_id.length === 1 ? "it belongs" : "they belong"} in your ledger.`, "error");
+    }
+    if (skips.page_capped.length) {
+      toast(`${skips.page_capped.join(", ")} still ${skips.page_capped.length === 1 ? "has" : "have"} more history than one sync can pull. Sync again to keep going.`);
     }
   };
 
@@ -3239,6 +3381,81 @@ export default function FinancialsView() {
               </div>
             )}
 
+            {/* R-019. Everything the last sync declined to load, in one place. The feed
+                can't be made infallible — the bank decides what it sends — so the promise
+                is only that nothing goes missing quietly. Nothing here is acted on
+                automatically; the duplicate lists in particular are for review only. */}
+            {syncSkips && (
+              <div className="border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12px] font-medium text-ink">What the last sync didn't load</div>
+                    <div className="mt-1.5 flex flex-col gap-1.5 text-[11.5px] text-ink-2 leading-relaxed">
+                      {syncSkips.skipped_unsaved.length > 0 && (
+                        <div>
+                          <span className="text-ink">{syncSkips.skipped_unsaved.length} couldn't be saved.</span>{" "}
+                          Your bank won't offer {syncSkips.skipped_unsaved.length === 1 ? "it" : "them"} again — re-pull all history to recover {syncSkips.skipped_unsaved.length === 1 ? "it" : "them"}.
+                          <div className="mt-0.5 text-muted">{syncSkips.skipped_unsaved.join("; ")}</div>
+                        </div>
+                      )}
+                      {syncSkips.skipped_no_id.length > 0 && (
+                        <div>
+                          <span className="text-ink">{syncSkips.skipped_no_id.length} arrived with no id</span>, so there was nothing to file {syncSkips.skipped_no_id.length === 1 ? "it" : "them"} under. Add by hand if {syncSkips.skipped_no_id.length === 1 ? "it belongs" : "they belong"} in the ledger.
+                          <div className="mt-0.5 text-muted">{syncSkips.skipped_no_id.join("; ")}</div>
+                        </div>
+                      )}
+                      {syncSkips.page_capped.length > 0 && (
+                        <div>
+                          <span className="text-ink">Stopped part-way through {syncSkips.page_capped.join(", ")}.</span>{" "}
+                          The rest of the history is still waiting — sync again to continue.
+                        </div>
+                      )}
+                      {syncSkips.amend_unknown > 0 && (
+                        <div>
+                          <span className="text-ink">Your bank changed {syncSkips.amend_unknown} transaction{syncSkips.amend_unknown === 1 ? "" : "s"} this ledger has never held.</span>{" "}
+                          Re-pull all history to bring {syncSkips.amend_unknown === 1 ? "it" : "them"} in.
+                        </div>
+                      )}
+                      {syncSkips.possible_duplicates.length > 0 && (
+                        <div>
+                          <span className="text-ink">{syncSkips.possible_duplicates.length} imported transaction{syncSkips.possible_duplicates.length === 1 ? "" : "s"} share a payment reference with one you already have.</span>{" "}
+                          Nothing was removed — check whether {syncSkips.possible_duplicates.length === 1 ? "it is" : "they are"} the same money.
+                          <div className="mt-0.5 flex flex-col text-muted">
+                            {syncSkips.possible_duplicates.slice(0, 8).map((s, i) => (
+                              <span key={i} className="truncate">{skipLine(s)}{s.reference ? ` · ${s.reference}` : ""}</span>
+                            ))}
+                            {syncSkips.possible_duplicates.length > 8 && <span>and {syncSkips.possible_duplicates.length - 8} more</span>}
+                          </div>
+                        </div>
+                      )}
+                      {syncSkips.skipped_duplicate.length > 0 && (
+                        <div>
+                          <span className="text-ink">{syncSkips.skipped_duplicate.length} skipped as {syncSkips.skipped_duplicate.length === 1 ? "a copy" : "copies"} of transactions already on the books.</span>{" "}
+                          Usually a bank you reconnected re-sending its history.
+                          <div className="mt-0.5 flex flex-col text-muted">
+                            {syncSkips.skipped_duplicate.slice(0, 8).map((s, i) => (
+                              <span key={i} className="truncate">{skipLine(s)}</span>
+                            ))}
+                            {syncSkips.skipped_duplicate.length > 8 && <span>and {syncSkips.skipped_duplicate.length - 8} more</span>}
+                          </div>
+                        </div>
+                      )}
+                      {syncSkips.already_held > 0 && (
+                        <div className="text-muted">{syncSkips.already_held} were already in your ledger, unchanged.</div>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setSyncSkips(null)}
+                    className="flex-shrink-0 h-7 px-2 border border-line text-muted hover:bg-surface-2 rounded-md text-[11px] transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+
             {plaidItems.length > 0 && (
               <div className="border border-line-2 rounded-lg divide-y divide-line-2 overflow-hidden">
                 {plaidItems.map((it) => (
@@ -4206,6 +4423,11 @@ export default function FinancialsView() {
                 >
                   <CategoryOptions />
                 </select>
+                {CAT_HINTS[openTxn.category || ""] && (
+                  <span className="mt-1 block text-[11px] text-muted leading-snug">
+                    {CAT_HINTS[openTxn.category || ""]}
+                  </span>
+                )}
                 {(() => {
                   // Booking memory: what this payee's own booked history says.
                   const sg = suggestionFor(openTxn);

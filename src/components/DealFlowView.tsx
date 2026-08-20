@@ -213,11 +213,19 @@ export default function DealFlowView() {
     return !inv.is_complete;
   };
 
-  // ANY deal with refund activity is a refund, not an active pipeline deal — it lives
-  // in the Refunds section (even fully-refunded, until marked fully done) and never
-  // shows in the active list.
+  // Only a FULLY refunded deal leaves the pipeline. Every deal with any refund
+  // activity used to be pulled out into the Refunds section, which exiled a
+  // part-refunded deal: it was gone from the active list and — never having been
+  // marked complete — absent from Completed too, so the only way to find it was to
+  // know to look under Refunds. A part-refunded deal is still live work and stays
+  // where you can finish it; handed-back money is marked by the struck-through
+  // amounts on the card, not by hiding the deal.
+  const isFullyRefunded = (id: string) => {
+    const r = refundMap[id];
+    return !!r && r.refund_owed > 0.01 && r.remaining <= 0.01;
+  };
   const active    = flows.filter(
-    (f) => f.stage !== "complete" && !refundMap[f.id] && isInvoiceActive(f) && matchFl(f)
+    (f) => f.stage !== "complete" && !isFullyRefunded(f.id) && isInvoiceActive(f) && matchFl(f)
   );
   const completed = flows.filter((f) => f.stage === "complete");
   // Completed deals, most recent completion first, so the list always reads top-down
@@ -631,11 +639,19 @@ function invoiceStatusPill(status: string | undefined): { label: string; cls: st
 }
 
 // ─── Section model ────────────────────────────────────────────────────────
-// Five focused steps. The DB keeps its four stages; these sections just present
+// Four focused steps. The DB keeps its four stages; these sections just present
 // them (plus the bank-linking + profit review) one screen at a time.
+//
+// "Money movement" was folded away (R-132) — the money is tracked in Financials
+// now, so a step that re-stated it was a second place to look. Its two halves
+// moved to where each already belonged: the supplier legs' paid/kept state onto
+// the cost lines in Supplier & cost, and the buyer payment onto Link financials
+// beside the bank transaction it is paired to. Nothing was dropped —
+// `markPaymentReceived` (the only path that flips the invoice to paid with its
+// `paid_at`) and `unmarkPaymentReceived` (the only cascade that unwinds a
+// completed deal) are called exactly as before, from their new home.
 const SECTIONS = [
   { key: "supplier", label: "Supplier & cost" },
-  { key: "money",    label: "Money movement" },
   { key: "link",     label: "Link financials" },
   { key: "profit",   label: "Profit" },
   { key: "complete", label: "Review & complete" },
@@ -648,7 +664,6 @@ function DealFlowCard({
 }: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
-  const refundView = refundOverride ?? !!refund;
   // Three refund states, same ladder as the mobile badge (www/app.js `refundBadgeHTML`):
   // fully refunded, part refunded, and owed back with nothing returned yet. Desktop used
   // to collapse the last two into one label, so a part-refunded deal looked untouched.
@@ -659,6 +674,10 @@ function DealFlowCard({
     : refundPaid > 0 && refundOwed > 0 && refundPaid + 0.005 >= refundOwed ? "full"
     : refundPaid > 0 ? "part"
     : "owed";
+  // Only a fully refunded deal opens straight into the refund workspace — there is
+  // nothing else left of it. A part-refunded deal is still a deal, so it opens on its
+  // own sections like any other; the refund pill switches over.
+  const refundView = refundOverride ?? refundState === "full";
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
   const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
@@ -671,7 +690,6 @@ function DealFlowCard({
   const hasSuppliers  = payments.length > 0;
   const received      = si(flow.stage) >= si("payment_received");
   const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid || p.kept) : true; // nothing to send → satisfied
-  const moneyDone     = received && suppliersPaid;
   const isComplete    = flow.stage === "complete";
   const supplierDone  = hasSuppliers || si(flow.stage) > si("invoiced") || received;
 
@@ -682,21 +700,22 @@ function DealFlowCard({
   const hasLinks = !!reconStatus?.has_financials || reconLinked;
 
   const done: Record<SectionKey, boolean> = {
-    supplier: supplierDone,
-    money:    moneyDone,
+    // Supplier & cost now owns the legs' settled state too, so the dot waits for
+    // every leg to be paid or kept — not just for a cost to have been entered.
+    supplier: supplierDone && suppliersPaid,
     // The link dot fills only when there's nothing left to link — every money leg
     // that's owed is either paired to the bank or explicitly marked "no record"
     // (reconStatus.needs_review === false). Being complete is NOT enough on its own:
     // you can complete now and reconcile later, and the dot must stay empty until you do.
-    link:     isComplete ? (!!reconStatus && !reconStatus.needs_review) : hasLinks,
+    // The buyer payment lives here now, so it has to be marked received as well.
+    link:     received && (isComplete ? (!!reconStatus && !reconStatus.needs_review) : hasLinks),
     profit:   hasLinks || isComplete,
     complete: isComplete,
   };
 
   const firstOpen = (): SectionKey => {
     if (isComplete) return "complete";
-    if (!supplierDone) return "supplier";
-    if (!moneyDone) return "money";
+    if (!supplierDone || !suppliersPaid) return "supplier";
     return "link";
   };
   const [section, setSection] = useState<SectionKey>(firstOpen);
@@ -791,23 +810,49 @@ function DealFlowCard({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Refunded money is gone, so the deal's real figures are the originals
+              minus what went back — in full, and a deal can end up negative. The
+              original stays on screen with a red line through it rather than being
+              silently rewritten, so a part-refunded deal reads exactly like every
+              other deal, just with true numbers. */}
           <div className="flex flex-col items-end leading-tight">
-            <span className="text-[13px] font-semibold text-ink-2 tabular-nums">{fmtAmount(flow.invoice_total)}</span>
-            {!isComplete && (() => {
-              const proj = flow.invoice_total - flow.total_supplier_cost;
+            {(() => {
+              const struck = refundPaid > 0.005;
               return (
-                <span className={`text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
-                  title="Projected profit — revenue minus supplier costs entered so far">
-                  {fmtAmount(proj)} <span className="text-[8px] text-muted uppercase">proj</span>
+                <span className="flex items-baseline gap-1.5">
+                  {struck && (
+                    <span className="text-[11.5px] tabular-nums text-muted line-through decoration-danger-ink decoration-[1.5px]">
+                      {fmtAmount(flow.invoice_total)}
+                    </span>
+                  )}
+                  <span className="text-[13px] font-semibold text-ink-2 tabular-nums">{fmtAmount(flow.invoice_total - refundPaid)}</span>
+                </span>
+              );
+            })()}
+            {!isComplete && (() => {
+              const raw  = flow.invoice_total - flow.total_supplier_cost;
+              const proj = raw - refundPaid;
+              return (
+                <span className={`flex items-baseline gap-1.5 text-[11px] font-semibold tabular-nums ${proj >= 0 ? "text-success-ink" : "text-danger-ink"}`}
+                  title="Projected profit — revenue minus supplier costs entered so far, minus anything refunded">
+                  {refundPaid > 0.005 && (
+                    <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(raw)}</span>
+                  )}
+                  <span>{fmtAmount(proj)} <span className="text-[8px] text-muted uppercase">proj</span></span>
                 </span>
               );
             })()}
             {isComplete && (() => {
-              const mgn = flow.gross_revenue > 0 ? (flow.net_profit / flow.gross_revenue) * 100 : 0;
+              const net = flow.net_profit    - refundPaid;
+              const rev = flow.gross_revenue - refundPaid;
+              const mgn = rev > 0 ? (net / rev) * 100 : 0;
               return (
-                <span className={`text-[11px] font-semibold tabular-nums ${flow.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}
-                  title="Recorded profit · margin (net profit ÷ revenue)">
-                  {fmtAmount(flow.net_profit)} <span className="text-[8px] text-muted uppercase">{mgn.toFixed(0)}% mgn</span>
+                <span className={`flex items-baseline gap-1.5 text-[11px] font-semibold tabular-nums ${net >= 0 ? "text-success-ink" : "text-danger-ink"}`}
+                  title="Recorded profit · margin (net profit ÷ revenue), after refunds">
+                  {refundPaid > 0.005 && (
+                    <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(flow.net_profit)}</span>
+                  )}
+                  <span>{fmtAmount(net)} <span className="text-[8px] text-muted uppercase">{mgn.toFixed(0)}% mgn</span></span>
                 </span>
               );
             })()}
@@ -941,8 +986,7 @@ function DealFlowCard({
               <div className="border-t border-line bg-surface-2 px-5 py-4">
                 <div key={animKey} className="df-anim">
                   {section === "supplier" && <SectionSupplier flow={flow} onReload={onReload} onAdvance={() => advance("supplier")} locked={locked} />}
-                  {section === "money"    && <SectionMoney    flow={flow} onReload={onReload} onAdvance={() => advance("money")} locked={locked} />}
-                  {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} />}
+                  {section === "link"     && <SectionLink     flow={flow} onReload={onReload} onAdvance={() => advance("link")} locked={locked} />}
                   {section === "profit"   && <SectionProfit   flow={flow} onAdvance={() => advance("profit")} />}
                   {section === "complete" && <PanelComplete   flow={flow} onReload={onReload} />}
                 </div>
@@ -1186,7 +1230,14 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   const existingPayments = flow.supplier_payments || [];
   const anyRateEntered   = items.some((it) => parseAmt(it.myRate) > 0);
   const suppTotal        = items.reduce((s, it) => s + it.qty * parseAmt(it.myRate), 0);
-  const totalCost        = existingPayments.reduce((s, p) => s + p.amount, 0);
+  // A kept leg was never paid, so it is not a cost — same rule as
+  // `total_supplier_cost`, and now visible here because the kept toggle lives on
+  // these rows (R-132).
+  const totalCost        = existingPayments.filter((p) => !p.kept).reduce((s, p) => s + p.amount, 0);
+  const outstanding      = existingPayments.filter((p) => !p.paid && !p.kept);
+  const suppliersPaid    = existingPayments.length > 0 ? outstanding.length === 0 : true;
+  const outstandingTotal = outstanding.reduce((s, p) => s + p.amount, 0);
+  const received         = si(flow.stage) >= si("payment_received");
 
   const pickSupplier = (s: Supplier) => { setSelSupplier(s); setSuppName(s.name); setSuppResults([]); };
 
@@ -1245,14 +1296,43 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
     } catch (e: any) { toast(String(e), "error"); }
   };
 
+  // ── Settling the legs (folded in from Money movement, R-132) ──
+  const togglePaid = async (pid: string, paid: boolean) => {
+    setSaving(true);
+    try { await (paid ? api.markSupplierPaymentPaid(flow.id, pid) : api.unmarkSupplierPaymentPaid(flow.id, pid)); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const markAllPaid = async () => {
+    setSaving(true);
+    // A kept leg is already settled — flipping it to paid would put its cost back on
+    // the deal. Only genuinely outstanding legs get marked.
+    try { await Promise.all(outstanding.map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const unmarkAllPaid = async () => {
+    setSaving(true);
+    try { await Promise.all(existingPayments.filter((p) => p.paid).map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  // "Didn't pay — kept it": drop this supplier's amount from the deal's cost.
+  const toggleKept = async (pid: string, kept: boolean) => {
+    setSaving(true);
+    try { await api.setSupplierPaymentKept(flow.id, pid, kept); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+
   return (
     <div className="space-y-4">
       <div>
         <div className="text-[14px] font-semibold text-ink">Supplier &amp; cost</div>
-        <div className="text-[12px] text-muted mt-0.5">What you're paying for the goods. Add each supplier and cost, then continue.</div>
+        <div className="text-[12px] text-muted mt-0.5">What you're paying for the goods, and whether each leg has gone out yet.</div>
       </div>
 
-      {/* Existing cost lines */}
+      {/* Existing cost lines — each carries its own settled state */}
       {existingPayments.length > 0 && (
         <div className="space-y-1.5">
           {existingPayments.map((p) => (
@@ -1267,8 +1347,26 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                 {p.quantity != null && p.unit_price != null && (
                   <div className="text-[11px] text-muted tabular-nums">{p.quantity} × {fmtAmount(p.unit_price)}</div>
                 )}
+                {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
+                {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept — didn't pay, not counted as a cost</div>}
+                {!locked && (
+                  <div className="flex items-center gap-2.5 mt-0.5">
+                    {!p.kept && (
+                      <button onClick={() => togglePaid(p.id, !p.paid)} disabled={saving}
+                        className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
+                        {p.paid ? "Undo — not paid yet" : "Mark paid"}
+                      </button>
+                    )}
+                    {!p.paid && (
+                      <button onClick={() => toggleKept(p.id, !p.kept)} disabled={saving}
+                        className="text-[10.5px] text-muted hover:text-ink-2 disabled:opacity-40">
+                        {p.kept ? "Undo — I did pay this" : "Didn't pay — keep it"}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(p.amount)}</div>
+              <div className={`text-[13px] font-semibold tabular-nums ${p.kept ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
               {!locked && (
                 <button onClick={() => removePayment(p.id)} className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>
               )}
@@ -1278,6 +1376,25 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
             <span>Total cost</span>
             <span className="font-semibold text-ink tabular-nums w-24 text-right">{fmtAmount(totalCost)}</span>
           </div>
+          {!locked && (
+            suppliersPaid ? (
+              existingPayments.some((p) => p.paid) && (
+                <button onClick={unmarkAllPaid} disabled={saving}
+                  className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
+                  <RotateCcw size={11} /> Undo suppliers paid
+                </button>
+              )
+            ) : received ? (
+              <button onClick={markAllPaid} disabled={saving}
+                className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center">
+                <Check size={14} strokeWidth={2.5} /> Mark supplier paid — {fmtAmount(outstandingTotal)}
+              </button>
+            ) : (
+              // The stage ladder won't take a supplier payment before the buyer's money
+              // is in, so say so rather than let the click fail.
+              <div className="text-[11.5px] text-muted">Mark the buyer payment received in Link financials before settling these legs.</div>
+            )
+          )}
         </div>
       )}
 
@@ -1414,29 +1531,33 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
       {/* Advance */}
       <div className="flex items-center justify-between pt-1">
         <span className="text-[11.5px] text-muted">
-          {existingPayments.length > 0 ? "Cost recorded" : "No supplier cost yet — you can continue and record this as 100% profit"}
+          {existingPayments.length === 0 ? "No supplier cost yet — you can continue and record this as 100% profit"
+            : suppliersPaid ? "Cost recorded, every leg settled"
+            : `${outstanding.length} leg${outstanding.length === 1 ? "" : "s"} still to send`}
         </span>
         <button onClick={onAdvance}
           className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
-          Continue to money <Check size={14} strokeWidth={2.5} />
+          Continue to financials <Check size={14} strokeWidth={2.5} />
         </button>
       </div>
     </div>
   );
 }
 
-// ─── Section 2: Money movement (received + sent) ──────────────────────────
-function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; onReload: () => void; onAdvance: () => void; locked: boolean }) {
-  const payments      = flow.supplier_payments || [];
-  const hasSuppliers  = payments.length > 0;
-  const received      = si(flow.stage) >= si("payment_received");
-  const suppliersPaid = hasSuppliers ? payments.every((p) => p.paid || p.kept) : true;
+// ── The buyer's money in (folded from Money movement, R-132) ──
+// `markPaymentReceived` is the ONLY path that both advances the deal and flips the
+// invoice to paid with its `paid_at`, and `unmarkPaymentReceived` the only cascade
+// that unwinds a completed one. Both are called here exactly as they were before
+// the fold — the section moved, the calls did not change.
+function BuyerPayment({ flow, onReload, locked }: { flow: DealFlow; onReload: () => void; locked: boolean }) {
+  const hasSuppliers = (flow.supplier_payments || []).length > 0;
+  const received     = si(flow.stage) >= si("payment_received");
   const [saving, setSaving] = useState(false);
+  const [savingDeposit, setSavingDeposit] = useState(false);
   const [receivedAmount, setReceivedAmount] = useState<string>(flow.invoice_total ? flow.invoice_total.toFixed(2) : "");
   useEffect(() => { setReceivedAmount(flow.invoice_total ? flow.invoice_total.toFixed(2) : ""); }, [flow.invoice_total]);
   const [depositAmount, setDepositAmount] = useState<string>(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : "");
   useEffect(() => { setDepositAmount(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""); }, [flow.deposit_amount]);
-  const [savingDeposit, setSavingDeposit] = useState(false);
 
   const handleMarkReceived = async () => {
     const amt = parseFloat(receivedAmount);
@@ -1447,7 +1568,11 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
     catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };
-  const undoReceived = async () => { setSaving(true); try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); } setSaving(false); };
+  const undoReceived = async () => {
+    setSaving(true);
+    try { await api.unmarkPaymentReceived(flow.id); onReload(); } catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
   const handleSaveDeposit = async () => {
     const amt = parseFloat(depositAmount) || 0;
     if (amt < 0) { toast("Enter a valid deposit amount", "error"); return; }
@@ -1456,163 +1581,141 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
     catch (e: any) { toast(String(e), "error"); }
     setSavingDeposit(false);
   };
-  const markAllPaid = async () => {
-    setSaving(true);
-    // A kept leg is already settled — flipping it to paid would put its cost back on
-    // the deal. Only genuinely outstanding legs get marked.
-    try { await Promise.all(payments.filter((p) => !p.paid && !p.kept).map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-  const unmarkAllPaid = async () => {
-    setSaving(true);
-    try { await Promise.all(payments.filter((p) => p.paid).map((p) => api.unmarkSupplierPaymentPaid(flow.id, p.id))); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
-  // "Didn't pay — kept it": drop this supplier's amount from the deal's cost.
-  const toggleKept = async (paymentId: string, kept: boolean) => {
-    setSaving(true);
-    try { await api.setSupplierPaymentKept(flow.id, paymentId, kept); onReload(); }
-    catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
-  };
 
-  const canReceive = !received; // show the mark-received form only when it isn't yet received
   return (
-    <div className="space-y-4">
-      <div>
-        <div className="text-[14px] font-semibold text-ink">Money movement</div>
-        <div className="text-[12px] text-muted mt-0.5">Both legs must be done to continue: money in from the buyer, money out to the supplier.</div>
+    <div className={`rounded-xl border p-4 ${received ? "border-success/40 bg-success-bg/30" : "border-line bg-surface"}`}>
+      <div className="flex items-center gap-2 mb-2">
+        {received ? <CheckCircle2 size={15} className="text-success-ink" /> : <AlertTriangle size={15} className="text-warning-ink" />}
+        <span className="text-[13px] font-semibold text-ink">Money received from the buyer</span>
+        {received && <span className="ml-auto text-[12px] text-success-ink font-medium tabular-nums">{fmtAmount(flow.payment_received_amount)} received</span>}
       </div>
-
-      {/* Money received */}
-      <div className={`rounded-xl border p-4 ${received ? "border-success/40 bg-success-bg/30" : "border-line bg-surface"}`}>
-        <div className="flex items-center gap-2 mb-2">
-          {received ? <CheckCircle2 size={15} className="text-success-ink" /> : <AlertTriangle size={15} className="text-warning-ink" />}
-          <span className="text-[13px] font-semibold text-ink">Money received</span>
-          {received && <span className="ml-auto text-[12px] text-success-ink font-medium tabular-nums">{fmtAmount(flow.payment_received_amount)} received</span>}
-        </div>
-        {received && !locked ? (
+      {received ? (
+        !locked && (
           <button onClick={undoReceived} disabled={saving}
             className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
             <RotateCcw size={11} /> Undo payment
           </button>
-        ) : canReceive ? (
-          <div className="space-y-2.5">
-            <div className="rounded-lg border border-line bg-surface p-3">
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Deposit received (optional)</label>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                  <input type="number" step="0.01" min="0" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00"
-                    className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
-                </div>
-                {(() => {
-                  const dep = parseFloat(depositAmount) || 0; const total = flow.invoice_total || 0;
-                  if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
-                  if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
-                  return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
-                })()}
-                <button onClick={handleSaveDeposit} disabled={savingDeposit}
-                  className="flex items-center gap-1.5 border border-line hover:bg-surface-3 text-ink-2 px-3 h-9 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors">
-                  {flow.deposit_amount ? "Update deposit" : "Save deposit"}
-                </button>
+        )
+      ) : locked ? null : (
+        <div className="space-y-2.5">
+          <div className="rounded-lg border border-line bg-surface p-3">
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Deposit received (optional)</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
+                <input type="number" step="0.01" min="0" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00"
+                  className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
               </div>
+              {(() => {
+                const dep = parseFloat(depositAmount) || 0; const total = flow.invoice_total || 0;
+                if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
+                if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
+                return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
+              })()}
+              <button onClick={handleSaveDeposit} disabled={savingDeposit}
+                className="flex items-center gap-1.5 border border-line hover:bg-surface-3 text-ink-2 px-3 h-9 rounded-lg text-[12.5px] font-medium disabled:opacity-40 transition-colors">
+                {flow.deposit_amount ? "Update deposit" : "Save deposit"}
+              </button>
             </div>
-            <div>
-              <label className="block text-[12.5px] font-medium text-muted mb-1">Amount received</label>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                  <input type="number" step="0.01" min="0" value={receivedAmount} onChange={(e) => setReceivedAmount(e.target.value)}
-                    className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
-                </div>
-                {(() => {
-                  const amt = parseFloat(receivedAmount); const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
-                  if (!isFinite(diff) || Math.abs(diff) < 0.005) return <span className="text-[11px] text-muted">matches invoice {fmtAmount(flow.invoice_total)}</span>;
-                  return <span className={`text-[11px] font-medium ${diff < 0 ? "text-danger-ink" : "text-success-ink"}`}>{diff < 0 ? "−" : "+"}{fmtAmount(Math.abs(diff))} vs invoice {fmtAmount(flow.invoice_total)}</span>;
-                })()}
-              </div>
-            </div>
-            <button onClick={handleMarkReceived} disabled={saving}
-              className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all">
-              <DollarSign size={14} /> Mark payment received
-            </button>
           </div>
-        ) : null}
-      </div>
-
-      {/* Money sent to supplier */}
-      <div className={`rounded-xl border p-4 ${suppliersPaid && hasSuppliers ? "border-success/40 bg-success-bg/30" : "border-line bg-surface"}`}>
-        <div className="flex items-center gap-2 mb-2">
-          {suppliersPaid ? <CheckCircle2 size={15} className="text-success-ink" /> : <AlertTriangle size={15} className="text-warning-ink" />}
-          <span className="text-[13px] font-semibold text-ink">Money sent to supplier</span>
-          {hasSuppliers && <span className="ml-auto text-[12px] text-muted tabular-nums">{fmtAmount(flow.total_supplier_cost)}</span>}
-        </div>
-        {!hasSuppliers ? (
-          <p className="text-[12px] text-muted">No supplier cost on this deal — nothing to send.</p>
-        ) : (
-          <>
-            <div className="rounded-lg border border-line overflow-hidden bg-surface mb-2">
-              {payments.map((p) => (
-                <div key={p.id} className="flex items-center gap-3 px-3 py-2 border-b border-line-2 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
-                      {p.supplier_name}
-                      {p.category && p.category !== "supplier" && (
-                        <span className="text-[9px] font-bold uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded flex-shrink-0">{catLabel(p.category)}</span>
-                      )}
-                    </div>
-                    {p.paid && <div className="text-[10.5px] text-success-ink font-medium">Paid</div>}
-                    {p.kept && <div className="text-[10.5px] text-accent font-medium">Kept — didn't pay, not counted as a cost</div>}
-                    {!locked && !p.paid && (
-                      <button onClick={() => toggleKept(p.id, !p.kept)} disabled={saving}
-                        className="text-[10.5px] text-muted hover:text-ink-2 mt-0.5 disabled:opacity-40">
-                        {p.kept ? "Undo — I did pay this" : "Didn't pay — keep it"}
-                      </button>
-                    )}
-                  </div>
-                  <div className={`text-[13px] font-semibold tabular-nums ${p.kept ? "text-muted line-through" : "text-ink"}`}>{fmtAmount(p.amount)}</div>
-                </div>
-              ))}
+          <div>
+            <label className="block text-[12.5px] font-medium text-muted mb-1">Amount received</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
+                <input type="number" step="0.01" min="0" value={receivedAmount} onChange={(e) => setReceivedAmount(e.target.value)}
+                  className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
+              </div>
+              {(() => {
+                const amt = parseFloat(receivedAmount); const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
+                if (!isFinite(diff) || Math.abs(diff) < 0.005) return <span className="text-[11px] text-muted">matches invoice {fmtAmount(flow.invoice_total)}</span>;
+                return <span className={`text-[11px] font-medium ${diff < 0 ? "text-danger-ink" : "text-success-ink"}`}>{diff < 0 ? "−" : "+"}{fmtAmount(Math.abs(diff))} vs invoice {fmtAmount(flow.invoice_total)}</span>;
+              })()}
             </div>
-            {suppliersPaid ? (
-              !locked && (
-                <button onClick={unmarkAllPaid} disabled={saving}
-                  className="flex items-center gap-1.5 text-[12px] text-warning-ink px-2.5 py-1 rounded-lg hover:bg-warning-bg border border-warning transition-colors">
-                  <RotateCcw size={11} /> Undo suppliers paid
-                </button>
-              )
-            ) : (
-              !locked && (
-                <button onClick={markAllPaid} disabled={saving}
-                  className="flex items-center gap-2 bg-accent hover:bg-accent text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors w-full justify-center">
-                  <Check size={14} strokeWidth={2.5} /> Mark supplier paid — {fmtAmount(flow.total_supplier_cost)}
-                </button>
-              )
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Advance — gated on both legs */}
-      <div className="flex items-center justify-between pt-1">
-        <span className="text-[11.5px] text-muted">
-          {received && suppliersPaid ? "Both legs done" : !received ? "Mark the buyer payment received" : "Mark the supplier paid"}
-        </span>
-        <button onClick={onAdvance} disabled={!(received && suppliersPaid)}
-          title={received && suppliersPaid ? undefined : "Complete both money legs first"}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          Continue to financials <Check size={14} strokeWidth={2.5} />
-        </button>
-      </div>
+          </div>
+          <button onClick={handleMarkReceived} disabled={saving}
+            className="flex items-center gap-2 bg-success hover:opacity-90 text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-all">
+            <DollarSign size={14} /> Mark payment received
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Section 3: Link financials ───────────────────────────────────────────
-function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: () => void; onAdvance: () => void }) {
+// ── What the bank already agrees with ──
+// `deal_reconciliation` works out whether the paired transactions cover each leg
+// (`payment_received_paired` / `supplier_paid_paired`). It is offered as a
+// one-click confirm and never applied on its own: the pairing is evidence, the
+// stage change is Jack's call.
+function BankConfirm({ flow, onReload, locked }: { flow: DealFlow; onReload: () => void; locked: boolean }) {
+  const [recon, setRecon] = useState<Awaited<ReturnType<typeof api.dealReconciliation>> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const payments    = flow.supplier_payments || [];
+  const outstanding = payments.filter((p) => !p.paid && !p.kept);
+  const received    = si(flow.stage) >= si("payment_received");
+
+  useEffect(() => {
+    let live = true;
+    api.dealReconciliation(flow.id).then((r) => { if (live) setRecon(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [flow.id, flow.stage, flow.payment_received_amount, payments.length]);
+
+  const buyerPaired    = recon?.pieces.buyer_paired ?? 0;
+  const supplierPaired = recon?.pieces.supplier_paired ?? 0;
+  const buyerReady    = !locked && !received && !!recon?.payment_received_paired;
+  const supplierReady = !locked && received && outstanding.length > 0 && !!recon?.supplier_paid_paired;
+  if (!buyerReady && !supplierReady) return null;
+
+  const confirmBuyer = async () => {
+    const amt = buyerPaired > 0 ? buyerPaired : flow.invoice_total;
+    if (payments.length === 0 && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
+    setSaving(true);
+    try { await api.markPaymentReceived(flow.id, { amount: amt, method: null, notes: null }); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+  const confirmSupplier = async () => {
+    setSaving(true);
+    try { await Promise.all(outstanding.map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    catch (e: any) { toast(String(e), "error"); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="rounded-xl border border-accent/30 bg-accent/5 p-3 space-y-2">
+      <div className="text-[12.5px] font-medium text-ink-2">The bank already covers this deal</div>
+      {buyerReady && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[12px] text-muted flex-1 min-w-0">
+            {fmtAmount(buyerPaired)} is paired to the buyer leg, and the deal still says the payment hasn't landed.
+          </span>
+          <button onClick={confirmBuyer} disabled={saving}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40 transition-colors">
+            <Check size={13} strokeWidth={2.5} /> Mark payment received
+          </button>
+        </div>
+      )}
+      {supplierReady && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[12px] text-muted flex-1 min-w-0">
+            {fmtAmount(supplierPaired)} is paired to the supplier leg, and {outstanding.length} cost line{outstanding.length === 1 ? "" : "s"} still read as unpaid.
+          </span>
+          <button onClick={confirmSupplier} disabled={saving}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-40 transition-colors">
+            <Check size={13} strokeWidth={2.5} /> Mark supplier paid
+          </button>
+        </div>
+      )}
+      <div className="text-[10.5px] text-muted">Suggested from the linked transactions — nothing changes until you confirm.</div>
+    </div>
+  );
+}
+
+// ─── Section 2: Link financials ───────────────────────────────────────────
+// Also the buyer's money in, folded here from Money movement (R-132): the payment
+// belongs beside the bank transaction it is paired to, not in a step of its own.
+function SectionLink({ flow, onReload, onAdvance, locked }: { flow: DealFlow; onReload: () => void; onAdvance: () => void; locked: boolean }) {
   const meta = (() => { try { return JSON.parse((flow as any).metadata || "{}"); } catch { return {}; } })();
   const [noBuyer,    setNoBuyer]    = useState<boolean>(!!meta.no_buyer_link);
   const [noSupplier, setNoSupplier] = useState<boolean>(!!meta.no_supplier_link);
@@ -1629,6 +1732,10 @@ function SectionLink({ flow, onReload, onAdvance }: { flow: DealFlow; onReload: 
           Anything you link here (or from Bank statements) is what the recorded profit is built from.
         </div>
       </div>
+
+      <BuyerPayment flow={flow} onReload={onReload} locked={locked} />
+      <BankConfirm  flow={flow} onReload={onReload} locked={locked} />
+
       <ReconciliationPanel flow={flow} onChange={onReload} />
 
       {/* "Didn't happen" — mark a leg as having no bank record to link (cash, etc.) so

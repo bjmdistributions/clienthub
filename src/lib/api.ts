@@ -49,6 +49,21 @@ export interface Client {
   approval_status: string;
   /** True until this client has been sent ANY email; self-clears server-side on first send. */
   first_contact?: boolean;
+  /** The supplier record that is the same company (R-175, migration 80). LINKED,
+   *  never merged, and money is never netted across it. Optional because
+   *  `get_client`'s SELECT does not return it yet — see `getPartyLink`. */
+  linked_party_id?: string | null;
+}
+
+/** One end of the dual-role party link. The two records stay separate: what they
+ *  pay us is revenue and what we pay them is cost, and a UI that shows one
+ *  combined figure for the pair calls it POSITION, never profit. */
+export interface PartyLink {
+  /** The id of the record on the OTHER side of the link. */
+  linked_id: string;
+  linked_name: string;
+  /** Which table `linked_id` lives in. */
+  linked_type: "client" | "supplier";
 }
 
 export interface ClientInput {
@@ -347,6 +362,14 @@ export interface Interaction {
   subject: string | null;
   body: string | null;
   created_at: string;
+  /** Who logged it. `interactions.user_name` has existed since migration 25 and
+   *  the desktop writer fills it in, but the desktop READ path never selected it,
+   *  so every row on a profile showed no author (R-152-c). The server half shipped
+   *  in v0.16.1. Optional here because a build whose `list_interactions` has not
+   *  been updated yet simply omits the field — it must read as "not known", never
+   *  as an error. Add `user_name` to the `Interaction` struct and to the SELECT in
+   *  `commands.rs::list_interactions` and every row fills in. */
+  user_name?: string | null;
 }
 
 export interface LineItem {
@@ -619,6 +642,9 @@ export interface Supplier {
   avg_deal_amount: number;
   total_profit: number;    // profit on their deals, apportioned by their share of the payments
   total_revenue: number;   // apportioned the same way — 0 means "no revenue recorded", not "0%"
+  /** The client record that is the same company (R-175, migration 80). See
+   *  `PartyLink` — linked, never merged, never netted. */
+  linked_party_id?: string | null;
 }
 
 export interface SupplierInput {
@@ -1257,11 +1283,22 @@ export interface LotDetails {
   // division so re-opening the form shows exactly what was typed.
   qty_basis?: "total" | "per_pallet" | null;
   qty_per_pallet?: number | null;
+  // Upper end of a quoted per-pallet RANGE ("450-500 units per pallet"). `quantity`
+  // keeps the LOW end multiplied out, so stock is never overstated to a buyer; the
+  // range itself is what gets displayed beside it.
+  qty_per_pallet_max?: number | null;
   msrp?: number | null;
   avg_msrp?: number | null;
   moq?: number | null;
   size_run?: { size: string; qty: number }[] | null;
   price_text?: string | null;   // free-text price shown verbatim when price_type === "custom"
+  // How the PRICE was entered, mirroring `qty_basis`. `asking_price` is ALWAYS the
+  // figure `price_type` describes — a per-pallet lot stores `price_type: "total"` and
+  // the multiplied-out whole-load price — so every existing value/profit sum stays
+  // correct. `price_per_pallet` is the figure the supplier actually quoted, kept so the
+  // form shows it back and every surface can print "$1,500 per pallet · $3.16 / unit".
+  price_basis?: "total" | "per_pallet" | null;
+  price_per_pallet?: number | null;
   open_to_offers?: boolean | null;  // storefront shows a "Make an offer" form when true
   // Shopify-style variants: option TYPES (Color, Size…) each with their values, and
   // one variant row per combination the seller stocks, with its own qty + price.
@@ -2360,6 +2397,22 @@ export const api = {
   revertSupplierPriceChange: (id: string, paymentId: string) =>
     invoke<void>("revert_supplier_price_change", { id, paymentId }),
   getDealFlowNodeMap: (dealFlowId: string) => invoke<DealFlowNodeMap>("get_deal_flow_node_map", { dealFlowId }),
+
+  // ── The dual-role party link (R-175 / R-153) ──────────────────────────────
+  // `linked_party_id` shipped on both `clients` and `suppliers` in v0.16.1 with
+  // no readers and no writers. These two commands are the readers and the writer.
+  // A LINK, not a merge: the two records stay separate everywhere, and what we
+  // pay them (cost) is never netted against what they pay us (revenue).
+  //
+  // Callers MUST tolerate `get_party_link` rejecting — a build that predates the
+  // Rust half has no such command, and the surface is expected to hide itself
+  // rather than offer a control that cannot work.
+  getPartyLink: (ptype: "client" | "supplier", id: string) =>
+    invoke<PartyLink | null>("get_party_link", { ptype, id }),
+  /** `linkedId` null clears the link. Writes BOTH sides — a one-sided pointer is
+   *  a link only one profile can see. */
+  setPartyLink: (ptype: "client" | "supplier", id: string, linkedId: string | null) =>
+    invoke<void>("set_party_link", { ptype, id, linkedId }),
 
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),

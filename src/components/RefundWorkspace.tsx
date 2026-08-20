@@ -171,6 +171,17 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   const supplierBack = allocs.filter((a) => a.role === "refund_in");
   const totalReceived = receivedLinked.reduce((s, a) => s + a.amount, 0) + receipts.reduce((s, r) => s + r.amount, 0);
   const shortage: DealShortage | null = payout?.shortage ?? null;
+  // What the supplier owes back for units that never arrived, against what has actually
+  // landed as a linked `refund_in`. These are two different numbers on purpose: refunding
+  // the buyer does NOT make the cost go away, so a deal where the supplier never pays back
+  // lands at zero profit, not at the kept-units profit. Showing only the expectation would
+  // imply a recovery that has not happened. `supplier_refund_owed` is explicit when set —
+  // 0 means agreed and nothing owed, so only null falls through to the suggestion.
+  const supplierExpected = shortage?.supplier_refund_owed ?? shortage?.suggested_supplier_refund ?? 0;
+  const supplierArrived = supplierBack.reduce((s, a) => s + a.amount, 0);
+  // Floors at 0: this is a "still to come" figure, and an over-recovery is not negative
+  // outstanding. It is not a profit figure, so the never-cap-profit rule does not apply.
+  const supplierGap = Math.max(0, supplierExpected - supplierArrived);
   const refundOwed: number = payout?.refund_owed || 0;
   const totalRefunded = payout?.refunded || refunds.reduce((s, r) => s + r.amount, 0);
   const remaining = Math.max(refundOwed - totalRefunded, 0);
@@ -417,31 +428,72 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
                   <div className="mt-2 flex items-start gap-1.5 text-[11px] text-warning-ink">
                     <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
                     <span>
-                      {fmtAmount(shortage.supplier_gap)} still to come back from the supplier. Until it lands the units are gone but the
-                      cost isn't — profit on the {shortage.kept_units} kept units is {fmtAmount(shortage.actual.profit)}, not {fmtAmount(shortage.expected.profit)}.
+                      Until the supplier's money lands the units are gone but the cost isn't — profit on
+                      the {shortage.kept_units} kept units is {fmtAmount(shortage.actual.profit)}, not {fmtAmount(shortage.expected.profit)}.
                     </span>
                   </div>
                 )}
-                <div className="mt-2 pt-2 border-t border-line-2 space-y-0.5">
-                  {supplierBack.map((a) => (
-                    <div key={a.id} className="flex items-center gap-2 text-[12px] py-0.5">
-                      <ArrowDownLeft size={13} className="text-success-ink flex-shrink-0" />
-                      <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
-                      <span className="flex-1 min-w-0 truncate text-ink">{a.counterparty_name || a.description || "Supplier returned"}</span>
-                      <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
-                      {!locked && <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
-                        title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
-                    </div>
-                  ))}
-                  {supplierBack.length === 0 && <div className="text-[11.5px] text-muted">Nothing back from the supplier yet.</div>}
-                </div>
-                {!locked && (
-                  <button onClick={() => setPickSupplierBack((v) => !v)}
-                    className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><Link2 size={12} /> Link the supplier's money back</button>
-                )}
-                {!locked && pickSupplierBack && <TxnPicker txns={unalloc.money_in} onPick={linkSupplierBack} onClose={() => setPickSupplierBack(false)} />}
               </section>
             )}
+
+            <div className="border-t border-line-2" />
+          </>)}
+
+          {/* 2b · Supplier recovery (R-163-3) — owed against what actually arrived.
+              Its own section, and never inside the buyer's refund ladder: two
+              parties, two obligations, and one is not the other's offset. Shown
+              whenever the supplier owes us or has already sent money back, even if
+              nothing was typed into the shortage box. */}
+          {(supplierExpected > 0.005 || supplierBack.length > 0) && (<>
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[12.5px] font-medium text-ink-2">Supplier recovery</span>
+                {supplierGap > 0.005 ? (
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-warning-ink">
+                    <AlertTriangle size={12} /> {fmtAmount(supplierGap)} still to come
+                  </span>
+                ) : supplierExpected > 0.005 ? (
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-success-ink">
+                    <CheckCircle2 size={13} /> Recovered in full
+                  </span>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-3 gap-x-4 text-[12px] rounded-lg border border-line bg-surface-2 px-3 py-2">
+                <div>
+                  <div className="text-[10.5px] text-muted">Supplier owes us</div>
+                  <div className="tabular-nums font-semibold text-ink">{fmtAmount(supplierExpected)}</div>
+                </div>
+                <div>
+                  <div className="text-[10.5px] text-muted">Arrived in the bank</div>
+                  <div className="tabular-nums font-semibold text-success-ink">{fmtAmount(supplierArrived)}</div>
+                </div>
+                <div>
+                  <div className="text-[10.5px] text-muted">Still to come</div>
+                  <div className={`tabular-nums font-semibold ${supplierGap > 0.005 ? "text-warning-ink" : "text-ink"}`}>{fmtAmount(supplierGap)}</div>
+                </div>
+              </div>
+              <div className="mt-2 space-y-0.5">
+                {supplierBack.map((a) => (
+                  <div key={a.id} className="flex items-center gap-2 text-[12px] py-0.5">
+                    <ArrowDownLeft size={13} className="text-success-ink flex-shrink-0" />
+                    <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
+                    <span className="flex-1 min-w-0 truncate text-ink">{a.counterparty_name || a.description || "Supplier returned"}</span>
+                    <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
+                    {!locked && <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
+                      title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
+                  </div>
+                ))}
+                {supplierBack.length === 0 && <div className="text-[11.5px] text-muted">Nothing back from the supplier yet.</div>}
+              </div>
+              {!locked && (
+                <button onClick={() => setPickSupplierBack((v) => !v)}
+                  className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><Link2 size={12} /> Link the supplier's money back</button>
+              )}
+              {!locked && pickSupplierBack && <TxnPicker txns={unalloc.money_in} onPick={linkSupplierBack} onClose={() => setPickSupplierBack(false)} />}
+              <div className="text-[10.5px] text-muted mt-2">
+                Money back from the supplier lowers our cost. It is never counted against what we owe the buyer.
+              </div>
+            </section>
 
             <div className="border-t border-line-2" />
           </>)}

@@ -45,6 +45,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # R-134b. The TypeScript half of `cargo test` below — Vitest over the pure
+      # helpers in src/lib. `vitest run`, never bare `vitest`, which watches and
+      # would hang the job forever. Note that vitest exits 1 when it finds no test
+      # files at all, so deleting the last test breaks the build rather than going
+      # quiet. See vitest.config.ts for what the suite deliberately does not cover.
+      - name: Test
+        run: npm test
+
       # R-134e. Colours belong to the design tokens, not to the component that
       # happens to need one. A raw hex in a .tsx is invisible to a theme change
       # and to the accent system, and every one of them has to be found by hand.

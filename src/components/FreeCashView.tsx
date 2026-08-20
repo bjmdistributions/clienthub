@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { api, FinancialsOverview, MoneyConfig, ReconAccount } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, SlidersHorizontal, X, AlertTriangle, ShieldCheck } from "lucide-react";
@@ -7,6 +8,35 @@ import { toast } from "./Toast";
 
 const inputCls =
   "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
+
+// One connected depository account, offered as the place the reserve actually sits.
+// `key` is the same account identity the balance sum de-duplicates with — never a
+// per-connection id, which Plaid re-mints on every re-link.
+type ReserveAccountOption = {
+  key: string;
+  institution: string;
+  name: string;
+  mask: string;
+  subtype: string;
+  balance: number;
+};
+
+// The reserve-account fields financials_overview returns (R-143). Declared here
+// rather than on FinancialsOverview because src/lib/api.ts is owned by another
+// session this wave — fold these onto the shared interface when it is free, and
+// swap the raw invoke in save() back to api.setMoneyConfig with the extra argument.
+type OverviewWithReserve = FinancialsOverview & {
+  reserve_account_key?: string;
+  reserve_account_label?: string;
+  reserve_account_linked?: boolean;
+  reserve_parked?: number;
+  reserve_target?: number;
+  reserve_shortfall?: number;
+  reserve_accounts?: ReserveAccountOption[];
+};
+
+const acctLabel = (a: ReserveAccountOption) =>
+  `${a.institution} · ${a.name}${a.mask ? ` (${a.mask})` : ""}`;
 
 // Status → plain colored text (no dot, no pill, never the orange accent).
 
@@ -64,7 +94,7 @@ function NumField({
 }
 
 export default function FreeCashView() {
-  const [ov, setOv] = useState<FinancialsOverview | null>(null);
+  const [ov, setOv] = useState<OverviewWithReserve | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,6 +112,9 @@ export default function FreeCashView() {
   const [taxStr, setTaxStr]       = useState("");
   const [refundStr, setRefundStr] = useState("");
   const [warStr, setWarStr]       = useState("");
+  // Which linked account holds the reserve. "" means none designated — the state
+  // the app ships in, and until it changes every figure behaves exactly as before.
+  const [reserveKeyStr, setReserveKeyStr] = useState("");
 
   const loadOverview = () => {
     setRefreshing(true);
@@ -163,7 +196,20 @@ export default function FreeCashView() {
       // device is actually using. If Free Cash is showing a live or synced balance, the
       // manual box holds a stale number nobody is looking at — publishing it would
       // overwrite the good figure for everyone until the next bank sync.
-      await api.setMoneyConfig(bank, card, floor, tax / 100, refund / 100, war, ov?.balance_source === "manual");
+      // Raw invoke rather than api.setMoneyConfig only because the wrapper's argument
+      // list lives in src/lib/api.ts, which another session holds this wave. Same
+      // command, same arguments, plus the reserve account. Omitting `reserveAccountKey`
+      // leaves the stored choice alone; "" un-designates.
+      await invoke<void>("set_money_config", {
+        bankBalance: bank,
+        creditCardBalance: card,
+        cashFloor: floor,
+        taxSweepPct: tax / 100,
+        refundReservePct: refund / 100,
+        warChest: war,
+        publishManual: ov?.balance_source === "manual",
+        reserveAccountKey: reserveKeyStr,
+      });
       setAdjustOpen(false);
       await loadOverview();
       toast("Saved");
@@ -188,6 +234,14 @@ export default function FreeCashView() {
     : [];
 
   const reserveTotal = ov ? ov.tax_reserve + ov.refund_reserve : 0;
+  // Reserve account (R-143). Designated = Jack has picked one; linked = it is still
+  // among the connected banks. Designated-but-unlinked has to be said out loud,
+  // because the parked figure silently falls to zero and free cash rises.
+  const reserveAccounts = ov?.reserve_accounts ?? [];
+  const reserveDesignated = !!ov?.reserve_account_key;
+  const reserveLinked = reserveDesignated && ov?.reserve_account_linked !== false;
+  const reserveParked = ov?.reserve_parked ?? 0;
+  const reserveShortfall = ov?.reserve_shortfall ?? reserveTotal;
 
   const reconciled = ov
     ? ov.allocated_actuals.buyer_in + ov.allocated_actuals.supplier_paid + ov.allocated_actuals.refunds_out
@@ -217,7 +271,7 @@ export default function FreeCashView() {
             <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
           </button>
           <button
-            onClick={() => { loadConfig(); setAdjustOpen(true); }}
+            onClick={() => { loadConfig(); setReserveKeyStr(ov?.reserve_account_key ?? ""); setAdjustOpen(true); }}
             className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 transition-colors"
           >
             <SlidersHorizontal size={14} /> Adjust
@@ -339,13 +393,25 @@ export default function FreeCashView() {
                 permanently and double-counted every tax payment (the payment
                 already leaves the bank balance). They are goals to park in a
                 real account, so they are stated, not taken. */}
-            {reserveTotal > 0.005 && (
+            {(reserveTotal > 0.005 || reserveDesignated) && (
               <div className="min-w-0">
                 <h3 className="text-[13px] font-semibold text-ink tracking-tight">Set aside</h3>
                 <p className="text-[11px] text-muted mt-0.5">
-                  A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year — for the record only,
-                  not taken out of the number above
+                  {reserveLinked
+                    ? <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year. {ov.reserve_account_label} holds
+                        the money, and its balance is already out of the number above</>
+                    : <>A target based on {fmtAmount(ov.refund_reserve_base ?? 0)} of profit this year — for the record only,
+                        not taken out of the number above</>}
                 </p>
+                {reserveDesignated && !reserveLinked && (
+                  <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-danger-line bg-danger-bg/40 px-3 py-2.5">
+                    <AlertTriangle size={14} className="text-danger-ink flex-shrink-0 mt-0.5" />
+                    <span className="text-[11.5px] text-ink-2 min-w-0">
+                      The account you set aside is no longer connected on this device, so nothing is counted as parked.
+                      Reconnect the bank, or pick another account under Adjust.
+                    </span>
+                  </div>
+                )}
                 <div className="mt-3 border-t border-line-2 divide-y divide-line-2">
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
                     <span className="min-w-0 flex-1 text-[13px] text-ink-2">Tax</span>
@@ -358,8 +424,24 @@ export default function FreeCashView() {
                     </span>
                     <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(ov.refund_reserve)}</span>
                   </div>
+                  {reserveLinked && (
+                    <>
+                      <div className="flex items-center gap-3 py-2.5 min-w-0">
+                        <span className="min-w-0 flex-1 text-[13px] font-medium text-ink">Parked in {ov.reserve_account_label}</span>
+                        <span className="text-[13px] tabular-nums text-ink w-28 text-right flex-shrink-0">{fmtAmount(reserveParked)}</span>
+                      </div>
+                      <div className="flex items-center gap-3 py-2.5 min-w-0">
+                        <span className="min-w-0 flex-1 text-[13px] text-ink-2">
+                          {reserveShortfall > 0.005 ? "Still to move across" : "Target covered"}
+                        </span>
+                        <span className="text-[13px] tabular-nums text-ink-2 w-28 text-right flex-shrink-0">{fmtAmount(reserveShortfall)}</span>
+                      </div>
+                    </>
+                  )}
                   <div className="flex items-center gap-3 py-2.5 min-w-0">
-                    <span className="min-w-0 flex-1 text-[12.5px] text-muted">If you parked both, free cash would be</span>
+                    <span className="min-w-0 flex-1 text-[12.5px] text-muted">
+                      {reserveLinked ? "If you moved the rest across, free cash would be" : "If you parked both, free cash would be"}
+                    </span>
                     <span className={`text-[13px] tabular-nums w-28 text-right flex-shrink-0 ${(ov.free_cash_after_reserves ?? 0) < 0 ? "text-danger-ink" : "text-muted"}`}>
                       {fmtAmount(ov.free_cash_after_reserves ?? 0)}
                     </span>
@@ -492,6 +574,36 @@ export default function FreeCashView() {
                 value={warStr}
                 onChange={setWarStr}
               />
+              {/* Where the reserve actually sits. Picking an account turns the two
+                  percentages above from an estimate into a real balance: that account
+                  is held out of the bank balance everywhere, and shown as parked
+                  against the target. Nothing is selected until you choose. */}
+              <div>
+                <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Reserve account</label>
+                <p className="text-[11px] text-muted mb-1.5 leading-snug">
+                  {reserveAccounts.length > 0
+                    ? "The connected account you keep the tax and refund money in. Its balance stops counting as free cash and shows as parked against the target instead."
+                    : ov?.has_plaid
+                      ? "No connected checking or savings account to choose from yet."
+                      : "Connect a bank on this device to pick the account that holds the money."}
+                </p>
+                <select
+                  value={reserveKeyStr}
+                  onChange={(e) => setReserveKeyStr(e.target.value)}
+                  disabled={reserveAccounts.length === 0}
+                  className={"w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13.5px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" + (reserveAccounts.length === 0 ? " opacity-50 cursor-not-allowed" : "")}
+                >
+                  <option value="">None — keep the reserve as an estimate</option>
+                  {reserveAccounts.map((a) => (
+                    <option key={a.key} value={a.key}>{acctLabel(a)} — {fmtAmount(a.balance)}</option>
+                  ))}
+                  {/* A previously chosen account that is no longer connected still has
+                      to be shown, or saving this dialog would silently un-designate it. */}
+                  {reserveKeyStr !== "" && !reserveAccounts.some((a) => a.key === reserveKeyStr) && (
+                    <option value={reserveKeyStr}>{ov?.reserve_account_label || "Chosen account"} — not connected</option>
+                  )}
+                </select>
+              </div>
             </div>
 
             <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">

@@ -1,15 +1,21 @@
-import { useEffect, useState, Children } from "react";
-import { api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo, PaymentMethod, CounterpartyPaymentRow } from "../lib/api";
-import { fmtAmount, fmtPhone } from "../lib/format";
+import { useEffect, useMemo, useState, Children } from "react";
+import {
+  api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo,
+  PaymentMethod, CounterpartyPaymentRow, DealFlow, Supplier, PartyLink,
+} from "../lib/api";
+import { fmtAmount, fmtPhone, localDay, parseLocalDay, primarySupplierLabel } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
 import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
-import { PersonRef } from "./PersonPicker";
+import PersonPickerModal, { PersonRef } from "./PersonPicker";
+import { toast } from "./Toast";
 import {
   ArrowLeft,
+  ArrowRight,
   Mail,
   Phone,
   Building2,
+  MapPin,
   Sparkles,
   RefreshCw,
   Plus,
@@ -17,10 +23,7 @@ import {
   MessageSquare,
   ShoppingCart,
   Target,
-  Calendar,
   User,
-  Inbox,
-  Clock,
   Tag,
   Pencil,
   Trash2,
@@ -28,7 +31,72 @@ import {
   X,
   Send,
   Check,
+  ChevronDown,
+  ChevronRight,
+  Link2,
+  Unlink,
+  Banknote,
+  Truck,
 } from "lucide-react";
+
+/* ── The party profile (R-153) ───────────────────────────────────────────────
+ *
+ * Money leads, chrome follows — the same principle that drove the supplier
+ * redesign (R-116). What this party is worth, and what is waiting on them, are
+ * the first two things on the screen; contact details, portal links and credit
+ * limits sit behind a disclosure at the bottom where they belong.
+ *
+ * The four tabs (overview / emails / invoices / timeline) are gone. They were
+ * four permutations of two arrays, and they rendered invoices three separate
+ * times. One activity stream now carries interactions, invoices, deals and bank
+ * payments together, newest first, with filter chips instead of tabs.
+ *
+ * THE MONEY RULES ARE BINDING HERE:
+ *  * A refund subtracts from that deal's profit IN FULL and a deal CAN go
+ *    negative (Jack, 2026-08-19). No cap, no floor.
+ *  * Each refund counts exactly once — `refund_status_all` is the one command
+ *    that already applies the UNION rule, so profit on this screen is read from
+ *    it rather than re-derived.
+ *  * Deal flows are deduped by invoice before any SUM.
+ *  * Money paid to a party is COST and money from them is REVENUE. The two are
+ *    never netted. A single combined figure is called POSITION, never profit.
+ */
+
+/* ── Role configuration ──────────────────────────────────────────────────────
+ * The supplier profile is meant to be this component with a different config,
+ * and another session wires that side. Everything that differs between the two
+ * sides of a deal lives in this one map, so that session changes copy, never
+ * layout. The pieces below (`NextActionBand`, `ActivityStream`, `PartyLinkPanel`,
+ * `StatTile`) are all role-neutral and exported for exactly that reason. */
+export type PartyRole = "client" | "supplier";
+
+export const PARTY_COPY: Record<PartyRole, {
+  /** What this record is called, lower case, mid-sentence. */
+  self: string;
+  /** The role on the other side of the link. */
+  other: PartyRole;
+  /** The link offer, when nothing is linked yet. */
+  linkOffer: string;
+  /** Heading over money that came FROM them (revenue to us). */
+  theirSide: string;
+  /** Heading over money that went TO them (cost to us). */
+  ourSide: string;
+}> = {
+  client: {
+    self: "client",
+    other: "supplier",
+    linkOffer: "This client is also a supplier",
+    theirSide: "What they bought from us",
+    ourSide: "What we bought from them",
+  },
+  supplier: {
+    self: "supplier",
+    other: "client",
+    linkOffer: "This supplier is also a client",
+    theirSide: "What they bought from us",
+    ourSide: "What we bought from them",
+  },
+};
 
 interface Props {
   clientId: string;
@@ -63,6 +131,82 @@ const leadStatusColor = (s: string): string => {
   if (s === "active_customer") return "bg-success-bg text-success-ink border border-success";
   if (s === "inactive")        return "bg-surface-3 text-muted border border-line";
   return "bg-accent/10 text-accent-hover border border-accent/20";
+};
+
+// Deal stages, worded as what the deal is waiting for. Stage names copied from
+// STAGES in DealFlowView.tsx, which does not export them; the two must not drift.
+const STAGE_LABEL: Record<string, string> = {
+  invoiced: "Invoiced",
+  payment_received: "Payment received",
+  supplier_paid: "Supplier paid",
+  complete: "Complete",
+};
+const WAITING_ON: Record<string, string> = {
+  invoiced: "waiting on their payment",
+  payment_received: "waiting on us to pay the supplier",
+  supplier_paid: "waiting on us to close it out",
+};
+
+/** Drill into the deal that produced an invoice — the same handoff Receivables
+ *  and Payables use: stash a search term, then switch tabs. */
+const openDeal = (invoiceNumber: string) => {
+  try { localStorage.setItem("dealflow_invoice_filter", invoiceNumber); } catch { /* ignore */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
+};
+
+const openInvoices = () => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
+const openSuppliers = () => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "suppliers" }));
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Sort key for a stream row. A bare YYYY-MM-DD through `new Date()` is parsed
+ *  as UTC midnight and reads a day early in Central (R-159), so date-only values
+ *  go through parseLocalDay and timestamps keep their time. */
+const atMs = (raw: string): number => {
+  const s = (raw || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return parseLocalDay(s).getTime();
+  const v = new Date(s).getTime();
+  return Number.isFinite(v) ? v : 0;
+};
+
+/** "Aug 19", "Aug 19, 2025", or "Aug 19 · 3:24 PM" when there is a real time. */
+const whenLabel = (raw: string): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec((raw || "").trim());
+  if (!m) return "";
+  const day = `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}`;
+  const dated = Number(m[1]) === new Date().getFullYear() ? day : `${day}, ${m[1]}`;
+  if (!/T\d{2}:\d{2}/.test(raw)) return dated;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return dated;
+  return `${dated} · ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+};
+
+const relTime = (d: string | null): string => {
+  if (!d) return "—";
+  const ms = Date.now() - atMs(d);
+  if (!Number.isFinite(ms)) return "—";
+  const days = Math.floor(ms / 86400000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+};
+
+/** Whole days from today to `day` (negative = in the past), in local time. */
+const daysFromToday = (day: string): number =>
+  Math.round((parseLocalDay(day.slice(0, 10)).getTime() - parseLocalDay(localDay()).getTime()) / 86400000);
+
+/** One deal flow per invoice, keeping the LOWEST id — the same survivor rule the
+ *  backend uses (`MIN(d2.id)`). Duplicate rows for one invoice are a known live
+ *  condition and would double every total taken over them. */
+const dedupeByInvoice = (flows: DealFlow[]): DealFlow[] => {
+  const best = new Map<string, DealFlow>();
+  for (const f of flows) {
+    const cur = best.get(f.invoice_id);
+    if (!cur || f.id < cur.id) best.set(f.invoice_id, f);
+  }
+  return [...best.values()];
 };
 
 // A premium labeled on/off switch. `tone` colours the ON state: accent for a
@@ -116,8 +260,8 @@ function FlagSwitch({ label, on, onToggle, title, tone = "accent" }: {
   );
 }
 
-// A calm key-stat tile for the profile header + financials.
-function StatTile({ label, value, tone = "ink", hint }: { label: string; value: string; tone?: "ink" | "success" | "warning" | "danger" | "muted"; hint?: string }) {
+// A calm key-stat tile for the money band. Role-neutral.
+export function StatTile({ label, value, tone = "ink", hint }: { label: string; value: string; tone?: "ink" | "success" | "warning" | "danger" | "muted"; hint?: string }) {
   const valCls = tone === "success" ? "text-success-ink" : tone === "warning" ? "text-warning-ink" : tone === "danger" ? "text-danger-ink" : tone === "muted" ? "text-muted" : "text-ink";
   return (
     <div className="bg-surface-2/60 border border-line-2 rounded-xl px-3.5 py-3">
@@ -132,7 +276,372 @@ function SubHeading({ icon, children }: { icon: React.ReactNode; children: React
   return <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">{icon}{children}</div>;
 }
 
+/** A section that stays shut until asked for. The admin drawer at the bottom of
+ *  the profile is one of these — portal links and credit limits used to sit
+ *  above the history of the relationship. */
+function Disclosure({ title, icon, children, defaultOpen = false }: {
+  title: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-surface border border-line rounded-2xl mb-4 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 px-6 py-4 text-left text-[13px] font-semibold text-ink hover:bg-surface-2 transition-colors"
+      >
+        {open ? <ChevronDown size={15} className="text-muted flex-shrink-0" /> : <ChevronRight size={15} className="text-muted flex-shrink-0" />}
+        {icon}
+        {title}
+      </button>
+      {open && <div className="px-6 pb-6">{children}</div>}
+    </div>
+  );
+}
+
+/* ── The next-action line ────────────────────────────────────────────────────
+ * What is owed, what is overdue, what is waiting on them. Role-neutral: the
+ * caller assembles the actions, this renders them. The most urgent leads; the
+ * rest ride the same band as a quiet second line, so the screen is a worklist
+ * and not a record. */
+export type NextAction = {
+  tone: "danger" | "warning" | "muted";
+  text: string;
+  /** Optional one-click hop to wherever the action gets done. */
+  go?: { label: string; onClick: () => void };
+};
+
+export function NextActionBand({ actions, followUp, onFollowUp }: {
+  actions: NextAction[];
+  /** YYYY-MM-DD, or "" when none is set. Always offered — it used to render only
+   *  when a date already existed, nine cards down inside a metadata panel. */
+  followUp: string;
+  onFollowUp: (day: string) => void | Promise<void>;
+}) {
+  const head = actions[0];
+  const rest = actions.slice(1);
+  const band =
+    head?.tone === "danger" ? "bg-danger-bg border-danger" :
+    head?.tone === "warning" ? "bg-warning-bg border-warning" :
+    "bg-surface-2 border-line";
+  const headCls =
+    head?.tone === "danger" ? "text-danger-ink" :
+    head?.tone === "warning" ? "text-warning-ink" :
+    "text-ink-2";
+  return (
+    <div className={`mt-4 rounded-xl border px-4 py-3 ${band}`}>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <div className={`text-[13.5px] font-semibold flex items-center gap-2 ${headCls}`}>
+            {head?.tone === "danger" && <AlertTriangle size={14} className="flex-shrink-0" />}
+            {head ? head.text : "Nothing is waiting on them right now."}
+          </div>
+          {rest.length > 0 && (
+            <div className="text-[12px] text-muted mt-1 leading-relaxed">{rest.map((a) => a.text).join(" · ")}</div>
+          )}
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {head?.go && (
+            <button onClick={head.go.onClick} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
+              {head.go.label} <ArrowRight size={12} />
+            </button>
+          )}
+          <label className="flex items-center gap-1.5 text-[11.5px] text-muted">
+            Follow up
+            <input
+              type="date"
+              value={followUp}
+              onChange={(e) => onFollowUp(e.target.value)}
+              className="bg-surface border border-line rounded-lg h-7 px-2 text-[12px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+            />
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── The activity stream ─────────────────────────────────────────────────────
+ * Interactions, invoices, deals and bank payments in one list, newest first.
+ * Role-neutral — the caller builds the items. */
+export type StreamGroup = "contact" | "email" | "invoice" | "deal" | "payment";
+
+export type StreamItem = {
+  key: string;
+  at: string;
+  group: StreamGroup;
+  chip: string;
+  chipCls: string;
+  title?: string | null;
+  body?: string | null;
+  /** Who logged it. `interactions.user_name` has carried this since migration 25
+   *  (R-152-c) — no row should read as anonymous once the desktop SELECT returns it. */
+  author?: string | null;
+  amount?: number | null;
+  amountTone?: "ink" | "success" | "danger";
+  meta?: string | null;
+  go?: { label: string; onClick: () => void };
+};
+
+const GROUP_LABEL: Record<StreamGroup, string> = {
+  contact: "Notes & calls",
+  email: "Emails",
+  invoice: "Invoices",
+  deal: "Deals",
+  payment: "Payments",
+};
+
+export function ActivityStream({ items, header }: { items: StreamItem[]; header?: React.ReactNode }) {
+  const [group, setGroup] = useState<StreamGroup | "all">("all");
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const it of items) c[it.group] = (c[it.group] || 0) + 1;
+    return c;
+  }, [items]);
+  const shown = useMemo(
+    () => (group === "all" ? items : items.filter((i) => i.group === group)),
+    [items, group],
+  );
+  const chips = (Object.keys(GROUP_LABEL) as StreamGroup[]).filter((g) => (counts[g] || 0) > 0 || group === g);
+
+  return (
+    <div className="bg-surface border border-line rounded-2xl">
+      <div className="flex items-center justify-between gap-3 flex-wrap px-6 py-4 border-b border-line">
+        <SubHeading icon={<MessageSquare size={15} className="text-muted" />}>Activity</SubHeading>
+        {header}
+      </div>
+      <div className="flex flex-wrap gap-1.5 px-6 pt-3">
+        <button
+          onClick={() => setGroup("all")}
+          className={`text-[11.5px] px-2.5 py-1 rounded-full border font-medium transition-colors ${
+            group === "all" ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"
+          }`}
+        >
+          Everything · {items.length}
+        </button>
+        {chips.map((g) => (
+          <button
+            key={g}
+            onClick={() => setGroup(group === g ? "all" : g)}
+            className={`text-[11.5px] px-2.5 py-1 rounded-full border font-medium transition-colors ${
+              group === g ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"
+            }`}
+          >
+            {GROUP_LABEL[g]} · {counts[g] || 0}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 max-h-[640px] overflow-auto">
+        {shown.map((it) => (
+          <div key={it.key} className="px-6 py-3 border-t border-line-2 first:border-t-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium border ${it.chipCls}`}>
+                    {it.chip}
+                  </span>
+                  <span className="text-[11px] text-muted tabular-nums">{whenLabel(it.at)}</span>
+                  {it.author && <span className="text-[11px] text-ink-2">{it.author}</span>}
+                </div>
+                {it.title && <div className="text-[13.5px] font-medium text-ink mt-1">{it.title}</div>}
+                {it.body && <div className="text-[13px] text-ink-2 mt-0.5 whitespace-pre-wrap leading-relaxed">{it.body}</div>}
+                {it.meta && <div className="text-[11.5px] text-muted mt-0.5">{it.meta}</div>}
+              </div>
+              <div className="flex-shrink-0 text-right">
+                {typeof it.amount === "number" && (
+                  <div className={`text-[13px] font-semibold tabular-nums ${
+                    it.amountTone === "success" ? "text-success-ink" : it.amountTone === "danger" ? "text-danger-ink" : "text-ink"
+                  }`}>
+                    {fmtAmount(it.amount)}
+                  </div>
+                )}
+                {it.go && (
+                  <button
+                    onClick={it.go.onClick}
+                    title={it.go.label}
+                    aria-label={it.go.label}
+                    className="mt-1 w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
+                  >
+                    <ArrowRight size={11} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+        {shown.length === 0 && (
+          <div className="px-6 py-10 text-center text-[13px] text-muted">
+            {items.length === 0 ? "Nothing has happened with them yet." : "Nothing under this filter."}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── The party link ──────────────────────────────────────────────────────────
+ * Dual-role parties are LINKED, not merged (v0.16.1, `linked_party_id` on both
+ * `clients` and `suppliers`). The two sides render as SEPARATE sections and
+ * nothing appears twice. Money paid to them is cost and money from them is
+ * revenue; the two are never netted. The one combined figure below is labelled
+ * POSITION and says on its face that it is not profit. */
+export function PartyLinkPanel({
+  role, selfName, link, linked, linkedPayments, theirDeals, theirSide, ourSide, position,
+  onOpenPicker, onUnlink, onUntagLinked, busy,
+}: {
+  role: PartyRole;
+  selfName: string;
+  link: PartyLink | null;
+  /** The linked supplier record, when it has loaded. */
+  linked: Supplier | null;
+  linkedPayments: CounterpartyPaymentRow[];
+  /** Deals where the linked party supplied the goods. */
+  theirDeals: { flow: DealFlow; amount: number; paid: number }[];
+  theirSide: { revenue: number; open: number; invoices: number };
+  ourSide: { cost: number; deals: number; last: string | null };
+  position: number;
+  onOpenPicker: () => void;
+  onUnlink: () => void;
+  /** Remove a counterparty tag from one of the supplier side's payments. The
+   *  payment itself stays exactly as it is — the tag says who, not what. */
+  onUntagLinked: (txnId: string) => void;
+  busy: boolean;
+}) {
+  const copy = PARTY_COPY[role];
+
+  if (!link) {
+    return (
+      <div className="bg-surface border border-line rounded-2xl px-6 py-4 mb-4 flex items-center justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <SubHeading icon={<Link2 size={15} className="text-muted" />}>{copy.linkOffer}</SubHeading>
+          <p className="text-[12px] text-muted mt-1 leading-relaxed">
+            Link the two records and both sides show here, kept apart. Nothing is merged and no figure is
+            netted — what they pay us stays revenue, what we pay them stays cost.
+          </p>
+        </div>
+        <button
+          onClick={onOpenPicker}
+          disabled={busy}
+          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-50 transition-colors flex-shrink-0"
+        >
+          <Link2 size={13} /> Link a {copy.other}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <SubHeading icon={<Link2 size={15} className="text-muted" />}>
+            {selfName} is also a {copy.other}: <span className="text-accent-hover ml-1">{link.linked_name}</span>
+          </SubHeading>
+          <p className="text-[12px] text-muted mt-1 leading-relaxed">
+            Two records, linked, never merged. The two sides below stand on their own and no row appears in both.
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* Honest label: this opens the supplier LIST. Landing on the supplier's
+              own profile needs a handoff SuppliersView reads, and that file
+              belongs to another session — see the report. */}
+          <button onClick={openSuppliers} title={`Opens the ${copy.other} list`}
+            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors">
+            {copy.other === "supplier" ? "Suppliers" : "Clients"} <ArrowRight size={12} />
+          </button>
+          <button onClick={onOpenPicker} disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-50 transition-colors">
+            Change
+          </button>
+          <button onClick={onUnlink} disabled={busy} title="Remove the link — neither record is changed otherwise"
+            className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-line text-faint hover:text-ink-2 hover:border-line-3 disabled:opacity-50 transition-colors">
+            <Unlink size={13} />
+          </button>
+        </div>
+      </div>
+
+      {/* Their side — revenue. */}
+      <div className="mt-5">
+        <div className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
+          <Banknote size={14} className="text-muted" /> {copy.theirSide}
+        </div>
+        <p className="text-[11px] text-faint mt-0.5">Money from them. This is revenue.</p>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+          <StatTile label="Paid us" value={fmtAmount(theirSide.revenue)} tone="success" />
+          <StatTile label="Still open" value={fmtAmount(theirSide.open)} tone={theirSide.open > 0 ? "warning" : "muted"} />
+          <StatTile label="Invoices" value={String(theirSide.invoices)} tone="ink" />
+        </div>
+      </div>
+
+      {/* Our side — cost. Never added to the block above. */}
+      <div className="mt-5 pt-5 border-t border-line-2">
+        <div className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
+          <Truck size={14} className="text-muted" /> {copy.ourSide}
+        </div>
+        <p className="text-[11px] text-faint mt-0.5">Money to them. This is cost, and it is never subtracted from the figures above.</p>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+          <StatTile label="We paid them" value={fmtAmount(ourSide.cost)} tone="ink" />
+          <StatTile label="Deals supplied" value={String(ourSide.deals)} tone="ink" />
+          <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "—"} tone="muted" />
+        </div>
+
+        {theirDeals.length > 0 && (
+          <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden max-h-[280px] overflow-y-auto">
+            {theirDeals.map(({ flow, amount, paid }) => (
+              <div key={flow.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-[12.5px] text-ink truncate">
+                    {flow.invoice_number ? `#${flow.invoice_number}` : "Deal"}
+                    <span className="text-muted"> · {STAGE_LABEL[flow.stage] || flow.stage}</span>
+                  </div>
+                  <div className="text-[11px] text-muted">
+                    {flow.client_name || "—"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-[12.5px] font-semibold text-ink tabular-nums">{fmtAmount(amount)}</span>
+                  {flow.invoice_number && (
+                    <button onClick={() => openDeal(flow.invoice_number as string)} title="Open this deal"
+                      aria-label="Open this deal"
+                      className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
+                      <ArrowRight size={11} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {linkedPayments.length > 0 && (
+          <div className="mt-4">
+            <PersonPayments
+              person={{ type: "supplier", id: link.linked_id, name: link.linked_name }}
+              payments={linkedPayments}
+              onUntag={onUntagLinked}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* The one combined number, and what it is not. */}
+      <div className="mt-5 pt-4 border-t border-line-2 flex items-baseline justify-between gap-3 flex-wrap">
+        <span className="text-[12.5px] text-muted">
+          Position — what they paid us less what we paid them. It is not profit and no deal reads it.
+        </span>
+        <span className={`text-[15px] font-bold tabular-nums ${position < 0 ? "text-danger-ink" : "text-ink"}`}>
+          {fmtAmount(position)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }: Props) {
+  const role: PartyRole = "client";
   const [client, setClient] = useState<Client | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showSendDetails, setShowSendDetails] = useState(false);
@@ -140,27 +649,45 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
-  const [detailTab, setDetailTab] = useState<"overview" | "emails" | "invoices" | "timeline">("overview");
   const [tier, setTier] = useState<BuyerTier | null>(null);
   const [portalLink, setPortalLink] = useState<PortalLink | null>(null);
   const [credit, setCredit] = useState<{ credit_limit: number; exposure: number; available: number; over: boolean } | null>(null);
   const [creditEdit, setCreditEdit] = useState("");
-  // Profit made from this client = sum of its completed deals' net profit.
-  const [clientProfit, setClientProfit] = useState<number | null>(null);
+  // This client's deal flows, deduped by invoice. Previously fetched, summed into
+  // one tile and thrown away — the screen held the live pipeline and never showed it.
+  const [flows, setFlows] = useState<DealFlow[]>([]);
+  // Refunded per deal, counted exactly ONCE (`refund_status_all` applies the
+  // refunds-UNION-refund_out rule). Profit on this screen is net_profit minus
+  // this, uncapped — a deal can legitimately go negative.
+  const [refundByDeal, setRefundByDeal] = useState<Record<string, number>>({});
   // Bank payments this client touches: tagged rows + buyer_payment allocations.
   const [payments, setPayments] = useState<CounterpartyPaymentRow[]>([]);
   // Both sides of the address book, for re-filing a payment under the party it
-  // actually belongs to (R-175). Loaded once; failure only costs the picker.
+  // actually belongs to (R-175) and for picking the linked party. Loaded once.
   const [people, setPeople] = useState<PersonRef[]>([]);
+
+  // ── The party link (R-175) ───────────────────────────────────────────────
+  // `linked_party_id` shipped in v0.16.1 with no readers and no writers, and the
+  // two Tauri commands that read and write it live in commands.rs, which this
+  // session does not own (see the handoff in the report). So the surface is
+  // capability-detected: if `get_party_link` is not there yet the whole panel
+  // stays hidden rather than offering a control that cannot work. The moment the
+  // Rust half lands, this lights up with no further change here.
+  const [linkSupported, setLinkSupported] = useState(false);
+  const [link, setLink] = useState<PartyLink | null>(null);
+  const [linkedSupplier, setLinkedSupplier] = useState<Supplier | null>(null);
+  const [linkedPayments, setLinkedPayments] = useState<CounterpartyPaymentRow[]>([]);
+  const [linkPicker, setLinkPicker] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
 
   useEffect(() => {
     api.getClientCreditStatus(clientId)
       .then((c) => { setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); })
       .catch(() => setCredit(null));
   }, [clientId]);
-  const [kindFilter, setKindFilter] = useState<string | null>(null);
 
   const load = async () => {
     const c = await api.getClient(clientId);
@@ -169,22 +696,40 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     setInteractions(await api.listInteractions(clientId));
     setInvoices(await api.listInvoicesForClient(clientId));
     api.getBuyerTier(clientId).then(setTier).catch(() => {});
-    // Sum net profit across this client's completed deal flows, deduped by invoice
-    // so a duplicate flow row can't double-count (belt-and-suspenders on top of the
-    // ghost cleanup that archives duplicates).
-    api.listDealFlows().then((flows) => {
-      const seen = new Set<string>();
-      const p = flows
-        .filter((f) => f.client_id === clientId && f.stage === "complete")
-        .filter((f) => (seen.has(f.invoice_id) ? false : (seen.add(f.invoice_id), true)))
-        .reduce((s, f) => s + (f.net_profit || 0), 0);
-      setClientProfit(p);
-    }).catch(() => setClientProfit(null));
+    api.listDealFlows()
+      .then((all) => setFlows(dedupeByInvoice(all.filter((f) => f.client_id === clientId))))
+      .catch(() => setFlows([]));
+    api.refundStatusAll()
+      .then((rows) => {
+        const m: Record<string, number> = {};
+        for (const r of rows) m[r.deal_flow_id] = r.refunded || 0;
+        setRefundByDeal(m);
+      })
+      .catch(() => setRefundByDeal({}));
     api.listPortalLinks(clientId).then((links) => {
       const active = links.find((l) => l.is_active && new Date(l.expires_at) > new Date());
       if (active) setPortalLink(active);
     }).catch(() => {});
     api.counterpartyPayments("client", clientId, c.name).then(setPayments).catch(() => setPayments([]));
+  };
+
+  const loadLink = async () => {
+    try {
+      const l = await api.getPartyLink("client", clientId);
+      setLinkSupported(true);
+      setLink(l);
+      if (l) {
+        api.getSupplier(l.linked_id).then(setLinkedSupplier).catch(() => setLinkedSupplier(null));
+        api.counterpartyPayments("supplier", l.linked_id, l.linked_name)
+          .then(setLinkedPayments).catch(() => setLinkedPayments([]));
+      } else {
+        setLinkedSupplier(null);
+        setLinkedPayments([]);
+      }
+    } catch {
+      // The command is not in this build yet — offer nothing rather than a dead control.
+      setLinkSupported(false);
+    }
   };
 
   // Remove a wrong client tag — the payment itself stays booked. Re-fetch so a
@@ -201,7 +746,16 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     } catch {}
   };
 
-  useEffect(() => { load(); }, [clientId]);
+  // Same as untagPayment, on the linked party's side of the screen.
+  const untagLinkedPayment = async (txnId: string) => {
+    if (!link) return;
+    try {
+      await api.untagBankTxnCounterparty(txnId);
+      setLinkedPayments(await api.counterpartyPayments("supplier", link.linked_id, link.linked_name));
+    } catch {}
+  };
+
+  useEffect(() => { load(); loadLink(); }, [clientId]);
   useEffect(() => {
     Promise.all([api.listClients(), api.listSuppliers()])
       .then(([cs, ss]) => setPeople([
@@ -214,11 +768,51 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
   const handleSummarize = async () => {
     setSummarizing(true);
+    setShowSummary(true);
     try {
       const s = await api.aiSummarizeHistory(clientId);
       setSummary(s);
-    } catch (e: any) { alert(`AI error: ${e}`); }
+    } catch (e: any) { toast(`AI error: ${e}`, "error"); }
     finally { setSummarizing(false); }
+  };
+
+  const setLinkedParty = async (p: PersonRef) => {
+    setLinkBusy(true);
+    try {
+      await api.setPartyLink("client", clientId, p.id);
+      setLinkPicker(false);
+      toast(`Linked to ${p.name}`);
+      await loadLink();
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally { setLinkBusy(false); }
+  };
+
+  const clearLinkedParty = async () => {
+    setLinkBusy(true);
+    try {
+      await api.setPartyLink("client", clientId, null);
+      await loadLink();
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally { setLinkBusy(false); }
+  };
+
+  // Create the missing supplier record and link it in one step. PersonPicker can
+  // now offer this; before R-153 it could only filter what already existed, so a
+  // company we buy from that had never been entered as a supplier was a dead end.
+  const createAndLink = async (name: string) => {
+    setLinkBusy(true);
+    try {
+      const id = await api.createSupplier({ name });
+      await api.setPartyLink("client", clientId, id);
+      setLinkPicker(false);
+      toast(`Created ${name} and linked them`);
+      setPeople((ps) => [...ps, { type: "supplier", id, name }]);
+      await loadLink();
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally { setLinkBusy(false); }
   };
 
   if (!client)
@@ -234,37 +828,44 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   // Fell-through (voided) invoices are excluded from the money tiles — a voided
   // sent invoice isn't really outstanding, and a voided paid one isn't revenue.
   const live = invoices.filter((i) => !i.voided);
-  const outstanding = live
-    .filter((i) => i.status === "sent" || i.status === "overdue")
-    .reduce((s, i) => s + i.total, 0);
-  const paid = live
-    .filter((i) => i.status === "paid")
-    .reduce((s, i) => s + i.total, 0);
+  const today = localDay();
+  const unpaid = live.filter((i) => i.status === "sent" || i.status === "overdue");
+  const overdueInvs = unpaid.filter((i) => i.status === "overdue" || i.due_date.slice(0, 10) < today);
+  const overdueTotal = overdueInvs.reduce((s, i) => s + i.total, 0);
+  const outstanding = unpaid.reduce((s, i) => s + i.total, 0);
+  const notYetDue = outstanding - overdueTotal;
+  const paid = live.filter((i) => i.status === "paid").reduce((s, i) => s + i.total, 0);
   // total_revenue is the authoritative refund-netted figure from the backend.
   const revenue = client.total_revenue ?? paid;
-  // Invoices sent = actually sent (sent/overdue/paid), voided excluded — always tracked.
   const sentCount = live.filter((i) => ["sent", "overdue", "paid"].includes(i.status)).length;
 
+  // Profit = completed deals' net profit less every refund on those deals, in
+  // full and uncapped. `net_profit` alone is deliberately PRE-refund, so reading
+  // it raw overstates a refunded client — and capping the subtraction at the
+  // deal's profit (which `buyer_tiers.total_profit` still does) is the rule Jack
+  // revoked on 2026-08-19. Six deals legitimately report a loss.
+  const completed = flows.filter((f) => f.stage === "complete");
+  const dealProfit = (f: DealFlow) => (f.net_profit || 0) - (refundByDeal[f.id] || 0);
+  const clientProfit = completed.reduce((s, f) => s + dealProfit(f), 0);
+  const refundedTotal = completed.reduce((s, f) => s + (refundByDeal[f.id] || 0), 0);
+  const openDeals = flows.filter((f) => f.stage !== "complete");
+
+  const meta = client.metadata || {};
   // Sales rep — must be shown. No rep set reads "Unassigned"; it used to fall
   // back to the CLIENT'S OWN company name, which put the buyer's company beside
   // a person icon labelled "Rep:" and read as a fact (R-153 finding 6).
-  const meta = client.metadata || {};
   const rep = (meta.lead_representative || meta.sales_rep || "").toString().trim();
   const repDisplay = rep || "Unassigned";
   const initials = (client.name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
 
+  const address = [
+    client.street_address || meta.street_address,
+    [client.city || meta.city, client.state || meta.state, client.zip_code || meta.zip_code].filter(Boolean).join(" "),
+  ].map((v) => (v || "").toString().trim()).filter(Boolean).join(", ");
+
   const lastActivityRaw = client.last_contact_at || interactions[0]?.created_at || null;
-  const relTime = (d: string | null): string => {
-    if (!d) return "—";
-    const ms = Date.now() - new Date(d).getTime();
-    if (isNaN(ms)) return "—";
-    const days = Math.floor(ms / 86400000);
-    if (days <= 0) return "Today";
-    if (days === 1) return "Yesterday";
-    if (days < 30) return `${days}d ago`;
-    if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-    return `${Math.floor(days / 365)}y ago`;
-  };
+  const followUp = ((client.next_follow_up_date || meta.next_follow_up_date || "") as string).slice(0, 10);
+
   const tierLabel = tier ? (tier.tier === "P" ? "Platinum" : tier.tier === "S" ? "Diamond" : tier.tier === "A" ? "Gold" : tier.tier === "B" ? "Silver" : tier.tier === "C" ? "Bronze" : "Prospect") : null;
   const tierChipCls = tier ? (
     tier.tier === "P" ? "bg-[#8B5CF6]/12 text-[#8B5CF6]" :
@@ -272,6 +873,155 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
     tier.tier === "A" ? "bg-success-bg text-success-ink" :
     tier.tier === "B" ? "bg-warning-bg text-warning-ink" : "bg-surface-3 text-muted"
   ) : "";
+
+  // Merge-on-write: `update_client` writes lead_status unconditionally and
+  // defaults it to "prospect" when the caller omits it, so this call has to send
+  // the stored value back or saving a follow-up date silently demotes the client.
+  const saveFollowUp = async (day: string) => {
+    await api.updateClient(client.id, {
+      name: client.name, email: client.email, phone: client.phone,
+      company: client.company, notes: client.notes,
+      lead_status: client.lead_status,
+      metadata: { ...(client.metadata || {}), next_follow_up_date: day },
+      next_follow_up_date: day,
+    });
+    load();
+  };
+
+  // ── What is waiting, most urgent first ───────────────────────────────────
+  const actions: NextAction[] = [];
+  if (overdueInvs.length > 0) {
+    const oldest = [...overdueInvs].sort((a, b) => a.due_date.localeCompare(b.due_date))[0];
+    const days = Math.abs(daysFromToday(oldest.due_date));
+    actions.push({
+      tone: "danger",
+      text: `${fmtAmount(overdueTotal)} overdue across ${overdueInvs.length} invoice${overdueInvs.length === 1 ? "" : "s"} — oldest ${days} day${days === 1 ? "" : "s"} past due`,
+      go: oldest.number ? { label: "Open the deal", onClick: () => openDeal(oldest.number) } : undefined,
+    });
+  }
+  if (followUp) {
+    const d = daysFromToday(followUp);
+    if (d < 0) actions.push({ tone: "danger", text: `Follow-up was due ${Math.abs(d)} day${d === -1 ? "" : "s"} ago` });
+    else if (d === 0) actions.push({ tone: "warning", text: "Follow up today" });
+    else actions.push({ tone: "muted", text: `Follow up in ${d} day${d === 1 ? "" : "s"}` });
+  }
+  if (openDeals.length > 0) {
+    const byStage = openDeals[0];
+    actions.push({
+      tone: "warning",
+      text: `${openDeals.length} deal${openDeals.length === 1 ? "" : "s"} in progress — ${WAITING_ON[byStage.stage] || STAGE_LABEL[byStage.stage] || byStage.stage}`,
+      go: byStage.invoice_number ? { label: "Open the deal", onClick: () => openDeal(byStage.invoice_number as string) } : undefined,
+    });
+  }
+  if (notYetDue > 0.01) {
+    actions.push({ tone: "muted", text: `${fmtAmount(notYetDue)} invoiced and not yet due` });
+  }
+  if (client.first_contact) {
+    actions.push({ tone: "muted", text: "Never emailed" });
+  }
+  // Urgent first, so the band's headline is genuinely the headline.
+  const TONE_RANK = { danger: 0, warning: 1, muted: 2 } as const;
+  actions.sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone]);
+
+  // ── One stream ───────────────────────────────────────────────────────────
+  const stream: StreamItem[] = [];
+  for (const it of interactions) {
+    const isEmail = it.kind === "email_in" || it.kind === "email_out";
+    stream.push({
+      key: `i:${it.id}`,
+      at: it.created_at,
+      group: isEmail ? "email" : "contact",
+      chip: it.kind.replace("_", " "),
+      chipCls: kindColor(it.kind),
+      title: it.subject,
+      body: it.body,
+      author: it.user_name || null,
+    });
+  }
+  for (const inv of invoices) {
+    stream.push({
+      key: `v:${inv.id}`,
+      at: inv.issue_date,
+      group: "invoice",
+      chip: inv.voided ? "invoice · voided" : "invoice",
+      chipCls: invoiceStatusColor(inv.voided ? "" : inv.status),
+      title: `Invoice ${inv.number}`,
+      meta: `Due ${inv.due_date.slice(0, 10)} · ${inv.status}`,
+      amount: inv.total,
+      amountTone: "ink",
+      go: inv.number ? { label: "Open the deal", onClick: () => openDeal(inv.number) } : undefined,
+    });
+  }
+  for (const f of flows) {
+    const supplier = primarySupplierLabel(f.supplier_payments);
+    if (f.stage === "complete" && f.completed_at) {
+      const p = dealProfit(f);
+      stream.push({
+        key: `dc:${f.id}`,
+        at: f.completed_at,
+        group: "deal",
+        chip: "deal completed",
+        chipCls: "bg-success-bg text-success-ink border border-success",
+        title: f.invoice_number ? `Deal ${f.invoice_number} closed` : "Deal closed",
+        meta: [
+          supplier ? `Supplier ${supplier}` : null,
+          `Profit ${fmtAmount(p)}`,
+          (refundByDeal[f.id] || 0) > 0 ? `after ${fmtAmount(refundByDeal[f.id])} refunded` : null,
+        ].filter(Boolean).join(" · "),
+        amount: f.invoice_total,
+        amountTone: "ink",
+        go: f.invoice_number ? { label: "Open the deal", onClick: () => openDeal(f.invoice_number as string) } : undefined,
+      });
+    } else {
+      stream.push({
+        key: `do:${f.id}`,
+        at: f.updated_at || f.created_at,
+        group: "deal",
+        chip: `deal · ${STAGE_LABEL[f.stage] || f.stage}`,
+        chipCls: "bg-accent/10 text-accent-hover border border-accent/20",
+        title: f.invoice_number ? `Deal ${f.invoice_number}` : "Deal",
+        meta: [supplier ? `Supplier ${supplier}` : null, WAITING_ON[f.stage]].filter(Boolean).join(" · "),
+        amount: f.invoice_total,
+        amountTone: "ink",
+        go: f.invoice_number ? { label: "Open the deal", onClick: () => openDeal(f.invoice_number as string) } : undefined,
+      });
+    }
+  }
+  for (const p of payments) {
+    stream.push({
+      key: `p:${p.txn_id}`,
+      at: p.posted_at,
+      group: "payment",
+      chip: p.direction === "in" ? "payment in" : "payment out",
+      chipCls: p.direction === "in" ? "bg-success-bg text-success-ink border border-success" : "bg-warning-bg text-warning-ink border border-warning",
+      title: p.description || p.counterparty_name || "Bank transaction",
+      meta: [p.invoice_number ? `#${p.invoice_number}` : null, p.tagged ? "tagged to them" : null].filter(Boolean).join(" · "),
+      amount: p.amount,
+      amountTone: p.direction === "in" ? "success" : "danger",
+    });
+  }
+  stream.sort((a, b) => atMs(b.at) - atMs(a.at));
+
+  // ── The linked side, kept separate ───────────────────────────────────────
+  // Deals the linked supplier supplied. Their cost legs only — this never touches
+  // the revenue figures above and the two are never added together.
+  const linkedId = link?.linked_id || "";
+  const theirDeals = linkedId
+    ? flows
+        .map((flow) => {
+          const legs = (flow.supplier_payments || []).filter((sp) => sp.supplier_id === linkedId && !sp.kept);
+          const amount = legs.reduce((s, sp) => s + (sp.amount || 0), 0);
+          const paidLegs = legs.filter((sp) => sp.paid).reduce((s, sp) => s + (sp.amount || 0), 0);
+          return { flow, amount, paid: paidLegs, n: legs.length };
+        })
+        .filter((d) => d.n > 0)
+        .sort((a, b) => atMs(b.flow.created_at) - atMs(a.flow.created_at))
+    : [];
+  // Nothing may appear twice: a transaction already listed on the client side is
+  // not repeated under the supplier side.
+  const clientTxnIds = new Set(payments.map((p) => p.txn_id));
+  const linkedPaymentsShown = linkedPayments.filter((p) => !clientTxnIds.has(p.txn_id));
+  const costToThem = linkedSupplier ? linkedSupplier.total_paid : theirDeals.reduce((s, d) => s + d.paid, 0);
 
   return (
     <div>
@@ -293,6 +1043,22 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           onClose={() => setShowSendDetails(false)}
         />
       )}
+      {linkPicker && (
+        <PersonPickerModal
+          title={`Which supplier is ${client.name}?`}
+          subtitle="Links the two records. Nothing is merged, no money moves, and what we pay them stays cost."
+          only="supplier"
+          people={people}
+          candidates={[]}
+          current={link ? { type: "supplier", id: link.linked_id, name: link.linked_name } : null}
+          busy={linkBusy}
+          onClose={() => setLinkPicker(false)}
+          onPick={setLinkedParty}
+          onCreate={createAndLink}
+          createLabel="Add a new supplier"
+        />
+      )}
+
       {/* Back */}
       <button
         onClick={onBack}
@@ -301,7 +1067,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         <ArrowLeft size={14} /> Back to Clients
       </button>
 
-      {/* ── Identity header ─────────────────────────────── */}
+      {/* ── Identity, money, next action ─────────────────── */}
       <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-4 min-w-0">
@@ -313,8 +1079,8 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 <span className="inline-flex items-center gap-1.5" title="Sales rep"><User size={14} /> Rep: <span className={`font-medium ${rep ? "text-ink-2" : "text-faint"}`}>{repDisplay}</span></span>
               </div>
               <div className="mt-2.5 flex items-center gap-2 flex-wrap">
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${leadStatusColor(client.lead_status)}`}>
-                  {client.lead_status.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${leadStatusColor(client.lead_status)}`}>
+                  {client.lead_status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                 </span>
                 {tierLabel && <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${tierChipCls}`}>{tierLabel}</span>}
                 {tier && tier.avg_commission_pct > 0 && (
@@ -389,7 +1155,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 setClient((c) => c ? { ...c, is_blacklisted: val } : c);
               }} />
             {client.metadata?.unsubscribed && (
-              <span className="inline-flex items-center text-[10px] font-bold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg uppercase tracking-wide"
+              <span className="inline-flex items-center text-[10px] font-semibold text-ink-2 bg-surface-3 border border-line px-2 py-1 rounded-lg"
                 title={`Unsubscribed via an email link${client.metadata?.unsubscribed_at ? " on " + new Date(client.metadata.unsubscribed_at).toLocaleDateString() : ""} — kept off all sends`}>
                 Unsubscribed
               </span>
@@ -397,67 +1163,224 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
           </div>
         </div>
 
-        {/* Key stats row */}
+        {/* Money first. Profit leads — it is the figure Jack has said repeatedly
+            is the one that matters. */}
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
-          <StatTile label="Revenue" value={fmtAmount(revenue)} tone="ink" />
-          <StatTile label="Profit" value={clientProfit === null ? "—" : fmtAmount(clientProfit)} tone={clientProfit !== null && clientProfit < 0 ? "danger" : "success"} hint={clientProfit === null ? undefined : "completed deals"} />
-          <StatTile label="Orders" value={String(client.invoice_count)} tone="ink" hint={`${outstanding > 0 ? fmtAmount(outstanding) + " open" : "none open"}`} />
-          <StatTile label="Last activity" value={relTime(lastActivityRaw)} tone="ink"
-            hint={client.first_contact ? "no contact yet — never emailed" : undefined} />
+          <StatTile
+            label="Profit"
+            value={flows.length === 0 ? "—" : fmtAmount(clientProfit)}
+            tone={clientProfit < 0 ? "danger" : "success"}
+            hint={refundedTotal > 0 ? `after ${fmtAmount(refundedTotal)} refunded` : `${completed.length} completed deal${completed.length === 1 ? "" : "s"}`}
+          />
+          <StatTile label="Revenue" value={fmtAmount(revenue)} tone="ink" hint="paid invoices, net of refunds" />
+          <StatTile
+            label="Overdue"
+            value={fmtAmount(overdueTotal)}
+            tone={overdueTotal > 0 ? "danger" : "muted"}
+            hint={notYetDue > 0.01 ? `${fmtAmount(notYetDue)} more not yet due` : undefined}
+          />
+          <StatTile
+            label="Open deals"
+            value={String(openDeals.length)}
+            tone={openDeals.length > 0 ? "warning" : "muted"}
+            hint={`${sentCount} invoice${sentCount === 1 ? "" : "s"} sent · last activity ${relTime(lastActivityRaw)}`}
+          />
         </div>
 
-        {/* Contact line */}
-        {(client.email || client.phone) && (
-          <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-4 pt-4 border-t border-line-2">
-            {client.email && (
-              <div className="flex items-center gap-1.5">
-                <a href={`mailto:${client.email}`} className="flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"><Mail size={14} /> {client.email}</a>
-                <CopyEmail email={client.email} />
-              </div>
-            )}
-            {client.phone && <span className="flex items-center gap-1.5 text-[13px] text-ink-2"><Phone size={14} /> {fmtPhone(client.phone)}</span>}
-          </div>
-        )}
+        <NextActionBand actions={actions} followUp={followUp} onFollowUp={saveFollowUp} />
+
+        {/* Contact line — address included, which Jack named as must-be-glanceable. */}
+        <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-4 pt-4 border-t border-line-2">
+          {client.email ? (
+            <div className="flex items-center gap-1.5">
+              <a href={`mailto:${client.email}`} className="flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"><Mail size={14} /> {client.email}</a>
+              <CopyEmail email={client.email} />
+            </div>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[13px] text-faint"><Mail size={14} /> No email</span>
+          )}
+          {client.phone
+            ? <span className="flex items-center gap-1.5 text-[13px] text-ink-2"><Phone size={14} /> {fmtPhone(client.phone)}</span>
+            : <span className="flex items-center gap-1.5 text-[13px] text-faint"><Phone size={14} /> No phone</span>}
+          {address
+            ? <span className="flex items-center gap-1.5 text-[13px] text-ink-2"><MapPin size={14} /> {address}</span>
+            : <span className="flex items-center gap-1.5 text-[13px] text-faint"><MapPin size={14} /> No address</span>}
+        </div>
       </div>
 
-      {/* ── Financials: credit + portal ─────────────────── */}
-      <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
-        <SubHeading icon={<ShoppingCart size={15} className="text-muted" />}>Financials</SubHeading>
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
+      {/* ── Open with them ───────────────────────────────── */}
+      {openDeals.length > 0 && (
+        <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+          <SubHeading icon={<ShoppingCart size={15} className="text-muted" />}>Open with them</SubHeading>
+          <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
+            {openDeals.map((f) => {
+              const supplier = primarySupplierLabel(f.supplier_payments);
+              return (
+                <div key={f.id} className="flex items-center justify-between gap-3 px-3 py-3">
+                  <div className="min-w-0">
+                    <div className="text-[13px] text-ink truncate">
+                      {f.invoice_number ? `Invoice ${f.invoice_number}` : f.name || "Deal"}
+                      <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-accent/10 text-accent-hover border border-accent/20">
+                        {STAGE_LABEL[f.stage] || f.stage}
+                      </span>
+                    </div>
+                    <div className="text-[11.5px] text-muted mt-0.5">
+                      {[WAITING_ON[f.stage], supplier ? `supplier ${supplier}` : null].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(f.invoice_total)}</span>
+                    {f.invoice_number && (
+                      <button onClick={() => openDeal(f.invoice_number as string)} title="Open this deal in Deal flow"
+                        aria-label="Open this deal in Deal flow"
+                        className="w-6 h-6 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
+                        <ArrowRight size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── The party link ───────────────────────────────── */}
+      {linkSupported && (
+        <PartyLinkPanel
+          role={role}
+          selfName={client.name}
+          link={link}
+          linked={linkedSupplier}
+          linkedPayments={linkedPaymentsShown}
+          theirDeals={theirDeals}
+          theirSide={{ revenue, open: outstanding, invoices: sentCount }}
+          ourSide={{ cost: costToThem, deals: theirDeals.length, last: linkedSupplier?.last_deal_date || null }}
+          position={revenue - costToThem}
+          onOpenPicker={() => setLinkPicker(true)}
+          onUnlink={clearLinkedParty}
+          onUntagLinked={untagLinkedPayment}
+          busy={linkBusy}
+        />
+      )}
+
+      {/* ── Activity ─────────────────────────────────────── */}
+      <div className="mb-4">
+        {showNoteForm && (
+          <div className="bg-surface border border-line rounded-2xl mb-3 overflow-hidden">
+            <NoteForm clientId={clientId} onClose={() => { setShowNoteForm(false); load(); }} />
+          </div>
+        )}
+        {showSummary && (
+          <div className="bg-surface-2 border border-line rounded-2xl px-6 py-4 mb-3">
+            <div className="flex items-center justify-between gap-3">
+              <SubHeading icon={<Sparkles size={15} className="text-muted" />}>Summary of the history</SubHeading>
+              <button onClick={() => setShowSummary(false)} className="text-muted hover:text-ink transition-colors" aria-label="Close the summary"><X size={15} /></button>
+            </div>
+            {summarizing
+              ? <p className="text-[13px] text-muted mt-2 flex items-center gap-2"><RefreshCw size={12} className="animate-spin" /> Reading everything on file…</p>
+              : <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed mt-2">{summary || "Nothing came back."}</div>}
+          </div>
+        )}
+        <ActivityStream
+          items={stream}
+          header={
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSummarize}
+                disabled={summarizing || interactions.length === 0}
+                title={interactions.length === 0 ? "There is nothing on file to summarise yet" : "Summarise the history with AI"}
+                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 disabled:opacity-40 transition-colors"
+              >
+                <Sparkles size={13} /> {summary ? "Re-summarise" : "Summarise"}
+              </button>
+              <button
+                onClick={() => setShowNoteForm(true)}
+                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors"
+              >
+                <Plus size={13} /> Add a note
+              </button>
+            </div>
+          }
+        />
+      </div>
+
+      {/* ── Bank payments ────────────────────────────────── */}
+      {/* Open by default: this section shipped in v0.15.141 and Jack did not know
+          it existed. Demoted below the activity stream, not hidden inside it. */}
+      <Disclosure title="Bank payments" icon={<Banknote size={14} className="text-muted" />} defaultOpen>
+        {/* THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal of
+            their own, which that deal already counts; booked to somebody else's
+            deal, which counts on that deal and not here at all; and tagged to them
+            only, which no deal counts. The middle group is why the split is three
+            and not two — an allocation says the money is booked, never that it is
+            booked to them. */}
+        <PersonPayments
+          person={{ type: "client", id: clientId, name: client.name }}
+          payments={payments}
+          onUntag={untagPayment}
+          people={people}
+          onChanged={reloadPayments}
+        />
+      </Disclosure>
+
+      {/* ── Everything else, out of the way ──────────────── */}
+      <Disclosure title="Details and settings for this client" icon={<Target size={14} className="text-muted" />}>
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+          <MetadataCard title="Contact info" icon={<User size={14} />}>
+            {client.metadata?.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
+            {address && <MetaRow label="Address" value={address} />}
+            {client.metadata?.country && <MetaRow label="Country" value={client.metadata.country} />}
+          </MetadataCard>
+
+          <MetadataCard title="Business info" icon={<Building2 size={14} />}>
+            {client.category && <MetaRow label="Category" value={client.category} />}
+            {client.metadata?.website && <MetaRow label="Website" value={client.metadata.website} />}
+            {client.metadata?.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
+            {client.metadata?.primary_buy_category && <MetaRow label="Buy category" value={client.metadata.primary_buy_category} />}
+            {client.metadata?.other_buy_categories && <MetaRow label="Other categories" value={client.metadata.other_buy_categories} />}
+            {client.metadata?.estimated_annual_spend && <MetaRow label="Spend per frequency" value={client.metadata.estimated_annual_spend} />}
+            {client.metadata?.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
+          </MetadataCard>
+
+          <MetadataCard title="Lead info" icon={<Target size={14} />}>
+            {client.metadata?.lead_source && <MetaRow label="Source" value={client.metadata.lead_source} />}
+            {client.metadata?.interest_level && <MetaRow label="Interest" value={client.metadata.interest_level} />}
+            {client.metadata?.buyer_type && <MetaRow label="Buyer type" value={client.metadata.buyer_type} />}
+            {client.metadata?.lead_id && <MetaRow label="Lead ID" value={client.metadata.lead_id} />}
+            {client.metadata?.lead_representative && <MetaRow label="Rep" value={client.metadata.lead_representative} />}
+            {client.metadata?.date_added && <MetaRow label="Added" value={client.metadata.date_added} />}
+            {client.metadata?.last_contact_date && <MetaRow label="Last contact" value={client.metadata.last_contact_date} />}
+          </MetadataCard>
+
+          <CreditPanel clientId={client.id} />
+
+          {customFields.length > 0 && (
+            <MetadataCard title="Custom fields" icon={<Tag size={14} />}>
+              {customFields.map(f => (
+                <MetaRow key={f.id} label={f.label} value={(client.metadata as any)?.[f.field_key] ?? ""} />
+              ))}
+            </MetadataCard>
+          )}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-line-2 grid grid-cols-1 lg:grid-cols-3 gap-3">
           <StatTile label="Outstanding" value={fmtAmount(outstanding)} tone={outstanding > 0 ? "warning" : "muted"} />
           <StatTile label="Paid" value={fmtAmount(paid)} tone="success" />
           <StatTile label="Invoices sent" value={String(sentCount)} tone="ink" />
         </div>
 
-        {/* Bank payments — payments from this buyer, tagged or deal-linked (R-150).
-            THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal of
-            their own, which that deal already counts; booked to somebody else's
-            deal, which counts on that deal and not here at all; and tagged to them
-            only, which no deal counts. The middle group is why the split is three
-            and not two — an allocation says the money is booked, never that it is
-            booked to them, so calling it "their deals" put six figures of another
-            client's money in this client's total. */}
-        <div className="mt-4 pt-4 border-t border-line-2">
-          <PersonPayments
-            person={{ type: "client", id: clientId, name: client.name }}
-            payments={payments}
-            onUntag={untagPayment}
-            people={people}
-            onChanged={reloadPayments}
-          />
-        </div>
-
         {credit && (
           <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 bg-surface-2 border border-line rounded-xl px-4 py-3">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-muted uppercase tracking-wide font-semibold">Credit limit</span>
+              <span className="text-[12px] text-muted font-medium">Credit limit</span>
               <input value={creditEdit} onChange={(e) => setCreditEdit(e.target.value)}
                 onBlur={async () => { const v = parseFloat(creditEdit) || 0; await api.setClientCreditLimit(client.id, v); const c = await api.getClientCreditStatus(client.id); setCredit(c); setCreditEdit(c.credit_limit > 0 ? String(c.credit_limit) : ""); }}
                 placeholder="none" className="w-24 text-[13px] bg-surface border border-line rounded-lg px-2 py-1 text-ink focus:outline-none focus:ring-2 focus:ring-accent/40" />
             </div>
             <div className="text-[12px]"><span className="text-muted">Exposure: </span><span className="font-semibold text-ink tabular-nums">{fmtAmount(credit.exposure)}</span></div>
             {credit.credit_limit > 0 && <div className="text-[12px]"><span className="text-muted">Available: </span><span className={`font-semibold tabular-nums ${credit.over ? "text-danger-ink" : "text-success-ink"}`}>{fmtAmount(credit.available)}</span></div>}
-            {credit.over && <span className="text-[10px] font-bold uppercase text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
+            {credit.over && <span className="text-[10px] font-semibold text-danger-ink bg-danger-bg border border-danger-ink/20 px-2 py-0.5 rounded">Over limit</span>}
           </div>
         )}
 
@@ -487,306 +1410,13 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{client.notes}</div>
           </div>
         )}
-      </div>
 
-      {/* Metadata cards */}
-      {client.metadata && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
-          <MetadataCard title="Contact Info" icon={<User size={14} />}>
-            {client.metadata.job_title && <MetaRow label="Title" value={client.metadata.job_title} />}
-            {client.metadata.street_address && <MetaRow label="Address" value={client.metadata.street_address} />}
-            {(client.metadata.city || client.metadata.state) && (
-              <MetaRow
-                label=""
-                value={[client.metadata.city, client.metadata.state, client.metadata.zip_code].filter(Boolean).join(" ")}
-              />
-            )}
-            {client.metadata.country && <MetaRow label="Country" value={client.metadata.country} />}
-          </MetadataCard>
-
-          <MetadataCard title="Business Info" icon={<Building2 size={14} />}>
-            {client.category && <MetaRow label="Category" value={client.category} />}
-            {client.metadata.website && <MetaRow label="Website" value={client.metadata.website} />}
-            {client.metadata.tax_id && <MetaRow label="Tax ID" value={client.metadata.tax_id} />}
-            {client.metadata.primary_buy_category && <MetaRow label="Buy Category" value={client.metadata.primary_buy_category} />}
-            {client.metadata.other_buy_categories && <MetaRow label="Other Categories" value={client.metadata.other_buy_categories} />}
-            {client.metadata.estimated_annual_spend && <MetaRow label="Spend Per Frequency" value={client.metadata.estimated_annual_spend} />}
-            {client.metadata.purchase_frequency && <MetaRow label="Frequency" value={client.metadata.purchase_frequency} />}
-          </MetadataCard>
-
-          <MetadataCard title="Lead Info" icon={<Target size={14} />}>
-            {client.metadata.lead_source && <MetaRow label="Source" value={client.metadata.lead_source} />}
-            {client.metadata.interest_level && <MetaRow label="Interest" value={client.metadata.interest_level} />}
-            {client.metadata.buyer_type && <MetaRow label="Buyer Type" value={client.metadata.buyer_type} />}
-            {client.metadata.lead_id && <MetaRow label="Lead ID" value={client.metadata.lead_id} />}
-            {client.metadata.lead_representative && <MetaRow label="Rep" value={client.metadata.lead_representative} />}
-            {client.metadata.date_added && <MetaRow label="Added" value={client.metadata.date_added} />}
-            {client.metadata.last_contact_date && <MetaRow label="Last Contact" value={client.metadata.last_contact_date} />}
-            {client.metadata.next_follow_up_date && (
-              <div className="mt-2 first:mt-0">
-                <span className="block text-[12.5px] font-medium text-muted mb-1">Follow Up</span>
-                <input
-                  type="date"
-                  className="border border-line-3 px-2 h-8 rounded-md text-[13px] w-full focus:outline-none focus:ring-1 focus:ring-accent"
-                  value={client.metadata.next_follow_up_date}
-                  onChange={async (e) => {
-                    const meta = { ...(client.metadata || {}), next_follow_up_date: e.target.value };
-                    await api.updateClient(client.id, {
-                      name: client.name, email: client.email, phone: client.phone,
-                      company: client.company, notes: client.notes, metadata: meta,
-                    });
-                    load();
-                  }}
-                />
-              </div>
-            )}
-          </MetadataCard>
-
-          <CreditPanel clientId={client.id} />
-
-          {customFields.length > 0 && (
-            <MetadataCard title="Custom Fields" icon={<Tag size={14} />}>
-              {customFields.map(f => (
-                <MetaRow key={f.id} label={f.label} value={(client.metadata as any)?.[f.field_key] ?? ""} />
-              ))}
-            </MetadataCard>
-          )}
-        </div>
-      )}
-
-      {/* Detail tabs — underline style */}
-      <div className="flex gap-0 border-b border-line mb-4">
-        {(["overview", "emails", "invoices", "timeline"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setDetailTab(t)}
-            className={`px-4 py-2.5 text-[14px] border-b-2 -mb-px capitalize transition-colors ${
-              detailTab === t
-                ? "border-accent text-accent-hover font-medium"
-                : "border-transparent text-muted hover:text-ink"
-            }`}
-          >
-            {t}
+        <div className="mt-4 pt-4 border-t border-line-2">
+          <button onClick={openInvoices} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors">
+            <FileText size={13} /> See every invoice in Invoices <ArrowRight size={12} />
           </button>
-        ))}
-      </div>
-
-      {/* Overview tab */}
-      {detailTab === "overview" && (
-        <>
-          {/* AI Summary */}
-          <div className="bg-accent/10 border border-accent/20 rounded-lg p-4 mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-[14px] font-semibold text-accent-hover flex items-center gap-2">
-                <Sparkles size={14} /> AI Summary
-              </h3>
-              <button
-                onClick={handleSummarize}
-                disabled={summarizing || interactions.length === 0}
-                className="text-[12px] font-medium bg-accent hover:bg-accent-hover text-on-accent px-3 h-7 rounded-md disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {summarizing && <RefreshCw size={10} className="animate-spin" />}
-                {summary ? "Re-summarize" : "Summarize History"}
-              </button>
-            </div>
-            {summary ? (
-              <div className="text-[13px] text-ink-2 whitespace-pre-wrap leading-relaxed">{summary}</div>
-            ) : (
-              <p className="text-[13px] text-accent-hover">
-                Click to generate a 3–5 bullet summary of outstanding asks, deliverables, and billing context.
-              </p>
-            )}
-          </div>
-
-          {/* Two-column: interactions + invoices */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Interactions */}
-            <div className="bg-surface border border-line rounded-lg min-w-0">
-              <div className="flex items-center justify-between px-4 py-3.5 border-b border-line">
-                <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
-                  <MessageSquare size={14} className="text-muted" /> Interactions ({interactions.length})
-                </h3>
-                <button
-                  onClick={() => setShowNoteForm(true)}
-                  className="text-[12px] font-medium text-accent hover:text-accent-hover flex items-center gap-1"
-                >
-                  <Plus size={12} /> Add Note
-                </button>
-              </div>
-              {showNoteForm && (
-                <NoteForm
-                  clientId={clientId}
-                  onClose={() => { setShowNoteForm(false); load(); }}
-                />
-              )}
-              <div className="flex flex-wrap gap-1.5 px-4 pb-2">
-                {["call", "meeting", "email_in", "email_out", "whatsapp", "sms", "note"].map((k) => (
-                  <button key={k} onClick={() => setKindFilter(kindFilter === k ? null : k)}
-                    className={`text-[10px] px-2 py-0.5 rounded-full border font-medium capitalize transition-colors ${kindFilter === k ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"}`}>
-                    {k.replace("_", " ")}
-                  </button>
-                ))}
-              </div>
-              <div className="max-h-[500px] overflow-auto">
-                {interactions.filter((it) => !kindFilter || it.kind === kindFilter).map((it) => (
-                  <div key={it.id} className="px-4 py-3 border-b border-line last:border-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${kindColor(it.kind)}`}>
-                        {it.kind}
-                      </span>
-                      <span className="text-[11px] text-muted">
-                        {new Date(it.created_at).toLocaleString()}
-                      </span>
-                    </div>
-                    {it.subject && <div className="text-[14px] font-medium text-ink">{it.subject}</div>}
-                    {it.body && <div className="text-[13px] text-ink-2 mt-0.5 whitespace-pre-wrap">{it.body}</div>}
-                  </div>
-                ))}
-                {interactions.length === 0 && (
-                  <div className="px-4 py-8 text-center text-[14px] text-muted">No interactions yet.</div>
-                )}
-              </div>
-            </div>
-
-            {/* Invoices */}
-            <div className="bg-surface border border-line rounded-lg min-w-0">
-              <div className="px-4 py-3.5 border-b border-line">
-                <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
-                  <FileText size={14} className="text-muted" /> Invoices ({invoices.length})
-                </h3>
-              </div>
-              <div className="max-h-[500px] overflow-auto">
-                {invoices.map((inv) => (
-                  <div key={inv.id} className="px-4 py-3 border-b border-line last:border-0">
-                    <div className="flex justify-between items-center">
-                      <span className="font-mono text-[12px] text-muted">{inv.number}</span>
-                      <span className="text-[14px] font-semibold text-ink tabular-nums">{fmtAmount(inv.total)}</span>                    </div>
-                    <div className="flex justify-between items-center mt-1">
-                      <span className="text-[12px] text-muted">Due {inv.due_date.slice(0, 10)}</span>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${invoiceStatusColor(inv.status)}`}>
-                        {inv.status}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-                {invoices.length === 0 && (
-                  <div className="px-4 py-8 text-center text-[14px] text-muted">No invoices yet.</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Emails tab */}
-      {detailTab === "emails" && (
-        <div className="bg-surface border border-line rounded-lg">
-          <div className="px-4 py-3.5 border-b border-line">
-            <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
-              <Inbox size={14} className="text-muted" /> Email Thread
-            </h3>
-          </div>
-          <div className="max-h-[600px] overflow-auto">
-            {interactions
-              .filter((it) => it.kind === "email_in" || it.kind === "email_out")
-              .map((it) => (
-                <div key={it.id} className="px-4 py-3.5 border-b border-line last:border-0">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border mb-2 ${
-                    it.kind === "email_in"
-                      ? "bg-info-bg text-info-ink border-info"
-                      : "bg-accent/10 text-accent-hover border-accent/20"
-                  }`}>
-                    {it.kind === "email_in" ? "Received" : "Sent"}
-                  </span>
-                  {it.subject && <div className="text-[14px] font-medium text-ink mb-1">{it.subject}</div>}
-                  {it.body && <div className="text-[13px] text-ink-2 whitespace-pre-wrap">{it.body}</div>}
-                  <div className="text-[11px] text-muted mt-1.5">{new Date(it.created_at).toLocaleString()}</div>
-                </div>
-              ))}
-            {interactions.filter((it) => it.kind === "email_in" || it.kind === "email_out").length === 0 && (
-              <div className="px-4 py-8 text-center text-[14px] text-muted">No email interactions yet.</div>
-            )}
-          </div>
         </div>
-      )}
-
-      {/* Invoices tab */}
-      {detailTab === "invoices" && (
-        <div className="bg-surface border border-line rounded-lg">
-          <div className="px-4 py-3.5 border-b border-line">
-            <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
-              <FileText size={14} className="text-muted" /> Invoices ({invoices.length})
-            </h3>
-          </div>
-          <div className="max-h-[600px] overflow-auto">
-            {invoices.map((inv) => (
-              <div key={inv.id} className="px-4 py-3 border-b border-line last:border-0">
-                <div className="flex justify-between items-center">
-                  <span className="font-mono text-[12px] text-muted">{inv.number}</span>
-                  <span className="text-[14px] font-semibold text-ink tabular-nums">{fmtAmount(inv.total)}</span>
-                </div>
-                <div className="flex justify-between mt-1">
-                  <span className="text-[12px] text-muted">Due {inv.due_date.slice(0, 10)}</span>
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${invoiceStatusColor(inv.status)}`}>
-                    {inv.status}
-                  </span>
-                </div>
-              </div>
-            ))}
-            {invoices.length === 0 && (
-              <div className="px-4 py-8 text-center text-[14px] text-muted">No invoices yet.</div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Timeline tab */}
-      {detailTab === "timeline" && (
-        <div className="bg-surface border border-line rounded-lg">
-          <div className="px-4 py-3.5 border-b border-line">
-            <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2">
-              <Clock size={14} className="text-muted" /> Timeline
-            </h3>
-          </div>
-          <div className="max-h-[600px] overflow-auto">
-            {[
-              ...interactions.map((it) => ({ type: "interaction", data: it, date: it.created_at })),
-              ...invoices.map((inv) => ({ type: "invoice", data: inv, date: inv.issue_date })),
-            ]
-              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-              .map((item, i) => (
-                <div key={i} className="px-4 py-3 border-b border-line last:border-0">
-                  <div className="text-[11px] text-muted mb-1">{new Date(item.date).toLocaleString()}</div>
-                  {item.type === "interaction" && (
-                    <>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ${kindColor((item.data as Interaction).kind)}`}>
-                        {(item.data as Interaction).kind}
-                      </span>
-                      {(item.data as Interaction).subject && (
-                        <span className="text-[14px] font-medium text-ink ml-2">{(item.data as Interaction).subject}</span>
-                      )}
-                    </>
-                  )}
-                  {item.type === "invoice" && (
-                    <>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-surface-3 text-ink-2 border border-line uppercase tracking-wide">
-                        invoice
-                      </span>
-                      <span className="font-mono text-[12px] text-muted ml-2">{(item.data as Invoice).number}</span>
-                      <span className="text-[14px] font-semibold text-ink ml-2 tabular-nums">{fmtAmount((item.data as Invoice).total)}</span>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide border ml-2 ${invoiceStatusColor((item.data as Invoice).status)}`}>
-                        {(item.data as Invoice).status}
-                      </span>
-                    </>
-                  )}
-                </div>
-              ))}
-            {interactions.length + invoices.length === 0 && (
-              <div className="px-4 py-8 text-center text-[14px] text-muted">No activity yet.</div>
-            )}
-          </div>
-        </div>
-      )}
+      </Disclosure>
     </div>
   );
 }
@@ -801,7 +1431,7 @@ function MetadataCard({
   const hasContent = Children.toArray(children).length > 0;
   if (!hasContent) return null;
   return (
-    <div className="bg-surface border border-line rounded-lg p-4">
+    <div className="bg-surface-2 border border-line rounded-lg p-4">
       <h3 className="text-[13px] font-semibold text-ink-2 flex items-center gap-2 mb-3 pb-2 border-b border-line">
         {icon}
         {title}

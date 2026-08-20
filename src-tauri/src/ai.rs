@@ -252,27 +252,56 @@ pub async fn categorize_transactions(items: &Value) -> Result<Value> {
     let prompt = format!(
         r#"You categorize business bank transactions for a wholesale-brokerage. For each transaction pick ONE category value from EXACTLY this list:
 - receipt (money IN from a buyer/customer for goods sold)
-- other_income (money IN that isn't a product sale: interest, rebates, misc)
+- service_income (money IN that is commission or a service fee you earned)
+- shipping_income (money IN where freight was billed to the customer)
+- interest_income (money IN as bank or account interest)
+- other_income (money IN that isn't a product sale: rebates, misc)
+- customer_refund (money OUT returned to a customer)
+- sales_discount (a discount or allowance granted to a customer)
+- chargeback (money OUT from a card dispute or chargeback)
+- bad_debt (an uncollectible invoice written off)
 - payment (money OUT to a supplier for goods)
 - merchandise (inventory/stock purchases, general merchandise)
 - shipping (postage/freight/carriers: Pirate Ship, USPS, UPS, FedEx)
+- customs (customs duty, tariffs, import broker charges)
+- packaging (boxes, pallets, labels, shipping supplies)
+- storage (3PL, warehousing and pallet storage fees)
+- supplier_refund (money IN returned by a supplier)
+- purchase_discount (a rebate or early-payment discount from a supplier)
 - meals (food, restaurants, coffee, entertainment)
 - auto (fuel, gas, parking, rideshare, vehicle)
 - travel (flights, hotels, lodging)
-- office (office supplies, equipment)
+- office (office supplies, small office equipment)
 - utilities (phone, internet, electric, water)
-- rent (rent, warehouse, storage)
+- rent (rent, warehouse, storage lease)
+- repairs (repairs and maintenance)
+- equipment (small tools and equipment)
 - software (SaaS: Shopify, Google, Airtable, Anthropic, GoDaddy)
 - advertising (ads, marketing)
-- insurance (insurance premiums)
+- insurance (business insurance premiums)
+- health_insurance (health or medical insurance premiums)
 - professional (legal, accounting, professional/general services)
 - payroll (wages, contractors, 1099s)
-- fee (bank, wire, or card fees)
-- taxes (taxes, government payments)
+- commissions (sales commission or rep payout)
+- retirement (SEP, IRA or 401k contributions)
+- education (training, courses, books)
+- gifts (client gifts)
+- charity (charitable donations)
+- fee (bank or wire fees)
+- merchant_fees (card processing: Stripe, Square, PayPal, Shopify Payments)
+- interest_expense (loan or credit card interest charged)
 - other_expense (money OUT that fits nothing above)
+- taxes (business or franchise tax payments)
+- payroll_taxes (payroll tax deposits: EFTPS, state withholding)
+- sales_tax_collected (money IN that is sales tax charged to a customer)
+- sales_tax_remitted (money OUT paying sales tax to a state)
+- licenses (business licences, permits, registrations, filing fees)
+- estimated_tax (the owner's personal estimated income tax payment: IRS, state)
 - internal_transfer (moving money between the owner's own accounts)
 - card_payment (a payment made TO a credit card)
 - owner_draw (owner's personal draw)
+- owner_contribution (the owner putting personal money into the business)
+- asset_purchase (a vehicle, machine or equipment expected to last years)
 - cash_in (ATM or teller cash deposit)
 - cash_out (ATM or teller cash withdrawal)
 Also extract the counterparty (the other party's name) when present, else "".
@@ -476,8 +505,8 @@ Return ONLY valid JSON, no markdown: \
 Rules: amount is ALWAYS a positive plain number (no sign, no $, no commas). \
 direction: for a checking/debit account, money leaving = \"out\" and money arriving = \"in\". \
 For a CREDIT CARD, a purchase/charge = \"out\" and a payment or credit to the card = \"in\". \
-category is exactly one of: receipt, payment, fee, shipping, software, owner_draw, card_payment, internal_transfer, cash_in, cash_out, interest, other. \
-Use \"card_payment\" for a payment made TO a credit card, \"internal_transfer\" for a transfer between the owner's own accounts, \"interest\" for interest charges, \"receipt\" for money in from a customer, \"payment\" for money out to a supplier. \
+category is exactly one of: receipt, other_income, interest_income, customer_refund, payment, merchandise, shipping, customs, supplier_refund, meals, auto, travel, office, utilities, rent, repairs, software, advertising, insurance, professional, payroll, fee, merchant_fees, interest_expense, taxes, other_expense, internal_transfer, card_payment, owner_draw, cash_in, cash_out. \
+Use \"card_payment\" for a payment made TO a credit card, \"internal_transfer\" for a transfer between the owner's own accounts, \"interest_expense\" for interest charged, \"interest_income\" for interest earned, \"merchant_fees\" for card-processing charges, \"customer_refund\" for money returned to a customer, \"supplier_refund\" for money returned by a supplier, \"receipt\" for money in from a customer, \"payment\" for money out to a supplier, and \"other_expense\" when nothing else fits. \
 counterparty is the merchant or other party's name, or \"\". \
 Infer the 4-digit year from the statement period (rows may show only MM/DD). \
 Include fees and interest as transactions. Do NOT emit running-balance, subtotal, 'new balance', 'minimum payment', 'previous balance', or any summary line — only real dated transactions. Never invent transactions.";

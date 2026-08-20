@@ -37,13 +37,35 @@ const relTime = (d: string | null | undefined): string => {
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
 // Headline numbers are always read off the WHOLE client set, never off the
-// filtered table, so they don't move as you type.
-const statsOf = (all: Client[]) => ({
-  total:    all.length,
-  active:   all.filter((c) => c.lead_status === "active_customer").length,
-  hotLeads: all.filter((c) => c.lead_status === "hot_lead").length,
-  revenue:  all.reduce((s, c) => s + (c.total_revenue || 0), 0),
-});
+// filtered table, so they don't move as you type. A rejected lead was never
+// accepted as a client, so it is out of every headline — the rows stay in the
+// table, badged, so the difference is visible rather than mysterious.
+const statsOf = (all: Client[]) => {
+  const live = all.filter((c) => c.approval_status !== "rejected");
+  return {
+    total:    live.length,
+    active:   live.filter((c) => c.lead_status === "active_customer").length,
+    hotLeads: live.filter((c) => c.lead_status === "hot_lead").length,
+    revenue:  live.reduce((s, c) => s + (c.total_revenue || 0), 0),
+  };
+};
+
+// The table's sortable columns, in render order. The list opens sorted by profit,
+// descending — that is the figure that decides who matters.
+const COLUMNS = [
+  ["name",    "Name",          "left"],
+  ["company", "Company",       "left"],
+  ["tier",    "Tier",          "left"],
+  ["email",   "Email",         "left"],
+  ["phone",   "Phone",         "left"],
+  ["last",    "Last activity", "left"],
+  ["profit",  "Profit",        "right"],
+  ["revenue", "Revenue",       "right"],
+] as const;
+
+// The three shortcuts offered by the sort dropdown; any other key comes from
+// clicking a column header.
+const SORT_CHOICES = ["profit", "revenue", "name"];
 
 export default function ClientsView() {
   const [clients, setClients]               = useState<Client[]>([]);
@@ -66,8 +88,8 @@ export default function ClientsView() {
   const [duplicates, setDuplicates]         = useState<DuplicateGroup[]>([]);
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
   const [showTiers, setShowTiers]           = useState(false);
-  const [sortKey, setSortKey]               = useState<string>("name");
-  const [sortDir, setSortDir]               = useState<1 | -1>(1);
+  const [sortKey, setSortKey]               = useState<string>("profit");
+  const [sortDir, setSortDir]               = useState<1 | -1>(-1);
   const [reps, setReps]                     = useState<string[]>([]);
   const [reviewId, setReviewId]             = useState<string | null>(null);
   // Client-side "never emailed" filter — reads the first_contact flag.
@@ -181,16 +203,26 @@ export default function ClientsView() {
 
   const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep || filter.sort_by || filter.lead_status;
 
-  // Client-side sort by any column.
+  // Tier row per client, keyed — the sort reads it once per comparison, so the
+  // repeated linear scan it replaced showed up on a 141-row list.
+  const tierOf = useMemo(() => {
+    const m = new Map<string, BuyerTier>();
+    for (const t of buyerTiers) m.set(t.client_id, t);
+    return m;
+  }, [buyerTiers]);
+
+  // Client-side sort by any column. Profit comes off the tier row (buyerTiers) —
+  // it is net of refunds, and it can be negative.
   const TIER_RANK: Record<string, number> = { P: 6, S: 5, A: 4, B: 3, C: 2, New: 1, Prospect: 0 };
   const sortVal = (c: Client, key: string): string | number => {
     switch (key) {
       case "company": return (c.company || "").toLowerCase();
       case "email": return (c.email || "").toLowerCase();
       case "phone": return c.phone || "";
+      case "profit": return tierOf.get(c.id)?.total_profit ?? 0;
       case "revenue": return c.total_revenue || 0;
       case "last": return activity[c.id]?.at || c.last_contact_at || "";
-      case "tier": { const bt = buyerTiers.find((t) => t.client_id === c.id); return TIER_RANK[bt?.tier || "New"] ?? 0; }
+      case "tier": return TIER_RANK[tierOf.get(c.id)?.tier || "New"] ?? 0;
       default: return (c.name || "").toLowerCase();
     }
   };
@@ -198,11 +230,21 @@ export default function ClientsView() {
     const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
     if (va < vb) return -1 * sortDir;
     if (va > vb) return 1 * sortDir;
-    return 0;
+    // Ties on a money column would otherwise fall in whatever order the query
+    // returned; name keeps the list stable.
+    return (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase());
   });
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
+    else { setSortKey(key); setSortDir(key === "profit" || key === "revenue" ? -1 : 1); }
+  };
+  // The dropdown shortcut. Revenue still asks the backend for its own ordering;
+  // profit is computed here, so it clears that hint.
+  const chooseSort = (key: string) => {
+    setSortKey(key);
+    setSortDir(key === "name" ? 1 : -1);
+    const nextSortBy = key === "revenue" ? "revenue_desc" : undefined;
+    if (nextSortBy !== filter.sort_by) updateFilter({ sort_by: nextSortBy });
   };
 
   // "No contact yet" is filtered client-side off the first_contact flag.
@@ -618,10 +660,14 @@ export default function ClientsView() {
         >
           <SlidersHorizontal size={13} /> Filters
         </button>
-        <select value={filter.sort_by ?? ""} onChange={(e) => updateFilter({ sort_by: e.target.value || undefined })}
+        <select value={SORT_CHOICES.includes(sortKey) ? sortKey : "column"} onChange={(e) => chooseSort(e.target.value)}
           className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 bg-surface">
-          <option value="">Sort: Name A-Z</option>
-          <option value="revenue_desc">Revenue Highest</option>
+          {!SORT_CHOICES.includes(sortKey) && (
+            <option value="column" disabled>Sort: {COLUMNS.find(([k]) => k === sortKey)?.[1] ?? sortKey}</option>
+          )}
+          <option value="profit">Sort: Profit, highest first</option>
+          <option value="revenue">Sort: Revenue, highest first</option>
+          <option value="name">Sort: Name A-Z</option>
         </select>
       </div>
 
@@ -695,7 +741,7 @@ export default function ClientsView() {
 
       {(hasAnyFilter || fcOnly) && (
         <div className="text-[12px] text-muted mb-3">
-          Showing {displayed.length} of {summaryStats.total} clients
+          Showing {displayed.filter((c) => c.approval_status !== "rejected").length} of {summaryStats.total} clients
         </div>
       )}
 
@@ -746,7 +792,7 @@ export default function ClientsView() {
               <th className="px-3 py-3 w-10">
                 <input type="checkbox" className="accent-accent" checked={allDisplayedSelected} onChange={toggleSelectAll} />
               </th>
-              {([["name", "Name", "left"], ["company", "Company", "left"], ["tier", "Tier", "left"], ["email", "Email", "left"], ["phone", "Phone", "left"], ["last", "Last activity", "left"], ["revenue", "Revenue", "right"]] as const).map(([k, label, align]) => (
+              {COLUMNS.map(([k, label, align]) => (
                 <th key={k} onClick={() => toggleSort(k)}
                   className={`text-${align} px-4 py-3 text-[12.5px] font-medium text-muted cursor-pointer select-none hover:text-ink-2`}>
                   {label}{sortKey === k && <span className="ml-0.5 text-accent">{sortDir === 1 ? "▲" : "▼"}</span>}
@@ -757,7 +803,7 @@ export default function ClientsView() {
           </thead>
           <tbody>
             {displayed.map((c) => {
-              const bt = buyerTiers.find((t) => t.client_id === c.id);
+              const bt = tierOf.get(c.id);
               return (
                 <tr
                   key={c.id}
@@ -772,7 +818,7 @@ export default function ClientsView() {
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
                       <span className="truncate">{c.name}</span>
                     </div>
-                    {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.metadata?.unsubscribed || c.first_contact || c.approval_status === "pending" || !c.email || !c.phone || !c.street_address || !c.category) && (
+                    {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.metadata?.unsubscribed || c.first_contact || c.approval_status === "pending" || c.approval_status === "rejected" || !c.email || !c.phone || !c.street_address || !c.category) && (
                       <div className="flex flex-wrap items-center gap-1 mt-1">
                         {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Blacklisted — excluded from all sends">Blacklisted</span>}
                         {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide" title="High-Value — one of your best buyers (label only)">High value</span>}
@@ -780,6 +826,7 @@ export default function ClientsView() {
                         {!c.is_blacklisted && c.metadata?.exclusive && !c.metadata?.unsubscribed && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
                         {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Never been sent an email — introduce yourself">No contact yet</span>}
                         {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide">Pending</span>}
+                        {c.approval_status === "rejected" && <span className="text-[8px] font-bold text-muted bg-surface-3 border border-line px-1.5 py-0.5 rounded uppercase tracking-wide" title="Rejected — kept for the record, and left out of the headline counts">Rejected</span>}
                         {(!c.email || !c.phone || !c.street_address || !c.category) && (
                           <span className="inline-flex items-center gap-0.5 text-faint" title="Missing profile info (email / phone / address / category)">
                             {!c.email && <Mail size={10} />}
@@ -816,7 +863,14 @@ export default function ClientsView() {
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-3 text-right text-[13px] font-semibold text-ink tabular-nums">
+                  <td className={`px-4 py-3 text-right text-[13px] font-semibold tabular-nums ${
+                    (bt?.total_profit ?? 0) < 0 ? "text-danger-ink" : "text-ink"
+                  }`}>
+                    {bt && bt.total_profit !== 0
+                      ? <>{bt.total_profit < 0 ? "−" : ""}{fmtAmount(Math.abs(bt.total_profit))}</>
+                      : <span className="text-faint">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-right text-[13px] text-muted tabular-nums">
                     {fmtAmount(c.total_revenue || 0)}
                   </td>
                   <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
@@ -922,12 +976,14 @@ function ClientForm({
           <Field label="Category">
             <input className={inp} list="categories" value={form.category ?? ""} onChange={(e) => set("category", e.target.value)} />
           </Field>
+          {/* One vocabulary, the underscore set the stats and the filters read.
+              The spaced spellings this form used to write ("hot lead", "active
+              customer") were a second vocabulary that matched nothing. */}
           <Field label="Lead Status">
             <select className={inp} value={form.lead_status ?? "prospect"} onChange={(e) => set("lead_status", e.target.value)}>
               <option value="prospect">Prospect</option>
-              <option value="hot lead">Hot Lead</option>
-              <option value="warm">Warm</option>
-              <option value="active customer">Active Customer</option>
+              <option value="hot_lead">Hot Lead</option>
+              <option value="active_customer">Active Customer</option>
               <option value="inactive">Dormant</option>
             </select>
           </Field>

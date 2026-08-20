@@ -523,10 +523,14 @@ function NewsletterTab() {
   const [tierFilter, setTierFilter] = useState<"all" | "ranked" | "first_contact" | string[]>("all");
   const [includeRanked, setIncludeRanked] = useState(true);
   const [unsubEnabled, setUnsubEnabled] = useState(true);
+  // What {sender_name} resolves to. The send path resolves it from the same company
+  // name, so the preview shows the words that actually go out.
+  const [senderName, setSenderName] = useState("");
   useEffect(() => {
     api.buyerTiers().then(setTiers).catch(() => {});
     api.getNewsletterIncludeRanked().then(setIncludeRanked).catch(() => {});
     api.getNewsletterUnsubscribeEnabled().then(setUnsubEnabled).catch(() => {});
+    api.getCompanyInfo().then((c) => setSenderName(c?.name?.trim() || "")).catch(() => {});
   }, []);
   const [showFilters, setShowFilters] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -540,7 +544,9 @@ function NewsletterTab() {
   const lastFocusedRef = useRef<"subject" | "body">("body");
 
   const defaultSubject = "Update from Ecliptr";
-  const defaultBody = "Hi {first_name},\n\nI hope you're doing well. I wanted to reach out and share some updates.\n\n[Your message here]\n\nBest regards,\n[Your name]";
+  // Signs off with the {sender_name} token rather than a "[Your name]" placeholder that
+  // gets mailed verbatim when nobody remembers to replace it.
+  const defaultBody = "Hi {first_name},\n\nI hope you're doing well. I wanted to reach out and share some updates.\n\n[Your message here]\n\nBest regards,\n{sender_name}";
 
   useEffect(() => {
     api.listClients().then((cs) => {
@@ -555,7 +561,7 @@ function NewsletterTab() {
           // Preselect from the Clients-view "Email" bulk action must honor the same
           // rules as the recipient picker — never carry blacklisted or "No bulk email"
           // clients into a newsletter selection.
-          setSelected(cs.filter((c) => ids.has(c.id) && !c.is_blacklisted && !c.exclusive && !c.metadata?.exclusive));
+          setSelected(cs.filter((c) => ids.has(c.id) && !c.is_blacklisted && !c.exclusive && !c.metadata?.exclusive && !c.metadata?.unsubscribed));
         } catch { /* ignore malformed stash */ }
       }
     });
@@ -608,6 +614,7 @@ function NewsletterTab() {
   const metadataFilteredClients = searchedClients.filter((c) => {
     if (c.is_blacklisted) return false;                         // never mass-send to blacklisted (bug fix)
     if (c.exclusive || c.metadata?.exclusive) return false;     // "No bulk email" stays off mass sends (flag lives in the column OR metadata)
+    if (c.metadata?.unsubscribed) return false;                 // opted out through the link; the send path suppresses these whatever the column says
     if (excludeDormant && c.lead_status === "inactive") return false;
     if (excludeAsNeeded && c.metadata?.purchase_frequency === "As Needed / One Time") return false;
     if (excludeUnder10k && c.metadata?.estimated_annual_spend === "Under $10,000") return false;
@@ -819,8 +826,12 @@ function NewsletterTab() {
     .replace(/\{\{?first_name\}?\}/g, c.name.split(" ")[0])
     .replace(/\{\{?full_name\}?\}/g, c.name)
     .replace(/\{\{?company\}?\}/g, c.company || "");
-  const previewSubject = previewClient ? previewSub(subject, previewClient) : subject;
-  const previewBody = previewClient ? previewSub(body, previewClient) : body;
+  // {sender_name} is a workspace value, not a per-recipient one, so it resolves whether
+  // or not a recipient is picked — otherwise the preview shows a literal placeholder and
+  // gives no hint that the send will fill it in.
+  const previewSender = (t: string) => t.replace(/\{\{?sender_name\}?\}/g, senderName);
+  const previewSubject = previewSender(previewClient ? previewSub(subject, previewClient) : subject);
+  const previewBody = previewSender(previewClient ? previewSub(body, previewClient) : body);
 
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
   const charCount = body.length;
@@ -928,7 +939,7 @@ function NewsletterTab() {
               <span className="block text-[10px] mt-0.5 opacity-80">
                 {unsubEnabled
                   ? "Added automatically to every send — required by anti-spam law (CAN-SPAM)."
-                  : "Off — sending marketing email without an opt-out can be illegal. Turn this back on."}
+                  : "Off for sends from this app. Sending marketing email without an opt-out can be illegal — turn this back on. Scheduled sends go out from the server and always carry the link."}
               </span>
             </span>
           </label>
@@ -1091,7 +1102,7 @@ function NewsletterTab() {
 
             <textarea
               ref={textareaRef}
-              placeholder={`Hi {first_name},\n\nWrite your message here…\n\nBest regards,\n[Your name]`}
+              placeholder={`Hi {first_name},\n\nWrite your message here…\n\nBest regards,\n{sender_name}`}
               rows={12}
               className="flex-1 w-full border border-line rounded-md px-3 py-2.5 text-[14px] font-mono focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none"
               value={body}

@@ -159,11 +159,35 @@ pub async fn client_last_activity() -> Result<Vec<ClientActivity>, String> {
     Ok(rows)
 }
 
+/// The one canonical desktop `lead_status` vocabulary: `prospect`, `hot_lead`,
+/// `active_customer`, `inactive` — the set the stats bar and the filters already
+/// read. Rows written by the phone, by the server or by the Sheets importer (which
+/// copies the sheet's free text verbatim) carry other spellings, which is why the
+/// same org showed a non-zero "Active" on the phone and 0 on the laptop. Map them
+/// on READ; the stored rows are never rewritten. Substitute for `c.lead_status` in
+/// any `... FROM clients c` select, and use it in place of the column in a
+/// lead-status WHERE so a filter matches the mapped value too.
+const LEAD_STATUS_SQL: &str = "CASE REPLACE(LOWER(TRIM(COALESCE(c.lead_status,''))),' ','_')
+        WHEN '' THEN 'prospect'
+        WHEN 'active' THEN 'active_customer'
+        WHEN 'active_buyer' THEN 'active_customer'
+        WHEN 'buyer' THEN 'active_customer'
+        WHEN 'customer' THEN 'active_customer'
+        WHEN 'hot' THEN 'hot_lead'
+        WHEN 'lead' THEN 'prospect'
+        WHEN 'warm' THEN 'prospect'
+        WHEN 'warm_lead' THEN 'prospect'
+        WHEN 'cold' THEN 'inactive'
+        WHEN 'cold_lead' THEN 'inactive'
+        WHEN 'churned' THEN 'inactive'
+        WHEN 'dormant' THEN 'inactive'
+        ELSE REPLACE(LOWER(TRIM(COALESCE(c.lead_status,''))),' ','_') END";
+
 #[tauri::command]
 pub async fn list_clients() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
-            "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+            "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                     NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                                COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
@@ -175,7 +199,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                     COALESCE(c.exclusive,0),
                     ({fc}) AS first_contact
              FROM clients c
-             ORDER BY c.name", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL);
+             ORDER BY c.name", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| e.to_string())?;
@@ -234,7 +258,7 @@ pub async fn list_client_reps() -> Result<Vec<String>, String> {
 pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
-        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
@@ -246,7 +270,7 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 COALESCE(c.exclusive,0),
                 ({fc}) AS first_contact
          FROM clients c
-         WHERE c.id=?1", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL);
+         WHERE c.id=?1", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL, ls = LEAD_STATUS_SQL);
     let res: rusqlite::Result<Client> = conn.query_row(
         &sql,
         [&id],
@@ -680,7 +704,7 @@ pub async fn reject_client(id: String) -> Result<(), String> {
 pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
-        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULL,
                 COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
@@ -689,7 +713,7 @@ pub async fn get_pending_approvals() -> Result<Vec<Client>, String> {
                 ({fc}) AS first_contact
          FROM clients c
          WHERE c.approval_status = 'pending'
-         ORDER BY c.created_at ASC", fc = FIRST_CONTACT_SQL);
+         ORDER BY c.created_at ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
@@ -1194,7 +1218,7 @@ pub async fn export_clients_csv(ids: Vec<String>, output_path: String) -> Result
     let mut count: u32 = 0;
     for id in &ids {
         let row: Option<(String,Option<String>,Option<String>,Option<String>,Option<String>,String)> = conn.query_row(
-            "SELECT c.name,c.email,c.phone,c.company,c.metadata,c.lead_status FROM clients c WHERE c.id=?1",
+            &format!("SELECT c.name,c.email,c.phone,c.company,c.metadata,({ls}) FROM clients c WHERE c.id=?1", ls = LEAD_STATUS_SQL),
             [id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
         ).ok();
 
@@ -1451,7 +1475,7 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     // Below 3 digits the leg drops out entirely - see `phone_query_pattern`.
     let phone_pattern = phone_query_pattern(&query);
     let sql = format!(
-        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 MAX(i.created_at),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
@@ -1463,7 +1487,7 @@ pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
          WHERE LOWER(c.name) LIKE ?1 OR LOWER(c.email) LIKE ?1 OR LOWER(c.company) LIKE ?1 OR LOWER(c.metadata) LIKE ?1
             OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(c.phone,''),'-',''),' ',''),'(',''),')',''),'.',''),'+','') LIKE ?2
          GROUP BY c.id
-         ORDER BY c.name LIMIT 50", fc = FIRST_CONTACT_SQL);
+         ORDER BY c.name LIMIT 50", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map(rusqlite::params![pattern, phone_pattern], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
@@ -1545,7 +1569,7 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let cutoff = format!("-{} days", days);
     let sql = format!(
-        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 MAX(i.created_at),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
@@ -1554,7 +1578,7 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
          LEFT JOIN interactions i ON i.client_id = c.id
          GROUP BY c.id
      HAVING MAX(i.created_at) IS NULL OR MAX(i.created_at) < datetime('now', ?1)
-     ORDER BY MAX(i.created_at) ASC", fc = FIRST_CONTACT_SQL);
+     ORDER BY MAX(i.created_at) ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([cutoff], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
@@ -1585,7 +1609,7 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
 pub async fn due_followups() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let sql = format!(
-            "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+            "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                     NULL,
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
@@ -1593,7 +1617,7 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
              FROM clients c
              WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
              AND json_extract(c.metadata, '$.next_follow_up_date') <= date('now')
-             ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC", fc = FIRST_CONTACT_SQL);
+             ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| e.to_string())?;
@@ -1650,7 +1674,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     let conn = pool().get().map_err(|e| e.to_string())?;
 
     let mut sql = format!(
-        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
+        "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
@@ -1660,7 +1684,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 COALESCE(c.approval_status,'active'),
                 ({fc}) AS first_contact
          FROM clients c
-         LEFT JOIN interactions i ON i.client_id = c.id", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL
+         LEFT JOIN interactions i ON i.client_id = c.id", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL, ls = LEAD_STATUS_SQL
     );
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1743,9 +1767,11 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
     }
     if let Some(ref s) = filter.lead_status {
         if s == "active_not_dormant" {
-            conds.push("COALESCE(c.lead_status,'') != 'inactive'".into());
+            // Compare against the CANONICAL status, not the raw column — an
+            // imported 'Active Buyer' row must not read as dormant.
+            conds.push(format!("({ls}) != 'inactive'", ls = LEAD_STATUS_SQL));
         } else if !s.is_empty() {
-            conds.push(format!("c.lead_status = ?{}", param_idx));
+            conds.push(format!("({ls}) = ?{p}", ls = LEAD_STATUS_SQL, p = param_idx));
             params.push(Box::new(s.clone()));
             param_idx += 1;
         }
@@ -8471,25 +8497,41 @@ pub async fn generate_whatsapp_message(lot_ids: Vec<String>) -> Result<String, S
         // Per-unit vs full-lot price, derived from how the lot is priced.
         let per_unit = if price_type == "total" && qty > 0 { ask / qty as f64 } else { ask };
         let total    = if price_type == "per_unit" { ask * qty as f64 } else { ask };
-        // Extras from details_json: pallets + the free-text price for "custom" lots.
-        let (pallets, price_text) = details.as_deref()
-            .and_then(|d| serde_json::from_str::<Value>(d).ok())
-            .map(|v| (
-                v.get("pallets").and_then(|x| x.as_i64()).filter(|p| *p > 0).map(|p| p.to_string()).unwrap_or_default(),
-                v.get("price_text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            ))
-            .unwrap_or_default();
+        // Extras from details_json: pallets, the free-text price for "custom" lots, and
+        // the per-pallet quote (see LotDetails.price_basis — a per-pallet lot stores the
+        // multiplied-out total in asking_price, so the quoted figure lives here).
+        let dv = details.as_deref().and_then(|d| serde_json::from_str::<Value>(d).ok());
+        let num = |k: &str| dv.as_ref().and_then(|v| v.get(k)).and_then(|x| x.as_f64()).filter(|n| *n > 0.0);
+        let pallets_n = num("pallets").map(|n| n as i64).unwrap_or(0);
+        let pallets = if pallets_n > 0 { pallets_n.to_string() } else { String::new() };
+        let price_text = dv.as_ref().and_then(|v| v.get("price_text")).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let per_pallet = if dv.as_ref().and_then(|v| v.get("price_basis")).and_then(|x| x.as_str()) == Some("per_pallet")
+            && pallets_n > 0 { num("price_per_pallet") } else { None };
+        // A quoted units-per-pallet RANGE ("450-500") gives a per-unit price range:
+        // fewer units on a pallet makes each unit dearer, so the ends invert.
+        let qpp_lo = num("qty_per_pallet").unwrap_or(0.0);
+        let qpp_hi = num("qty_per_pallet_max").unwrap_or(0.0);
+        let ranged = qpp_hi > qpp_lo && qpp_lo > 0.0 && pallets_n > 0;
+        let units_s = if ranged {
+            format!("{}-{}", qty, (qpp_hi * pallets_n as f64) as i64)
+        } else { qty.to_string() };
         // Custom-priced lots have no numeric price — every price variable shows the text.
         let is_custom = price_type == "custom";
         let asking_s   = if is_custom { price_text.clone() } else { fmt_money(ask) };
-        let per_unit_s = if is_custom { price_text.clone() } else { fmt_money(per_unit) };
+        let per_unit_s = if is_custom {
+            price_text.clone()
+        } else if let (Some(pp), true) = (per_pallet, ranged) {
+            format!("{}-{}", fmt_money(pp / qpp_hi), fmt_money(pp / qpp_lo))
+        } else { fmt_money(per_unit) };
         let total_s    = if is_custom { price_text.clone() } else { fmt_money(total) };
+        let per_pallet_s = match (is_custom, per_pallet) { (false, Some(pp)) => fmt_money(pp), _ => String::new() };
         let entry = lot_format
             .replace("{number}", &idx.to_string())
             .replace("{lot_name}", &name)
-            .replace("{quantity}", &qty.to_string())
-            .replace("{units}", &qty.to_string())
+            .replace("{quantity}", &units_s)
+            .replace("{units}", &units_s)
             .replace("{pallets}", &pallets)
+            .replace("{price_per_pallet}", &per_pallet_s)
             .replace("{asking_price}", &asking_s)
             .replace("{price_per_unit}", &per_unit_s)
             .replace("{total_price}", &total_s)
@@ -11402,9 +11444,14 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
     // counting them as untied deal money produced a backlog that could never reach
     // zero — a fuel purchase was being reported as work outstanding. Blank stays in:
     // an uncategorised wire is usually the buyer payment that does need tying.
-    // MUST match DEAL_CAPABLE_CATEGORIES in FinancialsView.tsx and the copy in
-    // financials_overview.stale_unallocated.
-    let not_deal_money = "COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','cash_in','cash_out') \
+    // MUST match DEAL_CAPABLE_CATEGORIES in FinancialsView.tsx, the copy in
+    // financials_overview.stale_unallocated, BK_DEAL_CAPABLE in the mobile
+    // www/app.js and `not_deal_money` in the server's routes/bank.rs.
+    // The two refund categories are IN on purpose: a refund still belongs to a
+    // deal (role refund_out / refund_in) and subtracts from that deal's profit,
+    // so it must keep asking to be tied rather than reading as already booked.
+    let not_deal_money = "COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','customs',\
+                                                        'customer_refund','supplier_refund','cash_in','cash_out') \
                           AND COALESCE(bt.counterparty_type,'') != 'loan'";
     let unallocated_in = one(&format!(
         "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in' AND {}
@@ -13547,6 +13594,20 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let mut settle_refused: Vec<String> = Vec::new();    // pair found, work NOT moved — both rows kept
     let mut retracted_kept: Vec<String> = Vec::new();    // bank retracted booked work; we KEPT the row
     let mut with_pending_ref = 0i64;                     // added txns carrying pending_transaction_id
+    // R-019. Ingestion can never be made infallible — Plaid decides what it hands over —
+    // but every transaction this loop declines to store must be COUNTED and reportable.
+    // Four paths used to drop one with no trace at all: an exact-id match, a content
+    // match against a prior run, a payload with no transaction_id, and an oplog write
+    // that refused (that last one is the dangerous one — the cursor still advances, so
+    // the row is gone until someone re-pulls). None of the skip DECISIONS change here;
+    // they only stop being invisible.
+    let mut already_held = 0i64;                          // exact id already in the ledger (a replay)
+    let mut skipped_duplicate: Vec<Value> = Vec::new();   // content match against a prior run
+    let mut skipped_no_id: Vec<String> = Vec::new();      // the bank sent a payload with no id
+    let mut skipped_unsaved: Vec<String> = Vec::new();    // oplog refused — the row never landed
+    let mut amend_unknown = 0i64;                         // amendment for a txn we do not hold
+    let mut page_capped: Vec<String> = Vec::new();        // banks truncated by the page cap
+    let mut possible_duplicates: Vec<Value> = Vec::new(); // same payment reference, different content
     let mut touched_deals: std::collections::HashSet<String> = Default::default();
     let mut preparing = false;  // at least one item still extracting after we waited
     let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
@@ -13582,6 +13643,19 @@ pub async fn plaid_sync() -> Result<Value, String> {
             }
         }
         Value::Object(obj).to_string()
+    }
+
+    // What the bank sent, for a payload we could not store. Enough for Jack to find the
+    // transaction on a statement, which is the whole point of reporting the miss.
+    fn payload_label(t: &Value) -> String {
+        format!(
+            "{} {:.2} {}",
+            t.get("date").and_then(|v| v.as_str()).unwrap_or("no date"),
+            t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            t.get("name").and_then(|v| v.as_str())
+                .or_else(|| t.get("merchant_name").and_then(|v| v.as_str()))
+                .unwrap_or("no memo"),
+        )
     }
 
     for (item_pk, access, mut cursor, accounts_json, item_env, institution) in items {
@@ -13642,7 +13716,11 @@ pub async fn plaid_sync() -> Result<Value, String> {
                 continue;
             }
             pages += 1;
-            if pages > 60 { break; } // safety cap
+            // Safety cap. The cursor for this page is not persisted (that happens at the
+            // bottom of the loop), so the remaining history is re-served on the next sync
+            // rather than lost — but a run that stops short must SAY so, or a bank with
+            // more than 60 pages of history looks finished when it is not.
+            if pages > 60 { page_capped.push(institution.clone()); break; }
             let conn = pool().get().map_err(|e| e.to_string())?;
             // Ids the bank retracts in THIS page. A pending transaction settling
             // arrives as removed[pending_id] + added[posted_id] together, and the
@@ -13659,7 +13737,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
             if let Some(added) = page.get("added").and_then(|v| v.as_array()) {
                 for t in added {
                     let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
-                    if tid.is_empty() { continue; }
+                    // No transaction_id means no primary key, so the row cannot be stored
+                    // at all. Report exactly what the bank described instead of dropping it.
+                    if tid.is_empty() { skipped_no_id.push(format!("new: {}", payload_label(t))); continue; }
                     let id = plaid_txn_id(tid);
                     let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let direction = if amt > 0.0 { "out" } else { "in" };
@@ -13721,6 +13801,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                                 Settled::None       => {}
                             }
                         }
+                        already_held += 1;
                         continue;
                     }
                     // Content match against a prior-run row → this is a duplicate, skip it. But
@@ -13799,7 +13880,58 @@ pub async fn plaid_sync() -> Result<Value, String> {
                                     }
                                 }
                             }
+                            // The one skip in this loop that discards a transaction the
+                            // bank is actively offering. It is very probably a re-link of
+                            // history already on the books — but "probably" is exactly why
+                            // it has to be reviewable rather than silent.
+                            skipped_duplicate.push(json!({
+                                "date": date,
+                                "amount": amount,
+                                "direction": direction,
+                                "account": label,
+                                "description": desc,
+                                "matched": matches.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>(),
+                            }));
                             continue;
+                        }
+                    }
+                    // R-019-E. The content fingerprint above is the only duplicate signal
+                    // this loop has, and it needs the memo to match character for character
+                    // — a bank that rewrites a wire's descriptor between two connections
+                    // defeats it, and most rows already on the books carry no provenance to
+                    // fall back on. The payment rail's own reference (IMAD / trace / TRN /
+                    // Zelle token) is a second, independent signal for the same real money.
+                    // DETECTION ONLY: the transaction still imports, nothing is removed, and
+                    // the pair is reported for review. Two genuine repeats — the 2x$100k
+                    // Tytan wires — carry DIFFERENT references, so they never pair up here.
+                    if let Some((kind, refval)) = bank_txn_reference(&desc) {
+                        let same_ref: Vec<String> = conn
+                            .prepare(
+                                "SELECT id, COALESCE(description,'') FROM bank_txn WHERE account_id=?1 AND direction=?2 \
+                                   AND ABS(amount-?3)<0.005 AND id<>?4",
+                            )
+                            .and_then(|mut st| {
+                                st.query_map(
+                                    rusqlite::params![label, direction, amount, id],
+                                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                                )
+                                .map(|rows| rows.filter_map(|x| x.ok())
+                                    .filter(|(_, d)| bank_txn_reference(d)
+                                        .map(|(k, v)| k == kind && v == refval).unwrap_or(false))
+                                    .map(|(i, _)| i)
+                                    .collect())
+                            })
+                            .unwrap_or_default();
+                        if !same_ref.is_empty() {
+                            possible_duplicates.push(json!({
+                                "date": date,
+                                "amount": amount,
+                                "direction": direction,
+                                "account": label,
+                                "description": desc,
+                                "reference": format!("{}:{}", kind, refval),
+                                "existing": same_ref,
+                            }));
                         }
                     }
                     let s = |v: &str| Value::String(v.to_string());
@@ -13817,7 +13949,15 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     cols.insert("created_at".into(), s(&now));
                     cols.insert("updated_at".into(), s(&now));
                     cols.insert("raw_json".into(), s(&rawj));
-                    if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
+                    // The oplog refused the write, so the INSERT below never runs — and the
+                    // cursor at the foot of this loop still advances past the page, so Plaid
+                    // will not offer this transaction again. This is the one true loss in the
+                    // whole function. It is named here rather than changed: deciding whether
+                    // it should abort the page too is a separate call.
+                    if sync::record_upsert("bank_txn", &id, cols).is_err() {
+                        skipped_unsaved.push(format!("new: {} {:.2} {} {}", date, amount, direction, desc));
+                        continue;
+                    }
                     if let Err(e) = conn.execute(
                         "INSERT OR IGNORE INTO bank_txn (id, account_id, posted_at, amount, direction, description, memo_raw, category, counterparty_name, source_format, imported_at, created_at, updated_at, raw_json)
                          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11,?12)",
@@ -13856,7 +13996,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
             if let Some(modified) = page.get("modified").and_then(|v| v.as_array()) {
                 for t in modified {
                     let tid = t.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
-                    if tid.is_empty() { continue; }
+                    if tid.is_empty() { skipped_no_id.push(format!("change: {}", payload_label(t))); continue; }
                     let id = plaid_txn_id(tid);
                     // Only amend a row we actually hold. An unknown id here means we
                     // never imported it (or it arrived under a different link), and the
@@ -13865,7 +14005,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         "SELECT amount, COALESCE(reviewed,0) FROM bank_txn WHERE id=?1",
                         [&id], |r| Ok((r.get(0)?, r.get(1)?)),
                     ).ok();
-                    let Some((old_amount, reviewed)) = existing else { continue };
+                    // The bank is describing a transaction we do not hold at all — the
+                    // clearest possible statement that something was never loaded.
+                    let Some((old_amount, reviewed)) = existing else { amend_unknown += 1; continue };
 
                     let amt = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let direction = if amt > 0.0 { "out" } else { "in" };
@@ -13908,12 +14050,16 @@ pub async fn plaid_sync() -> Result<Value, String> {
                         cols.insert("category".into(), s(&plaid_category(pfc, direction)));
                         cols.insert("counterparty_name".into(), s(&if merchant.is_empty() { desc.clone() } else { merchant }));
                     }
-                    if sync::record_upsert("bank_txn", &id, cols).is_err() { continue; }
+                    if sync::record_upsert("bank_txn", &id, cols).is_err() {
+                        skipped_unsaved.push(format!("change: {} {:.2} {} {}", date, amount, direction, desc));
+                        continue;
+                    }
                     if let Err(e) = conn.execute(
                         "UPDATE bank_txn SET posted_at=?1, amount=?2, direction=?3, description=?4, memo_raw=?4, raw_json=?5, updated_at=?6 WHERE id=?7",
                         rusqlite::params![date, amount, direction, desc, rawj, now, id],
                     ) {
                         tracing::warn!("plaid_sync: amendment for {} failed to save: {}", id, e);
+                        skipped_unsaved.push(format!("change: {} {:.2} {} {}", date, amount, direction, desc));
                         continue;
                     }
                     item_amended += 1;
@@ -13930,7 +14076,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
             if let Some(rem) = page.get("removed").and_then(|v| v.as_array()) {
                 for r in rem {
                     let tid = r.get("transaction_id").and_then(|v| v.as_str()).unwrap_or("");
-                    if tid.is_empty() { continue; }
+                    if tid.is_empty() { skipped_no_id.push("retraction: no id".to_string()); continue; }
                     let id = plaid_txn_id(tid);
                     // Nothing to retract. The settle above already retired it in this page,
                     // an earlier page/sync did, or this device never held it — with one
@@ -14100,6 +14246,38 @@ pub async fn plaid_sync() -> Result<Value, String> {
             amended_over_allocated.len(), amended_over_allocated.join(", ")
         );
     }
+    // R-019: the skips, in the log as well as the response, so a run that dropped
+    // something leaves a trace even when nobody was watching the screen.
+    if !skipped_unsaved.is_empty() {
+        tracing::error!(
+            "plaid_sync: {} transaction(s) could not be written and the bank will not offer them again — re-pull all history to recover: {}",
+            skipped_unsaved.len(), skipped_unsaved.join("; ")
+        );
+    }
+    if !skipped_no_id.is_empty() {
+        tracing::warn!(
+            "plaid_sync: {} payload(s) arrived with no transaction id and could not be stored: {}",
+            skipped_no_id.len(), skipped_no_id.join("; ")
+        );
+    }
+    if !page_capped.is_empty() {
+        tracing::warn!(
+            "plaid_sync: stopped at the 60-page cap for {} — history remains; sync again to continue",
+            page_capped.join(", ")
+        );
+    }
+    if !skipped_duplicate.is_empty() {
+        tracing::info!("plaid_sync: {} transaction(s) skipped as duplicates of rows already held", skipped_duplicate.len());
+    }
+    if !possible_duplicates.is_empty() {
+        tracing::warn!(
+            "plaid_sync: {} imported transaction(s) share a payment reference with a row already held — nothing removed, review them",
+            possible_duplicates.len()
+        );
+    }
+    if amend_unknown > 0 {
+        tracing::warn!("plaid_sync: the bank amended {} transaction(s) this ledger has never held", amend_unknown);
+    }
     if imported > 0 || amended > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
@@ -14113,6 +14291,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
         // is never deleted by a retraction, so nothing is ever unlinked behind the user's
         // back. `retracted_kept` is the figure that needs surfacing instead.
         "unlinked": 0,
+        // R-019: every transaction this run declined to store, and why.
+        "already_held": already_held,                 // exact id already present — a replay, not a loss
+        "skipped_duplicate": skipped_duplicate,       // content match against a prior run
+        "skipped_no_id": skipped_no_id,               // the bank sent no transaction id
+        "skipped_unsaved": skipped_unsaved,           // could not be written; the bank will not re-offer these
+        "amend_unknown": amend_unknown,               // the bank amended a transaction we never held
+        "page_capped": page_capped,                   // banks stopped at the page cap with history left
+        "possible_duplicates": possible_duplicates,   // same payment reference, imported anyway
         "preparing": preparing, "results": results,
     }))
 }
@@ -14157,18 +14343,66 @@ fn read_setting_f64(conn: &rusqlite::Connection, key: &str, default: f64) -> f64
         .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(default)
 }
 
+/// Identity for one Plaid account. Best available first: Plaid's
+/// `persistent_account_id` is stable across re-links but is NOT issued for credit
+/// cards, so fall back to the bank's own name+mask+subtype. The per-connection
+/// `account_id` is deliberately NOT used — it is re-minted on every link, which is
+/// exactly the case being de-duplicated.
+///
+/// This is the one key: the balance sum de-duplicates with it, the reserve picker
+/// lists accounts under it, and the designated reserve account is matched by it.
+/// Do not mint a second identity scheme alongside it.
+fn plaid_account_key(a: &Value) -> String {
+    match a.get("persistent_account_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        Some(pid) => format!("p:{}", pid),
+        None => format!(
+            "n:{}|{}|{}",
+            a.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase(),
+            a.get("mask").and_then(|v| v.as_str()).unwrap_or(""),
+            a.get("subtype").and_then(|v| v.as_str()).unwrap_or(""),
+        ),
+    }
+}
+
+/// The account Jack has designated as the reserve, by `plaid_account_key`. Empty
+/// until he picks one — and until he does, every figure below behaves as before.
+/// Device-local on purpose: the Plaid link is device-local too, so only the linked
+/// device can resolve the key, and it is that device which publishes the balance
+/// the rest of the org reads. Designating here therefore reaches every device
+/// through the published figure, without a second source of truth.
+fn reserve_account_key(conn: &rusqlite::Connection) -> String {
+    conn.query_row("SELECT value FROM settings WHERE key='money_reserve_account_key'", [], |r| r.get::<_, String>(0))
+        .unwrap_or_default().trim().to_string()
+}
+
 /// Live balances from connected Plaid banks, captured in each item's accounts_json
 /// at link time: depository accounts (checking/savings) sum to the bank balance,
 /// credit accounts to the card owed. Returns (bank, card, any_bank_connected).
+///
+/// The bank figure EXCLUDES the designated reserve account — see
+/// `plaid_balances_split`, which is the same walk with that balance handed back
+/// separately. Every caller (the publisher in plaid_sync, set_money_config's live
+/// check, financials_overview) goes through here so the org-wide published balance
+/// and this device's free cash can never disagree about what is parked.
 fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
+    let (bank, card, any, _, _) = plaid_balances_split(conn);
+    (bank, card, any)
+}
+
+/// `plaid_balances` plus the reserve split: (bank_excluding_reserve, card, any,
+/// reserve_parked, reserve_account_still_linked).
+fn plaid_balances_split(conn: &rusqlite::Connection) -> (f64, f64, bool, f64, bool) {
     let mut bank = 0.0;
     let mut card = 0.0;
     let mut any = false;
+    let mut reserve_parked = 0.0;
+    let mut reserve_found = false;
+    let reserve_key = reserve_account_key(conn);
     let mut stmt = match conn.prepare("SELECT accounts_json FROM plaid_items") {
-        Ok(s) => s, Err(_) => return (0.0, 0.0, false),
+        Ok(s) => s, Err(_) => return (0.0, 0.0, false, 0.0, false),
     };
     let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
-        Ok(r) => r, Err(_) => return (0.0, 0.0, false),
+        Ok(r) => r, Err(_) => return (0.0, 0.0, false, 0.0, false),
     };
     // One physical account can appear under SEVERAL plaid_items — re-linking a bank
     // ("Connect a bank" instead of update mode) or linking the same bank on a second
@@ -14176,11 +14410,6 @@ fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
     // therefore counted the same balance twice and overstated free cash by a whole
     // account, while the manual correction field was locked out because a live source
     // was present. Count each real account ONCE.
-    //
-    // Identity, best available first: Plaid's `persistent_account_id` is stable across
-    // re-links but is NOT issued for credit cards, so fall back to the bank's own
-    // name+mask+subtype. The per-connection `account_id` is deliberately NOT used — it
-    // is re-minted on every link, which is exactly the case being de-duplicated.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for aj in rows.filter_map(|r| r.ok()) {
         // `any` must NOT be set from the mere existence of a plaid_items row. When the
@@ -14192,25 +14421,57 @@ fn plaid_balances(conn: &rusqlite::Connection) -> (f64, f64, bool) {
         for a in &accts {
             let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if kind != "credit" && kind != "depository" { continue; }
-            let key = match a.get("persistent_account_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-                Some(pid) => format!("p:{}", pid),
-                None => format!(
-                    "n:{}|{}|{}",
-                    a.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase(),
-                    a.get("mask").and_then(|v| v.as_str()).unwrap_or(""),
-                    a.get("subtype").and_then(|v| v.as_str()).unwrap_or(""),
-                ),
-            };
+            let key = plaid_account_key(a);
+            let is_reserve = !reserve_key.is_empty() && key == reserve_key;
             if !seen.insert(key) { continue; } // already counted through another item
             let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
             match kind {
                 "credit" => { card += cur.abs(); any = true; }
+                // The reserve account's money is real and it is a live source — `any`
+                // still counts, or designating the only linked account would flip this
+                // device back to "manual" and republish a stale figure over the org.
+                // It just isn't spendable, so it stays out of the bank balance.
+                "depository" if is_reserve => { reserve_parked += cur; reserve_found = true; any = true; }
                 "depository" => { bank += cur; any = true; }
                 _ => {}
             }
         }
     }
-    (bank, card, any)
+    (bank, card, any, reserve_parked, reserve_found)
+}
+
+/// Depository accounts across every connected bank, de-duplicated by
+/// `plaid_account_key` — the candidates for the reserve picker. Credit cards are
+/// not offered: a card cannot hold money set aside.
+fn plaid_reserve_candidates(conn: &rusqlite::Connection) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let mut stmt = match conn.prepare("SELECT institution, accounts_json FROM plaid_items ORDER BY created_at") {
+        Ok(s) => s, Err(_) => return out,
+    };
+    let rows = match stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+        Ok(r) => r, Err(_) => return out,
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (institution, aj) in rows.filter_map(|r| r.ok()) {
+        let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
+        for a in &accts {
+            if a.get("type").and_then(|v| v.as_str()).unwrap_or("") != "depository" { continue; }
+            let key = plaid_account_key(a);
+            if !seen.insert(key.clone()) { continue; }
+            out.push(json!({
+                "key": key,
+                "institution": institution,
+                "name": a.get("official_name").and_then(|v| v.as_str())
+                          .filter(|s| !s.is_empty())
+                          .or_else(|| a.get("name").and_then(|v| v.as_str()))
+                          .unwrap_or("Account"),
+                "mask": a.get("mask").and_then(|v| v.as_str()).unwrap_or(""),
+                "subtype": a.get("subtype").and_then(|v| v.as_str()).unwrap_or(""),
+                "balance": (a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0).round() / 100.0,
+            }));
+        }
+    }
+    out
 }
 
 #[tauri::command]
@@ -14227,7 +14488,13 @@ pub async fn get_money_config() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64, publish_manual: Option<bool>) -> Result<(), String> {
+pub async fn set_money_config(bank_balance: f64, credit_card_balance: f64, cash_floor: f64, tax_sweep_pct: f64, refund_reserve_pct: f64, war_chest: f64, publish_manual: Option<bool>, reserve_account_key: Option<String>) -> Result<(), String> {
+    // `reserve_account_key` omitted (None) means "not mine to change" — a caller that
+    // doesn't know about the reserve account must never clear Jack's choice. Passing
+    // an empty string is how the picker un-designates.
+    if let Some(k) = reserve_account_key {
+        write_setting("money_reserve_account_key", k.trim())?;
+    }
     write_setting("money_bank_balance", &format!("{}", bank_balance))?;
     write_setting("money_credit_card_balance", &format!("{}", credit_card_balance))?;
     write_setting("money_cash_floor", &format!("{}", cash_floor))?;
@@ -14267,7 +14534,22 @@ pub async fn financials_overview() -> Result<Value, String> {
     let round2 = |x: f64| (x * 100.0).round() / 100.0;
     // Prefer live balances from connected banks (Plaid); fall back to the manual
     // figures only when no bank is linked. Makes Free Cash real automatically.
-    let (plaid_bank, plaid_card, has_plaid) = plaid_balances(&conn);
+    // R-143: one linked account can be designated as the reserve. `plaid_bank` already
+    // has its balance held out (see plaid_balances_split), so the figure published
+    // org-wide has it removed too and no device can disagree about what is parked.
+    // With nothing designated `reserve_parked` is 0 and every figure below is exactly
+    // what it was.
+    let (plaid_bank, plaid_card, has_plaid, reserve_parked, reserve_linked) = plaid_balances_split(&conn);
+    let reserve_key = reserve_account_key(&conn);
+    let reserve_candidates = plaid_reserve_candidates(&conn);
+    let reserve_label = reserve_candidates.iter()
+        .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(reserve_key.as_str()))
+        .map(|a| format!(
+            "{} · {}",
+            a.get("institution").and_then(|v| v.as_str()).unwrap_or(""),
+            a.get("name").and_then(|v| v.as_str()).unwrap_or("Account"),
+        ))
+        .unwrap_or_default();
     // Balance sharing: a device WITH the Plaid link publishes its fresh balance so
     // devices without it (Mac, mobile) can show it; a device WITHOUT the link reads
     // that last-known balance, falling back to the manual figure. The Plaid token
@@ -14388,9 +14670,17 @@ pub async fn financials_overview() -> Result<Value, String> {
     // screen can show them as goals to park in a real account. Do not re-subtract them
     // without wiring `reserve_entry` draw-downs first.
     let free_cash = round2(bank_balance - credit_card_balance - supplier_payables - refund_liability - cash_floor - loan_outstanding);
-    // What would be left if both reserve targets were actually parked elsewhere —
-    // shown as a secondary line, never as the headline figure.
-    let free_cash_after_reserves = round2(free_cash - tax_reserve - refund_reserve);
+    // Target vs money actually parked. Once a real reserve account is designated its
+    // balance is ALREADY out of `bank_balance`, and therefore out of `free_cash` —
+    // subtracting the full target again on top would take the same money away twice.
+    // Only the SHORTFALL, what still has to be moved, comes off the secondary line.
+    // With no account designated `reserve_parked` is 0, the shortfall is the whole
+    // target, and this is the old arithmetic to the cent.
+    let reserve_target = tax_reserve + refund_reserve;
+    let reserve_shortfall = (reserve_target - reserve_parked).max(0.0);
+    // What would be left if the reserve target were fully parked elsewhere — shown as
+    // a secondary line, never as the headline figure.
+    let free_cash_after_reserves = round2(free_cash - reserve_shortfall);
 
     // Trailing monthly opex (last 90 days / 3) for the runway/status.
     let opex_3mo: f64 = conn.query_row(
@@ -14416,7 +14706,8 @@ pub async fn financials_overview() -> Result<Value, String> {
     // permanently — a red flag on the Overview screen that could never be cleared.
     let stale_unallocated: i64 = conn.query_row(
         "SELECT COUNT(*) FROM bank_txn bt WHERE bt.direction='in'
-           AND COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','cash_in','cash_out')
+           AND COALESCE(bt.category,'') IN ('','receipt','payment','merchandise','shipping','customs',
+                                            'customer_refund','supplier_refund','cash_in','cash_out')
            AND COALESCE(bt.counterparty_type,'') != 'loan'
            AND bt.posted_at != '' AND bt.posted_at <= date('now','-7 days')
            AND COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.bank_txn_id=bt.id),0) < bt.amount - 0.01",
@@ -14444,6 +14735,17 @@ pub async fn financials_overview() -> Result<Value, String> {
         "refund_reserve": round2(refund_reserve),
         "refund_reserve_base": round2(year_profit),
         "refund_reserve_pct": refund_reserve_pct,
+        // Reserve account (R-143). `reserve_account_key` is "" until Jack picks one.
+        // `reserve_linked` false with a key set means the designated account is no
+        // longer among the connected banks — the parked figure has gone to 0 and the
+        // screen must say so rather than quietly showing more free cash.
+        "reserve_account_key": reserve_key,
+        "reserve_account_label": reserve_label,
+        "reserve_account_linked": reserve_linked,
+        "reserve_parked": round2(reserve_parked),
+        "reserve_target": round2(reserve_target),
+        "reserve_shortfall": round2(reserve_shortfall),
+        "reserve_accounts": reserve_candidates,
         "cash_floor": round2(cash_floor),
         "loan_outstanding": round2(loan_outstanding),
         "war_chest": round2(war_chest),
@@ -14843,6 +15145,109 @@ pub async fn untag_bank_txn_counterparty(bank_txn_id: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Does this device hold that row yet? A link can name a party that has not been
+/// pulled here, and writing a column onto an id we have never seen would sync a
+/// skeletal phantom row out to every other device.
+fn party_row_exists(conn: &rusqlite::Connection, table: &str, id: &str) -> bool {
+    conn.query_row(&format!("SELECT 1 FROM {table} WHERE id=?1"), [&id], |_| Ok(())).is_ok()
+}
+
+/// Write one side of a party link. Partial columns only — merge-on-write, never a
+/// full-row replace: the narrow-form data loss was a full column list writing NULL
+/// over fields the caller never had. `table` is always one of two literals chosen by
+/// a match, never caller text.
+fn write_party_link(conn: &rusqlite::Connection, table: &str, id: &str, target: &str, now: &str) -> Result<(), String> {
+    let mut cols = Map::new();
+    cols.insert("linked_party_id".into(), json!(target));
+    cols.insert("updated_at".into(), json!(now));
+    sync::record_upsert(table, id, cols).map_err(|e| e.to_string())?;
+    conn.execute(
+        &format!("UPDATE {table} SET linked_party_id=?1, updated_at=?2 WHERE id=?3"),
+        rusqlite::params![target, now, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Link a client record and a supplier record that are the SAME company (R-155-a).
+/// `ctype` describes `id`; `other_id` always names the opposite table.
+///
+/// The two rows stay separate — this records only that they are one party, so a
+/// profile can show both sides. Nothing is merged and NO MONEY MOVES: like a
+/// counterparty tag this is identity, never accounting. `linked_party_id` is read by
+/// the profile alone; no query that computes deal profit, cost, free cash or a
+/// reconciliation figure looks at it, and none may start. What we pay them stays
+/// cost, what they pay us stays revenue, and the two are never netted.
+///
+/// Symmetric by construction: the client row points at the supplier and the supplier
+/// row points back, both written here. A pointer left over from a previous partner is
+/// released in the same call — a half-link is worse than no link, because each side
+/// would then name a different company.
+#[tauri::command]
+pub async fn link_party(ctype: String, id: String, other_id: String) -> Result<(), String> {
+    let (table, other_table) = match ctype.as_str() {
+        "supplier" => ("suppliers", "clients"),
+        "client" => ("clients", "suppliers"),
+        _ => return Err("ctype must be supplier or client".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // Both rows must exist here before either is written, for the phantom-row reason
+    // above and because a link to an id nobody holds cannot be shown or undone.
+    let old_other: String = conn.query_row(
+        &format!("SELECT COALESCE(linked_party_id,'') FROM {table} WHERE id=?1"),
+        [&id], |r| r.get(0),
+    ).map_err(|_| "Party not found".to_string())?;
+    let old_self: String = conn.query_row(
+        &format!("SELECT COALESCE(linked_party_id,'') FROM {other_table} WHERE id=?1"),
+        [&other_id], |r| r.get(0),
+    ).map_err(|_| "The other party was not found".to_string())?;
+    if old_other == other_id && old_self == id { return Ok(()); }
+    let now = Utc::now().to_rfc3339();
+    // Release the parties these two were linked to before, so no third record is left
+    // pointing at a company that has stopped pointing back.
+    if !old_other.is_empty() && old_other != other_id && party_row_exists(&conn, other_table, &old_other) {
+        write_party_link(&conn, other_table, &old_other, "", &now)?;
+    }
+    if !old_self.is_empty() && old_self != id && party_row_exists(&conn, table, &old_self) {
+        write_party_link(&conn, table, &old_self, "", &now)?;
+    }
+    write_party_link(&conn, table, &id, &other_id, &now)?;
+    write_party_link(&conn, other_table, &other_id, &id, &now)?;
+    crate::netsync::push_now();
+    Ok(())
+}
+
+/// Undo a party link. Clears BOTH pointers, for the same reason `link_party` sets
+/// both: one cleared side leaves the other naming a company that no longer names it
+/// back. The far side is cleared only if it still points HERE — if it has already
+/// been re-linked to somebody else, that is a newer decision and stands.
+///
+/// Identity only. No money figure changes, on either record.
+#[tauri::command]
+pub async fn unlink_party(ctype: String, id: String) -> Result<(), String> {
+    let (table, other_table) = match ctype.as_str() {
+        "supplier" => ("suppliers", "clients"),
+        "client" => ("clients", "suppliers"),
+        _ => return Err("ctype must be supplier or client".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let other: String = conn.query_row(
+        &format!("SELECT COALESCE(linked_party_id,'') FROM {table} WHERE id=?1"),
+        [&id], |r| r.get(0),
+    ).map_err(|_| "Party not found".to_string())?;
+    if other.is_empty() { return Err("This party is not linked to another record".into()); }
+    let now = Utc::now().to_rfc3339();
+    write_party_link(&conn, table, &id, "", &now)?;
+    let points_back: String = conn.query_row(
+        &format!("SELECT COALESCE(linked_party_id,'') FROM {other_table} WHERE id=?1"),
+        [&other], |r| r.get(0),
+    ).unwrap_or_default();
+    if points_back == id {
+        write_party_link(&conn, other_table, &other, "", &now)?;
+    }
+    crate::netsync::push_now();
+    Ok(())
+}
+
 /// One allocation-shaped row of a counterparty's payment history, before dedupe.
 /// A transaction split across several deals arrives here once per allocation.
 struct CpHit {
@@ -15037,6 +15442,233 @@ fn counterparty_payment_rows(conn: &rusqlite::Connection, ctype: &str, id: &str,
 pub async fn counterparty_payments(ctype: String, id: String, name: String) -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     Ok(json!(counterparty_payment_rows(&conn, &ctype, &id, &name)?))
+}
+
+/// How strongly one section of a linked profile claims a payment (R-155-a).
+///
+/// An explicit tag wins, exactly as it does inside `counterparty_payments_sql`
+/// (R-175), and only one section can ever hold it: a transaction carries a single
+/// `counterparty_id`. Failing a tag, the section whose own deal the money sits on
+/// keeps it. One wire CAN carry an allocation on each side's deal, so direction
+/// breaks that tie — money out is a purchase, money in is a sale.
+fn linked_side_rank(r: &Value, is_purchase: bool) -> u8 {
+    let dir_fits = (r["direction"].as_str().unwrap_or("") == "out") == is_purchase;
+    if r["tagged"].as_bool().unwrap_or(false) { 4 }
+    else if r["deal_is_theirs"].as_bool().unwrap_or(false) { if dir_fits { 3 } else { 2 } }
+    else if dir_fits { 1 }
+    else { 0 }
+}
+
+/// NOTHING APPEARS TWICE (Jack's rule for the linked profile, and a real hazard).
+/// `counterparty_payments` is a UNION, and once a link exists the supplier leg and
+/// the client leg can BOTH return the same payment: a wire with a `supplier_payment`
+/// allocation on the pair's deal and a `buyer_payment` allocation on the same deal
+/// is matched by each side on its own merits.
+///
+/// The dedupe key is the TRANSACTION id, not the allocation id — what a human reads
+/// is one payment, and the same payment under both "bought from them" and "sold to
+/// them" is the duplicate he means. `counterparty_payment_rows` already returns one
+/// row per transaction per side, so this only has to settle which side keeps it.
+/// Ties go to the purchase side so the answer never depends on iteration order.
+///
+/// Returns how many rows were dropped, so the profile can say so rather than quietly
+/// showing fewer than either side alone.
+fn dedupe_linked_sides(purchases: &mut Vec<Value>, sales: &mut Vec<Value>) -> usize {
+    if purchases.is_empty() || sales.is_empty() { return 0; }
+    let sale_rank: std::collections::HashMap<String, u8> = sales.iter()
+        .map(|r| (r["txn_id"].as_str().unwrap_or("").to_string(), linked_side_rank(r, false)))
+        .collect();
+    let mut dropped = 0usize;
+    purchases.retain(|r| {
+        let keep = match sale_rank.get(r["txn_id"].as_str().unwrap_or("")) {
+            Some(&sr) => sr <= linked_side_rank(r, true),
+            None => true,
+        };
+        if !keep { dropped += 1; }
+        keep
+    });
+    let kept: std::collections::HashSet<&str> = purchases.iter()
+        .map(|r| r["txn_id"].as_str().unwrap_or("")).collect();
+    let before = sales.len();
+    sales.retain(|r| !kept.contains(r["txn_id"].as_str().unwrap_or("")));
+    dropped + (before - sales.len())
+}
+
+/// One section of a linked profile: who it is, its payments, and its own totals.
+/// `money_in` and `money_out` are the same `amount`-by-direction sums the payments
+/// panel already shows, over the same rows — never added together. A single signed
+/// number for a party that both buys and supplies would read as profit while being
+/// nothing of the kind; if the screen ever wants one figure it is called position.
+fn linked_side_json(ctype: &str, party: Option<&(String, String)>, rows: Vec<Value>) -> Value {
+    let mut money_in = 0.0;
+    let mut money_out = 0.0;
+    for r in &rows {
+        let amt = r["amount"].as_f64().unwrap_or(0.0);
+        if r["direction"].as_str().unwrap_or("") == "in" { money_in += amt } else { money_out += amt }
+    }
+    json!({
+        "ctype": ctype,
+        "id": party.map(|p| p.0.clone()).unwrap_or_default(),
+        "name": party.map(|p| p.1.clone()).unwrap_or_default(),
+        "rows": rows,
+        "money_in": r2(money_in),
+        "money_out": r2(money_out),
+    })
+}
+
+/// Both sides of a linked party, kept apart (R-155-a). The reader half of
+/// `link_party`: given either record it returns its counterpart plus the payments
+/// each side reaches, in TWO separate lists — what we bought from them and what we
+/// sold to them — with a total for each and no combined figure anywhere.
+///
+/// Read-only, and nothing here feeds a money total: the rows are exactly what
+/// `counterparty_payments` already returns for each record on its own, minus the
+/// cross-side duplicates.
+///
+/// `linked_party_id` may name a row this device has not pulled yet. That reads as
+/// `link_pending`, never as an error — migration 80 is explicit that an id we do not
+/// hold means "not linked here yet".
+#[tauri::command]
+pub async fn linked_party_payments(ctype: String, id: String) -> Result<Value, String> {
+    let (table, other_type, other_table) = match ctype.as_str() {
+        "supplier" => ("suppliers", "client", "clients"),
+        "client" => ("clients", "supplier", "suppliers"),
+        _ => return Err("ctype must be supplier or client".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // The name is read here rather than taken from the caller: the supplier leg
+    // matches on the exact stored name, and a caller-supplied one can drift from it.
+    let (name, link): (String, String) = conn.query_row(
+        &format!("SELECT COALESCE(name,''), COALESCE(linked_party_id,'') FROM {table} WHERE id=?1"),
+        [&id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|_| "Party not found".to_string())?;
+    let other: Option<(String, String)> = if link.is_empty() { None } else {
+        conn.query_row(
+            &format!("SELECT id, COALESCE(name,'') FROM {other_table} WHERE id=?1"),
+            [&link], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).ok()
+    };
+    let mine = counterparty_payment_rows(&conn, &ctype, &id, &name)?;
+    let theirs = match &other {
+        Some((oid, oname)) => counterparty_payment_rows(&conn, other_type, oid, oname)?,
+        None => Vec::new(),
+    };
+    let is_supplier = ctype == "supplier";
+    let (mut purchases, mut sales) = if is_supplier { (mine, theirs) } else { (theirs, mine) };
+    let dropped = dedupe_linked_sides(&mut purchases, &mut sales);
+    let this = (id.clone(), name.clone());
+    let (sup, cli) = if is_supplier { (Some(&this), other.as_ref()) } else { (other.as_ref(), Some(&this)) };
+    Ok(json!({
+        "self": { "ctype": ctype, "id": id, "name": name },
+        "linked": other.as_ref().map(|(oid, oname)| json!({ "ctype": other_type, "id": oid, "name": oname })),
+        "link_pending": !link.is_empty() && other.is_none(),
+        "purchases": linked_side_json("supplier", sup, purchases),
+        "sales": linked_side_json("client", cli, sales),
+        "duplicates_dropped": dropped,
+    }))
+}
+
+#[cfg(test)]
+mod linked_party_tests {
+    use super::{counterparty_payment_rows, dedupe_linked_sides};
+    use serde_json::Value;
+
+    /// One company that both buys from us and supplies us — the case the link
+    /// exists for. `cl_tytan` and `sup_tytan` are the two records; `deal_t` is a
+    /// deal where they are on both ends at once, which is how one wire ends up
+    /// reachable from both sides.
+    fn both_roles_ledger() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            CREATE TABLE clients (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+            CREATE TABLE invoices (id TEXT PRIMARY KEY, number TEXT NOT NULL DEFAULT '',
+              client_id TEXT NOT NULL DEFAULT '');
+            CREATE TABLE deal_flows (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL DEFAULT '',
+              supplier_payments_json TEXT NOT NULL DEFAULT '');
+            CREATE TABLE bank_txn (id TEXT PRIMARY KEY, posted_at TEXT NOT NULL DEFAULT '',
+              amount REAL NOT NULL DEFAULT 0, direction TEXT NOT NULL DEFAULT '',
+              description TEXT NOT NULL DEFAULT '', counterparty_name TEXT NOT NULL DEFAULT '',
+              counterparty_type TEXT NOT NULL DEFAULT '', counterparty_id TEXT NOT NULL DEFAULT '',
+              rail TEXT NOT NULL DEFAULT '', confirmed_method TEXT, raw_json TEXT NOT NULL DEFAULT '');
+            CREATE TABLE bank_allocation (id TEXT PRIMARY KEY, bank_txn_id TEXT NOT NULL DEFAULT '',
+              deal_flow_id TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0,
+              role TEXT NOT NULL DEFAULT '');
+
+            INSERT INTO clients VALUES ('cl_tytan','Tytan Market LLC');
+            INSERT INTO invoices VALUES ('inv_t','INV-0190','cl_tytan');
+            INSERT INTO deal_flows VALUES
+              ('deal_t','inv_t','[{"supplier_id":"sup_tytan","supplier_name":"Tytan Market LLC"}]');
+
+            -- THE DUPLICATE. Untagged, so neither leg 1 claims it and neither leg 2
+            -- excludes it, and it carries an allocation on each side of the same
+            -- deal: the supplier leg matches the supplier_payment, the client leg
+            -- matches the buyer_payment, and the same wire reaches both sections.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description) VALUES ('txn_both','2026-08-10',80000,'out','ONLINE DOMESTIC WIRE TRANSFER');
+            INSERT INTO bank_allocation VALUES
+              ('al_both_sup','txn_both','deal_t',50000,'supplier_payment'),
+              ('al_both_buy','txn_both','deal_t',30000,'buyer_payment');
+
+            -- Money out, tagged to the supplier record only.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_type,counterparty_id) VALUES ('txn_sup','2026-08-11',900,'out','WIRE TO TYTAN','supplier','sup_tytan');
+
+            -- Money in, tagged to the client record only.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_type,counterparty_id) VALUES ('txn_cli','2026-08-12',5000,'in','ZELLE FROM TYTAN','client','cl_tytan');
+        "#).unwrap();
+        conn
+    }
+
+    fn sides(conn: &rusqlite::Connection) -> (Vec<Value>, Vec<Value>, usize) {
+        let mut purchases = counterparty_payment_rows(conn, "supplier", "sup_tytan", "Tytan Market LLC").unwrap();
+        let mut sales = counterparty_payment_rows(conn, "client", "cl_tytan", "Tytan Market LLC").unwrap();
+        let dropped = dedupe_linked_sides(&mut purchases, &mut sales);
+        (purchases, sales, dropped)
+    }
+    fn ids(rows: &[Value]) -> Vec<String> {
+        rows.iter().map(|r| r["txn_id"].as_str().unwrap_or("").to_string()).collect()
+    }
+
+    #[test]
+    fn both_roles_show_each_payment_exactly_once() {
+        let conn = both_roles_ledger();
+        // Both sides really do return the same wire before the dedupe — if this
+        // stops being true the test below is proving nothing.
+        let raw_sup = counterparty_payment_rows(&conn, "supplier", "sup_tytan", "Tytan Market LLC").unwrap();
+        let raw_cli = counterparty_payment_rows(&conn, "client", "cl_tytan", "Tytan Market LLC").unwrap();
+        assert!(ids(&raw_sup).contains(&"txn_both".to_string()) && ids(&raw_cli).contains(&"txn_both".to_string()),
+            "the both-roles wire must reach both legs, or there is no duplicate to dedupe");
+
+        let (purchases, sales, dropped) = sides(&conn);
+        let mut all = ids(&purchases);
+        all.extend(ids(&sales));
+        let unique: std::collections::HashSet<&String> = all.iter().collect();
+        assert_eq!(all.len(), unique.len(), "a payment appeared in both sections: {all:?}");
+        assert_eq!(dropped, 1, "exactly one duplicate row should have been dropped");
+        // Money out belongs under what we bought from them.
+        assert!(ids(&purchases).contains(&"txn_both".to_string()));
+        assert!(!ids(&sales).contains(&"txn_both".to_string()));
+    }
+
+    #[test]
+    fn a_tagged_payment_stays_on_the_side_it_is_tagged_to() {
+        let (purchases, sales, _) = sides(&both_roles_ledger());
+        assert!(ids(&purchases).contains(&"txn_sup".to_string()));
+        assert!(!ids(&sales).contains(&"txn_sup".to_string()));
+        assert!(ids(&sales).contains(&"txn_cli".to_string()));
+        assert!(!ids(&purchases).contains(&"txn_cli".to_string()));
+    }
+
+    /// The two sides are counted apart: what they paid us never cancels what we
+    /// paid them. 80,000 + 900 out against 5,000 in, and no figure of 75,900.
+    #[test]
+    fn the_two_sides_are_never_netted() {
+        let (purchases, sales, _) = sides(&both_roles_ledger());
+        let out: f64 = purchases.iter().filter(|r| r["direction"] == "out")
+            .map(|r| r["amount"].as_f64().unwrap_or(0.0)).sum();
+        let inn: f64 = sales.iter().filter(|r| r["direction"] == "in")
+            .map(|r| r["amount"].as_f64().unwrap_or(0.0)).sum();
+        assert_eq!(out, 80900.0);
+        assert_eq!(inn, 5000.0);
+    }
 }
 
 /// The transactions tagged to one loan, plus received / repaid totals (kind is
@@ -15658,14 +16290,52 @@ pub async fn delete_newsletter(id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The "why you're getting this" line of the opt-out footer. Editable through the
+/// `newsletter_footer` setting; an empty value falls back to this literal, never to
+/// nothing. The line UNDER it — the one-click link or the reply-to instruction — is
+/// always written by code, so the legal opt-out itself cannot be configured away.
+const DEFAULT_NL_FOOTER_LINE: &str = "You're receiving this from {business} because you asked us to send you deals.";
+
+/// Business name for newsletter copy. It lives in the `company_info` JSON, the same
+/// place the WhatsApp message reads it from. The `business_name` settings key this
+/// footer used to read is not written by any surface — desktop, server or mobile —
+/// so every footer sent so far has said "from us".
+fn nl_business_name(conn: &rusqlite::Connection) -> String {
+    let from_company: String = conn.query_row(
+        "SELECT COALESCE(json_extract(value, '$.name'), '') FROM settings WHERE key='company_info'",
+        [], |r| r.get(0),
+    ).unwrap_or_default();
+    if !from_company.trim().is_empty() { return from_company.trim().to_string(); }
+    wa_setting(conn, "business_name", "").trim().to_string()
+}
+
+/// Resolve `{sender_name}` — who a newsletter is signed by. No runtime has ever carried
+/// a resolver for this token, which is why the shared default sign-off
+/// ("Thanks,\n{sender_name}") mails the literal placeholder to customers. It resolves to
+/// the business name, the one name every surface already agrees on; with none set the
+/// token is dropped rather than sent.
+fn nl_sender_name(conn: &rusqlite::Connection) -> String {
+    nl_business_name(conn)
+}
+
+/// Substitute `{sender_name}` / `{{sender_name}}` before the per-client pass, which
+/// leaves tokens it can't resolve intact.
+fn nl_apply_sender_name(text: &str, sender: &str) -> String {
+    text.replace("{{sender_name}}", sender).replace("{sender_name}", sender)
+}
+
 /// Append the CAN-SPAM opt-out footer to a marketing email. Prefers the server-signed
 /// one-click link; falls back to a reply-to-unsubscribe line so every email carries an
 /// opt-out even if the link couldn't be minted (offline).
-fn append_unsub_footer(body: &str, business: &str, url: Option<&str>) -> String {
+fn append_unsub_footer(body: &str, business: &str, url: Option<&str>, footer_line: &str) -> String {
     let who = { let b = business.trim(); if b.is_empty() { "us".to_string() } else { b.to_string() } };
+    let line = {
+        let f = footer_line.trim();
+        if f.is_empty() { DEFAULT_NL_FOOTER_LINE } else { f }
+    }.replace("{business}", &who);
     match url {
-        Some(u) => format!("{body}\n\n—\nYou're receiving this from {who} because you asked us to send you deals.\nTo unsubscribe: {u}"),
-        None => format!("{body}\n\n—\nYou're receiving this from {who} because you asked us to send you deals.\nTo stop receiving these, reply to this email with \"unsubscribe\"."),
+        Some(u) => format!("{body}\n\n—\n{line}\nTo unsubscribe: {u}"),
+        None => format!("{body}\n\n—\n{line}\nTo stop receiving these, reply to this email with \"unsubscribe\"."),
     }
 }
 
@@ -15708,9 +16378,14 @@ pub async fn send_newsletter(
         .ok()
         .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(true);
-    let business_name: String = conn
-        .query_row("SELECT value FROM settings WHERE key='business_name'", [], |r| r.get::<_, String>(0))
-        .unwrap_or_default();
+    let business_name: String = nl_business_name(&conn);
+    let footer_line: String = wa_setting(&conn, "newsletter_footer", "");
+    // {sender_name} is resolved once for the whole send — it's a workspace value, not a
+    // per-recipient one — before substitute_variables runs, which leaves unknown tokens
+    // intact and would otherwise mail the literal placeholder.
+    let sender_name = nl_sender_name(&conn);
+    let subject_template = nl_apply_sender_name(&subject_template, &sender_name);
+    let body_template = nl_apply_sender_name(&body_template, &sender_name);
     let unsub_urls: std::collections::HashMap<String, String> = if unsub_enabled {
         let mut emails: Vec<String> = Vec::new();
         for cid in &client_ids {
@@ -15757,7 +16432,7 @@ pub async fn send_newsletter(
         match &email {
             Some(addr) if !addr.is_empty() => {
                 let body_out = if unsub_enabled {
-                    append_unsub_footer(&body, &business_name, unsub_urls.get(addr).map(|s| s.as_str()))
+                    append_unsub_footer(&body, &business_name, unsub_urls.get(addr).map(|s| s.as_str()), &footer_line)
                 } else {
                     body.clone()
                 };
@@ -15856,6 +16531,13 @@ pub async fn schedule_newsletter_send(
 ) -> Result<ScheduledSend, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
+
+    // The server's scheduler delivers this one, and nothing there resolves
+    // {sender_name}, so bake it in while the value is at hand. The stored body is
+    // already a snapshot of what was composed, exactly like an immediate send.
+    let sender_name = nl_sender_name(&conn);
+    let subject = nl_apply_sender_name(&subject, &sender_name);
+    let body = nl_apply_sender_name(&body, &sender_name);
 
     let scheduled_time = chrono::DateTime::parse_from_rfc3339(&scheduled_at)
         .map_err(|e| format!("Invalid scheduled_at: {}", e))?;
