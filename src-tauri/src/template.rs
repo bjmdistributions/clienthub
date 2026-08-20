@@ -53,6 +53,7 @@ fn compute_tier(conn: &Connection, client_id: &str, metadata_str: Option<&str>) 
             SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
             UNION ALL \
             SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
          ) x JOIN deal_flows df ON df.id=x.dfid JOIN invoices iv ON iv.id=df.invoice_id \
          WHERE iv.client_id=?1",
         [client_id], |r| r.get(0),

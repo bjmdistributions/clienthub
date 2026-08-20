@@ -4,6 +4,7 @@ import { fmtAmount, fmtPhone } from "../lib/format";
 import ReliabilityBadge from "./ReliabilityBadge";
 import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
+import { PersonRef } from "./PersonPicker";
 import {
   ArrowLeft,
   Mail,
@@ -150,6 +151,9 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const [clientProfit, setClientProfit] = useState<number | null>(null);
   // Bank payments this client touches: tagged rows + buyer_payment allocations.
   const [payments, setPayments] = useState<CounterpartyPaymentRow[]>([]);
+  // Both sides of the address book, for re-filing a payment under the party it
+  // actually belongs to (R-175). Loaded once; failure only costs the picker.
+  const [people, setPeople] = useState<PersonRef[]>([]);
 
   useEffect(() => {
     api.getClientCreditStatus(clientId)
@@ -185,6 +189,10 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
 
   // Remove a wrong client tag — the payment itself stays booked. Re-fetch so a
   // tag-only row disappears and a deal-linked row merely loses its badge.
+  const reloadPayments = async () => {
+    setPayments(await api.counterpartyPayments("client", clientId, client?.name || "").catch(() => []));
+  };
+
   const untagPayment = async (txnId: string) => {
     try {
       await api.untagBankTxnCounterparty(txnId);
@@ -194,6 +202,14 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   };
 
   useEffect(() => { load(); }, [clientId]);
+  useEffect(() => {
+    Promise.all([api.listClients(), api.listSuppliers()])
+      .then(([cs, ss]) => setPeople([
+        ...cs.map((c): PersonRef => ({ type: "client", id: c.id, name: c.name })),
+        ...ss.filter((x) => !x.archived).map((x): PersonRef => ({ type: "supplier", id: x.id, name: x.name })),
+      ]))
+      .catch(() => {});
+  }, []);
   useEffect(() => { api.listCustomFields().then(setCustomFields).catch(() => {}); }, []);
 
   const handleSummarize = async () => {
@@ -426,6 +442,8 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             person={{ type: "client", id: clientId, name: client.name }}
             payments={payments}
             onUntag={untagPayment}
+            people={people}
+            onChanged={reloadPayments}
           />
         </div>
 

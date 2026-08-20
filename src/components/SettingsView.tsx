@@ -4,6 +4,7 @@ import {
   Me,
   EmailInbox,
   EmailSettings,
+  PolicyClauseSettings,
   CompanyInfo,
   InvoiceTemplate,
   OllamaModel,
@@ -1380,9 +1381,76 @@ function EmailTab() {
   return (
     <div className="max-w-2xl space-y-4">
       <SendingCard />
+      <PolicyClauseCard />
       <NewsletterTemplateCard />
       <InboxCard />
       <CaptureCard />
+    </div>
+  );
+}
+
+// Standing policy clauses that ride outbound documents (R-162). Both print at the foot
+// of the document AND repeat in the send email, so a buyer who never opens the PDF has
+// still been told. The 24-hour notice rides invoices and quotes; the return policy is an
+// invoice-level term and what is set here is only the DEFAULT — each invoice's own copy
+// is editable on the invoice form and frozen on the row once created, so re-editing this
+// never restates an invoice already issued.
+//
+// Both ship empty. This wording is Jack's, not the app's; an enabled toggle with empty
+// text renders nothing rather than putting invented legalese in front of a customer.
+function PolicyClauseCard() {
+  const [c, setC] = useState<PolicyClauseSettings>({
+    notice_24h_enabled: false, notice_24h_text: "",
+    return_policy_enabled: false, return_policy_text: "",
+  });
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.getPolicyClauseSettings().then(setC).catch(() => {}); }, []);
+  const save = async () => {
+    setBusy(true);
+    try { await api.savePolicyClauseSettings(c); setSaved(true); setTimeout(() => setSaved(false), 2500); }
+    catch (e: any) { toast(String(e), "error"); }
+    setBusy(false);
+  };
+  const ta = "w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink resize-y focus:outline-none focus:border-accent";
+  const Switch = ({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) => (
+    <button onClick={onClick} role="switch" aria-checked={on} aria-label={label}
+      className={`w-11 h-6 rounded-full relative flex-shrink-0 transition-colors ${on ? "bg-accent" : "bg-surface-3"}`}>
+      <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+    </button>
+  );
+  return (
+    <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
+      <div>
+        <SectionLabel>Policy clauses</SectionLabel>
+        <p className="text-[13px] text-muted mt-1 leading-relaxed">
+          Standing terms that print at the bottom of the document and repeat in the email body.
+          Leave the text blank and nothing is added, whatever the toggle says.
+        </p>
+      </div>
+      <div>
+        <div className="flex items-center gap-3 mb-1.5">
+          <span className="text-[12.5px] font-medium text-muted">24-hour notice</span>
+          <Switch on={c.notice_24h_enabled} label="Include the 24-hour notice"
+            onClick={() => setC({ ...c, notice_24h_enabled: !c.notice_24h_enabled })} />
+          <span className="text-[11.5px] text-muted">Invoices and quotes</span>
+        </div>
+        <textarea value={c.notice_24h_text} onChange={(e) => setC({ ...c, notice_24h_text: e.target.value })}
+          rows={3} className={ta} placeholder="Your 24-hour notification wording" />
+      </div>
+      <div>
+        <div className="flex items-center gap-3 mb-1.5">
+          <span className="text-[12.5px] font-medium text-muted">Return policy</span>
+          <Switch on={c.return_policy_enabled} label="Prefill the return policy on new invoices"
+            onClick={() => setC({ ...c, return_policy_enabled: !c.return_policy_enabled })} />
+          <span className="text-[11.5px] text-muted">Default for new invoices, editable per deal</span>
+        </div>
+        <textarea value={c.return_policy_text} onChange={(e) => setC({ ...c, return_policy_text: e.target.value })}
+          rows={3} className={ta} placeholder="Your return policy wording" />
+      </div>
+      <button onClick={save} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
+        {saved ? "Saved" : busy ? "Saving…" : "Save clauses"}
+      </button>
     </div>
   );
 }

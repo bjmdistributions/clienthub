@@ -19,7 +19,7 @@ const bucketMeta = (key: string) => BUCKETS.find((b) => b.key === key);
 // Deal Flow view reads on mount, then switch tabs. Matches how invoices deep-link.
 function openDeal(searchTerm: string) {
   try { localStorage.setItem("dealflow_invoice_filter", searchTerm); } catch { /* ignore */ }
-  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "deals" }));
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
 }
 
 // "34 days overdue" / "due in 3 days" — dates in words a broker acts on.

@@ -383,6 +383,9 @@ export interface Invoice {
   deal_flow_id?: string | null;
   deal_flow_stage?: string | null;
   voided?: boolean;
+  /** Return-policy wording this invoice was sent under (R-162), frozen at creation.
+   *  Empty/absent means no clause was sent — never falls back to the current default. */
+  return_policy?: string | null;
 }
 
 export interface ShippingInfo {
@@ -867,6 +870,15 @@ export interface CustomerHealth {
   revenue_trend_pct: number;
 }
 
+export interface PolicyClauseSettings {
+  /** The 24-hour notification clause: rides invoice AND quote sends. */
+  notice_24h_enabled: boolean;
+  notice_24h_text: string;
+  /** The return policy: invoices only, and editable per deal on the invoice form. */
+  return_policy_enabled: boolean;
+  return_policy_text: string;
+}
+
 export interface InvoiceInput {
   client_id: string;
   due_date: string;
@@ -875,6 +887,7 @@ export interface InvoiceInput {
   tax_rate: number;
   notes?: string;
   recurring?: string;
+  return_policy?: string;
 }
 
 export interface ReleaseLetterInput {
@@ -2044,7 +2057,9 @@ export const api = {
   getInvoice: (id: string) => invoke<Invoice>("get_invoice", { id }),
   listInvoicesForClient: (clientId: string) => invoke<Invoice[]>("list_invoices_for_client", { clientId }),
   createInvoice: (input: InvoiceInput) => invoke<string>("create_invoice", { input }),
-  updateInvoice: (id: string, input: { due_date: string; line_items: LineItem[]; tax_rate: number; notes?: string; recurring?: string }) =>
+  // `return_policy` omitted (undefined) means "leave the stored clause alone" — it is NOT
+  // the same as "", which explicitly clears it. See the merge-on-write rule in R-162.
+  updateInvoice: (id: string, input: { due_date: string; line_items: LineItem[]; tax_rate: number; notes?: string; recurring?: string; return_policy?: string }) =>
     invoke<void>("update_invoice", { id, input }),
   deleteInvoice: (id: string) => invoke<void>("delete_invoice", { id }),
   generateInvoicePdf: (invoiceId: string) =>
@@ -2815,6 +2830,11 @@ export const api = {
   saveWhatsappDescription: (description: string) => invoke<void>("save_whatsapp_description", { description }),
   getWhatsappDescription: () => invoke<string>("get_whatsapp_description"),
   getWhatsappSettings: () => invoke<WhatsappSettings>("get_whatsapp_settings"),
+  // R-162 policy clauses. Both texts are Jack's wording and ship empty; an enabled
+  // toggle with empty text renders nothing anywhere.
+  getPolicyClauseSettings: () => invoke<PolicyClauseSettings>("get_policy_clause_settings"),
+  savePolicyClauseSettings: (settings: PolicyClauseSettings) =>
+    invoke<void>("save_policy_clause_settings", { settings }),
   saveWhatsappSettings: (s: WhatsappSettings) =>
     invoke<void>("save_whatsapp_settings", { template: s.template, lotFormat: s.lot_format, footer: s.footer, phone: s.phone }),
   // Editable inventory-newsletter template: intro/outro wrap the list, lot_format is the

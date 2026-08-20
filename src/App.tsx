@@ -7,6 +7,7 @@ import {
   Settings as SettingsIcon,
   LayoutDashboard,
   RefreshCw, LogOut,
+  PanelLeftClose, PanelLeftOpen,
   Briefcase,
   BarChart3,
   Layers,
@@ -114,6 +115,15 @@ const paneFallback = (
 
 type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
+/** Below this window width the sidebar collapses itself.
+ *
+ *  1280 is the principled number - it is where the 28 `xl:` breakpoints across the
+ *  screens fire, and they were authored as if they owned the whole window when in
+ *  fact they live in a column of `viewport - 216 - 56`. A 56px rail hands back 160px
+ *  of that. 1240 rather than 1280 because a 1280 window reports innerWidth ~1264
+ *  once Windows chrome is subtracted, and a fresh install must not launch collapsed. */
+const NAV_COLLAPSE_AT = 1240;
+
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
     (localStorage.getItem("clienthub_last_tab") as Tab) || "dashboard"
@@ -136,6 +146,42 @@ export default function App() {
     localStorage.setItem("clienthub_nav_open", JSON.stringify([...next]));
     return next;
   });
+
+  // Sidebar collapse. Two inputs, one rule: the window decides by default, and a
+  // manual choice overrides it until the window next crosses the threshold. That is
+  // what stops the rail from springing shut again the moment you open it on a narrow
+  // window, while still auto-collapsing when you actually resize.
+  const narrowRef = useRef(window.innerWidth < NAV_COLLAPSE_AT);
+  const [narrow, setNarrow] = useState(narrowRef.current);
+  const [manualNav, setManualNav] = useState<boolean | null>(() => {
+    const v = localStorage.getItem("clienthub_nav_collapsed");
+    return v === "1" ? true : v === "0" ? false : null;
+  });
+  const navCollapsed = manualNav ?? narrow;
+  useEffect(() => {
+    const onResize = () => {
+      const n = window.innerWidth < NAV_COLLAPSE_AT;
+      if (n === narrowRef.current) return;
+      narrowRef.current = n;
+      setNarrow(n);
+      // Crossing the threshold hands control back to the window.
+      setManualNav(null);
+      localStorage.removeItem("clienthub_nav_collapsed");
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const toggleNav = () => setManualNav((prev) => {
+    const next = !(prev ?? narrowRef.current);
+    localStorage.setItem("clienthub_nav_collapsed", next ? "1" : "0");
+    return next;
+  });
+  // Canvases and charts that size themselves off a measured width (GlobeView, the
+  // split panes) only listen for window resize, which a width transition never fires.
+  useEffect(() => {
+    const t = setTimeout(() => window.dispatchEvent(new Event("resize")), 160);
+    return () => clearTimeout(t);
+  }, [navCollapsed]);
 
   // Split-screen: optional second pane showing another tab alongside the main one.
   const [splitTab, setSplitTabState] = useState<Tab | null>(
@@ -398,6 +444,7 @@ export default function App() {
       }
       if (e.key === "Escape") { setQuickLogOpen(false); setPaletteOpen(false); setShortcutsOpen(false); }
       if (e.key === "k" && mod) { e.preventDefault(); setPaletteOpen(v => !v); return; }
+      if (e.key === "b" && mod) { e.preventDefault(); toggleNav(); return; }
       if (e.key === "," && mod && tag !== "input" && tag !== "textarea" && tag !== "select") { e.preventDefault(); setTab("settings"); return; }
       if (e.key === "s" && mod) {
         if (tag === "input" || tag === "textarea" || tag === "select") {
@@ -514,23 +561,30 @@ export default function App() {
         key={item.id}
         ref={(el) => { buttonRefs.current[item.id] = el; }}
         onClick={() => setTab(item.id)}
-        className={`relative w-full flex items-center gap-2.5 ${isChild ? "pl-8 pr-2" : "px-2.5"} h-9 rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
+        title={navCollapsed ? item.label : undefined}
+        className={`relative w-full flex items-center gap-2.5 ${
+          navCollapsed ? "justify-center px-0" : isChild ? "pl-8 pr-2" : "px-2.5"
+        } h-9 rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
           active ? "text-white font-medium" : "text-[#6B6B7A] hover:text-white/80"
         }`}
         style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
       >
-        <Icon size={isChild ? 13 : 15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
-        {item.label}
+        <Icon size={isChild && !navCollapsed ? 13 : 15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
+        {!navCollapsed && item.label}
         {item.id === "email" && draftCount > 0 && (
-          <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
-            style={{ background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }}>
-            {draftCount}
-          </span>
+          navCollapsed
+            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "#FCD34D" }} />
+            : <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
+                style={{ background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }}>
+                {draftCount}
+              </span>
         )}
         {item.id === "approvals" && apCount > 0 && (
-          <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
-            {apCount > 9 ? "9+" : apCount}
-          </span>
+          navCollapsed
+            ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
+            : <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+                {apCount > 9 ? "9+" : apCount}
+              </span>
         )}
       </button>
     );
@@ -590,70 +644,83 @@ export default function App() {
   if (onboarded === null) return null; // resolving onboarding status for this account
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
 
+  // Bell, dark mode and split view. They sit in the brand row when the sidebar is
+  // open and stack in the footer when it is collapsed - split view has no other
+  // entry point, so hiding them at 56px would strand it.
+  const shellButtons = (
+    <>
+        {/* Approvals notification bell (admins only) */}
+        {me?.is_admin && (
+          <button
+            onClick={() => setTab("approvals")}
+            title={apCount > 0 ? `${apCount} waiting for review` : "Notifications"}
+            className="relative w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+            style={{ color: tab === "approvals" ? "var(--accent-400)" : "#7A7A90" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== "approvals") e.currentTarget.style.color = "var(--accent-400)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === "approvals" ? "var(--accent-400)" : "#7A7A90"; }}
+          >
+            <Bell size={13} strokeWidth={2} />
+            {apCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-[15px] text-center">
+                {apCount > 9 ? "9+" : apCount}
+              </span>
+            )}
+          </button>
+        )}
+
+        {/* Dark mode toggle — flips the base only; Mono (if on) is preserved
+            since it's now orthogonal to light/dark. */}
+        <button
+          onClick={() => setDark(d => !d)}
+          title={dark ? "Switch to light mode" : "Switch to dark mode"}
+          className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+          style={{ color: dark ? "#FCD34D" : "#7A7A90" }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.08)";
+            e.currentTarget.style.color = dark ? "#FDE68A" : "var(--accent-400)";
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = "";
+            e.currentTarget.style.color = dark ? "#FCD34D" : "#7A7A90";
+          }}
+        >
+          {dark
+            ? <Sun size={13} strokeWidth={2} />
+            : <Moon size={13} strokeWidth={2} />
+          }
+        </button>
+
+        {/* Split-view toggle */}
+        <button
+          onClick={toggleSplit}
+          title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
+          className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+          style={{ color: splitTab ? "var(--accent-400)" : "#7A7A90" }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (!splitTab) e.currentTarget.style.color = "var(--accent-400)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "#7A7A90"; }}
+        >
+          <Columns2 size={13} strokeWidth={2} />
+        </button>
+    </>
+  );
+
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
       {/* Sidebar */}
-      <aside className="w-[216px] flex flex-col flex-shrink-0 relative" style={{
+      <aside className={`${navCollapsed ? "w-[56px]" : "w-[216px]"} flex flex-col flex-shrink-0 relative transition-[width] motion-reduce:transition-none`} style={{
         background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
         {/* Brand */}
-        <div className="h-[54px] px-4 flex items-center gap-2.5 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
+        <div className={`h-[54px] ${navCollapsed ? "justify-center px-0" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
           <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
-          <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
-
-          {/* Approvals notification bell (admins only) */}
-          {me?.is_admin && (
-            <button
-              onClick={() => setTab("approvals")}
-              title={apCount > 0 ? `${apCount} waiting for review` : "Notifications"}
-              className="relative w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-              style={{ color: tab === "approvals" ? "var(--accent-400)" : "#7A7A90" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== "approvals") e.currentTarget.style.color = "var(--accent-400)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === "approvals" ? "var(--accent-400)" : "#7A7A90"; }}
-            >
-              <Bell size={13} strokeWidth={2} />
-              {apCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-[15px] text-center">
-                  {apCount > 9 ? "9+" : apCount}
-                </span>
-              )}
-            </button>
+          {!navCollapsed && (
+            <>
+              <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
+              {shellButtons}
+            </>
           )}
 
-          {/* Dark mode toggle — flips the base only; Mono (if on) is preserved
-              since it's now orthogonal to light/dark. */}
-          <button
-            onClick={() => setDark(d => !d)}
-            title={dark ? "Switch to light mode" : "Switch to dark mode"}
-            className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-            style={{ color: dark ? "#FCD34D" : "#7A7A90" }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.08)";
-              e.currentTarget.style.color = dark ? "#FDE68A" : "var(--accent-400)";
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = "";
-              e.currentTarget.style.color = dark ? "#FCD34D" : "#7A7A90";
-            }}
-          >
-            {dark
-              ? <Sun size={13} strokeWidth={2} />
-              : <Moon size={13} strokeWidth={2} />
-            }
-          </button>
-
-          {/* Split-view toggle */}
-          <button
-            onClick={toggleSplit}
-            title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
-            className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-            style={{ color: splitTab ? "var(--accent-400)" : "#7A7A90" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (!splitTab) e.currentTarget.style.color = "var(--accent-400)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "#7A7A90"; }}
-          >
-            <Columns2 size={13} strokeWidth={2} />
-          </button>
         </div>
 
         {/* Nav */}
@@ -664,7 +731,10 @@ export default function App() {
             style={{ top: indicatorStyle.top, opacity: indicatorStyle.opacity }}
           />
 
-          {NAV.map((node) => {
+          {navCollapsed ? NAV.flatMap((node) => [
+            ...(visible(node.id) ? [node as NavKid] : []),
+            ...(node.children || []).filter((c) => visible(c.id)),
+          ]).map((item) => navButton(item, false)) : NAV.map((node) => {
             const kids = (node.children || []).filter((c) => visible(c.id));
             // Parent gated out: don't strand independently-visible children (e.g.
             // null-perm Automation/Globe under Analytics) — promote them to top level.
@@ -697,12 +767,25 @@ export default function App() {
           {/* Utility zone — configuration & housekeeping, set apart from the workflow mains */}
           <div className="mt-2 pt-2 space-y-0.5" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
             {UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
+            <button
+              onClick={toggleNav}
+              title={`${navCollapsed ? "Expand" : "Collapse"} sidebar (Cmd/Ctrl + B)`}
+              aria-label={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              className={`relative w-full flex items-center gap-2.5 ${navCollapsed ? "justify-center px-0" : "px-2.5"} h-9 rounded-lg text-[13px] tracking-tight text-[#6B6B7A] hover:text-white/80 transition-all duration-150`}
+            >
+              {navCollapsed ? <PanelLeftOpen size={15} strokeWidth={1.6} /> : <PanelLeftClose size={15} strokeWidth={1.6} />}
+              {!navCollapsed && "Collapse sidebar"}
+            </button>
           </div>
         </nav>
 
         {/* Status footer */}
-        <div className="px-3 py-3 space-y-1 flex-shrink-0" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
-          <div className="flex items-center justify-between px-1.5 py-0.5">
+        <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 space-y-1 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+          {navCollapsed && (
+            <div className="flex flex-col items-center gap-1 pb-1">{shellButtons}</div>
+          )}
+          <div className={`flex items-center ${navCollapsed ? "justify-center" : "justify-between"} px-1.5 py-0.5`}
+               title={navCollapsed ? `Ollama ${aiOnline ? "online" : "offline"}` : undefined}>
             <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
               {aiOnline ? (
                 <span className="pulse-ring flex-shrink-0">
@@ -711,41 +794,48 @@ export default function App() {
               ) : (
                 <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0" />
               )}
-              Ollama
+              {!navCollapsed && "Ollama"}
             </span>
-            <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
-              {aiOnline ? "online" : "offline"}
-            </span>
+            {!navCollapsed && (
+              <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
+                {aiOnline ? "online" : "offline"}
+              </span>
+            )}
           </div>
           <button
             onClick={handleSync}
             disabled={syncing}
-            className="w-full flex items-center justify-between px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50"
+            title={navCollapsed ? `Sync · ${lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}` : undefined}
+            className={`w-full flex items-center ${navCollapsed ? "justify-center" : "justify-between"} px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50`}
             style={{ color: "#4A4A5A" }}
             onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
             onMouseLeave={e => (e.currentTarget.style.background = "")}
           >
             <span className="flex items-center gap-1.5">
               <RefreshCw size={11} className={syncing ? "animate-spin" : ""} />
-              Sync
+              {!navCollapsed && "Sync"}
             </span>
-            <span className="tabular-nums">
-              {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
-            </span>
+            {!navCollapsed && (
+              <span className="tabular-nums">
+                {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
+              </span>
+            )}
           </button>
 
           {/* Signed-in user + sign out */}
-          <div className="flex items-center gap-2 px-1.5 pt-2 mt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+          <div className={`flex ${navCollapsed ? "flex-col" : ""} items-center gap-2 px-1.5 pt-2 mt-1`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
             {me?.avatar
               ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover flex-shrink-0" />
               : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
                   style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
                   {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
                 </div>}
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
-              <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
-            </div>
+            {!navCollapsed && (
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
+                <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
+              </div>
+            )}
             <button
               onClick={() => setFbOpen(true)}
               title="Send feedback"

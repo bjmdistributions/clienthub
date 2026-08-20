@@ -26,7 +26,9 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
   const revenue = fromPayments ? recon!.pieces.buyer_paired : flow.gross_revenue;
   const costs   = fromPayments ? recon!.pieces.supplier_paired + recon!.pieces.fee_paired + recon!.pieces.refund_total - recon!.pieces.refund_in : flow.total_cost;
   const profit  = fromPayments ? recon!.actual_profit : flow.net_profit;
-  const margin  = revenue > 0 ? (profit / revenue) * 100 : 0;
+  // No revenue recorded means there is no margin - "0.0%" would read as a real
+  // figure. Matches marginOf on the suppliers table, which renders an em dash.
+  const margin  = revenue > 0 ? (profit / revenue) * 100 : null;
   const payments = flow.supplier_payments || [];
   const supplierLabel = primarySupplierLabel(flow.supplier_payments);
 
@@ -177,13 +179,16 @@ export default function CompletedBreakdown({ flow, onReload }: { flow: DealFlow;
             { label: "Total costs", value: fmtAmount(costs),   clr: "text-ink" },
             {
               label: profit >= 0 ? "Profit" : "Loss",
-              value: fmtAmount(profit),
+              value: fmtAmount(Math.abs(profit)),
               clr:   profit >= 0 ? "text-success-ink" : "text-danger-ink",
             },
             {
               label: "Margin",
-              value: `${margin.toFixed(1)}%`,
-              clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
+              value: margin === null ? "—" : `${margin.toFixed(1)}%`,
+              clr:   margin === null ? "text-faint"
+                   : margin >= 20   ? "text-success-ink"
+                   : margin >= 10   ? "text-warning-ink"
+                   : "text-danger-ink",
             },
           ].map((item) => (
             <div key={item.label} className="bg-surface border border-line rounded-xl px-4 py-3">

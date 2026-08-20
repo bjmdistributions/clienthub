@@ -11,6 +11,7 @@ import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
+import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 
@@ -404,8 +405,6 @@ const wireDetail = (t: BankTxn): { label: string; value: string }[] => {
 // or to, while the allocation says WHAT it paid for. Tagging must never move deal
 // profit, cost, Free Cash or any reconciliation figure — nothing in this file
 // reads counterparty_type/id into a total, and nothing here may start.
-type PersonRef = { type: "client" | "supplier"; id: string; name: string };
-const personKey = (p: { type: string; id: string }) => `${p.type}:${p.id}`;
 const personTypeLabel = (t: string) => (t === "supplier" ? "Supplier" : "Client");
 
 const inp =
@@ -573,7 +572,17 @@ export default function FinancialsView() {
   const pendingOpenRef = useRef<string | null>(null);
   useEffect(() => {
     const pending = (window as any).__pendingBankTxn;
-    if (pending) { pendingOpenRef.current = pending; (window as any).__pendingBankTxn = null; }
+    if (pending) {
+      pendingOpenRef.current = pending;
+      (window as any).__pendingBankTxn = null;
+      // Open every filter first. The ledger defaults to the current tax year and
+      // whatever facets were last used; a jump that lands on a row those filters
+      // hide does nothing at all and reads as a dead link (R-170).
+      setTab("ledger");
+      setPersonFilter("all"); setQueue("all"); setDirFilter("all"); setAcctFilter("all");
+      setCatFilter("all"); setStatusFilter("all"); setMethodFilter("all");
+      setSearch(""); setFromDate(""); setToDate("");
+    }
   }, []);
   useEffect(() => {
     const id = pendingOpenRef.current;
@@ -1359,7 +1368,10 @@ export default function FinancialsView() {
       // a failed tag must never undo or hide a successful allocation.
       const cpid = r === "supplier_payment" ? candidate?.supplier_id : candidate?.client_id;
       if (cpid) {
-        api.tagBankTxnCounterparty(t.id, r === "supplier_payment" ? "supplier" : "client", cpid).catch(() => {});
+        // Since R-175 the tag is exclusive - it decides which profile shows this
+        // payment at all - so a swallowed failure leaves it on the wrong one.
+        api.tagBankTxnCounterparty(t.id, r === "supplier_payment" ? "supplier" : "client", cpid)
+          .catch(() => toast("Booked, but the payment was not filed under anyone - set it on the row", "error"));
       }
       toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)}`);
       await refreshAll(true);
@@ -1397,7 +1409,8 @@ export default function FinancialsView() {
       await api.allocateBankTxn(cand.txn_id, cand.deal_id, amt, cand.role, cand.supplier_name || "");
       const cpid = cand.role === "supplier_payment" ? cand.supplier_id : cand.client_id;
       if (cpid) {
-        api.tagBankTxnCounterparty(cand.txn_id, cand.role === "supplier_payment" ? "supplier" : "client", cpid).catch(() => {});
+        api.tagBankTxnCounterparty(cand.txn_id, cand.role === "supplier_payment" ? "supplier" : "client", cpid)
+          .catch(() => toast("Booked, but the payment was not filed under anyone - set it on the row", "error"));
       }
       toast(`Attached ${fmtAmount(amt)} to ${cand.client_name}${cand.supplier_name ? ` · ${cand.supplier_name}` : ""}`);
       setMissingLinks((prev) => prev
@@ -1763,7 +1776,7 @@ export default function FinancialsView() {
   // figures strip) reflect only what's in view — pre-January rows you've excluded
   // via the date filter don't inflate the "left to review" count.
   const rangeSummary = useMemo(() => {
-    let total = 0, reviewed = 0, sumIn = 0, sumOut = 0, unclassified = 0, needsDeal = 0;
+    let total = 0, reviewed = 0, sumIn = 0, sumOut = 0, unclassified = 0, needsDeal = 0, shippingOut = 0;
     for (const t of txns) {
       const d = (t.posted_at || "").slice(0, 10);
       if (fromDate && d < fromDate) continue;
@@ -1782,9 +1795,34 @@ export default function FinancialsView() {
       // that can belong to a deal at all (see needsADeal). Booking a row marks it
       // reviewed, so it clears — the counter can actually reach zero.
       if (!t.reviewed && needsADeal(t)) needsDeal++;
+      // Freight is a real cost that had no figure anywhere (R-174). Money-out only:
+      // a credit from a carrier is not spend, and netting it would understate it.
+      if (cat === "shipping" && t.direction === "out") shippingOut += t.amount;
     }
-    return { total, reviewed, sumIn, sumOut, unclassified, needsDeal };
+    return { total, reviewed, sumIn, sumOut, unclassified, needsDeal, shippingOut };
   }, [txns, fromDate, toDate]);
+
+  // What one category adds up to (R-174). Nothing anywhere rolled a category up to
+  // a total before this, so "how much did shipping cost me" had no answer on any
+  // screen. Money in and money out stay separate - a category like `shipping` can
+  // carry a refund from a carrier, and one netted figure would hide it.
+  //
+  // Scoped to the date range only, NOT to the other facets: this strip explains
+  // what picking the category means, so it has to describe the whole category.
+  const catSummary = useMemo(() => {
+    if (catFilter === "all") return null;
+    let outN = 0, outSum = 0, inN = 0, inSum = 0, tied = 0;
+    for (const t of txns) {
+      if ((t.category || "") !== catFilter) continue;
+      const d = (t.posted_at || "").slice(0, 10);
+      if (fromDate && d < fromDate) continue;
+      if (toDate && d > toDate) continue;
+      if (t.direction === "in") { inN++; inSum += t.amount; } else { outN++; outSum += t.amount; }
+      // Fully allocated means every cent of it sits on a deal.
+      if (t.unallocated <= 0.0001) tied++;
+    }
+    return { outN, outSum, inN, inSum, tied, total: outN + inN };
+  }, [txns, catFilter, fromDate, toDate]);
 
   // ── To book — the daily queue ────────────────────────────────────────────────
   // Every unbooked transaction, org-wide, newest first. Search and account narrow
@@ -3352,6 +3390,15 @@ export default function FinancialsView() {
           <span className="text-muted">Money out <span className="text-danger-ink font-medium tabular-nums">{fmtAmount(rangeSummary.sumOut)}</span></span>
           <span className="text-muted">Uncategorized <span className={`font-medium tabular-nums ${rangeSummary.unclassified > 0 ? "text-ink" : "text-muted"}`}>{rangeSummary.unclassified}</span></span>
           <span className="text-muted">Needs a deal <span className={`font-medium tabular-nums ${rangeSummary.needsDeal > 0 ? "text-ink" : "text-muted"}`}>{rangeSummary.needsDeal}</span></span>
+          {rangeSummary.shippingOut > 0 && (
+            <button
+              onClick={() => { setTab("ledger"); setCatFilter("shipping"); }}
+              title="Every transaction categorised as shipping and freight"
+              className="text-muted hover:text-ink-2 transition-colors"
+            >
+              Shipping <span className="text-ink font-medium tabular-nums">{fmtAmount(rangeSummary.shippingOut)}</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -3537,6 +3584,31 @@ export default function FinancialsView() {
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {/* What the picked category comes to (R-174). Modelled on the method strip
+          above: a facet that filters without saying what it filtered to leaves the
+          reader counting rows by hand. */}
+      {tab === "ledger" && catSummary && catSummary.total > 0 && (
+        <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[12px] text-muted border-b border-line pb-2.5">
+          <span className="text-ink font-medium">{catLabel(catFilter)}</span>
+          {catSummary.outN > 0 && (
+            <span>
+              <span className="tabular-nums">{catSummary.outN}</span> out{" "}
+              <span className="text-danger-ink font-medium tabular-nums">{fmtAmount(catSummary.outSum)}</span>
+            </span>
+          )}
+          {catSummary.inN > 0 && (
+            <span>
+              · <span className="tabular-nums">{catSummary.inN}</span> in{" "}
+              <span className="text-success-ink font-medium tabular-nums">{fmtAmount(catSummary.inSum)}</span>
+            </span>
+          )}
+          <span>
+            · <span className="tabular-nums">{catSummary.tied}</span> of{" "}
+            <span className="tabular-nums">{catSummary.total}</span> tied to a deal
+          </span>
         </div>
       )}
 
@@ -4205,122 +4277,6 @@ export default function FinancialsView() {
 // This writes counterparty_type / counterparty_id, which is IDENTITY. It says who
 // the money is from or to; the allocation says what it paid for. No total on any
 // screen may move because of it.
-function PersonPickerModal({
-  txn, people, candidates, current, busy, onClose, onPick,
-}: {
-  txn: BankTxn;
-  people: PersonRef[];
-  candidates: BankPersonCandidate[];
-  current: PersonRef | null;
-  busy: boolean;
-  onClose: () => void;
-  onPick: (p: PersonRef) => void;
-}) {
-  const [q, setQ] = useState("");
-  const suggested = candidates.filter((c) => !current || personKey(c) !== personKey(current));
-  const suggestedKeys = new Set(suggested.map(personKey));
-  const matches = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    return people
-      .filter((p) => !suggestedKeys.has(personKey(p)))
-      .filter((p) => !s || p.name.toLowerCase().includes(s))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, 60);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [people, q, candidates, current]);
-  const clients = matches.filter((p) => p.type === "client");
-  const suppliers = matches.filter((p) => p.type === "supplier");
-
-  const row = (p: PersonRef, hint?: string) => (
-    <button
-      key={personKey(p)}
-      onClick={() => onPick(p)}
-      disabled={busy}
-      className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-2 disabled:opacity-50 transition-colors flex items-center gap-2 min-w-0"
-    >
-      <span className="text-[13px] text-ink truncate min-w-0">{p.name}</span>
-      {hint && <span className="ml-auto text-[11px] text-muted truncate flex-shrink-0 max-w-[55%]">{hint}</span>}
-    </button>
-  );
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Link this payment to a person"
-        className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-line">
-          <div className="min-w-0">
-            <h2 className="text-[16px] font-semibold text-ink">Who is this payment with?</h2>
-            <p className="text-[12px] text-muted mt-0.5">
-              {txn.direction === "in" ? "Money in" : "Money out"} · {fmtAmount(txn.amount)} ·{" "}
-              {(txn.posted_at || "").slice(0, 10)}
-            </p>
-            <p className="text-[12px] text-muted mt-1.5">
-              This records who the money is with. It doesn't tie it to a deal and it changes no figure —
-              tie it to a deal below if it belongs to one.
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-ink-2 hover:bg-surface-2 transition-colors flex-shrink-0"
-          >
-            <X size={16} />
-          </button>
-        </div>
-        <div className="px-5 py-3 border-b border-line">
-          <input
-            autoFocus
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search clients and suppliers…"
-            className={inp}
-          />
-        </div>
-        <div className="overflow-y-auto p-2">
-          {current && (
-            <div className="px-3 py-2 text-[12px] text-muted">
-              Linked to <span className="text-ink-2 font-medium">{current.name}</span> — picking someone else replaces it.
-            </div>
-          )}
-          {suggested.length > 0 && !q.trim() && (
-            <>
-              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">Suggested from the bank memo</div>
-              {suggested.map((c) => row(
-                { type: c.type, id: c.id, name: c.name },
-                c.reason,
-              ))}
-              <div className="my-1 border-t border-line-2" />
-            </>
-          )}
-          {clients.length > 0 && (
-            <>
-              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">Clients</div>
-              {clients.map((p) => row(p))}
-            </>
-          )}
-          {suppliers.length > 0 && (
-            <>
-              <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">Suppliers</div>
-              {suppliers.map((p) => row(p))}
-            </>
-          )}
-          {suggested.length === 0 && matches.length === 0 && (
-            <div className="text-center py-8 text-[12px] text-muted">Nobody matches that name</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Pick one deal or loan, then tag every selected transaction to it. For deals the
 // remaining amount is allocated (role auto-picked by direction); for loans the whole
 // txn is tagged (received/repayment derived by direction).

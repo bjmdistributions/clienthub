@@ -1651,4 +1651,24 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE bank_txn ADD COLUMN confirmed_method TEXT;
         "#,
     ),
+    (
+        79,
+        // The return-policy text as it was actually sent on THIS invoice (R-162).
+        //
+        // Frozen per row, not read live from `invoice_return_policy_text`, because the
+        // settings default is editable at any time: reading it live would silently
+        // restate every historical invoice under today's wording, so a buyer's PDF and
+        // ours would disagree about what was agreed. Empty means no clause was sent and
+        // must render as nothing — never as a fallback to the current default.
+        //
+        // Deliberately NOT folded into `notes`: notes carry shipping instructions, and
+        // one field would render the two as a single undifferentiated block.
+        //
+        // Mirrored in clienthub-api (schema.sql + sync.rs ensure_meta_tables); the
+        // server must be DEPLOYED FIRST or apply_upsert logs SCHEMA DRIFT and drops the
+        // column out of every invoices event.
+        r#"
+        ALTER TABLE invoices ADD COLUMN return_policy TEXT DEFAULT '';
+        "#,
+    ),
 ];

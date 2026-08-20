@@ -1422,16 +1422,34 @@ pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// SQL that strips a stored phone number down to its digits so it can be compared
+/// against a digits-only query - "(815) 593-2342" and "815593" then match. The same
+/// six characters are stripped in `search_clients` and `list_clients_filtered`; any
+/// new search surface must use this rather than grow a seventh divergent copy.
+fn phone_digits_sql(col: &str) -> String {
+    format!("REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE({col},''),'-',''),' ',''),'(',''),')',''),'.',''),'+','')")
+}
+
+/// A digits-only LIKE pattern, or None below 3 digits - one stray digit in a name
+/// query must not match every person whose number contains it.
+///
+/// None binds as NULL, and `col LIKE NULL` is NULL, so the phone leg simply drops out.
+/// It must NOT be a "\u{0}" sentinel: SQLite truncates a pattern at the NUL byte, and
+/// the empty pattern left behind matches every COALESCE(phone,'') = '' row - i.e. it
+/// returns precisely the people with no phone number on file.
+fn phone_query_pattern(query: &str) -> Option<String> {
+    let digits: String = query.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() >= 3 { Some(format!("%{digits}%")) } else { None }
+}
+
 #[tauri::command]
 pub async fn search_clients(query: String) -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let pattern = format!("%{}%", query.to_lowercase());
     // Phone search matches on digits only, so "(815) 593-2342", "815-593" and
     // "815593" all find the same client regardless of how the number was typed in.
-    // Below 3 digits the phone pattern is an impossible literal (no wildcards), so a
-    // stray digit in a name query cannot match every client with that digit.
-    let digits: String = query.chars().filter(|c| c.is_ascii_digit()).collect();
-    let phone_pattern = if digits.len() >= 3 { format!("%{digits}%") } else { "\u{0}".to_string() };
+    // Below 3 digits the leg drops out entirely - see `phone_query_pattern`.
+    let phone_pattern = phone_query_pattern(&query);
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,c.lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
@@ -1493,11 +1511,12 @@ pub struct SearchSupplier { pub id: String, pub name: String }
 pub async fn global_search(query: String) -> Result<GlobalSearchResults, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let pat = format!("%{}%", query.to_lowercase());
+    let phone_pat = phone_query_pattern(&query);
 
-    let mut stmt_c = conn.prepare(
-        "SELECT id, name, company, email FROM clients WHERE LOWER(name) LIKE ?1 OR LOWER(company) LIKE ?1 OR LOWER(email) LIKE ?1 ORDER BY name LIMIT 5"
+    let mut stmt_c = conn.prepare(&format!(
+        "SELECT id, name, company, email FROM clients          WHERE LOWER(name) LIKE ?1 OR LOWER(company) LIKE ?1 OR LOWER(email) LIKE ?1 OR {ph} LIKE ?2          ORDER BY name LIMIT 5", ph = phone_digits_sql("phone"))
     ).map_err(|e| e.to_string())?;
-    let clients: Vec<SearchClient> = stmt_c.query_map([&pat], |r| Ok(SearchClient { id: r.get(0)?, name: r.get(1)?, company: r.get(2)?, email: r.get(3)? }))
+    let clients: Vec<SearchClient> = stmt_c.query_map(rusqlite::params![&pat, &phone_pat], |r| Ok(SearchClient { id: r.get(0)?, name: r.get(1)?, company: r.get(2)?, email: r.get(3)? }))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     let mut stmt_i = conn.prepare(
@@ -1512,10 +1531,10 @@ pub async fn global_search(query: String) -> Result<GlobalSearchResults, String>
     let deals: Vec<SearchDeal> = stmt_d.query_map([&pat], |r| Ok(SearchDeal { id: r.get(0)?, title: r.get(1)?, client_name: r.get(2)? }))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
-    let mut stmt_s = conn.prepare(
-        "SELECT id, name FROM suppliers WHERE LOWER(name) LIKE ?1 ORDER BY name LIMIT 5"
+    let mut stmt_s = conn.prepare(&format!(
+        "SELECT id, name FROM suppliers          WHERE LOWER(name) LIKE ?1 OR LOWER(COALESCE(contact_name,'')) LIKE ?1 OR LOWER(COALESCE(email,'')) LIKE ?1 OR {ph} LIKE ?2          ORDER BY name LIMIT 5", ph = phone_digits_sql("phone"))
     ).map_err(|e| e.to_string())?;
-    let suppliers: Vec<SearchSupplier> = stmt_s.query_map([&pat], |r| Ok(SearchSupplier { id: r.get(0)?, name: r.get(1)? }))
+    let suppliers: Vec<SearchSupplier> = stmt_s.query_map(rusqlite::params![&pat, &phone_pat], |r| Ok(SearchSupplier { id: r.get(0)?, name: r.get(1)? }))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     Ok(GlobalSearchResults { clients, invoices, deals, suppliers })
@@ -1636,12 +1655,12 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
                     COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
-                COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
+                MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}) AS total_revenue,
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
                 ({fc}) AS first_contact
          FROM clients c
-         LEFT JOIN interactions i ON i.client_id = c.id", fc = FIRST_CONTACT_SQL
+         LEFT JOIN interactions i ON i.client_id = c.id", fc = FIRST_CONTACT_SQL, refunded = CLIENT_REFUNDED_SQL
     );
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1652,10 +1671,11 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
         // Phone search is format-agnostic: strip every non-digit from BOTH the stored
         // phone and the typed query, then substring-match. So "847-393-6858",
         // "8473936858" and "393-6858" all find the same client regardless of how the
-        // number was saved. Only kicks in when the query itself contains a digit, so a
-        // name/email search isn't dragged through the phone column.
+        // number was saved. Only kicks in from 3 digits up, so a name/email search
+        // isn't dragged through the phone column and a stray "5" doesn't return every
+        // client whose number happens to contain one. Same floor as `search_clients`.
         let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.is_empty() {
+        if digits.len() < 3 {
             conds.push(format!(
                 "(LOWER(c.name) LIKE ?{p} OR LOWER(c.email) LIKE ?{p} OR LOWER(c.company) LIKE ?{p})",
                 p = param_idx
@@ -1811,6 +1831,7 @@ fn refunded_by_client(conn: &rusqlite::Connection) -> std::collections::HashMap<
             SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
             UNION ALL \
             SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
          ) x JOIN deal_flows df ON df.id=x.dfid JOIN invoices iv ON iv.id=df.invoice_id \
          GROUP BY iv.client_id"
     ) {
@@ -1847,6 +1868,7 @@ const CLIENT_REFUNDED_SQL: &str =
         SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
         UNION ALL \
         SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+          AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
      ) x JOIN deal_flows df ON df.id=x.dfid JOIN invoices iv ON iv.id=df.invoice_id \
      WHERE iv.client_id=c.id),0)";
 
@@ -2109,6 +2131,11 @@ pub struct Invoice {
     /// invoice lists, AR/receivables, dashboard, and client ranking.
     #[serde(default)]
     pub voided: bool,
+    /// The return-policy wording this invoice was actually sent under (R-162), frozen
+    /// at finalization. Empty means no clause was sent — never a fallback to today's
+    /// settings default, or an old PDF and the buyer's copy would disagree.
+    #[serde(default)]
+    pub return_policy: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -2126,7 +2153,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0)
+            "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0),COALESCE(return_policy,'')
              FROM invoices WHERE COALESCE(archived,0)=0 ORDER BY issue_date DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -2144,6 +2171,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
                 delivery_date: r.get(21)?, is_complete: r.get(22)?,
                 deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
                 voided: r.get::<_, i64>(25).unwrap_or(0) != 0,
+            return_policy: r.get(26)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2154,7 +2182,7 @@ pub async fn list_invoices() -> Result<Vec<Invoice>, String> {
 pub async fn get_invoice(id: String) -> Result<Invoice, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0)
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0),COALESCE(return_policy,'')
          FROM invoices WHERE id=?1 AND COALESCE(archived,0)=0",
         [&id],
         |r| Ok(Invoice {
@@ -2169,6 +2197,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
             delivery_date: r.get(21)?, is_complete: r.get(22)?,
             deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
             voided: r.get::<_, i64>(25).unwrap_or(0) != 0,
+            return_policy: r.get(26)?,
         }),
     ).map_err(|e| e.to_string())
 }
@@ -2177,7 +2206,7 @@ pub async fn get_invoice(id: String) -> Result<Invoice, String> {
 pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0)
+        "SELECT id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,pdf_path,sent_at,notes,cost_items_json,total_cost,profit,margin,carrier,tracking_number,shipping_charged,pickup_date,delivery_date,is_complete,deal_flow_id,deal_flow_stage,COALESCE(voided,0),COALESCE(return_policy,'')
          FROM invoices WHERE client_id=?1 AND COALESCE(archived,0)=0 ORDER BY issue_date DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([client_id], |r| {
@@ -2193,6 +2222,7 @@ pub async fn list_invoices_for_client(client_id: String) -> Result<Vec<Invoice>,
             delivery_date: r.get(21)?, is_complete: r.get(22)?,
             deal_flow_id: r.get(23)?, deal_flow_stage: r.get(24)?,
             voided: r.get::<_, i64>(25).unwrap_or(0) != 0,
+            return_policy: r.get(26)?,
         })
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2207,6 +2237,7 @@ pub struct InvoiceInput {
     pub tax_rate: f64,
     pub notes: Option<String>,
     pub recurring: Option<String>,
+    pub return_policy: Option<String>,
 }
 
 #[tauri::command]
@@ -2219,6 +2250,9 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     let (subtotal, tax, total) = crate::invoice::compute_totals(&input.line_items, input.tax_rate);
     let notes = input.notes.unwrap_or_default();
     let recurring = input.recurring.unwrap_or_default();
+    // Frozen at creation (R-162). The form sends the text it actually showed Jack, so
+    // editing the settings default afterwards never restates an invoice already issued.
+    let return_policy = input.return_policy.unwrap_or_default();
     let next_date = if !recurring.is_empty() { issue.clone() } else { String::new() };
 
     let mut cols = Map::new();
@@ -2234,14 +2268,15 @@ pub async fn create_invoice(input: InvoiceInput) -> Result<String, String> {
     cols.insert("notes".into(), Value::String(notes.clone()));
     cols.insert("recurring".into(), Value::String(recurring.clone()));
     cols.insert("next_recurring_date".into(), Value::String(next_date.clone()));
+    cols.insert("return_policy".into(), Value::String(return_policy.clone()));
     cols.insert("created_at".into(), Value::String(issue.clone()));
     sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,notes,recurring,next_recurring_date,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?11,?12,?4)",
-        rusqlite::params![id, input.client_id, number, issue, input.due_date, line_items_json, subtotal, tax, total, notes, recurring, next_date],
+        "INSERT INTO invoices (id,client_id,number,issue_date,due_date,line_items_json,subtotal,tax,total,status,notes,recurring,next_recurring_date,return_policy,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'draft',?10,?11,?12,?13,?4)",
+        rusqlite::params![id, input.client_id, number, issue, input.due_date, line_items_json, subtotal, tax, total, notes, recurring, next_date, return_policy],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)
@@ -2692,6 +2727,10 @@ pub struct UpdateInvoiceInput {
     pub line_items: Vec<crate::invoice::LineItem>,
     pub tax_rate: f64,
     pub notes: Option<String>,
+    /// `None` means "leave whatever is already stored" (R-162). It is NOT the same as
+    /// `Some("")`, which is an explicit clear — a narrow form that omits the field must
+    /// never blank the clause a buyer already agreed to. See the merge-on-write rule.
+    pub return_policy: Option<String>,
 }
 
 #[tauri::command]
@@ -2707,12 +2746,19 @@ pub async fn update_invoice(id: String, input: UpdateInvoiceInput) -> Result<(),
     cols.insert("tax".into(), json!(tax));
     cols.insert("total".into(), json!(total));
     cols.insert("notes".into(), Value::String(notes.clone()));
+    // Merge-on-write (R-162): only touch the clause when the caller actually sent one.
+    // A form that omits the field must not blank the wording a buyer already agreed to,
+    // and an omitted column must not travel as an empty string through the oplog.
+    if let Some(ref rp) = input.return_policy {
+        cols.insert("return_policy".into(), Value::String(rp.clone()));
+    }
     sync::record_upsert("invoices", &id, cols).map_err(|e| e.to_string())?;
 
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE invoices SET due_date=?1, line_items_json=?2, subtotal=?3, tax=?4, total=?5, notes=?6 WHERE id=?7",
-        rusqlite::params![input.due_date, line_items_json, subtotal, tax, total, notes, id],
+        "UPDATE invoices SET due_date=?1, line_items_json=?2, subtotal=?3, tax=?4, total=?5, notes=?6,
+                return_policy=COALESCE(?7, return_policy) WHERE id=?8",
+        rusqlite::params![input.due_date, line_items_json, subtotal, tax, total, notes, input.return_policy, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -2738,7 +2784,7 @@ pub async fn mark_overdue_invoices() -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let ids: Vec<String> = {
         let mut stmt = conn
-            .prepare("SELECT id FROM invoices WHERE status='sent' AND due_date < date('now')")
+            .prepare("SELECT id FROM invoices WHERE status='sent' AND due_date < date('now') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0")
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| r.get(0))
             .map_err(|e| e.to_string())?;
@@ -3063,7 +3109,9 @@ pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInp
     let pdf_bytes = crate::invoice::build_pdf_bytes(
         "PREVIEW", &now, &input.due_date, &input.line_items,
         subtotal, tax, total, &cname, &cemail, &ccompany, &client_address, &company,
-        &notes, "draft", "invoice",
+        // A preview renders an unsaved InvoiceInput, which carries no frozen policy.
+        &notes, "",
+        "draft", "invoice",
     )
     .map_err(|e| e.to_string())?;
 
@@ -4920,7 +4968,12 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.query_row("SELECT i.client_id FROM deal_flows df LEFT JOIN invoices i ON df.invoice_id=i.id WHERE df.id=?1", [&deal_flow_id], |r| r.get::<_, Option<String>>(0)).map_err(|_| "Deal not found".to_string())?
     };
+    // Author's org, for the same reason as bank_allocation: left to the schema default
+    // every tenant's refund files under 'org_default', where the server's org filter
+    // can't see it.
+    let org = crate::employees::session_org_id();
     let mut cols = Map::new();
+    cols.insert("org_id".into(), json!(org));
     cols.insert("deal_flow_id".into(), Value::String(deal_flow_id.clone()));
     cols.insert("client_id".into(), to_value(client_id.clone()));
     cols.insert("amount".into(), json!(amt));
@@ -4935,8 +4988,8 @@ pub async fn create_refund(deal_flow_id: String, amount: f64, method: Option<Str
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("refunds", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute("INSERT INTO refunds (id,deal_flow_id,client_id,amount,method,source,source_supplier_ref,keep_rep_cut,reason,bank_txn_id,refunded_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11)",
-        rusqlite::params![id, deal_flow_id, client_id, amt, method, source, source_supplier_ref, keep, reason, txn, now]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO refunds (id,org_id,deal_flow_id,client_id,amount,method,source,source_supplier_ref,keep_rep_cut,reason,bank_txn_id,refunded_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,?12)",
+        rusqlite::params![id, org, deal_flow_id, client_id, amt, method, source, source_supplier_ref, keep, reason, txn, now]).map_err(|e| e.to_string())?;
     crate::netsync::push_now();
     Ok(id)
 }
@@ -5300,7 +5353,8 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         [&deal_flow_id], |r| r.get(0)).unwrap_or(0);
     let refunded: f64 = conn.query_row(
         "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE deal_flow_id=?1 AND COALESCE(bank_txn_id,'')=''),0) \
-              + COALESCE((SELECT SUM(amount) FROM bank_allocation WHERE deal_flow_id=?1 AND role='refund_out'),0)",
+              + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=?1 AND a.role='refund_out' \
+                           AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)",
         [&deal_flow_id], |r| r.get(0)).unwrap_or(0.0);
     let eff_net = net - refunded;
     let eff_gross = gross - refunded;
@@ -6019,6 +6073,7 @@ const SUPPLIER_STATS_SQL: &str = "
                      SELECT r.amount AS amt2, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
                      UNION ALL
                      SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
+                       AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)
                    ) x WHERE x.dfid = df.id),0),
                  MAX(df.net_profit, 0)) AS eff_profit,
              (SELECT SUM(CAST(json_extract(sp2.value, '$.amount') AS REAL))
@@ -6265,11 +6320,12 @@ pub async fn delete_supplier(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn search_suppliers(query: String) -> Result<Vec<Supplier>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let pattern = format!("%{}%", query);
-    let mut stmt = conn.prepare(
-        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount FROM suppliers s WHERE s.name LIKE ?1 AND s.archived=0 ORDER BY s.name LIMIT 20"
+    let pattern = format!("%{}%", query.to_lowercase());
+    let phone_pattern = phone_query_pattern(&query);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT s.*, 0.0 as total_paid, 0 as deal_count, NULL as last_deal_date, 0.0 as avg_deal_amount          FROM suppliers s          WHERE (LOWER(s.name) LIKE ?1 OR LOWER(COALESCE(s.contact_name,'')) LIKE ?1                 OR LOWER(COALESCE(s.email,'')) LIKE ?1 OR {ph} LIKE ?2)            AND s.archived=0 ORDER BY s.name LIMIT 20", ph = phone_digits_sql("s.phone"))
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([&pattern], map_supplier_row).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params![&pattern, &phone_pattern], map_supplier_row).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -8300,6 +8356,58 @@ pub async fn save_whatsapp_settings(template: String, lot_format: String, footer
     Ok(())
 }
 
+// ── Policy clauses (R-162) ──────────────────────────────────────────────
+// Two standing clauses that print at the foot of a document and repeat in its send
+// email. Stored as four bare settings keys rather than inside `invoice_template`
+// because the 24-hour notice applies to quotes too, and quotes carry their OWN
+// template blob — folding it in would split one term across two stores.
+//
+// Both texts ship EMPTY. Neither clause is legal wording this codebase invented; Jack
+// supplies it. An enabled toggle with empty text renders nothing, so a half-configured
+// state can never put placeholder legalese in front of a buyer.
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PolicyClauseSettings {
+    pub notice_24h_enabled: bool,
+    pub notice_24h_text: String,
+    pub return_policy_enabled: bool,
+    pub return_policy_text: String,
+}
+
+fn clause_setting(conn: &rusqlite::Connection, key: &str) -> String {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn get_policy_clause_settings() -> Result<PolicyClauseSettings, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let on = |k: &str| matches!(clause_setting(&conn, k).as_str(), "1" | "true");
+    Ok(PolicyClauseSettings {
+        notice_24h_enabled:    on("email_notice_24h_enabled"),
+        notice_24h_text:       clause_setting(&conn, "email_notice_24h_text"),
+        return_policy_enabled: on("invoice_return_policy_enabled"),
+        return_policy_text:    clause_setting(&conn, "invoice_return_policy_text"),
+    })
+}
+
+#[tauri::command]
+pub async fn save_policy_clause_settings(settings: PolicyClauseSettings) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    for (k, v) in [
+        ("email_notice_24h_enabled",      if settings.notice_24h_enabled { "1" } else { "0" }.to_string()),
+        ("email_notice_24h_text",         settings.notice_24h_text.clone()),
+        ("invoice_return_policy_enabled", if settings.return_policy_enabled { "1" } else { "0" }.to_string()),
+        ("invoice_return_policy_text",    settings.return_policy_text.clone()),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![k, v],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ── Inventory newsletter template ───────────────────────────────────────────
 // The intro/outro wrap the list; the per-lot block is `lot_format` with tokens
 // {title} {units} {price_per_unit} {price} {link}. The frontend substitutes per lot and
@@ -9524,14 +9632,16 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     // what's still owed back to customers.
     let refunded_total: f64 = conn.query_row(
         "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE COALESCE(bank_txn_id,'')=''),0) \
-              + COALESCE((SELECT SUM(amount) FROM bank_allocation WHERE role='refund_out'),0)",
+              + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.role='refund_out' \
+                           AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0)",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let refund_owed_remaining: f64 = conn.query_row(
         "SELECT COALESCE(SUM(MAX(owed - refunded, 0)),0) FROM ( \
            SELECT COALESCE(df.refund_owed,0) AS owed, \
                   COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0) \
-                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0) AS refunded \
+                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out' \
+                             AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0) AS refunded \
            FROM deal_flows df WHERE COALESCE(df.archived,0)=0 AND COALESCE(df.refund_owed,0) > 0.01)",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
@@ -9855,8 +9965,9 @@ pub async fn get_analytics_range(start_date: String, end_date: String) -> Result
     let refunded_in_range: f64 = conn.query_row(
         "SELECT COALESCE((SELECT SUM(amount) FROM refunds WHERE COALESCE(bank_txn_id,'')='' \
                            AND (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)),0) \
-              + COALESCE((SELECT SUM(amount) FROM bank_allocation WHERE role='refund_out' \
-                           AND (?1='' OR date(created_at) >= ?1) AND (?2='' OR date(created_at) <= ?2)),0)",
+              + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.role='refund_out' \
+                           AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
+                           AND (?1='' OR date(a.created_at) >= ?1) AND (?2='' OR date(a.created_at) <= ?2)),0)",
         p, |r| r.get(0)
     ).unwrap_or(0.0);
 
@@ -10007,6 +10118,7 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
                             SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
                             UNION ALL
                             SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
+                              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)
                           ) x WHERE x.dfid = df.id),0),
                         MAX(df.net_profit, 0))
                     ),0)
@@ -10381,11 +10493,18 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     ).unwrap_or(0) as u32;
     let win_rate = if deals_closed + deals_lost > 0 { (deals_closed as f64 / (deals_closed + deals_lost) as f64) * 100.0 } else { 0.0 };
 
+    // Overdue = live invoices past due as of the brief's own Central anchor (R-159),
+    // not UTC now. `mark_overdue_invoices` rewrites late invoices to 'overdue', so
+    // reading 'sent' alone dropped them off this card; the voided/archived guard keeps
+    // that widening from importing dead paper.
+    let today = now_date.format("%Y-%m-%d").to_string();
     let overdue_invoices_count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM invoices WHERE status='sent' AND due_date < date('now')", [], |r| r.get::<_,i64>(0)
+        "SELECT COUNT(*) FROM invoices WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND due_date < ?1",
+        [&today], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
     let overdue_invoices_value: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='sent' AND due_date < date('now')", [], |r| r.get(0)
+        "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status IN ('sent','overdue') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 AND due_date < ?1",
+        [&today], |r| r.get(0)
     ).unwrap_or(0.0);
 
     let follow_ups: Vec<Client> = due_followups().await?;
@@ -11229,6 +11348,38 @@ pub async fn allocate_bank_txn(
     ).map_err(|e| e.to_string())?;
     drop(conn); // release before recalc acquires its own connection
 
+    // The other half of the pairing `remove_bank_allocation` takes apart. Unlinking a
+    // refund_out allocation clears the refund's bank_txn_id, moving it onto the
+    // refunds-row arm; pairing the RIGHT transaction afterwards is the whole point of
+    // that correction, and without this the refund would then be counted by BOTH arms
+    // — permanently double — instead of once. Re-link it here, before the recalc below
+    // reads the deal's numbers. Runs before `resync_completed_deal` for that reason.
+    if role == "refund_out" {
+        let refund_ids: Vec<String> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare(
+                "SELECT id FROM refunds WHERE deal_flow_id=?1 AND COALESCE(bank_txn_id,'')='' AND ABS(amount - ?2) < 0.005"
+            ).map_err(|e| e.to_string())?;
+            let ids = stmt.query_map(rusqlite::params![deal_flow_id, amt], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            ids.filter_map(|x| x.ok()).collect()
+        };
+        // Exactly one candidate, or none at all. Two unlinked refunds of the same amount
+        // on one deal are indistinguishable from here, and attaching a real refund to a
+        // transaction that didn't pay it corrupts it — so re-link NEITHER and leave both
+        // on the refunds-row arm, where they still each count once. No match at all means
+        // this is a genuinely new refund, whose allocation is already its only arm.
+        if refund_ids.len() == 1 {
+            let rid = &refund_ids[0];
+            let mut cols = Map::new();
+            cols.insert("bank_txn_id".into(), json!(bank_txn_id));
+            cols.insert("updated_at".into(), json!(now));
+            sync::record_upsert("refunds", rid, cols).map_err(|e| e.to_string())?;
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute("UPDATE refunds SET bank_txn_id=?1, updated_at=?2 WHERE id=?3", rusqlite::params![bank_txn_id, now, rid])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
     // Any bank link (buyer payment, supplier payment, fee, refund) feeds the deal's
     // recorded numbers. For a completed deal, re-derive + persist now so Deal Flow
     // and every report that reads those numbers reflect the link immediately.
@@ -11241,11 +11392,43 @@ pub async fn allocate_bank_txn(
 /// Remove an allocation.
 #[tauri::command]
 pub async fn remove_bank_allocation(id: String) -> Result<(), String> {
-    // Capture the deal before deleting so we can re-derive its numbers after.
-    let deal_flow_id: Option<String> = {
+    // Capture the deal — and the refund pairing — before deleting, so we can re-derive
+    // its numbers after.
+    let alloc: Option<(Option<String>, String, Option<String>)> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT deal_flow_id FROM bank_allocation WHERE id=?1", [&id], |r| r.get(0)).ok()
+        conn.query_row("SELECT deal_flow_id, COALESCE(role,''), bank_txn_id FROM bank_allocation WHERE id=?1", [&id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))).ok()
     };
+    let deal_flow_id: Option<String> = alloc.as_ref().and_then(|a| a.0.clone());
+
+    // A refund booked through the workspace lives in BOTH tables and is counted once:
+    // via its `refunds` row while bank_txn_id is empty, otherwise via this allocation.
+    // Deleting the allocation without clearing that column left the refund counted by
+    // neither arm. Clear it — never delete the row, so the reason text and the money
+    // survive. The reverse teardown is `delete_refund`.
+    if let Some((Some(dfid), role, Some(txn))) = alloc.as_ref() {
+        if role.as_str() == "refund_out" && !txn.trim().is_empty() {
+            let refund_ids: Vec<String> = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                let mut stmt = conn.prepare("SELECT id FROM refunds WHERE deal_flow_id=?1 AND bank_txn_id=?2").map_err(|e| e.to_string())?;
+                let ids = stmt.query_map(rusqlite::params![dfid, txn], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+                ids.filter_map(|x| x.ok()).collect()
+            };
+            let now = Utc::now().to_rfc3339();
+            for rid in &refund_ids {
+                let mut cols = Map::new();
+                cols.insert("bank_txn_id".into(), Value::Null);
+                cols.insert("updated_at".into(), Value::String(now.clone()));
+                sync::record_upsert("refunds", rid, cols).map_err(|e| e.to_string())?;
+            }
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            for rid in &refund_ids {
+                conn.execute("UPDATE refunds SET bank_txn_id=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, rid])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
     sync::record_delete("bank_allocation", &id).map_err(|e| e.to_string())?;
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -11942,13 +12125,15 @@ pub async fn refund_status_all() -> Result<Vec<Value>, String> {
         // count here too — not just refunds recorded in the refund workspace.
         "SELECT df.id, COALESCE(df.refund_owed,0),
                 COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id AND COALESCE(r.bank_txn_id,'')=''),0)
-                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'),0),
+                + COALESCE((SELECT SUM(a.amount) FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'
+                             AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)),0),
                 COALESCE(df.metadata,'')
          FROM deal_flows df
          WHERE COALESCE(df.archived,0)=0
            AND (COALESCE(df.refund_owed,0) > 0.01
                 OR EXISTS (SELECT 1 FROM refunds r WHERE r.deal_flow_id=df.id)
-                OR EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'))",
+                OR EXISTS (SELECT 1 FROM bank_allocation a WHERE a.deal_flow_id=df.id AND a.role='refund_out'
+                             AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)))",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;
@@ -14486,6 +14671,17 @@ fn counterparty_payments_sql(is_supplier: bool) -> String {
     } else {
         "('buyer_payment','refund_out')"
     };
+    // An explicit tag WINS and is exclusive (R-175). Leg 2 infers the party from the
+    // deal record, which is a guess: `bank_allocation` has no supplier column, so a
+    // supplier-side allocation says only "money left on this deal", never who was
+    // paid. The moment Jack says who a payment belongs to, the guess must stop
+    // offering it to anyone else - that is the whole point of letting him correct it.
+    // Leg 1 still shows it in full to the person it is tagged to.
+    //
+    // 'loan' is deliberately NOT in that exclusion list: it is a different fact
+    // stored in the same two columns, and excluding it would drop a loan-tagged wire
+    // off its supplier's profile with no leg 1 to catch it.
+    //
     // The same three method fields `list_bank_txns` selects, read off the same
     // columns, so a transaction cannot say "wire" on the ledger and something else
     // on the profile. `json_valid` guards the extract — a bare json_extract over an
@@ -14518,7 +14714,8 @@ fn counterparty_payments_sql(is_supplier: bool) -> String {
          JOIN deal_flows df ON df.id = a.deal_flow_id \
          LEFT JOIN invoices i ON i.id = df.invoice_id \
          LEFT JOIN clients c ON c.id = i.client_id \
-         WHERE a.role IN {own_roles} AND ({leg_match})"
+         WHERE a.role IN {own_roles} AND ({leg_match}) \
+           AND COALESCE(t.counterparty_type,'') NOT IN ('supplier','client')"
     )
 }
 
@@ -18067,6 +18264,14 @@ mod counterparty_payment_tests {
               ('al_split_a','txn_split','deal_a',181625,'supplier_payment'),
               ('al_split_d','txn_split','deal_d',43620,'supplier_payment');
 
+            -- The same shape, tagged to nobody: reached only by inference off the deal.
+            -- Since R-175 a tag is exclusive, so a tagged wire can no longer stand in
+            -- for the untagged case - the two legs need their own row each.
+            INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_sup_split','2026-07-30',60000,'out','ONLINE DOMESTIC WIRE TRANSFER','','','');
+            INSERT INTO bank_allocation VALUES
+              ('al_sup_split_a','txn_sup_split','deal_a',40000,'supplier_payment'),
+              ('al_sup_split_d','txn_sup_split','deal_d',15000,'supplier_payment');
+
             -- Tagged to Dylan, booked nowhere.
             INSERT INTO bank_txn (id,posted_at,amount,direction,description,counterparty_name,counterparty_type,counterparty_id) VALUES ('txn_plain','2026-08-01',5000,'in','ZELLE FROM DYLAN','','client','cl_dylan');
 
@@ -18121,6 +18326,15 @@ mod counterparty_payment_tests {
         let theirs_in: f64 = rs.iter().filter(|r| group(r) == "theirs" && r["direction"] == "in")
             .map(|r| r["amount"].as_f64().unwrap()).sum();
         assert_eq!(theirs_in, 0.0, "$100,000 of Ali's money must not land in Dylan's booked total");
+
+        // R-175, the other direction. It is Ali's deal, but Jack has said the payment
+        // is Dylan's - so it belongs on Dylan's profile and nowhere else. Before this
+        // it appeared on both, and neither screen said the other existed.
+        assert!(!has(&rows(&conn, "client", "cl_ali", "Ali Rehman"), "txn_100k"),
+            "an explicit tag wins over the deal inference");
+        // Clearing the tag hands it straight back to the inference.
+        conn.execute("UPDATE bank_txn SET counterparty_type='', counterparty_id='' WHERE id='txn_100k'", []).unwrap();
+        assert_eq!(group(row(&rows(&conn, "client", "cl_ali", "Ali Rehman"), "txn_100k")), "theirs");
     }
 
     // R-157/F3. Every allocation role on their OWN deal is booked money. A refund
@@ -18161,14 +18375,22 @@ mod counterparty_payment_tests {
         assert_eq!(dylan["amount"].as_f64().unwrap(), 279500.0);
         assert_eq!(dylan["booked_amount"].as_f64().unwrap(), 43620.0);
 
-        // The supplier side of the same wire, reached with no tag at all.
+        // R-175. The tag is exclusive: Jack said this wire is Dylan's, so the deal
+        // inference must stop offering it to anyone else. ARABE is named on deal_a and
+        // would otherwise be shown $181,625 of a payment already claimed elsewhere -
+        // that is the "things tagged to him that have nothing to do with him" bug.
+        assert!(!has(&rows(&conn, "supplier", "sup_arabe", "ARABE LLC"), "txn_split"),
+            "a payment tagged to one party must not be inferred onto another");
+
+        // The same shape with no tag at all: the inference leg still works, and still
+        // reports only the part that landed on a deal naming them.
         let arabe = rows(&conn, "supplier", "sup_arabe", "ARABE LLC");
-        let r = row(&arabe, "txn_split");
+        let r = row(&arabe, "txn_sup_split");
         assert_eq!(group(r), "theirs");
         assert_eq!(r["tagged"], false);
-        assert_eq!(r["booked_amount"].as_f64().unwrap(), 181625.0, "only the leg on a deal that names them");
+        assert_eq!(r["booked_amount"].as_f64().unwrap(), 40000.0, "only the leg on a deal that names them");
         // A supplier who is on neither deal sees none of it.
-        assert!(!has(&rows(&conn, "supplier", "sup_none", "Nobody"), "txn_split"));
+        assert!(!has(&rows(&conn, "supplier", "sup_none", "Nobody"), "txn_sup_split"));
         // ...and a supplier row with no allocation at all still comes back, filed
         // under the group that claims nothing about a deal.
         assert_eq!(group(row(&arabe, "txn_sup_plain")), "tagged only");
@@ -18214,8 +18436,8 @@ mod counterparty_payment_tests {
 
         // The other leg carries them too — a row reached with no tag at all, through
         // the supplier's own deal, must read identically.
-        conn.execute("UPDATE bank_txn SET rail='wire' WHERE id='txn_split'", []).unwrap();
-        let s = row(&rows(&conn, "supplier", "sup_arabe", "ARABE LLC"), "txn_split").clone();
+        conn.execute("UPDATE bank_txn SET rail='wire' WHERE id='txn_sup_split'", []).unwrap();
+        let s = row(&rows(&conn, "supplier", "sup_arabe", "ARABE LLC"), "txn_sup_split").clone();
         assert_eq!(s["tagged"], false);
         assert_eq!(s["rail"], "wire");
         assert_eq!(s["confirmed_method"], "", "nobody answered this one");

@@ -16,7 +16,7 @@ const bucketMeta = (key: string) => BUCKETS.find((b) => b.key === key);
 
 function openDeal(searchTerm: string) {
   try { localStorage.setItem("dealflow_invoice_filter", searchTerm); } catch { /* ignore */ }
-  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "deals" }));
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
 }
 
 // Pay priority: big money owed longest floats to the top.

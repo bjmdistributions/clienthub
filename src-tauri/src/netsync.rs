@@ -1974,6 +1974,11 @@ const SHARED_SETTINGS_KEYS: &[&str] = &[
     // note in the server's SHARED_SETTINGS_WHITELIST. They ride /api/bank-balance so a
     // Plaid device's unused zero can never overwrite someone's real manual figure.
     "portal_base_url", "brief_frequency_days",
+    // R-162 policy clauses. Shared so a sibling admin's sends carry the same terms —
+    // two admins mailing different return policies for the same business is the exact
+    // divergence this allowlist exists to prevent. Non-secret config, so it qualifies.
+    "email_notice_24h_enabled", "email_notice_24h_text",
+    "invoice_return_policy_enabled", "invoice_return_policy_text",
 ];
 
 /// Push this device's org-shared config to the server so sibling admins converge (the

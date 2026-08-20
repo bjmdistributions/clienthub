@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, X } from "lucide-react";
-import { CounterpartyPaymentRow } from "../lib/api";
+import { ArrowRight, X, UserCog } from "lucide-react";
+import { api, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount } from "../lib/format";
+import PersonPickerModal, { PersonRef } from "./PersonPicker";
+import { toast } from "./Toast";
 
 /* ── Bank payments on a client or supplier profile (R-156, W1-d/e/f) ─────────
  *
@@ -189,6 +191,14 @@ const totalsLabel = (t: Totals): string => {
 const partlyBooked = (r: Row): boolean =>
   typeof r.booked_amount === "number" && r.booked_amount > 0 && Math.abs(r.booked_amount - r.amount) > 0.01;
 
+/** Open the ledger on one transaction. FinancialsView opens its row and scrolls
+ *  to it, and opens every filter first so the jump cannot land on a row the
+ *  current filters were hiding. */
+const openTxn = (txnId: string) => {
+  (window as any).__pendingBankTxn = txnId;
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "financials" }));
+};
+
 const openFinancials = (person?: { type: "client" | "supplier"; id: string }) => {
   // Same handoff shape as __pendingBankTxn: FinancialsView reads this on mount,
   // switches to the ledger, selects the person and opens every other filter.
@@ -198,12 +208,53 @@ const openFinancials = (person?: { type: "client" | "supplier"; id: string }) =>
 
 const linkCls = "inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors";
 
-export default function PersonPayments({ person, payments, onUntag }: {
+export default function PersonPayments({ person, payments, onUntag, people, onChanged }: {
   person: { type: "client" | "supplier"; id: string; name: string };
   payments: CounterpartyPaymentRow[];
   onUntag: (txnId: string) => void;
+  /** Every client and supplier, for the "who is this actually with?" picker.
+   *  Omitted, the picker is simply not offered - the rest of the screen is
+   *  unchanged, so a caller that has not loaded them yet still renders. */
+  people?: PersonRef[];
+  /** Re-fetch after an edit made here. Without it the row keeps showing what it
+   *  showed before the write, which reads as the edit having failed. */
+  onChanged?: () => void;
 }) {
   const [method, setMethod] = useState<"all" | Method | "unclassified">("all");
+  const [pickerFor, setPickerFor] = useState<Row | null>(null);
+  const [busyTxn, setBusyTxn] = useState<string | null>(null);
+
+  // Re-tagging is IDENTITY ONLY: it rewrites counterparty_type/counterparty_id on
+  // the transaction and touches no allocation, so no deal figure can move. Since
+  // R-175 the tag is also exclusive - the payment leaves every other profile the
+  // deal inference had put it on, which is the whole point of correcting it here.
+  const retag = async (row: Row, to: PersonRef) => {
+    setBusyTxn(row.txn_id);
+    try {
+      await api.tagBankTxnCounterparty(row.txn_id, to.type, to.id);
+      toast(`Filed under ${to.name}`);
+      setPickerFor(null);
+      onChanged?.();
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally {
+      setBusyTxn(null);
+    }
+  };
+
+  // A patch write - `set_bank_txn_review` sends only the column named, so
+  // confirming a method here cannot re-stamp category or the reviewed flag.
+  const confirmMethod = async (row: Row, value: string) => {
+    setBusyTxn(row.txn_id);
+    try {
+      await api.setBankTxnReview(row.txn_id, { confirmed_method: value });
+      onChanged?.();
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally {
+      setBusyTxn(null);
+    }
+  };
 
   const read = useMemo(
     () => (payments as Row[]).map((r) => ({ r, m: readMethod(r) })),
@@ -349,6 +400,9 @@ export default function PersonPayments({ person, payments, onUntag }: {
         showTaggedBadge
         ownRole={ownRole}
         onUntag={onUntag}
+        onPick={people ? (r) => setPickerFor(r) : undefined}
+        onMethod={confirmMethod}
+        busyTxn={busyTxn}
       />
 
       {/* Only when there is one. It is the anomaly bucket — a payment tagged to
@@ -357,13 +411,16 @@ export default function PersonPayments({ person, payments, onUntag }: {
       {elsewhere.length > 0 && (
         <div className="pt-3 mt-3 border-t border-line-2">
           <Group
-            title="Booked to someone else's deal"
-            caption="Tagged to them, but booked to a deal that does not list them. It counts on that deal — none of it counts here."
+            title="Booked to someone else's deal — worth a look"
+            caption={`Filed under ${person.name}, but booked to a deal that does not list them. One of the two is wrong: either the payment belongs to somebody else (change who it is filed under), or the deal is missing them. It counts on that deal — none of it counts here.`}
             rows={elsewhere}
             empty="None under this method."
             showClient
             ownRole={ownRole}
-            onUntag={onUntag}
+        onUntag={onUntag}
+        onPick={people ? (r) => setPickerFor(r) : undefined}
+        onMethod={confirmMethod}
+        busyTxn={busyTxn}
           />
         </div>
       )}
@@ -376,7 +433,10 @@ export default function PersonPayments({ person, payments, onUntag }: {
           empty={method === "all" ? "Nothing is tagged to them outside their deals." : "None under this method."}
           showClient={person.type === "supplier"}
           ownRole={ownRole}
-          onUntag={onUntag}
+        onUntag={onUntag}
+        onPick={people ? (r) => setPickerFor(r) : undefined}
+        onMethod={confirmMethod}
+        busyTxn={busyTxn}
         />
       </div>
 
@@ -392,11 +452,24 @@ export default function PersonPayments({ person, payments, onUntag }: {
           <span className="text-[11px] text-faint">Their 100 most recent — older ones are in Financials.</span>
         )}
       </div>
+
+      {pickerFor && people && (
+        <PersonPickerModal
+          txn={{ direction: pickerFor.direction, amount: pickerFor.amount, posted_at: pickerFor.posted_at }}
+          people={people}
+          candidates={[]}
+          current={pickerFor.tagged ? { type: person.type, id: person.id, name: person.name } : null}
+          busy={busyTxn === pickerFor.txn_id}
+          onClose={() => setPickerFor(null)}
+          onPick={(to) => retag(pickerFor, to)}
+        />
+      )}
     </div>
   );
 }
 
-function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRole, onUntag }: {
+function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRole, onUntag,
+                 onPick, onMethod, busyTxn }: {
   title: string;
   caption: string;
   rows: { r: Row; m: MethodRead }[];
@@ -405,6 +478,11 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
   showTaggedBadge?: boolean;
   ownRole: string;
   onUntag: (txnId: string) => void;
+  /** Undefined when the caller has not supplied the people list - the control
+   *  is then not rendered at all rather than rendered dead. */
+  onPick?: (r: Row) => void;
+  onMethod: (r: Row, value: string) => void;
+  busyTxn: string | null;
 }) {
   const t = totalsOf(rows.map((x) => x.r));
   return (
@@ -421,9 +499,9 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
       ) : (
         <div className="border border-line rounded-lg divide-y divide-line-2 overflow-hidden max-h-[360px] overflow-y-auto">
           {rows.map(({ r, m }) => (
-            <div key={r.txn_id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+            <div key={r.txn_id} className={`flex items-start justify-between gap-3 px-3 py-2.5 ${busyTxn === r.txn_id ? "opacity-50" : ""}`}>
               <div className="min-w-0">
-                <div className="text-[12px] text-ink-2 truncate">
+                <div className="text-[12px] text-ink-2 truncate" title={r.description || undefined}>
                   {r.description || r.counterparty_name || "Bank transaction"}
                   {showTaggedBadge && r.tagged && (
                     <span className="ml-1.5 inline-block align-middle text-[9.5px] font-semibold text-accent border border-accent/30 bg-accent/5 rounded px-1 py-px">Tagged</span>
@@ -438,7 +516,7 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
                     </button>
                   )}
                 </div>
-                <div className="text-[11px] text-muted tabular-nums truncate">
+                <div className="text-[11px] text-muted tabular-nums">
                   {dayLabel(r.posted_at)}
                   {r.invoice_number ? ` · #${r.invoice_number}` : ""}
                   {/* Only when it is not the side this profile is obviously on —
@@ -446,18 +524,52 @@ function Group({ title, caption, rows, empty, showClient, showTaggedBadge, ownRo
                   {r.role && r.role !== ownRole ? ` · ${roleLabel(r.role)}` : ""}
                   {showClient && r.client_name ? ` · ${r.client_name}` : ""}
                   {partlyBooked(r) ? ` · ${fmtAmount(r.booked_amount as number)} of it on their deals` : ""}
-                  {m.method && (
-                    <span
-                      className={m.state === "certain" ? "text-muted" : "text-faint"}
-                      title={m.reason}
-                    >
-                      {" · "}{methodLabel(m.method)}
-                    </span>
-                  )}
+                  {" · "}
+                  {/* Editable in place. A method the memo only suggests stays
+                      visibly unconfirmed until Jack picks one, so a guess and an
+                      answer never look the same. */}
+                  <select
+                    value={r.confirmed_method || ""}
+                    onChange={(e) => onMethod(r, e.target.value)}
+                    disabled={busyTxn === r.txn_id}
+                    aria-label="Payment method"
+                    title={r.confirmed_method ? "You confirmed this method" : m.reason || "Set the payment method"}
+                    className={`bg-transparent border-none p-0 text-[11px] cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent/40 rounded ${
+                      r.confirmed_method ? "text-muted" : "text-faint italic"
+                    }`}
+                  >
+                    <option value="">{m.method ? `${methodLabel(m.method)}?` : "No method"}</option>
+                    {METHODS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
-              <div className={`text-[12.5px] font-semibold tabular-nums flex-shrink-0 ${r.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
-                {r.direction === "in" ? "+" : "−"}{fmtAmount(r.amount)}
+              <div className="flex-shrink-0 text-right">
+                <div className={`text-[12.5px] font-semibold tabular-nums ${r.direction === "in" ? "text-success-ink" : "text-danger-ink"}`}>
+                  {r.direction === "in" ? "+" : "−"}{fmtAmount(r.amount)}
+                </div>
+                <div className="flex items-center justify-end gap-0.5 mt-1">
+                  {onPick && (
+                    <button
+                      onClick={() => onPick(r)}
+                      disabled={busyTxn === r.txn_id}
+                      title="File this payment under someone else"
+                      aria-label="File this payment under someone else"
+                      className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                    >
+                      <UserCog size={11} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => openTxn(r.txn_id)}
+                    title="Open this transaction in Financials"
+                    aria-label="Open this transaction in Financials"
+                    className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors"
+                  >
+                    <ArrowRight size={11} />
+                  </button>
+                </div>
               </div>
             </div>
           ))}

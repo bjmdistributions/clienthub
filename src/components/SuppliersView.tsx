@@ -4,6 +4,7 @@ import { api, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRo
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsModal from "./SupplierDealsModal";
 import PersonPayments from "./PersonPayments";
+import { PersonRef } from "./PersonPicker";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -75,6 +76,9 @@ export default function SuppliersView() {
   const [input,         setInput]         = useState<SupplierInput>(emptyInput);
   const [history,       setHistory]       = useState<SupplierPriceEntry[]>([]);
   const [payments,      setPayments]      = useState<CounterpartyPaymentRow[]>([]);
+  // Both sides of the address book, for re-filing a payment under the party it
+  // actually belongs to (R-175). Loaded once; failure only costs the picker.
+  const [people,        setPeople]        = useState<PersonRef[]>([]);
   const [supplierDeals, setSupplierDeals] = useState<any[]>([]);
   const [dealsModalOpen,setDealsModalOpen]= useState(false);
   const [query,         setQuery]         = useState("");
@@ -89,6 +93,14 @@ export default function SuppliersView() {
 
   const load = async () => setSuppliers(await api.listSuppliers());
   useEffect(() => { load().catch(console.error); }, []);
+  useEffect(() => {
+    Promise.all([api.listClients(), api.listSuppliers()])
+      .then(([cs, ss]) => setPeople([
+        ...cs.map((c): PersonRef => ({ type: "client", id: c.id, name: c.name })),
+        ...ss.filter((x) => !x.archived).map((x): PersonRef => ({ type: "supplier", id: x.id, name: x.name })),
+      ]))
+      .catch(() => {});
+  }, []);
 
   const inputFrom = (s: Supplier): SupplierInput => ({
     name:              s.name,
@@ -121,6 +133,11 @@ export default function SuppliersView() {
 
   // Remove a wrong supplier tag — the payment itself stays booked. Re-fetch so a
   // tag-only row disappears and a deal-linked row merely loses its badge.
+  const reloadPayments = async () => {
+    if (!selected) return;
+    setPayments(await api.counterpartyPayments("supplier", selected.id, selected.name).catch(() => []));
+  };
+
   const untagPayment = async (txnId: string) => {
     if (!selected) return;
     try {
@@ -148,7 +165,12 @@ export default function SuppliersView() {
       if (filter === "archived" && !s.archived) return false;
       if (query) {
         const q = query.toLowerCase();
-        if (!s.name.toLowerCase().includes(q) && !(s.contact_name || "").toLowerCase().includes(q)) return false;
+        // Phone matches on digits alone, so 8155932342 finds (815) 593-2342. It only
+        // joins in from 3 digits up - one digit would match nearly every number.
+        const qDigits = q.replace(/\D/g, "");
+        const text = `${s.name} ${s.contact_name || ""} ${s.email || ""}`.toLowerCase();
+        const phoneHit = qDigits.length >= 3 && (s.phone || "").replace(/\D/g, "").includes(qDigits);
+        if (!text.includes(q) && !phoneHit) return false;
       }
       const sr = SPEND_RANGES[spendRange];
       if (s.total_paid < sr.min || s.total_paid > sr.max) return false;
@@ -264,7 +286,7 @@ export default function SuppliersView() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search suppliers or contacts…"
+            placeholder="Search suppliers, contacts, email or phone…"
             className="w-full pl-8 pr-3 h-8 text-[13px] border border-line rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
         </div>
@@ -433,6 +455,8 @@ export default function SuppliersView() {
                   dealCount={supplierDeals.length}
                   onOpenDeals={() => setDealsModalOpen(true)}
                   onUntagPayment={untagPayment}
+                  people={people}
+                  onPaymentsChanged={reloadPayments}
                 />
               ) : (
                 <Form input={input} setInput={setInput} />
@@ -507,8 +531,9 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   );
 }
 
-function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment }: {
+function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment, people, onPaymentsChanged }: {
   s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[]; dealCount: number; onOpenDeals: () => void; onUntagPayment: (txnId: string) => void;
+  people: PersonRef[]; onPaymentsChanged: () => void;
 }) {
   const m = marginOf(s);
   return (
@@ -553,6 +578,8 @@ function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment 
         person={{ type: "supplier", id: s.id, name: s.name }}
         payments={payments}
         onUntag={onUntagPayment}
+        people={people}
+        onChanged={onPaymentsChanged}
       />
 
       {/* Contact */}

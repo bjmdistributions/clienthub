@@ -878,6 +878,8 @@ fn main() {
             get_whatsapp_description,
             get_whatsapp_settings,
             save_whatsapp_settings,
+            get_policy_clause_settings,
+            save_policy_clause_settings,
             get_newsletter_product_template,
             save_newsletter_product_template,
             open_lot_folder,

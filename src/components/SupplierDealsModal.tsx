@@ -4,6 +4,13 @@ import { api, Supplier, DealFlow } from "../lib/api";
 import { fmtAmount, parseLocalDay } from "../lib/format";
 import CompletedBreakdown from "./CompletedBreakdown";
 
+// Fixed columns, shared by the header row, every deal row and the totals row —
+// auto-width figures put each label and value at a different x on every line.
+const STAT_GRID = "grid grid-cols-[104px_104px_60px_104px] gap-x-6 flex-shrink-0 text-right items-baseline";
+
+/** −$4,300.00, not $-4,300.00 — the sign convention used on the suppliers table. */
+const signedAmount = (n: number) => `${n < 0 ? "−" : ""}${fmtAmount(Math.abs(n))}`;
+
 // Large-screen browser for a supplier's completed deals. Launched from the
 // suppliers drawer; stacks above it (z-60) so the narrow drawer stays mounted.
 export default function SupplierDealsModal({
@@ -49,6 +56,18 @@ export default function SupplierDealsModal({
     }
   };
 
+  // Footer totals. `supplier_amount` is what this supplier was paid; revenue and
+  // profit are the whole deal's, so the blended margin here is the deal-side one.
+  const totals = deals.reduce(
+    (a: { revenue: number; profit: number; paid: number }, d: any) => ({
+      revenue: a.revenue + (Number(d.gross_revenue)   || 0),
+      profit:  a.profit  + (Number(d.net_profit)      || 0),
+      paid:    a.paid    + (Number(d.supplier_amount) || 0),
+    }),
+    { revenue: 0, profit: 0, paid: 0 },
+  );
+  const totalMargin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : null;
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -60,6 +79,9 @@ export default function SupplierDealsModal({
             <h3 className="text-[15px] font-semibold text-ink truncate">{supplier.name}</h3>
             <p className="text-[12px] text-muted mt-0.5">
               {deals.length} completed deal{deals.length !== 1 ? "s" : ""}
+            </p>
+            <p className="text-[11px] text-faint mt-0.5">
+              Revenue and profit are the whole deal's, before refunds. The last column is what this supplier was paid.
             </p>
           </div>
           <button
@@ -78,6 +100,17 @@ export default function SupplierDealsModal({
             </div>
           ) : (
             <div className="divide-y divide-line-2">
+              {/* One header row instead of a label repeated on every figure. */}
+              <div className="flex items-center gap-4 px-6 py-2 sticky top-0 z-[1] bg-surface-2/60 backdrop-blur-sm">
+                <div className="w-[13px] flex-shrink-0" />
+                <div className="flex-1 min-w-0 text-[11px] font-medium text-muted">Deal</div>
+                <div className={`${STAT_GRID} text-[11px] font-medium text-muted`}>
+                  <div>Revenue</div>
+                  <div>Profit</div>
+                  <div>Margin</div>
+                  <div>Paid them</div>
+                </div>
+              </div>
               {deals.map((d: any) => {
                 const margin = d.gross_revenue > 0
                   ? (d.net_profit / d.gross_revenue) * 100
@@ -112,21 +145,22 @@ export default function SupplierDealsModal({
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-5 sm:gap-7 flex-shrink-0">
-                        <Stat label="Revenue" value={fmtAmount(d.gross_revenue)} />
+                      <div className={STAT_GRID}>
+                        <Stat value={fmtAmount(d.gross_revenue)} />
                         <Stat
-                          label="Profit"
-                          value={fmtAmount(d.net_profit)}
+                          value={signedAmount(d.net_profit)}
                           clr={d.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}
                         />
-                        {margin !== null && (
-                          <Stat
-                            label="Margin"
-                            value={`${margin.toFixed(1)}%`}
-                            clr={margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink"}
-                          />
-                        )}
-                        <Stat label="Supplier" value={fmtAmount(d.supplier_amount)} />
+                        <Stat
+                          value={margin === null ? "—" : `${margin.toFixed(1)}%`}
+                          clr={
+                            margin === null ? "text-faint"
+                            : margin >= 20 ? "text-success-ink"
+                            : margin >= 10 ? "text-warning-ink"
+                            : "text-danger-ink"
+                          }
+                        />
+                        <Stat value={fmtAmount(d.supplier_amount)} />
                       </div>
                     </button>
 
@@ -148,6 +182,24 @@ export default function SupplierDealsModal({
                   </div>
                 );
               })}
+              {deals.length > 1 && (
+                <div className="flex items-center gap-4 px-6 py-3 bg-surface-2/40">
+                  <div className="w-[13px] flex-shrink-0" />
+                  <div className="flex-1 min-w-0 text-[12px] font-medium text-ink-2">Total</div>
+                  <div className={STAT_GRID}>
+                    <Stat value={fmtAmount(totals.revenue)} />
+                    <Stat
+                      value={signedAmount(totals.profit)}
+                      clr={totals.profit >= 0 ? "text-success-ink" : "text-danger-ink"}
+                    />
+                    <Stat
+                      value={totalMargin === null ? "—" : `${totalMargin.toFixed(1)}%`}
+                      clr={totalMargin === null ? "text-faint" : "text-ink-2"}
+                    />
+                    <Stat value={fmtAmount(totals.paid)} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -156,11 +208,6 @@ export default function SupplierDealsModal({
   );
 }
 
-function Stat({ label, value, clr = "text-ink" }: { label: string; value: string; clr?: string }) {
-  return (
-    <div className="text-right">
-      <div className="text-[11px] font-medium text-muted">{label}</div>
-      <div className={`text-[13px] font-semibold tabular-nums ${clr}`}>{value}</div>
-    </div>
-  );
+function Stat({ value, clr = "text-ink" }: { value: string; clr?: string }) {
+  return <div className={`text-[13px] font-semibold tabular-nums ${clr}`}>{value}</div>;
 }

@@ -190,7 +190,20 @@ export default function InvoicesView() {
   });
   // Voided invoices are excluded from all money totals.
   const outstanding   = invoices.filter((i) => i.status !== "paid" && !isVoided(i)).reduce((s, i) => s + i.total, 0);
-  const overdueCount  = invoices.filter((i) => i.status === "overdue").length;
+  // R-131: past due is a date test, not a status label. Reading status === "overdue"
+  // alone missed genuinely late "sent" rows (the overdue sweep is a job, not a
+  // guarantee) and counted voided paper — mark_overdue_invoices has historically
+  // stamped "overdue" onto rows that were later voided. Mirrors the mobile
+  // isInvoicePastDue predicate so both surfaces show the same number. Archived rows
+  // need no guard here: list_invoices already filters COALESCE(archived,0)=0.
+  // Compare YYYY-MM-DD strings against localDay() — new Date on a bare date string
+  // parses UTC midnight and reads a day early in Central (R-159).
+  const todayLocal    = localDay();
+  const overdueCount  = invoices.filter((i) =>
+    (i.status === "sent" || i.status === "overdue")
+    && !isVoided(i)
+    && !!i.due_date && i.due_date.slice(0, 10) < todayLocal
+  ).length;
   const paidCount     = invoices.filter((i) => i.status === "paid").length;
   const completedCount = invoices.filter((i) => i.is_complete).length;
   const sentCount     = invoices.filter((i) => i.status === "sent").length;
@@ -493,6 +506,12 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const [taxRate, setTaxRate]       = useState<number>(initial && initial.subtotal > 0 ? Math.round((initial.tax / initial.subtotal) * 10000) / 100 : 0);
   const [notes, setNotes]           = useState(initial?.notes ?? "");
   const [recurring, setRecurring]   = useState("");
+  // R-162 policy clauses. An EXISTING invoice shows the wording it was actually sent
+  // under (frozen on the row) — never today's settings default, or reopening an old
+  // invoice would silently restate it. A NEW one prefills from the default below.
+  const [policyOn, setPolicyOn]     = useState(!!(initial?.return_policy || "").trim());
+  const [policyText, setPolicyText] = useState(initial?.return_policy ?? "");
+  const [noticeClause, setNoticeClause] = useState<[string, string] | null>(null);
   const [items, setItems]           = useState<LineItem[]>(() => {
     if (initial) {
       const parsed: LineItem[] = JSON.parse(initial.line_items_json || "[]");
@@ -527,6 +546,18 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
     setItems(copy);
   };
 
+  // Standing clause config. The 24-hour notice is display-only here (it is a standing
+  // term, set once in Settings); the return policy seeds a NEW invoice's editable box.
+  useEffect(() => {
+    api.getPolicyClauseSettings().then((c) => {
+      if (c.notice_24h_enabled && c.notice_24h_text.trim()) setNoticeClause(["Notice", c.notice_24h_text]);
+      if (!initial && c.return_policy_enabled && c.return_policy_text.trim()) {
+        setPolicyOn(true);
+        setPolicyText(c.return_policy_text);
+      }
+    }).catch(() => {});
+  }, [initial]);
+
   const subtotal = items.reduce((s, it) => s + it.amount, 0);
   const tax = subtotal * (taxRate / 100);
   const total = subtotal + tax;
@@ -545,6 +576,10 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
     items: items.filter((it) => it.description.trim() || it.amount),
     taxRate,
     notes,
+    clauses: [
+      ...(noticeClause ? [noticeClause] : []),
+      ...(policyOn && policyText.trim() ? [["Return policy", policyText] as [string, string]] : []),
+    ] as [string, string][],
   };
 
   // Opens the real generated PDF in the OS viewer. Disabled for a brand-new,
@@ -568,7 +603,9 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
         const created = await api.createClient({ name: newClient.name.trim(), email: newClient.email.trim() || undefined, phone: newClient.phone.trim() || undefined, company: newClient.company.trim() || undefined });
         cid = created.id;
       }
-      const data = { due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined, recurring: recurring || undefined };
+      // "" (not undefined) when the toggle is off, so switching it off on an existing
+      // invoice actually clears the stored clause instead of merging the old one back.
+      const data = { due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined, recurring: recurring || undefined, return_policy: policyOn ? policyText : "" };
       if (initial) await api.updateInvoice(initial.id, data);
       else await api.createInvoice({ ...data, client_id: cid });
       onClose();
@@ -711,6 +748,34 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
             </div>
           )}
         </div>
+      </div>
+
+      {/* Return policy (R-162). Sits directly above Notes because it is a term, not an
+          instruction — and because the toggle has to be visible on the row, never hidden
+          behind a hover or a drawer. The box is prefilled from the settings default on a
+          new invoice and freely editable per deal before finalizing. */}
+      <div className="mb-5">
+        <div className="flex items-center gap-3 mb-1.5">
+          <label className="text-[11px] font-medium text-muted">Return policy</label>
+          <button onClick={() => setPolicyOn((v) => !v)} role="switch" aria-checked={policyOn}
+            aria-label="Include the return policy on this invoice"
+            className={`w-11 h-6 rounded-full relative transition-colors ${policyOn ? "bg-accent" : "bg-surface-3"}`}>
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${policyOn ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          </button>
+          {policyOn && !policyText.trim() && (
+            <span className="text-[11px] text-muted">Add the wording in Settings, or type it here.</span>
+          )}
+        </div>
+        {policyOn && (
+          <textarea rows={3} className="border border-line px-3 py-2 rounded-lg text-[13px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
+            placeholder="Return policy wording that prints on this invoice and repeats in the send email"
+            value={policyText} onChange={(e) => setPolicyText(e.target.value)} />
+        )}
+        {noticeClause && (
+          <p className="text-[11px] text-muted mt-1.5">
+            The 24-hour notice also prints on this invoice. Edit it in Settings under Email.
+          </p>
+        )}
       </div>
 
       {/* Notes + recurring */}

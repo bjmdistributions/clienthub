@@ -62,6 +62,7 @@ export default function ClientsView() {
   const [reviewId, setReviewId]             = useState<string | null>(null);
   // Client-side "never emailed" filter — reads the first_contact flag.
   const [fcOnly, setFcOnly]                 = useState(false);
+  const [loadError, setLoadError]           = useState<string | null>(null);
   const tierDropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -78,9 +79,14 @@ export default function ClientsView() {
   }, []);
 
   const applyFilter = useCallback(async (f: ClientFilter) => {
-    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.unsubscribed || f.rep;
-    if (hasFilter) setClients(await api.listClientsFiltered(f));
-    else setClients(await api.listClients());
+    const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.unsubscribed || f.rep || f.sort_by || f.lead_status;
+    try {
+      if (hasFilter) setClients(await api.listClientsFiltered(f));
+      else setClients(await api.listClients());
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(String(e));
+    }
     loadActivity();
   }, [loadActivity]);
 
@@ -95,7 +101,7 @@ export default function ClientsView() {
         hotLeads: all.filter((c) => c.lead_status === "hot_lead").length,
         revenue:  all.reduce((s, c) => s + (c.total_revenue || 0), 0),
       });
-    });
+    }).catch((e) => setLoadError(String(e)));
     api.listCategories().then(setAllCategories);
     api.listClientReps().then(setReps).catch(() => {});
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
@@ -160,7 +166,7 @@ export default function ClientsView() {
 
   const clearAll = () => { setFilter({}); setSearchText(""); setFcOnly(false); applyFilter({}); };
 
-  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep;
+  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep || filter.sort_by || filter.lead_status;
 
   // Client-side sort by any column.
   const TIER_RANK: Record<string, number> = { P: 7, S: 6, A: 5, B: 4, C: 3, D: 2, New: 1, Prospect: 0 };
@@ -803,7 +809,18 @@ export default function ClientsView() {
                 </tr>
               );
             })}
-            {clients.length === 0 && (
+            {loadError && (
+              <tr>
+                <td colSpan={9} className="px-4 py-16 text-center">
+                  <p className="text-[13px] text-danger-ink mb-3">Couldn't load clients. {loadError}</p>
+                  <button onClick={() => applyFilter(filter)}
+                    className="border border-line px-3 h-9 rounded-lg text-[13px] hover:bg-surface-2 transition-colors">
+                    Try again
+                  </button>
+                </td>
+              </tr>
+            )}
+            {!loadError && clients.length === 0 && (
               <tr>
                 <td colSpan={9} className="px-4 py-16 text-center">
                   {hasAnyFilter ? (

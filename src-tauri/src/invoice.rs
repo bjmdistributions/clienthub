@@ -163,6 +163,74 @@ pub fn load_template() -> InvoiceTemplate {
     }
 }
 
+// ---------- Policy clauses (R-162) ----------
+
+/// A standing clause that prints at the foot of a document and repeats in the send
+/// email. `(heading, body)`.
+pub type Clause = (&'static str, String);
+
+fn setting(conn: &rusqlite::Connection, key: &str) -> String {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .unwrap_or_default()
+}
+
+fn flag(conn: &rusqlite::Connection, key: &str) -> bool {
+    matches!(setting(conn, key).as_str(), "1" | "true")
+}
+
+/// The clauses to print on a document and repeat in its email (R-162).
+///
+/// Loaded here rather than passed in, for the same reason the branding template is:
+/// every render path — real invoice, quote, preview, sample — gets them for free.
+///
+/// The two clauses have deliberately different lifetimes. The 24-hour notice is a
+/// standing term of business and is read from settings on every render. The return
+/// policy is NOT: it is frozen on the invoice row and arrives here as `return_policy`,
+/// so an invoice keeps the wording it was actually sent under even after the default is
+/// re-edited. An empty `return_policy` means no clause was sent on that invoice and
+/// renders as nothing — it must never fall back to today's default, or an old PDF and
+/// the buyer's copy would disagree about what was agreed.
+///
+/// Quotes pass `""` — the return policy is an invoice-level term.
+pub fn document_clauses(return_policy: &str) -> Vec<Clause> {
+    let mut out: Vec<Clause> = Vec::new();
+    if let Ok(conn) = pool().get() {
+        if flag(&conn, "email_notice_24h_enabled") {
+            let t = setting(&conn, "email_notice_24h_text");
+            if !t.trim().is_empty() { out.push(("Notice", t.trim().to_string())); }
+        }
+    }
+    if !return_policy.trim().is_empty() {
+        out.push(("Return policy", return_policy.trim().to_string()));
+    }
+    out
+}
+
+/// The same clauses as a plain-text block appended to an outbound email body, so the
+/// wording a buyer reads in the message matches the wording on the attached PDF.
+/// Empty string when nothing is enabled, so callers can append unconditionally.
+pub fn clause_email_block(return_policy: &str) -> String {
+    let clauses = document_clauses(return_policy);
+    if clauses.is_empty() { return String::new(); }
+    let mut s = String::from("\n\n---");
+    for (heading, body) in clauses {
+        s.push_str(&format!("\n\n{}: {}", heading, body));
+    }
+    s
+}
+
+/// The return-policy text frozen on an invoice row. Empty for a row that predates
+/// R-162 or was finalized with the clause switched off.
+pub fn invoice_return_policy(invoice_id: &str) -> String {
+    pool().get().ok()
+        .and_then(|conn| conn.query_row(
+            "SELECT COALESCE(return_policy,'') FROM invoices WHERE id=?1",
+            [invoice_id],
+            |r| r.get::<_, String>(0),
+        ).ok())
+        .unwrap_or_default()
+}
+
 pub fn save_template(tpl: &InvoiceTemplate) -> Result<()> {
     let conn = pool().get()?;
     let json = serde_json::to_string(tpl)?;
@@ -236,6 +304,8 @@ pub fn render_sample_quote_pdf() -> Result<String> {
         &Some("Acme Retail Co.".into()),
         &client_address, &company,
         "This estimate is valid until the date above. Line items and totals here are illustrative.",
+        // Quotes carry no return policy — it is an invoice-level term (R-162).
+        "",
         "draft", "quote",
     )?;
 
@@ -345,6 +415,35 @@ fn char_width(ch: char, bold: bool) -> f32 {
     if code >= 32 && code < 128 { table[code - 32] } else { 556.0 }
 }
 
+/// Greedy word-wrap for a clause body (R-162), at `max_chars` per line. Blank lines in
+/// the source are preserved so a multi-paragraph policy keeps its shape. A single word
+/// longer than the limit is emitted on its own line rather than split, which is what the
+/// notes block above does too.
+fn wrap_clause(text: &str, max_chars: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw_line in text.lines() {
+        if raw_line.trim().is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        for word in raw_line.split_whitespace() {
+            let extra = if line.is_empty() { 0 } else { 1 };
+            if !line.is_empty() && line.chars().count() + extra + word.chars().count() > max_chars {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    out
+}
+
 pub(crate) fn text_width_mm(text: &str, size_pt: f32, bold: bool) -> f32 {
     let units: f32 = text.chars().map(|c| char_width(c, bold)).sum();
     let width_pt = units / 1000.0 * size_pt;
@@ -393,6 +492,9 @@ pub fn build_pdf_bytes(
     client_address: &Option<ClientAddress>,
     company: &CompanyInfo,
     notes: &str,
+    // The return-policy text frozen on this invoice row (R-162). Empty for quotes and
+    // for any invoice finalized without the clause.
+    return_policy: &str,
     status: &str,
     kind: &str,
 ) -> Result<Vec<u8>> {
@@ -676,6 +778,23 @@ pub fn build_pdf_bytes(
             last_layer.use_text(ln, 8.0, Mm(MARGIN_L + 5.0), Mm(n_y), &font_regular);
             n_y -= 3.5;
         }
+        next_y = n_y - 4.0;
+    }
+
+    // Standing policy clauses (R-162), below the notes and above the footer. Kept
+    // visually separate from Notes on purpose: notes are per-shipment instructions,
+    // these are terms. Long clauses wrap at the page width and stop at the footer
+    // rather than overprinting it — same 25.0 floor the notes block uses.
+    for (heading, body) in document_clauses(return_policy) {
+        if next_y < 25.0 { break; }
+        last_layer.use_text(format!("{}:", heading), 9.0, Mm(MARGIN_L), Mm(next_y), &font_bold);
+        next_y -= 5.0;
+        for ln in wrap_clause(&body, 108) {
+            if next_y < 25.0 { break; }
+            last_layer.use_text(&ln, 8.0, Mm(MARGIN_L + 5.0), Mm(next_y), &font_regular);
+            next_y -= 3.5;
+        }
+        next_y -= 4.0;
     }
 
     // Footer
@@ -948,7 +1067,10 @@ pub async fn generate_pdf(invoice_id: &str) -> Result<String> {
 
     let pdf_bytes = build_pdf_bytes(
         &number, &issue, &due, &items, subtotal, tax, total,
-        &cname, &cemail, &ccompany, &client_address, &company, &notes, &status, "invoice",
+        &cname, &cemail, &ccompany, &client_address, &company, &notes,
+        // The wording frozen on THIS row, never today's default (R-162).
+        &invoice_return_policy(invoice_id),
+        &status, "invoice",
     )?;
 
     let dir = pdf_output_dir();
@@ -991,6 +1113,8 @@ pub fn render_sample_pdf() -> Result<String> {
         &Some("Acme Retail Co.".into()),
         &client_address, &company,
         "Thanks for reviewing this sample. Line items and totals here are illustrative.",
+        // The sample has no invoice row to freeze a policy on, so it renders none.
+        "",
         "draft", "invoice",
     )?;
 
@@ -1026,10 +1150,14 @@ pub async fn send_invoice(invoice_id: &str) -> Result<()> {
     let subject = format!("Invoice {}", number);
     let body = format!(
         "Hi {},\n\nPlease find attached invoice {} for {}.\n\n\
-         Payment instructions are detailed in the document.\n\nThank you!",
+         Payment instructions are detailed in the document.\n\nThank you!{}",
         cname.split_whitespace().next().unwrap_or(&cname),
         number,
         fmt_dollar(total),
+        // The clauses repeat in the message body, not just on the attached PDF (R-162):
+        // a buyer who never opens the attachment has still been told. This is the policy
+        // frozen on THIS invoice, so the email restates exactly what the PDF prints.
+        clause_email_block(&invoice_return_policy(invoice_id)),
     );
 
     crate::email::send(&to, &subject, &body, Some(&pdf)).await?;
@@ -1088,7 +1216,10 @@ pub async fn generate_quote_pdf(quote_id: &str) -> Result<String> {
 
     let pdf_bytes = build_pdf_bytes(
         &q.0, &q.2, &q.3, &items, q.5, q.6, q.7,
-        &cli.0, &cli.1, &cli.2, &client_address, &company, &q.8, &q.9, "quote",
+        &cli.0, &cli.1, &cli.2, &client_address, &company, &q.8,
+        // Quotes carry no return policy — it is an invoice-level term (R-162).
+        "",
+        &q.9, "quote",
     )?;
 
     let dir = quote_output_dir();
@@ -1148,8 +1279,11 @@ pub async fn send_quote(quote_id: &str, thread: bool) -> Result<()> {
     let body = format!(
         "Hi {},\n\nPlease find attached our quote {} for {}.\n\n\
          This quotation is valid until the date shown in the document. \
-         Let us know if you'd like to proceed.\n\nThank you!",
+         Let us know if you'd like to proceed.\n\nThank you!{}",
         cname.split_whitespace().next().unwrap_or(&cname), number, fmt_dollar(total),
+        // Standing notice only. The return policy is an invoice-level term, so a quote
+        // passes an empty string — a quotation is not yet a sale and carries no return terms.
+        clause_email_block(""),
     );
 
     crate::email::send_threaded(&to, &subject, &body, Some(&pdf), in_reply_to.as_deref()).await?;
@@ -1205,4 +1339,41 @@ pub fn compute_totals(items: &[LineItem], tax_rate: f64) -> (f64, f64, f64) {
     let tax = (subtotal * tax_rate * 100.0).round() / 100.0;
     let total = subtotal + tax;
     (subtotal, tax, total)
+}
+
+#[cfg(test)]
+mod clause_tests {
+    use super::wrap_clause;
+
+    // A clause is one long sentence in practice; the renderer has a fixed page width, so
+    // wrapping is the only thing standing between a real policy and text running off the
+    // right edge of the PDF. The 25.0mm floor in build_pdf_bytes stops the vertical run.
+    #[test]
+    fn wraps_at_the_limit_without_splitting_words() {
+        let out = wrap_clause("alpha bravo charlie delta echo", 11);
+        assert_eq!(out, vec!["alpha bravo", "charlie", "delta echo"]);
+        assert!(out.iter().all(|l| l.chars().count() <= 11));
+    }
+
+    // A multi-paragraph policy keeps its shape: blank lines survive so the clause reads
+    // the way it was typed rather than collapsing into one block.
+    #[test]
+    fn blank_lines_are_preserved() {
+        assert_eq!(wrap_clause("one\n\ntwo", 40), vec!["one", "", "two"]);
+    }
+
+    // A word longer than the limit (a URL, a case number) gets its own line rather than
+    // being cut in half — the notes block above behaves the same way.
+    #[test]
+    fn an_overlong_word_is_not_split() {
+        assert_eq!(wrap_clause("hi supercalifragilistic", 5), vec!["hi", "supercalifragilistic"]);
+    }
+
+    // Nothing in, nothing out — the guard that keeps an enabled-but-empty clause from
+    // printing a bare heading on an invoice.
+    #[test]
+    fn empty_text_yields_no_lines() {
+        assert!(wrap_clause("", 40).is_empty());
+        assert!(wrap_clause("   ", 40).iter().all(|l| l.is_empty()));
+    }
 }

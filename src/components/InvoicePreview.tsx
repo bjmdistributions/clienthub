@@ -27,6 +27,10 @@ export interface InvoicePreviewData {
   items?: { description: string; qty: number; rate: number; amount: number }[];
   taxRate?: number;     // percent, e.g. 8
   notes?: string;
+  /** Standing clauses printed below the notes (R-162), as [heading, body] pairs.
+   *  Mirrors `document_clauses` in the Rust renderer so the on-screen preview and
+   *  the emailed PDF cannot drift. */
+  clauses?: [string, string][];
 }
 
 // Visual A4-proportion document — mirrors the backend PDF layout (invoice or quote).
@@ -148,6 +152,15 @@ export default function InvoicePreview({ info, tpl, logoVersion, kind = "invoice
             <div className="whitespace-pre-wrap" style={{ color: "#6b7280" }}>{notes}</div>
           </div>
         )}
+
+        {/* Standing policy clauses (R-162) — terms, kept visually distinct from the
+            per-shipment Notes above. Renders nothing when no clause is enabled. */}
+        {(data?.clauses ?? []).filter(([, body]) => body.trim()).map(([heading, body]) => (
+          <div className="mt-4" key={heading}>
+            <div className="font-semibold" style={{ color: "#374151" }}>{heading}</div>
+            <div className="whitespace-pre-wrap" style={{ color: "#6b7280" }}>{body}</div>
+          </div>
+        ))}
 
         {/* Footer note */}
         {tpl.footer_note.trim() && (
