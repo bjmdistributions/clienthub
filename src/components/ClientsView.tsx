@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, CustomerHealth, DuplicateGroup, BuyerTier } from "../lib/api";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, DuplicateGroup, BuyerTier } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import { Plus, Trash2, Edit2, Search, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban, FileText, Calendar, StickyNote } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -36,9 +36,21 @@ const relTime = (d: string | null | undefined): string => {
 
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
+// Headline numbers are always read off the WHOLE client set, never off the
+// filtered table, so they don't move as you type.
+const statsOf = (all: Client[]) => ({
+  total:    all.length,
+  active:   all.filter((c) => c.lead_status === "active_customer").length,
+  hotLeads: all.filter((c) => c.lead_status === "hot_lead").length,
+  revenue:  all.reduce((s, c) => s + (c.total_revenue || 0), 0),
+});
+
 export default function ClientsView() {
   const [clients, setClients]               = useState<Client[]>([]);
-  const [totalClients, setTotalClients]     = useState(0);
+  // Every client, regardless of the current filter — the source for the stats
+  // bar, the pending banner and the unsubscribed count.
+  const [allClients, setAllClients]         = useState<Client[]>([]);
+  const [loading, setLoading]               = useState(true);
   const [editing, setEditing]               = useState<Client | null>(null);
   const [showForm, setShowForm]             = useState(false);
   const [detailId, setDetailId]             = useState<string | null>(null);
@@ -50,10 +62,8 @@ export default function ClientsView() {
   const [missingInfo, setMissingInfo]       = useState<MissingInfoReport | null>(null);
   const [showHealth, setShowHealth]         = useState(false);
   const [allCategories, setAllCategories]   = useState<Category[]>([]);
-  const [healthScores, setHealthScores]     = useState<CustomerHealth[]>([]);
   const [buyerTiers, setBuyerTiers]         = useState<BuyerTier[]>([]);
   const [duplicates, setDuplicates]         = useState<DuplicateGroup[]>([]);
-  const [summaryStats, setSummaryStats]     = useState({ total: 0, active: 0, hotLeads: 0, revenue: 0 });
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
   const [showTiers, setShowTiers]           = useState(false);
   const [sortKey, setSortKey]               = useState<string>("name");
@@ -70,6 +80,13 @@ export default function ClientsView() {
     api.clientsMissingInfo().then(setMissingInfo).catch(console.error);
   };
 
+  // Refresh the unfiltered set after anything that can add or remove a client.
+  // Deliberately NOT called on filter/search changes — that was a full refetch
+  // on every keystroke.
+  const loadAll = useCallback(() => {
+    api.listClients().then(setAllClients).catch(() => {});
+  }, []);
+
   const loadActivity = useCallback(() => {
     api.clientLastActivity().then((rows) => {
       const m: Record<string, { kind: string; at: string }> = {};
@@ -80,12 +97,15 @@ export default function ClientsView() {
 
   const applyFilter = useCallback(async (f: ClientFilter) => {
     const hasFilter = f.search || (f.tiers && f.tiers.length > 0) || f.category || f.tag || f.state || f.stale_days || f.missing || f.needs_review || f.unsubscribed || f.rep || f.sort_by || f.lead_status;
+    setLoading(true);
     try {
       if (hasFilter) setClients(await api.listClientsFiltered(f));
       else setClients(await api.listClients());
       setLoadError(null);
     } catch (e) {
       setLoadError(String(e));
+    } finally {
+      setLoading(false);
     }
     loadActivity();
   }, [loadActivity]);
@@ -95,14 +115,9 @@ export default function ClientsView() {
     api.getEmailInboxes().then((l) => setInboxLinked(l.length > 0)).catch(() => setInboxLinked(null));
     api.listClients().then((all) => {
       setClients(all);
-      setSummaryStats({
-        total:    all.length,
-        active:   all.filter((c) => c.lead_status === "active_customer").length,
-        hotLeads: all.filter((c) => c.lead_status === "hot_lead").length,
-        revenue:  all.reduce((s, c) => s + (c.total_revenue || 0), 0),
-      });
-    }).catch((e) => setLoadError(String(e)));
-    api.listCategories().then(setAllCategories);
+      setAllClients(all);
+    }).catch((e) => setLoadError(String(e))).finally(() => setLoading(false));
+    api.listCategories().then(setAllCategories).catch(() => {});
     api.listClientReps().then(setReps).catch(() => {});
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
@@ -123,10 +138,6 @@ export default function ClientsView() {
     const savedSearch = localStorage.getItem("clienthub_clients_search");
     if (savedSearch) setSearchText(savedSearch);
   }, []);
-
-  useEffect(() => {
-    api.listClients().then((c) => setTotalClients(c.length));
-  }, [clients]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -166,10 +177,12 @@ export default function ClientsView() {
 
   const clearAll = () => { setFilter({}); setSearchText(""); setFcOnly(false); applyFilter({}); };
 
+  const summaryStats = useMemo(() => statsOf(allClients), [allClients]);
+
   const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep || filter.sort_by || filter.lead_status;
 
   // Client-side sort by any column.
-  const TIER_RANK: Record<string, number> = { P: 7, S: 6, A: 5, B: 4, C: 3, D: 2, New: 1, Prospect: 0 };
+  const TIER_RANK: Record<string, number> = { P: 6, S: 5, A: 4, B: 3, C: 2, New: 1, Prospect: 0 };
   const sortVal = (c: Client, key: string): string | number => {
     switch (key) {
       case "company": return (c.company || "").toLowerCase();
@@ -218,6 +231,7 @@ export default function ClientsView() {
     setShowForm(false);
     setEditing(null);
     applyFilter(filter);
+    loadAll();
     loadMissingInfo();
   };
 
@@ -226,6 +240,7 @@ export default function ClientsView() {
     if (confirm(`Delete ${name}? This will also delete all their interactions. This cannot be undone.`)) {
       await api.deleteClient(id);
       applyFilter(filter);
+      loadAll();
       loadMissingInfo();
     }
   };
@@ -238,12 +253,11 @@ export default function ClientsView() {
     });
   };
 
+  // Select-all means "everything you can currently see" — never rows hidden by
+  // the active filters.
+  const allDisplayedSelected = displayed.length > 0 && displayed.every((c) => selectedIds.has(c.id));
   const toggleSelectAll = () => {
-    if (selectedIds.size === clients.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(clients.map((c) => c.id)));
-    }
+    setSelectedIds(allDisplayedSelected ? new Set() : new Set(displayed.map((c) => c.id)));
   };
 
   const handleBulkDelete = async () => {
@@ -255,10 +269,24 @@ export default function ClientsView() {
       if (!confirm(`Delete ${n} clients? This cannot be undone.`)) return;
     }
     const ids = Array.from(selectedIds);
-    await api.bulkDeleteClients(ids);
+    let deleted = 0;
+    try {
+      deleted = await api.bulkDeleteClients(ids);
+    } catch (e) {
+      alert(`Couldn't delete: ${e}`);
+      return;
+    }
     setSelectedIds(new Set());
     applyFilter(filter);
+    loadAll();
     loadMissingInfo();
+    // The command skips any client the database refuses to delete (invoices,
+    // deals or other records still point at it) and reports how many it got
+    // through — say so rather than reporting a clean sweep.
+    if (deleted < ids.length) {
+      const failed = ids.length - deleted;
+      alert(`Deleted ${deleted} of ${ids.length} clients. ${failed} couldn't be deleted because they still have invoices, deals or other linked records.`);
+    }
   };
 
   const handleBulkCategory = async (cat: string) => {
@@ -275,6 +303,7 @@ export default function ClientsView() {
     await api.bulkUpdateLeadStatus(Array.from(selectedIds), status);
     setSelectedIds(new Set());
     applyFilter(filter);
+    loadAll();
   };
 
   const handleBulkEmail = () => {
@@ -316,8 +345,8 @@ export default function ClientsView() {
     }
     api.listClients().then((all) => {
       setClients(all);
-      setSummaryStats({ total: all.length, active: all.filter((c) => c.lead_status === "active_customer").length, hotLeads: all.filter((c) => c.lead_status === "hot_lead").length, revenue: all.reduce((s, c) => s + (c.total_revenue || 0), 0) });
-    });
+      setAllClients(all);
+    }).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
     loadMissingInfo();
   };
@@ -328,13 +357,15 @@ export default function ClientsView() {
         clientId={detailId}
         onBack={() => { setDetailId(null); applyFilter(filter); }}
         onEdit={(c) => { setDetailId(null); setEditing(c); setShowForm(true); applyFilter(filter); }}
-        onDeleted={() => { setDetailId(null); applyFilter(filter); loadMissingInfo(); }}
+        onDeleted={() => { setDetailId(null); applyFilter(filter); loadAll(); loadMissingInfo(); }}
       />
     );
   }
 
-  const pending = clients.filter((c) => c.approval_status === "pending");
-  const reviewClient = clients.find((c) => c.id === reviewId) || null;
+  // Approvals and the unsubscribed tally describe the whole book of clients,
+  // so they must not move when the table is filtered or searched.
+  const pending = allClients.filter((c) => c.approval_status === "pending");
+  const reviewClient = allClients.find((c) => c.id === reviewId) || null;
 
   return (
     <div>
@@ -345,6 +376,7 @@ export default function ClientsView() {
           onResolved={async () => {
             const next = pending.find((c) => c.id !== reviewId);
             await applyFilter(filter);
+            loadAll();
             setReviewId(next ? next.id : null);
           }}
         />
@@ -433,7 +465,7 @@ export default function ClientsView() {
                 { label: "Missing category", count: missingInfo.missing_category.length, icon: Tag,           missing: "category" },
                 { label: "Never contacted",  count: missingInfo.never_contacted.length,  icon: MessageSquare, missing: undefined },
                 { label: "Needs review",     count: missingInfo.needs_review.length,     icon: AlertCircle,   needs_review: true },
-                { label: "Unsubscribed",     count: clients.filter((c: any) => c.metadata?.unsubscribed).length, icon: Ban, unsubscribed: true },
+                { label: "Unsubscribed",     count: allClients.filter((c: any) => c.metadata?.unsubscribed).length, icon: Ban, unsubscribed: true },
               ].map((row: any) => (
                 <div key={row.label} className="flex items-center justify-between py-1">
                   <span className="flex items-center gap-2 text-[12px] text-ink-2">
@@ -661,9 +693,9 @@ export default function ClientsView() {
         </div>
       )}
 
-      {hasAnyFilter && (
+      {(hasAnyFilter || fcOnly) && (
         <div className="text-[12px] text-muted mb-3">
-          Showing {clients.length} of {totalClients} clients
+          Showing {displayed.length} of {summaryStats.total} clients
         </div>
       )}
 
@@ -712,7 +744,7 @@ export default function ClientsView() {
           <thead>
             <tr className="border-b border-line-2">
               <th className="px-3 py-3 w-10">
-                <input type="checkbox" className="accent-accent" checked={selectedIds.size === clients.length && clients.length > 0} onChange={toggleSelectAll} />
+                <input type="checkbox" className="accent-accent" checked={allDisplayedSelected} onChange={toggleSelectAll} />
               </th>
               {([["name", "Name", "left"], ["company", "Company", "left"], ["tier", "Tier", "left"], ["email", "Email", "left"], ["phone", "Phone", "left"], ["last", "Last activity", "left"], ["revenue", "Revenue", "right"]] as const).map(([k, label, align]) => (
                 <th key={k} onClick={() => toggleSort(k)}
@@ -820,10 +852,17 @@ export default function ClientsView() {
                 </td>
               </tr>
             )}
-            {!loadError && clients.length === 0 && (
+            {loading && displayed.length === 0 && !loadError && (
+              <tr>
+                <td colSpan={9} className="px-4 py-16 text-center text-[13px] text-muted">
+                  Loading clients...
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && displayed.length === 0 && (
               <tr>
                 <td colSpan={9} className="px-4 py-16 text-center">
-                  {hasAnyFilter ? (
+                  {hasAnyFilter || fcOnly ? (
                     <p className="text-[13px] text-muted">No clients match the current filters</p>
                   ) : (
                     <div>

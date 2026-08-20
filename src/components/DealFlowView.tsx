@@ -649,6 +649,16 @@ function DealFlowCard({
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
   const refundView = refundOverride ?? !!refund;
+  // Three refund states, same ladder as the mobile badge (www/app.js `refundBadgeHTML`):
+  // fully refunded, part refunded, and owed back with nothing returned yet. Desktop used
+  // to collapse the last two into one label, so a part-refunded deal looked untouched.
+  const refundOwed = refund?.refund_owed ?? 0;
+  const refundPaid = refund?.refunded ?? 0;
+  const refundState: "full" | "part" | "owed" | null =
+    !refund ? null
+    : refundPaid > 0 && refundOwed > 0 && refundPaid + 0.005 >= refundOwed ? "full"
+    : refundPaid > 0 ? "part"
+    : "owed";
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
   const [invMeta,   setInvMeta]   = useState<{ subtotal: number; tax: number; total: number; number: string } | null>(null);
@@ -830,12 +840,22 @@ function DealFlowCard({
           )}
           <button
             onClick={(e) => { e.stopPropagation(); setIsOpen(true); setRefundOverride(!refundView); }}
-            className={refund
+            title={refund ? `${fmtAmount(refundPaid)} of ${fmtAmount(refundOwed)} refunded` : undefined}
+            className={
+              refundState === "full"
               ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-danger-bg text-danger-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
+              : refundState === "part"
+              ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
+              : refundState === "owed"
+              ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full border border-warning text-warning-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
               : "text-[11.5px] font-medium px-2 py-0.5 rounded-full border border-line text-muted hover:text-danger-ink hover:border-danger inline-flex items-center gap-1 flex-shrink-0 transition-colors"}
           >
             <RotateCcw size={11} />
-            {refundView ? "Back to deal" : refund ? (refund.remaining > 0 ? `Refund mode · ${fmtAmount(refund.remaining)} left` : "Refunded") : "Refund"}
+            {refundView ? "Back to deal"
+              : refundState === "full" ? "Refunded"
+              : refundState === "part" ? `Part refunded ${fmtAmount(refundPaid)}`
+              : refundState === "owed" ? `Refund owed ${fmtAmount(refundOwed)}`
+              : "Refund"}
           </button>
           <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
         </div>
@@ -1438,7 +1458,9 @@ function SectionMoney({ flow, onReload, onAdvance, locked }: { flow: DealFlow; o
   };
   const markAllPaid = async () => {
     setSaving(true);
-    try { await Promise.all(payments.filter((p) => !p.paid).map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
+    // A kept leg is already settled — flipping it to paid would put its cost back on
+    // the deal. Only genuinely outstanding legs get marked.
+    try { await Promise.all(payments.filter((p) => !p.paid && !p.kept).map((p) => api.markSupplierPaymentPaid(flow.id, p.id))); onReload(); }
     catch (e: any) { toast(String(e), "error"); }
     setSaving(false);
   };

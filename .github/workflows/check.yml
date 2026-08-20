@@ -45,6 +45,56 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # R-134e. Colours belong to the design tokens, not to the component that
+      # happens to need one. A raw hex in a .tsx is invisible to a theme change
+      # and to the accent system, and every one of them has to be found by hand.
+      #
+      # This is a ratchet in the same spirit as the eslint config above: the 18
+      # files that already contain hex are allowlisted so main exits 0 today, and
+      # the guard only fails on a file that is not on the list. Converting the
+      # existing ones is a design decision for the owner, not something CI should
+      # force. When a file is cleaned up, delete its line — that is what stops it
+      # regressing. Do not add a line to keep a new violation; use a token.
+      - name: No new raw hex colours
+        run: |
+          allowlist=$(mktemp)
+          # Pre-existing violations at v0.16.0. Counts are a guide, not enforced.
+          cat > "$allowlist" <<'EOF'
+          src/App.tsx
+          src/components/AnalyticsView.tsx
+          src/components/AuthView.tsx
+          src/components/BriefView.tsx
+          src/components/ClientDetailView.tsx
+          src/components/DashboardView.tsx
+          src/components/ErrorBoundary.tsx
+          src/components/GettingStarted.tsx
+          src/components/GlobeView.tsx
+          src/components/InvoicePreview.tsx
+          src/components/NotesView.tsx
+          src/components/OnboardingWizard.tsx
+          src/components/PayablesView.tsx
+          src/components/ReceivablesView.tsx
+          src/components/ReleaseLetterView.tsx
+          src/components/SettingsView.tsx
+          src/components/UpdateNotification.tsx
+          src/lib/accent.ts
+          EOF
+          # Anchor each allowlisted path to the start of a `path:line:` hit so a
+          # new file cannot slip through by containing an allowlisted name.
+          patterns=$(mktemp)
+          sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d; s/[.]/[.]/g; s|^|^|; s|$|:|' "$allowlist" > "$patterns"
+          # 3-, 6- and 8-digit hex only, and not when followed by a word
+          # character — that would be an id, a hash or a template placeholder.
+          hits=$(grep -rnE '#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})([^0-9a-zA-Z_-]|$)' src \
+                   --include='*.ts' --include='*.tsx' \
+                 | grep -vEf "$patterns" || true)
+          if [ -n "$hits" ]; then
+            echo "Raw hex colours in files that had none. Use a design token."
+            echo "$hits"
+            exit 1
+          fi
+          echo "No new raw hex colours."
+
   rust:
     # windows-latest, not ubuntu. This tree has only ever been compiled on Windows
     # and macOS (release.yml's matrix), and the desktop deps that reach the OS —

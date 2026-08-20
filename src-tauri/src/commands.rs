@@ -2782,11 +2782,14 @@ pub async fn delete_invoice(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn mark_overdue_invoices() -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // R-159: `date('now')` is UTC, which is already tomorrow from 6/7pm Central —
+    // invoices flipped overdue up to six hours early. Anchor the sweep on Central.
+    let today = central_today().format("%Y-%m-%d").to_string();
     let ids: Vec<String> = {
         let mut stmt = conn
-            .prepare("SELECT id FROM invoices WHERE status='sent' AND due_date < date('now') AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0")
+            .prepare("SELECT id FROM invoices WHERE status='sent' AND due_date < ?1 AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0")
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| r.get(0))
+        let rows = stmt.query_map([&today], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -4343,8 +4346,12 @@ pub async fn mark_supplier_payment_paid(id: String, payment_id: String) -> Resul
 
     write_sp(&id, &payments, &df.invoice_id)?;
 
-    let all_paid = payments.iter().all(|p| p.paid);
-    if all_paid && !payments.is_empty() {
+    // Settled = paid OR kept ("didn't pay — keep it"). Testing `paid` alone leaves a
+    // deal carrying a kept bill stuck one step short of complete, and disagrees with
+    // the server's predicate (clienthub-api/src/routes/deal_flows.rs `all_settled`),
+    // so the same deal showed a different stage on desktop and on mobile.
+    let all_settled = payments.iter().all(|p| p.paid || p.kept);
+    if all_settled && !payments.is_empty() {
         let now = Utc::now().to_rfc3339();
         let mut cols = Map::new();
         cols.insert("stage".into(), Value::String("supplier_paid".into()));
@@ -9768,7 +9775,9 @@ pub async fn get_receivables_aging() -> Result<Value, String> {
         r.get::<_, String>(7)?,
     ))).map_err(|e| e.to_string())?;
 
-    let today = Utc::now().date_naive();
+    // R-159: aging is measured against the Central calendar day, not UTC — otherwise
+    // every invoice reads a day more overdue from 6/7pm Central onward.
+    let today = central_today();
     // AR committed = everything except the speculative `invoiced` deal-flow quote.
     // Standalone invoices (`none`) are real bills and count (mirrors COMMITTED_AR_STAGES).
     let committed_stages = ["none", "supplier_paid", "payment_received", "complete"];

@@ -620,7 +620,7 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 />
               )}
               <div className="flex flex-wrap gap-1.5 px-4 pb-2">
-                {["call", "meeting", "email_out", "whatsapp", "sms", "note"].map((k) => (
+                {["call", "meeting", "email_in", "email_out", "whatsapp", "sms", "note"].map((k) => (
                   <button key={k} onClick={() => setKindFilter(kindFilter === k ? null : k)}
                     className={`text-[10px] px-2 py-0.5 rounded-full border font-medium capitalize transition-colors ${kindFilter === k ? "bg-accent text-on-accent border-accent" : "bg-surface text-muted border-line hover:bg-surface-2"}`}>
                     {k.replace("_", " ")}
