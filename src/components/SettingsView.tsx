@@ -631,8 +631,8 @@ function waFormat(text: string): React.ReactNode {
 }
 
 const WA_SAMPLE_LOTS = [
-  { name: "Mixed Electronics Pallet", qty: 48, perUnit: "$25.00", total: "$1,200.00", pallets: "2", cat: "Electronics" },
-  { name: "Designer Sneakers Lot", qty: 120, perUnit: "$28.33", total: "$3,400.00", pallets: "5", cat: "Shoes" },
+  { name: "Mixed Electronics Pallet", qty: 48, perUnit: "$25.00", total: "$1,200.00", pallets: "2", perPallet: "$600.00", cat: "Electronics" },
+  { name: "Designer Sneakers Lot", qty: 120, perUnit: "$28.33", total: "$3,400.00", pallets: "5", perPallet: "$680.00", cat: "Shoes" },
 ];
 
 function WhatsAppTab() {
@@ -669,6 +669,7 @@ function WhatsAppTab() {
   const lotList = WA_SAMPLE_LOTS.map((l, i) => sub(s.lot_format, {
     "{number}": String(i + 1), "{lot_name}": l.name, "{quantity}": String(l.qty), "{units}": String(l.qty),
     "{pallets}": l.pallets, "{price_per_unit}": l.perUnit, "{total_price}": l.total, "{asking_price}": l.total,
+    "{price_per_pallet}": l.perPallet,
     "{price_text}": "Best offer", "{category}": l.cat,
   })).join("\n");
   const preview = sub(s.template, {
@@ -707,7 +708,7 @@ function WhatsAppTab() {
         <Field label="Lot Format (per item)">
           <textarea ref={lotRef} className={ta} rows={3} value={s.lot_format} onChange={(e) => set("lot_format", e.target.value)} spellCheck={false} />
         </Field>
-        <VarHint field="lot_format" vars={["{number}", "{lot_name}", "{units}", "{price_per_unit}", "{total_price}", "{pallets}", "{asking_price}", "{category}"]} />
+        <VarHint field="lot_format" vars={["{number}", "{lot_name}", "{units}", "{price_per_unit}", "{price_per_pallet}", "{total_price}", "{pallets}", "{asking_price}", "{category}"]} />
       </div>
 
       <div className="grid grid-cols-2 gap-4 mt-5">

@@ -1475,6 +1475,12 @@ export interface ParsedLoad {
   avg_msrp?: number | null;
   moq?: number | null;
   size_run?: { size: string; qty: number }[] | null;
+  // Per-pallet quoting off a supplier message ("450-500 UNITS PER PALLET / $1,500 A
+  // PALLET"). `quantity` and `asking_price` above are already multiplied out; these are
+  // the quoted figures, so the form can show back what was actually said.
+  qty_per_pallet?: number | null;
+  qty_per_pallet_max?: number | null;
+  price_per_pallet?: number | null;
 }
 
 /// A forwarded supplier post waiting to be turned into inventory. Lives on the

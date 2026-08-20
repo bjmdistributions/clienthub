@@ -26,6 +26,41 @@ const daysSince = (iso: string) => {
 };
 const isStale = (lot: Lot) => lot.status === "available" && daysSince(lot.updated_at) > STALE_DAYS;
 
+// Per-pallet pricing. Suppliers quote "$1,500 A PALLET, 20 PALLETS" — the lot stores the
+// multiplied-out $30,000 in asking_price (price_type "total"), exactly as qty_basis does
+// for quantity, so every existing value/profit sum stays right. These two helpers are the
+// only place the quoted figure is turned back into something to display.
+const palletPrice = (det: LotDetails) => {
+  if (det.price_basis !== "per_pallet") return null;
+  const perPallet = det.price_per_pallet ?? 0;
+  const pallets = det.pallets ?? 0;
+  if (perPallet <= 0 || pallets <= 0) return null;
+  // Fewer units on a pallet makes each unit dearer, so the LOW per-pallet count gives the
+  // HIGH unit price. With no range quoted, both ends are the same figure.
+  const lo = det.qty_per_pallet ?? 0;
+  const hi = det.qty_per_pallet_max ?? 0;
+  const unitHigh = lo > 0 ? perPallet / lo : 0;
+  const unitLow = hi > lo ? perPallet / hi : unitHigh;
+  return { perPallet, pallets, unitLow, unitHigh };
+};
+// "$1,500 per pallet · $3.00–$3.33 / unit" — empty string for every other lot.
+const palletPriceLine = (det: LotDetails) => {
+  const p = palletPrice(det);
+  if (!p) return "";
+  const unit = p.unitHigh <= 0 ? ""
+    : p.unitLow < p.unitHigh ? `${fmtAmount(p.unitLow)}–${fmtAmount(p.unitHigh)} / unit`
+    : `${fmtAmount(p.unitHigh)} / unit`;
+  return [`${fmtAmount(p.perPallet)} per pallet`, unit].filter(Boolean).join(" · ");
+};
+// "9,000–10,000 units" when a per-pallet range was quoted, else the plain total.
+const unitsLabel = (lot: Lot, det: LotDetails) => {
+  const lo = det.qty_per_pallet ?? 0, hi = det.qty_per_pallet_max ?? 0, pallets = det.pallets ?? 0;
+  const ranged = det.qty_basis === "per_pallet" && hi > lo && pallets > 0;
+  return ranged
+    ? `${lot.quantity.toLocaleString()}–${(hi * pallets).toLocaleString()} units`
+    : `${lot.quantity.toLocaleString()} units`;
+};
+
 const statusColor = (s: string) => {
   switch (s) { case "available": return "bg-success-bg text-success-ink"; case "reserved": return "bg-info-bg text-info-ink"; case "sold": return "bg-surface-3 text-ink-2"; case "archived": return "bg-warning-bg text-warning-ink"; default: return "bg-surface-3 text-ink-2"; }
 };
@@ -318,10 +353,15 @@ export default function InventoryView() {
     const qty = l.quantity || 0;
     const isTotal = l.price_type === "total";
     const isCustom = l.price_type === "custom";
-    const priceText = isCustom ? (() => { try { return (JSON.parse(l.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+    const det: LotDetails = (() => { try { return (JSON.parse(l.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
+    const priceText = isCustom ? (det.price_text || "") : "";
     const perUnit = isCustom ? 0 : (isTotal && qty > 0 ? l.asking_price / qty : l.asking_price);
+    const pallet = palletPrice(det);
     let price = "";
     if (isCustom) price = priceText;
+    // A per-pallet lot leads with the pallet price — that is what the supplier quoted
+    // and what a buyer buys in.
+    else if (pallet) price = `${fmtAmount(pallet.perPallet)} per pallet · ${fmtAmount(l.asking_price)} for the lot`;
     else if (isTotal && l.asking_price > 0) price = `${fmtAmount(l.asking_price)} for the lot`;
     return {
       title: l.name,
@@ -824,6 +864,10 @@ function LotCard({
   const reserved = lot.status === "reserved";
   // Price-reduction: the prior (higher) asking, shown in the same "total" terms as loadPrice.
   const prevAsk = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.prev_price ?? null; } catch { return null; } })();
+  // A per-pallet lot was quoted by the pallet, so the pallet price is what gets shown
+  // under the load total — with the per-unit price at that pallet size beside it.
+  const cardDet: LotDetails = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
+  const palletLine = palletPriceLine(cardDet);
   const prevTotal = prevAsk != null && prevAsk > lot.asking_price ? (lot.price_type === "per_unit" ? prevAsk * lot.quantity : prevAsk) : null;
   // Stagger cap 8, +20ms each — enter feedback, not decoration.
   const delay = `${Math.min(index, 8) * 20}ms`;
@@ -908,7 +952,7 @@ function LotCard({
       <div className="p-3.5 flex flex-col flex-1">
         <div className="flex items-start justify-between gap-2">
           <h3 className="text-[14px] font-semibold text-ink leading-snug line-clamp-1 group-hover:text-accent transition-colors duration-[140ms]">{lot.name}</h3>
-          <span className="text-[11px] text-muted whitespace-nowrap flex-shrink-0 mt-px tabular-nums">{lot.quantity.toLocaleString()} units</span>
+          <span className="text-[11px] text-muted whitespace-nowrap flex-shrink-0 mt-px tabular-nums">{unitsLabel(lot, cardDet)}</span>
         </div>
         {/* Always render (reserve one line) so the price line below sits at the same height on every card. */}
         <p className="text-[11px] text-muted truncate mt-0.5 min-h-[15px]">{[lot.category, lot.supplier, lot.location].filter(Boolean).join(" · ")}</p>
@@ -929,10 +973,10 @@ function LotCard({
               </div>
               {prevTotal != null ? (
                 <div className="text-[11px] text-muted tabular-nums mt-1">
-                  <span className="line-through">{fmtAmount(prevTotal)}</span> · {fmtAmount(unitAsk)} / unit
+                  <span className="line-through">{fmtAmount(prevTotal)}</span> · {palletLine || `${fmtAmount(unitAsk)} / unit`}
                 </div>
               ) : (
-                <div className="text-[11px] text-muted tabular-nums mt-1">{fmtAmount(unitAsk)} / unit</div>
+                <div className="text-[11px] text-muted tabular-nums mt-1">{palletLine || `${fmtAmount(unitAsk)} / unit`}</div>
               )}
               {unitCost > 0 && (
                 <div className="text-[11px] text-muted tabular-nums mt-1.5">
@@ -1014,9 +1058,18 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
         const notes = [p.notes, p.condition ? `Condition: ${p.condition}` : ""].filter(Boolean).join(" · ");
         const pt = p.price_type === "per_unit" || p.price_type === "total" ? p.price_type : undefined;
         const sizeRun = p.size_run && p.size_run.length ? p.size_run : null;
+        // A per-pallet quote carries its own basis through, so the form re-opens showing
+        // "$1,500 a pallet across 20 pallets" rather than only the multiplied-out total.
+        const perPalletPriced = (p.price_per_pallet ?? 0) > 0 && (p.pallets ?? 0) > 0;
+        const perPalletQty = (p.qty_per_pallet ?? 0) > 0 && (p.pallets ?? 0) > 0;
         const hasDetails = p.pallets != null || p.msrp != null || p.avg_msrp != null || p.moq != null || sizeRun != null;
         const detailsJson = hasDetails
-          ? JSON.stringify({ pallets: p.pallets ?? null, msrp: p.msrp ?? null, avg_msrp: p.avg_msrp ?? null, moq: p.moq ?? null, size_run: sizeRun })
+          ? JSON.stringify({
+              pallets: p.pallets ?? null, msrp: p.msrp ?? null, avg_msrp: p.avg_msrp ?? null,
+              moq: p.moq ?? null, size_run: sizeRun,
+              ...(perPalletQty ? { qty_basis: "per_pallet", qty_per_pallet: p.qty_per_pallet, ...((p.qty_per_pallet_max ?? 0) > (p.qty_per_pallet ?? 0) ? { qty_per_pallet_max: p.qty_per_pallet_max } : {}) } : {}),
+              ...(perPalletPriced ? { price_basis: "per_pallet", price_per_pallet: p.price_per_pallet } : {}),
+            })
           : undefined;
         return {
           name: p.title ?? "",
@@ -1100,13 +1153,22 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
 
       setSubject(`New load: ${lot.name}`);
 
+      const pallet = palletPrice(details);
       const price = lot.asking_price > 0
         ? `${lot.price_type === "per_unit" ? "Price per unit" : "Price for the lot"} - $${fmtAmount(lot.asking_price).replace(/^\$/, "")}`
         : "";
+      // The pallet price and the per-unit price at that pallet size — the two figures a
+      // buyer reads a per-pallet load on.
+      const palletPriceLines = pallet
+        ? [`PRICE PER PALLET - $${fmtAmount(pallet.perPallet).replace(/^\$/, "")}`,
+           pallet.unitHigh > 0
+             ? `PRICE PER UNIT - ${pallet.unitLow < pallet.unitHigh ? `${fmtAmount(pallet.unitLow)}–${fmtAmount(pallet.unitHigh)}` : fmtAmount(pallet.unitHigh)}`
+             : ""].filter(Boolean)
+        : [];
       // Header summary line: "<pallets> pallets · <units> units · <brand mix>".
       const summary = [
         pallets ? `${pallets} pallets` : "",
-        lot.quantity > 0 ? `${lot.quantity} units` : "",
+        lot.quantity > 0 ? unitsLabel(lot, details) : "",
         lot.description || "",
       ].filter(Boolean).join(" · ");
 
@@ -1117,10 +1179,11 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
       lines.push(lot.name);
       if (summary) { lines.push(""); lines.push(summary); }
       lines.push("");
-      if (lot.quantity > 0) lines.push(`UNITS - ${lot.quantity}`);
+      if (lot.quantity > 0) lines.push(`UNITS - ${unitsLabel(lot, details).replace(" units", "")}`);
       if (pallets) lines.push(`PALLETS - ${pallets}`);
       if (msrp) lines.push(`TOTAL MSRP - $${fmtAmount(msrp).replace(/^\$/, "")}`);
       if (avgMsrp) lines.push(`AVG MSRP - $${fmtAmount(avgMsrp).replace(/^\$/, "")}`);
+      for (const l of palletPriceLines) lines.push(l);
       if (price) lines.push(price);
       if (sizeRun.length) {
         lines.push("");
@@ -1383,8 +1446,6 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [category, setCategory] = useState(initial?.category ?? prefill?.category ?? "");
   const [qty, setQty] = useState(initial?.quantity ?? prefill?.quantity ?? 1);
   const [cost, setCost] = useState(initial?.total_cost ?? prefill?.total_cost ?? 0);
-  const [ask, setAsk] = useState(initial?.asking_price ?? prefill?.asking_price ?? 0);
-  const [priceType, setPriceType] = useState(initial?.price_type ?? prefill?.price_type ?? "per_unit");
   const [supplier, setSupplier] = useState(initial?.supplier ?? prefill?.supplier ?? "");
   const [location, setLocation] = useState(initial?.location ?? prefill?.location ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? prefill?.notes ?? "");
@@ -1402,6 +1463,20 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     catch { return {}; }
   };
   const [details0] = useState<LotDetails>(seedDetails);
+  // The Selling price selector's four modes. "per_pallet" is an ENTRY mode, not a stored
+  // price_type — it saves as "total" with the price multiplied out across the pallets,
+  // the same trick qty_basis plays for quantity. So `ask` holds the quoted per-pallet
+  // figure in that mode, and the whole-load / per-unit price in the others.
+  const [priceMode, setPriceMode] = useState<"per_unit" | "total" | "per_pallet" | "custom">(
+    details0.price_basis === "per_pallet"
+      ? "per_pallet"
+      : ((initial?.price_type ?? prefill?.price_type ?? "per_unit") as "per_unit" | "total" | "custom")
+  );
+  const [ask, setAsk] = useState(
+    details0.price_basis === "per_pallet" && (details0.price_per_pallet ?? 0) > 0
+      ? details0.price_per_pallet!
+      : (initial?.asking_price ?? prefill?.asking_price ?? 0)
+  );
   // Multi-category: seed from details.categories, else the single legacy category column.
   const [cats, setCats] = useState<string[]>(() => {
     const list = details0.categories && details0.categories.length ? details0.categories : (category ? [category] : []);
@@ -1413,6 +1488,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   // `quantity` column stays the TOTAL either way; this only changes what you type.
   const [qtyBasis, setQtyBasis] = useState<"total" | "per_pallet">(details0.qty_basis === "per_pallet" ? "per_pallet" : "total");
   const [perPallet, setPerPallet] = useState<number>(details0.qty_per_pallet ?? 0);
+  // Optional upper end of a quoted range ("450-500 per pallet"). 0 means a flat count.
+  const [perPalletMax, setPerPalletMax] = useState<number>(details0.qty_per_pallet_max ?? 0);
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
   const [moq, setMoq] = useState<number>(details0.moq ?? 0);
   // Legacy size_run is preserved on old lots (read-only now — the variant splitter below
@@ -1437,6 +1514,20 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   // with no pallet count there is nothing to multiply, so it falls back to what was typed.
   const perPalletTotal = pallets > 0 ? perPallet * pallets : perPallet;
   const totalUnits = qtyBasis === "per_pallet" ? perPalletTotal : qty;
+  // A quoted range ("450-500 per pallet") stores its LOW end, so the lot never claims
+  // stock the supplier did not promise; the upper end is shown, not stored as quantity.
+  const perPalletTotalMax = perPalletMax > perPallet && pallets > 0 ? perPalletMax * pallets : 0;
+  // Per-unit price at the quoted pallet size — the figure a buyer actually compares on.
+  // Fewer units on a pallet makes each unit dearer, so a range inverts across the ends.
+  const perPalletUnitPrice = (() => {
+    if (priceMode !== "per_pallet" || ask <= 0) return "";
+    const lo = qtyBasis === "per_pallet" ? perPallet : (pallets > 0 ? Math.round(totalUnits / pallets) : 0);
+    const hi = qtyBasis === "per_pallet" ? perPalletMax : 0;
+    if (lo <= 0) return "";
+    const high = ask / lo;
+    const low = hi > lo ? ask / hi : high;
+    return low < high ? ` · ${fmtAmount(low)}–${fmtAmount(high)} / unit` : ` · ${fmtAmount(high)} / unit`;
+  })();
   // Third price mode: a free-text price shown verbatim (no per-unit math).
   const [priceText, setPriceText] = useState<string>(details0.price_text ?? "");
   const [openToOffers, setOpenToOffers] = useState<boolean>(details0.open_to_offers ?? false);
@@ -1511,7 +1602,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
   // Confirm before discarding an edited form — a stray backdrop click can't close it.
   const initialSnapshot = useRef({
-    name, desc, category, qty, cost, ask, priceType, priceText, openToOffers,
+    name, desc, category, qty, cost, ask, priceMode, priceText, openToOffers,
     supplier, location, notes, sentWa, sentEmail,
     photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
@@ -1520,7 +1611,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const isDirty = () =>
     name !== initialSnapshot.name || desc !== initialSnapshot.desc || category !== initialSnapshot.category ||
     qty !== initialSnapshot.qty || cost !== initialSnapshot.cost || ask !== initialSnapshot.ask ||
-    priceType !== initialSnapshot.priceType || priceText !== initialSnapshot.priceText || openToOffers !== initialSnapshot.openToOffers ||
+    priceMode !== initialSnapshot.priceMode || priceText !== initialSnapshot.priceText || openToOffers !== initialSnapshot.openToOffers ||
     supplier !== initialSnapshot.supplier || location !== initialSnapshot.location || notes !== initialSnapshot.notes ||
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
     qtyBasis !== initialSnapshot.qtyBasis || perPallet !== initialSnapshot.perPallet ||
@@ -1535,6 +1626,12 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
   const submit = async () => {
     if (!name.trim()) return;
+    // A per-pallet price with no pallet count would store the PALLET price as the whole
+    // load price - the exact 20x understatement this mode exists to stop. Refuse it.
+    if (priceMode === "per_pallet" && ask > 0 && pallets <= 0) {
+      toast("Add a pallet count - a per-pallet price needs one to work out the load price", "error");
+      return;
+    }
     setSaving(true);
     try {
       // Build the public/internal extras blob. Undefined when everything's empty
@@ -1544,9 +1641,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // edit-save doesn't silently drop it from the blast.
       const avgMsrp = details0.avg_msrp ?? null;
       // Custom price: persist the free text in details_json; the numeric ask is 0/ignored.
-      const isCustom = priceType === "custom";
+      const isCustom = priceMode === "custom";
       const priceTextClean = isCustom ? priceText.trim() : "";
-      const effAsk = isCustom ? 0 : ask;
+      // Per-pallet is an ENTRY mode: it stores the whole-load price under price_type
+      // "total", so nothing downstream has to learn a fourth price_type. With no pallet
+      // count there is nothing to multiply by, so the typed figure stands as the total.
+      const perPalletPriced = priceMode === "per_pallet" && ask > 0 && pallets > 0;
+      const storedPriceType = priceMode === "per_pallet" ? "total" : priceMode;
+      const effAsk = isCustom ? 0 : perPalletPriced ? ask * pallets : ask;
       // Variants: keep only fully-named option types with values, and only variant
       // rows the seller actually stocks (a qty or a price).
       const cleanOptions = options
@@ -1572,6 +1674,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       if (!hasVariants && qtyBasis === "per_pallet" && perPallet > 0) {
         detailsObj.qty_basis = "per_pallet";
         detailsObj.qty_per_pallet = perPallet;
+        // Only a real range is kept — a max at or below the low end is just the low end.
+        if (perPalletMax > perPallet) detailsObj.qty_per_pallet_max = perPalletMax;
+      }
+      // Remember the quoted per-pallet price so the form shows it back and every surface
+      // can print "$1,500 per pallet" rather than only the multiplied-out total.
+      if (perPalletPriced) {
+        detailsObj.price_basis = "per_pallet";
+        detailsObj.price_per_pallet = ask;
       }
       if (priceTextClean) detailsObj.price_text = priceTextClean;
       if (openToOffers) detailsObj.open_to_offers = true;
@@ -1595,7 +1705,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev;
+      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev || perPalletPriced;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       // Canonicalise on the way out. LocationField already emits the right shape,
       // but a PREFILLED lot (paste-a-load) can reach save without the field ever
@@ -1603,13 +1713,13 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       const locParts = parseLocation(location);
       const locClean = formatLocation(locParts.city, locParts.state);
       if (initial) {
-        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: primaryCat || null, quantity: effQty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: locClean || null, priceType, detailsJson });
+        await api.updateLot(initial.id, { name: name.trim(), description: desc || null, category: primaryCat || null, quantity: effQty, totalCost: cost, askingPrice: effAsk, photos, notes: notes.trim() || null, sentWhatsapp: sentWa, sentEmail: sentEmail, supplier: supplier.trim() || null, location: locClean || null, priceType: storedPriceType, detailsJson });
       } else {
         // Duplicate guard: warn (don't block) if a still-listed lot already has this
         // name — a legitimate re-buy of the same product can recur.
         const dupe = lots.find((l) => (l.name || "").trim().toLowerCase() === name.trim().toLowerCase() && l.status !== "archived");
         if (dupe && !confirm(`A lot named "${dupe.name}" already exists (${dupe.status}). Add another anyway?`)) { setSaving(false); return; }
-        const lot = await api.createLot({ name: name.trim(), quantity: effQty, totalCost: cost, askingPrice: effAsk, description: desc || undefined, category: primaryCat || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: locClean || undefined, priceType, detailsJson });
+        const lot = await api.createLot({ name: name.trim(), quantity: effQty, totalCost: cost, askingPrice: effAsk, description: desc || undefined, category: primaryCat || undefined, notes: notes.trim() || undefined, supplier: supplier.trim() || undefined, location: locClean || undefined, priceType: storedPriceType, detailsJson });
         // Photos were picked as raw paths; copy them into the lot's synced media folder now that it has an id.
         if (photos.length > 0) {
           const rel = await api.importLotPhotos(lot.id, photos);
@@ -1698,7 +1808,11 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                     <span className="text-[10.5px] text-muted font-normal">auto from variants</span>
                   </div>
                 ) : qtyBasis === "per_pallet" ? (
-                  <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={perPallet || ""} onChange={(e) => setPerPallet(parseInt(e.target.value) || 0)} placeholder="0" />
+                  <div className="flex items-center gap-1.5">
+                    <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={perPallet || ""} onChange={(e) => setPerPallet(parseInt(e.target.value) || 0)} placeholder="450" />
+                    <span className="text-[12px] text-muted flex-shrink-0">to</span>
+                    <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={perPalletMax || ""} onChange={(e) => setPerPalletMax(parseInt(e.target.value) || 0)} placeholder="optional" />
+                  </div>
                 ) : (
                   <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={qty || ""} onChange={(e) => setQty(parseInt(e.target.value) || 0)} placeholder="0" />
                 )}
@@ -1730,8 +1844,11 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                   <p className="text-[11.5px] mt-1.5 tabular-nums">
                     {pallets > 0 && perPallet > 0 ? (
                       <span className="text-ink-2">
-                        {perPallet.toLocaleString()} × {pallets} pallet{pallets === 1 ? "" : "s"} ={" "}
-                        <span className="font-semibold text-ink">{perPalletTotal.toLocaleString()} units</span> stored on this lot
+                        {perPallet.toLocaleString()}{perPalletMax > perPallet ? `–${perPalletMax.toLocaleString()}` : ""} × {pallets} pallet{pallets === 1 ? "" : "s"} ={" "}
+                        <span className="font-semibold text-ink">
+                          {perPalletTotal.toLocaleString()}{perPalletTotalMax ? `–${perPalletTotalMax.toLocaleString()}` : ""} units
+                        </span>
+                        {perPalletTotalMax ? " — the lower figure is what's stored, so the lot never over-promises" : " stored on this lot"}
                       </span>
                     ) : (
                       <span className="text-warning-ink">Add a pallet count and the total is worked out for you.</span>
@@ -1757,22 +1874,39 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             </div>
             <div>
             <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Selling price</label>
-            <div className="flex gap-1 bg-surface-3 rounded-lg p-0.5 mb-2">
-              {(["per_unit", "total", "custom"] as const).map(pt => (
-                <button key={pt} onClick={() => setPriceType(pt)}
-                  className={`flex-1 text-[12px] font-medium h-8 rounded-md transition-colors ${priceType === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
-                  {pt === "per_unit" ? "Per unit" : pt === "total" ? "Fixed total" : "Custom text"}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 bg-surface-3 rounded-lg p-0.5 mb-2">
+              {(["per_unit", "total", "per_pallet", "custom"] as const).map(pt => (
+                <button key={pt} onClick={() => setPriceMode(pt)}
+                  className={`text-[12px] font-medium h-8 rounded-md transition-colors ${priceMode === pt ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                  {pt === "per_unit" ? "Per unit" : pt === "total" ? "Fixed total" : pt === "per_pallet" ? "Per pallet" : "Custom text"}
                 </button>
               ))}
             </div>
-            {priceType === "custom" ? (
+            {priceMode === "custom" ? (
               <input className={inp} value={priceText} maxLength={80} onChange={(e) => setPriceText(e.target.value)}
                 placeholder="e.g. 10,000+ units at $10/unit, or Best offer" />
             ) : (
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+                <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)}
+                  placeholder={priceMode === "per_pallet" ? "1500.00" : "0.00"} />
               </div>
+            )}
+            {/* A per-pallet quote is stored multiplied out, so show the arithmetic before
+                it is saved — and the per-unit price at the quoted pallet size, which is
+                the number a buyer actually compares on. */}
+            {priceMode === "per_pallet" && (
+              <p className="text-[11.5px] mt-1.5 tabular-nums">
+                {ask > 0 && pallets > 0 ? (
+                  <span className="text-ink-2">
+                    {fmtAmount(ask)} × {pallets} pallet{pallets === 1 ? "" : "s"} ={" "}
+                    <span className="font-semibold text-ink">{fmtAmount(ask * pallets)}</span>
+                    {perPalletUnitPrice}
+                  </span>
+                ) : (
+                  <span className="text-warning-ink">Add a pallet count above and the load price is worked out for you.</span>
+                )}
+              </p>
             )}
             </div>
             <label className="flex items-start gap-2.5 cursor-pointer mt-1 rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
@@ -1922,12 +2056,15 @@ function FbPostModal({ lot, photos, onClose }: { lot: Lot; photos: string[]; onC
     const qty = lot.quantity || 0;
     const isTotal = lot.price_type === "total";
     const isCustom = lot.price_type === "custom";
-    const priceText = isCustom ? (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails)?.price_text || ""; } catch { return ""; } })() : "";
+    const det: LotDetails = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
+    const priceText = isCustom ? (det.price_text || "") : "";
     const perUnit = isTotal && qty > 0 ? lot.asking_price / qty : lot.asking_price;
     const total = lot.price_type === "per_unit" ? lot.asking_price * qty : lot.asking_price;
+    const pallet = palletPrice(det);
     const bits: string[] = [];
-    if (qty) bits.push(`${qty.toLocaleString()} units`);
+    if (qty) bits.push(unitsLabel(lot, det));
     if (isCustom && priceText) bits.push(priceText);
+    else if (pallet) { bits.push(`${fmtAmount(pallet.perPallet)}/pallet`); bits.push(`${fmtAmount(total)} total`); }
     else if (lot.asking_price > 0) { bits.push(`${fmtAmount(perUnit)}/unit`); bits.push(`${fmtAmount(total)} total`); }
     if (lot.category) bits.push(lot.category);
     const lines = [lot.name || "New lot"];
@@ -2149,7 +2286,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
                     </span>
                   )}
                 </div>
-                <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{fmtAmount(uAsk)} / unit · {lot.quantity.toLocaleString()} units</p>
+                <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{palletPriceLine(det) || `${fmtAmount(uAsk)} / unit`} · {unitsLabel(lot, det)}</p>
                 {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
                 {uCost > 0 && (
                   <div className="mt-3 pt-3 border-t border-line flex items-center justify-between text-[12px] text-muted tabular-nums">
