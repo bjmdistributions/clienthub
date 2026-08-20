@@ -1038,8 +1038,8 @@ function PasteLoadModal({ onClose, onParsed }: { onClose: () => void; onParsed: 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] bg-black/25 backdrop-blur-[3px]">
-      <div className="bg-surface rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-6" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] px-4 bg-black/25 backdrop-blur-[3px] overflow-y-auto">
+      <div className="bg-surface rounded-2xl shadow-xl w-[480px] max-w-[92vw] p-6 mb-10" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-1">
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Clipboard size={15} className="text-accent" /> Paste a load</h3>
           <button onClick={requestClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
@@ -1164,8 +1164,8 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[9vh] bg-black/25 backdrop-blur-[3px]" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-xl w-[520px] max-w-[94vw] p-6" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[9vh] px-4 bg-black/25 backdrop-blur-[3px] overflow-y-auto" onClick={onClose}>
+      <div className="bg-surface rounded-2xl shadow-xl w-[520px] max-w-[94vw] p-6 mb-10" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-1">
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Mail size={15} className="text-accent" /> Blast this load</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
@@ -1687,7 +1687,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
 
           <div className="pt-5 border-t border-line-2 space-y-3">
             <div className="text-[12px] font-semibold text-ink">Quantity &amp; variants</div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[12.5px] font-medium text-ink-2 mb-1">
                   {variantTotal > 0 ? "Total quantity (units)" : qtyBasis === "per_pallet" ? "Units per pallet" : "Total quantity (units)"}
@@ -1869,7 +1869,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[12.5px] font-medium text-muted mb-1">Your cost</label>
                 <div className="relative">
@@ -1945,7 +1945,7 @@ function FbPostModal({ lot, photos, onClose }: { lot: Lot; photos: string[]; onC
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-[3px] p-4" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-[440px] max-w-full bg-surface border border-line rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.18)] overflow-hidden">
+      <div onClick={(e) => e.stopPropagation()} className="w-[440px] max-w-full max-h-[88vh] overflow-y-auto bg-surface border border-line rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
           <h3 className="text-[14px] font-semibold text-ink flex items-center gap-2"><Facebook size={15} className="text-accent" /> Post to Facebook</h3>
           <button onClick={onClose} className="text-muted hover:text-ink-2"><X size={16} /></button>
@@ -2162,7 +2162,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           </div>
 
           {/* Details grid */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Row label="Quantity" value={`${lot.quantity} units`} />
             <Row label="Supplier" value={lot.supplier || "—"} />
             <Row label="Location" value={lot.location || "—"} />
@@ -2323,8 +2323,8 @@ function LinkDealModal({ lot, deals, clients, mediaBase, onClose, onLink }: {
   const priceLabel = isCustom ? (priceText || "—") : fmtAmount(totalAsk);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[3px]" onClick={onClose}>
-      <div ref={ref} className="bg-surface rounded-2xl border border-line shadow-[0_8px_24px_rgba(0,0,0,0.12)] w-[420px] max-w-[92vw] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[3px] p-4" onClick={onClose}>
+      <div ref={ref} className="bg-surface rounded-2xl border border-line shadow-[0_8px_24px_rgba(0,0,0,0.12)] w-[420px] max-w-[92vw] max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-line">
           <div className="flex items-center gap-2 min-w-0">
