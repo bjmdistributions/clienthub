@@ -220,19 +220,47 @@ export default function DealFlowView() {
   // know to look under Refunds. A part-refunded deal is still live work and stays
   // where you can finish it; handed-back money is marked by the struck-through
   // amounts on the card, not by hiding the deal.
-  const isFullyRefunded = (id: string) => {
-    const r = refundMap[id];
-    return !!r && r.refund_owed > 0.01 && r.remaining <= 0.01;
+  // "Fully refunded" means the refund covers the WHOLE DEAL — not that the refund
+  // has been fully paid. The first version tested `remaining <= 0.01`, which is the
+  // second thing, so attaching every payment for a PARTIAL refund is what exiled the
+  // deal: owe $7,890 back on a $52,890 deal, pay all $7,890, remaining hits 0, and
+  // the deal got filed as fully refunded. Doing the book-keeping properly is exactly
+  // what made the deal disappear. Scope, not settlement.
+  const dealValueOf = (f: DealFlow) =>
+    f.gross_revenue > 0 ? f.gross_revenue
+    : f.payment_received_amount > 0 ? f.payment_received_amount
+    : f.invoice_total;
+  const isFullyRefunded = (f: DealFlow) => {
+    const r = refundMap[f.id];
+    if (!r) return false;
+    // Owed is the intent, refunded is the fact; a refund entered as payments with no
+    // owed figure is still a refund of that size, so take whichever is larger.
+    const scope = Math.max(r.refund_owed, r.refunded);
+    return scope > 0.01 && scope + 0.01 >= dealValueOf(f);
+  };
+  // A PART refund is not a refund as far as these lists are concerned. Jack's rule:
+  // "if the amount refunded is not the entire thing, i want it to show in deal flow
+  // completed" — the lot did not go back, so some of it was sold and the deal is
+  // concluded, not a lot sitting in a returns queue. The Refunds drawer is reserved
+  // for a deal that went back WHOLE. A part-refunded deal is therefore listed under
+  // Completed with its pre-refund figures struck through, and nowhere else.
+  // It turns on money actually RETURNED, not merely owed — "if the amount refunded is
+  // not the entire thing". A part refund entered but not yet paid is still live work and
+  // stays in the pipeline; it moves across the moment its payments are attached.
+  const isPartlyRefunded = (f: DealFlow) => {
+    const r = refundMap[f.id];
+    return !!r && !isFullyRefunded(f) && r.refunded > 0.01;
   };
   const active    = flows.filter(
-    (f) => f.stage !== "complete" && !isFullyRefunded(f.id) && isInvoiceActive(f) && matchFl(f)
+    (f) => f.stage !== "complete" && !isFullyRefunded(f) && !isPartlyRefunded(f) && isInvoiceActive(f) && matchFl(f)
   );
-  const completed = flows.filter((f) => f.stage === "complete");
+  const completed = flows.filter((f) => f.stage === "complete" || isPartlyRefunded(f));
   // Completed deals, most recent completion first, so the list always reads top-down
-  // by date. Missing dates sort last.
+  // by date. A part-refunded deal that was never marked complete has no completion
+  // date, so it dates from when it was last touched rather than sinking to the bottom.
   const completedFiltered = completed.filter(matchFl).sort((a, b) => {
-    const ta = a.completed_at ? Date.parse(a.completed_at) : 0;
-    const tb = b.completed_at ? Date.parse(b.completed_at) : 0;
+    const ta = Date.parse(a.completed_at || a.updated_at || "") || 0;
+    const tb = Date.parse(b.completed_at || b.updated_at || "") || 0;
     return tb - ta;
   });
   const totalCompleted    = completed.length;
@@ -275,7 +303,8 @@ export default function DealFlowView() {
   // in and the whole feature is dead in a month.
   const noAnswer = active.filter((f) => shipState(f).kind === "unset").length;
 
-  const refundAll   = flows.filter((f) => refundMap[f.id]);
+  // Whole-lot refunds only — see `isPartlyRefunded`.
+  const refundAll   = flows.filter((f) => refundMap[f.id] && isFullyRefunded(f));
   const refundFlows = refundAll
     .filter((f) => showDoneRefunds || !isRefundDone(f.id))
     .sort((a, b) => refundMap[b.id].remaining - refundMap[a.id].remaining);
@@ -518,6 +547,8 @@ export default function DealFlowView() {
               {refundFlows.map((flow) => {
                 const r = refundMap[flow.id];
                 const isExp = expandedRefund === flow.id;
+                // Nothing left OWED. Not the same as the whole deal being refunded —
+                // conflating the two is what filed settled partial refunds as full ones.
                 const fullyRefunded = r.remaining <= 0.01;
                 const done = isRefundDone(flow.id);
                 // Marked done, but the numbers moved since — say so instead of hiding it.
@@ -543,7 +574,7 @@ export default function DealFlowView() {
                         <div className="text-right">
                           <div className="text-[12px] font-medium text-muted">Remaining</div>
                           {fullyRefunded ? (
-                            <div className="text-[13px] font-bold tabular-nums text-danger-ink">Fully refunded</div>
+                            <div className="text-[13px] font-bold tabular-nums text-danger-ink">Nothing owed</div>
                           ) : (
                             <div className="text-[13px] font-semibold tabular-nums text-danger-ink">{fmtAmount(r.remaining)}</div>
                           )}
@@ -664,19 +695,28 @@ function DealFlowCard({
 }: { flow: DealFlow; onReload: () => void; zebra: boolean; refund?: { refund_owed: number; refunded: number; remaining: number }; reconStatus?: { needs_financials: boolean; has_financials: boolean; fully_reconciled: boolean; buyer_missing: boolean; supplier_missing: boolean; needs_review: boolean } }) {
   const [isOpen,    setIsOpen]    = useState(false); // collapsed by default
   const [refundOverride, setRefundOverride] = useState<boolean | null>(null);
-  // Three refund states, same ladder as the mobile badge (www/app.js `refundBadgeHTML`):
-  // fully refunded, part refunded, and owed back with nothing returned yet. Desktop used
-  // to collapse the last two into one label, so a part-refunded deal looked untouched.
+  // Two independent questions, and collapsing them is what made a properly booked
+  // partial refund read as a full one (same ladder as mobile's `refundBadgeHTML`):
+  //   SCOPE  — how much of the deal is being given back: all of it, or part of it?
+  //   SETTLED — has the money owed back actually gone out?
+  // A deal can be partially refunded AND fully settled, which is the ordinary case
+  // once the refund payments are attached, and it must not say "Refunded".
   const refundOwed = refund?.refund_owed ?? 0;
   const refundPaid = refund?.refunded ?? 0;
-  const refundState: "full" | "part" | "owed" | null =
+  const refundScope = Math.max(refundOwed, refundPaid);
+  const dealValue = flow.gross_revenue > 0 ? flow.gross_revenue
+    : flow.payment_received_amount > 0 ? flow.payment_received_amount
+    : flow.invoice_total;
+  const wholeDeal = refundScope > 0.01 && refundScope + 0.01 >= dealValue;
+  const settled   = refundScope > 0.01 && refundPaid + 0.01 >= refundScope;
+  const refundLeft = Math.max(refundScope - refundPaid, 0);
+  const refundState: "full" | "full-owed" | "part" | "part-owed" | null =
     !refund ? null
-    : refundPaid > 0 && refundOwed > 0 && refundPaid + 0.005 >= refundOwed ? "full"
-    : refundPaid > 0 ? "part"
-    : "owed";
-  // Only a fully refunded deal opens straight into the refund workspace — there is
-  // nothing else left of it. A part-refunded deal is still a deal, so it opens on its
-  // own sections like any other; the refund pill switches over.
+    : wholeDeal ? (settled ? "full" : "full-owed")
+    : (settled ? "part" : "part-owed");
+  // Only a deal that is entirely refunded and settled opens straight into the refund
+  // workspace — there is nothing else left of it. A part-refunded deal is still a deal,
+  // so it opens on its own sections like any other; the refund pill switches over.
   const refundView = refundOverride ?? refundState === "full";
   const [invStatus, setInvStatus] = useState<string | undefined>(undefined);
   const [invItems,  setInvItems]  = useState<{ description: string; qty: number; rate: number; amount: number }[]>([]);
@@ -891,15 +931,16 @@ function DealFlowCard({
               ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-danger-bg text-danger-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
               : refundState === "part"
               ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full bg-warning-bg text-warning-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
-              : refundState === "owed"
+              : refundState === "full-owed" || refundState === "part-owed"
               ? "text-[12.5px] font-medium px-2 py-0.5 rounded-full border border-warning text-warning-ink inline-flex items-center gap-1 flex-shrink-0 hover:opacity-90 transition-opacity"
               : "text-[11.5px] font-medium px-2 py-0.5 rounded-full border border-line text-muted hover:text-danger-ink hover:border-danger inline-flex items-center gap-1 flex-shrink-0 transition-colors"}
           >
             <RotateCcw size={11} />
             {refundView ? "Back to deal"
               : refundState === "full" ? "Refunded"
-              : refundState === "part" ? `Part refunded ${fmtAmount(refundPaid)}`
-              : refundState === "owed" ? `Refund owed ${fmtAmount(refundOwed)}`
+              : refundState === "part" ? `Partially refunded ${fmtAmount(refundPaid)}`
+              : refundState === "part-owed" ? `Partial refund owed ${fmtAmount(refundLeft)}`
+              : refundState === "full-owed" ? `Refund owed ${fmtAmount(refundLeft)}`
               : "Refund"}
           </button>
           <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
@@ -909,11 +950,18 @@ function DealFlowCard({
       {/* ── Expanded body ── */}
       {isOpen && (
         <>
-          {refund && refund.refund_owed > 0 && refund.remaining === 0 && (
+          {refundState === "full" && (
             <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-danger-bg border border-danger px-4 py-3">
               <RotateCcw size={18} className="text-danger-ink flex-shrink-0" strokeWidth={2.2} />
               <span className="text-[15px] font-bold text-danger-ink">Fully refunded</span>
-              <span className="ml-auto text-[12px] text-danger-ink tabular-nums">{fmtAmount(refund.refunded)} refunded</span>
+              <span className="ml-auto text-[12px] text-danger-ink tabular-nums">{fmtAmount(refundPaid)} refunded</span>
+            </div>
+          )}
+          {refundState === "part" && (
+            <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg bg-warning-bg border border-warning px-4 py-3">
+              <RotateCcw size={18} className="text-warning-ink flex-shrink-0" strokeWidth={2.2} />
+              <span className="text-[15px] font-bold text-warning-ink">Partially refunded</span>
+              <span className="ml-auto text-[12px] text-warning-ink tabular-nums">{fmtAmount(refundPaid)} of {fmtAmount(dealValue)} returned</span>
             </div>
           )}
 
