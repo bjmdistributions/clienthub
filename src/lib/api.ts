@@ -1680,6 +1680,33 @@ export interface DealReceipt {
   label: string;
   received_at: string;
 }
+/** A deal restated around a short shipment (R-163), off `dealFlowPayout().shortage`.
+ *  The input is `shortage_units` — a COUNT. Every figure below is derived from it
+ *  and the rates already on record, so nobody retypes a price.
+ *
+ *  `expected` is the deal if the supplier takes the short units back and pays what
+ *  is owed. `actual` counts only money that has really moved. They are separate on
+ *  purpose: when the supplier keeps our money, cost does not fall and the profit on
+ *  the kept units is zero — never the figure the unit math alone suggests. */
+export interface DealShortage {
+  /** false when nobody has recorded a shortage yet — which is not the same as 0 short. */
+  recorded: boolean;
+  invoice_units: number;    // what the invoice says, and it is never rewritten
+  shortage_units: number | null;
+  kept_units: number;
+  buyer_rate: number;
+  buyer_rate_blended: boolean;      // averaged across several invoice lines
+  supplier_rate: number;
+  supplier_rate_estimated: boolean; // no supplier quantity on record; cost spread over invoice units
+  suggested_buyer_refund: number;
+  suggested_supplier_refund: number;
+  supplier_refund_owed: number | null; // an explicit figure (0 = agreed, nothing owed)
+  supplier_refund_expected: number;
+  supplier_refund_actual: number;      // landed as a refund_in allocation with a live bank txn
+  supplier_gap: number;                // never netted against what we owe the buyer
+  expected: { units: number; revenue: number; cost: number; profit: number };
+  actual: { units: number; revenue: number; cost: number; profit: number };
+}
 export interface UnallocatedTxn {
   id: string;
   posted_at: string;
@@ -2249,7 +2276,13 @@ export const api = {
   createRefund: (dealFlowId: string, amount: number, opts?: { method?: string; source?: string; sourceSupplierRef?: string; keepRepCut?: boolean; reason?: string; bankTxnId?: string }) =>
     invoke<string>("create_refund", { dealFlowId, amount, ...(opts || {}) }),
   listRefunds: (dealFlowId: string) => invoke<RefundRow[]>("list_refunds", { dealFlowId }),
-  setRefundOwed: (dealFlowId: string, amount: number) => invoke<void>("set_refund_owed", { dealFlowId, amount }),
+  /** Set what's owed back to the buyer. `opts` records the short-shipment behind
+   *  it (R-163): the unit shortfall and what the supplier owes us for those units,
+   *  saved in the same call so the deal never sits in a state where units say
+   *  short and the money says nothing is owed. Omitting `opts` leaves both
+   *  shortage columns exactly as they were. */
+  setRefundOwed: (dealFlowId: string, amount: number, opts?: { shortageUnits?: number; supplierRefundOwed?: number }) =>
+    invoke<void>("set_refund_owed", { dealFlowId, amount, ...(opts || {}) }),
   deleteRefund: (id: string) => invoke<void>("delete_refund", { id }),
   // Money received on a deal that isn't in the bank feed (custom lines). Bank-linked
   // receipts use allocateBankTxn(role="buyer_payment"); these are the manual side.

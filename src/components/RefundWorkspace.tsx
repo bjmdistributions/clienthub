@@ -3,15 +3,22 @@ import {
   ChevronRight, Plus, X, Trash2, Search, Link2,
   CheckCircle2, AlertTriangle, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
-import { api, DealAllocation, DealReceipt, RefundRow, UnallocatedTxn } from "../lib/api";
+import { api, DealAllocation, DealReceipt, DealShortage, RefundRow, UnallocatedTxn } from "../lib/api";
 import { fmtAmount, parseLocalDay } from "../lib/format";
 import { toast } from "./Toast";
 
 // ─── Refund workspace ───────────────────────────────────────────────────────
 // One place to run a deal's refund end to end: mark the money received (link the
-// real bank transactions, or add a custom line for anything not in the feed), set
-// how much is owed back, record each refund payment (linked to a bank transaction
-// or a custom amount), and watch the remaining balance fall to zero.
+// real bank transactions, or add a custom line for anything not in the feed), say
+// how many units came up short, set how much is owed back, record each refund
+// payment (linked to a bank transaction or a custom amount), and watch the
+// remaining balance fall to zero.
+//
+// A short shipment is entered as a UNIT COUNT and nothing else — the buyer's rate
+// comes off the invoice, ours off the recorded supplier cost. The deal restates
+// around the units that were kept; the invoice is never rewritten and keeps its
+// original quantity. Supplier money owed back is shown against what has actually
+// landed, because units leaving does not by itself mean the cost came back.
 //
 // Received money links live in bank_allocation(buyer_payment); custom received
 // lines in deal_receipts; refund payments in the refunds table (linked ones also
@@ -126,6 +133,12 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   const [refundAmt, setRefundAmt] = useState("");
   const [refundReason, setRefundReason] = useState("");
   const [refundSource, setRefundSource] = useState("business");
+  // Short shipment: the ONLY typed figure is the unit count. `supOwedDraft` starts
+  // empty and means "use the unit math"; it exists because a load can be short with
+  // nothing owed back (credited on the next one instead), and that has to be sayable.
+  const [shortDraft, setShortDraft] = useState<string | null>(null);
+  const [supOwedDraft, setSupOwedDraft] = useState("");
+  const [pickSupplierBack, setPickSupplierBack] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -155,7 +168,9 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
   };
 
   const receivedLinked = allocs.filter((a) => a.role === "buyer_payment");
+  const supplierBack = allocs.filter((a) => a.role === "refund_in");
   const totalReceived = receivedLinked.reduce((s, a) => s + a.amount, 0) + receipts.reduce((s, r) => s + r.amount, 0);
+  const shortage: DealShortage | null = payout?.shortage ?? null;
   const refundOwed: number = payout?.refund_owed || 0;
   const totalRefunded = payout?.refunded || refunds.reduce((s, r) => s + r.amount, 0);
   const remaining = Math.max(refundOwed - totalRefunded, 0);
@@ -195,6 +210,40 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
       setRefundAmt(""); setRefundReason(""); setShowManualRefund(false);
     });
   };
+
+  // ── Short shipment (R-163) ──
+  // Type how many units never arrived; the rates come off the invoice and the
+  // recorded supplier cost, so nothing is retyped. The invoice is untouched.
+  const shortSaved = shortage?.shortage_units ?? null;
+  const shortTyped = shortDraft !== null ? shortDraft : (shortSaved === null ? "" : String(shortSaved));
+  const shortNum = Math.max(0, Math.floor(parseFloat(shortTyped.replace(/[^\d.]/g, "")) || 0));
+  const invoiceUnits = shortage?.invoice_units ?? 0;
+  const shortValid = !shortage || invoiceUnits <= 0 || shortNum <= invoiceUnits;
+  const buyerFromUnits = shortNum * (shortage?.buyer_rate ?? 0);
+  const supplierFromUnits = shortNum * (shortage?.supplier_rate ?? 0);
+  // An explicit typed figure wins — including 0, which is the "short but nothing
+  // owed" answer. An untouched box means "whatever the units come to".
+  const supOwedTyped = supOwedDraft.trim() === "" ? null : parseFloat(supOwedDraft.replace(/[$,\s]/g, ""));
+  const supplierOwedNext = supOwedTyped !== null && isFinite(supOwedTyped) ? Math.max(0, supOwedTyped) : supplierFromUnits;
+  const shortDirty = shortDraft !== null || supOwedDraft.trim() !== "";
+
+  const saveShortage = () => {
+    if (!shortValid) { setErr(`The invoice only has ${invoiceUnits} units.`); return; }
+    run(async () => {
+      // Units, what we owe the buyer and what the supplier owes us go in ONE call:
+      // saved apart, the deal spends a moment claiming units are short while the
+      // money still says nothing is owed, and every badge reads that as fact.
+      await api.setRefundOwed(dealFlowId, buyerFromUnits, {
+        shortageUnits: shortNum,
+        supplierRefundOwed: supplierOwedNext,
+      });
+      setShortDraft(null); setSupOwedDraft("");
+    });
+  };
+  const linkSupplierBack = (t: UnallocatedTxn, amount: number) => run(async () => {
+    await api.allocateBankTxn(t.id, dealFlowId, amount, "refund_in", "Supplier returned the short units");
+    setPickSupplierBack(false);
+  });
 
   return (
     <div className="bg-surface border border-line rounded-xl overflow-hidden">
@@ -288,7 +337,116 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
 
           <div className="border-t border-line-2" />
 
-          {/* 2 · Refund owed */}
+          {/* 2 · Short shipment — units in, everything else derived (R-163) */}
+          {shortage && invoiceUnits > 0 && (<>
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[12.5px] font-medium text-ink-2">Short shipment</span>
+                {shortSaved !== null && shortSaved > 0 && (
+                  <span className="text-[11px] font-semibold text-warning-ink">Partial refund · {shortage.kept_units} of {invoiceUnits} kept</span>
+                )}
+              </div>
+              {!locked ? (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    value={shortTyped} onChange={(e) => setShortDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && shortDirty) saveShortage(); }}
+                    placeholder="0" inputMode="numeric"
+                    className={`bg-surface-2 border rounded-lg h-8 px-2 w-20 text-[12px] text-ink tabular-nums text-right ${shortValid ? "border-line" : "border-danger"}`}
+                  />
+                  <span className="text-[11.5px] text-muted">units short of the {invoiceUnits} invoiced</span>
+                  {shortDirty && (
+                    <button onClick={saveShortage} disabled={busy || !shortValid}
+                      className="ml-auto h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium disabled:opacity-40 transition-colors">Save</button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[12px] text-ink">{shortSaved ?? 0} units short of the {invoiceUnits} invoiced</div>
+              )}
+              {shortNum > 0 && (
+                <div className="mt-2 space-y-1 text-[11.5px] text-muted">
+                  <div>
+                    Buyer is owed <span className="text-ink tabular-nums font-medium">{fmtAmount(buyerFromUnits)}</span>
+                    {" "}— {shortNum} × {fmtAmount(shortage.buyer_rate)} from the invoice
+                    {shortage.buyer_rate_blended && <span className="text-warning-ink"> (averaged across the invoice's lines)</span>}
+                  </div>
+                  {!locked ? (
+                    <div className="flex items-center gap-2 pt-0.5">
+                      <span>Supplier owes us back</span>
+                      <input
+                        value={supOwedDraft} onChange={(e) => setSupOwedDraft(e.target.value)}
+                        placeholder={supplierFromUnits.toFixed(2)}
+                        className="bg-surface-2 border border-line rounded-lg h-7 px-2 w-24 text-[12px] text-ink tabular-nums text-right"
+                      />
+                      <span>
+                        {shortNum} × {fmtAmount(shortage.supplier_rate)}
+                        {shortage.supplier_rate_estimated && <span className="text-warning-ink"> (no supplier quantity on record — cost spread over the invoiced units)</span>}
+                      </span>
+                    </div>
+                  ) : (
+                    <div>Supplier owes us back <span className="text-ink tabular-nums font-medium">{fmtAmount(shortage.supplier_refund_expected)}</span></div>
+                  )}
+                  {!locked && <div className="text-[10.5px]">Enter 0 if the supplier is crediting the next load instead — the deal is still short, but nothing is owed.</div>}
+                </div>
+              )}
+            </section>
+
+            {/* The restated deal — expected against actual, never merged. */}
+            {shortSaved !== null && shortSaved > 0 && (
+              <section className="rounded-lg border border-line bg-surface-2 p-3">
+                <div className="grid grid-cols-[1fr_auto_auto] gap-x-4 gap-y-1 text-[12px]">
+                  <span className="text-muted" />
+                  <span className="text-[10.5px] font-semibold text-muted text-right">If the supplier pays</span>
+                  <span className="text-[10.5px] font-semibold text-muted text-right">Actually banked</span>
+                  <span className="text-ink-2">Units sold</span>
+                  <span className="tabular-nums text-right text-ink">{shortage.expected.units}</span>
+                  <span className="tabular-nums text-right text-ink">{shortage.actual.units}</span>
+                  <span className="text-ink-2">Revenue</span>
+                  <span className="tabular-nums text-right text-ink">{fmtAmount(shortage.expected.revenue)}</span>
+                  <span className="tabular-nums text-right text-ink">{fmtAmount(shortage.actual.revenue)}</span>
+                  <span className="text-ink-2">Cost</span>
+                  <span className="tabular-nums text-right text-ink">{fmtAmount(shortage.expected.cost)}</span>
+                  <span className="tabular-nums text-right text-ink">{fmtAmount(shortage.actual.cost)}</span>
+                  <span className="text-ink-2 font-medium">Profit</span>
+                  <span className="tabular-nums text-right font-semibold text-ink">{fmtAmount(shortage.expected.profit)}</span>
+                  <span className={`tabular-nums text-right font-semibold ${shortage.actual.profit < shortage.expected.profit - 0.005 ? "text-warning-ink" : "text-ink"}`}>
+                    {fmtAmount(shortage.actual.profit)}
+                  </span>
+                </div>
+                {shortage.supplier_gap > 0.005 && (
+                  <div className="mt-2 flex items-start gap-1.5 text-[11px] text-warning-ink">
+                    <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
+                    <span>
+                      {fmtAmount(shortage.supplier_gap)} still to come back from the supplier. Until it lands the units are gone but the
+                      cost isn't — profit on the {shortage.kept_units} kept units is {fmtAmount(shortage.actual.profit)}, not {fmtAmount(shortage.expected.profit)}.
+                    </span>
+                  </div>
+                )}
+                <div className="mt-2 pt-2 border-t border-line-2 space-y-0.5">
+                  {supplierBack.map((a) => (
+                    <div key={a.id} className="flex items-center gap-2 text-[12px] py-0.5">
+                      <ArrowDownLeft size={13} className="text-success-ink flex-shrink-0" />
+                      <span className="text-muted tabular-nums text-[11px] w-11 flex-shrink-0">{fmtDate(a.posted_at)}</span>
+                      <span className="flex-1 min-w-0 truncate text-ink">{a.counterparty_name || a.description || "Supplier returned"}</span>
+                      <span className="tabular-nums text-ink">{fmtAmount(a.amount)}</span>
+                      {!locked && <button onClick={() => run(async () => { await api.removeBankAllocation(a.id); })} disabled={busy}
+                        title="Unlink" className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
+                    </div>
+                  ))}
+                  {supplierBack.length === 0 && <div className="text-[11.5px] text-muted">Nothing back from the supplier yet.</div>}
+                </div>
+                {!locked && (
+                  <button onClick={() => setPickSupplierBack((v) => !v)}
+                    className="flex items-center gap-1 text-[11.5px] text-accent hover:text-accent-hover mt-2"><Link2 size={12} /> Link the supplier's money back</button>
+                )}
+                {!locked && pickSupplierBack && <TxnPicker txns={unalloc.money_in} onPick={linkSupplierBack} onClose={() => setPickSupplierBack(false)} />}
+              </section>
+            )}
+
+            <div className="border-t border-line-2" />
+          </>)}
+
+          {/* 3 · Refund owed */}
           <section className="flex items-center gap-2">
             <span className="text-[12.5px] font-medium text-ink-2 flex-1">Refund owed</span>
             {locked ? (
@@ -309,7 +467,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
 
           <div className="border-t border-line-2" />
 
-          {/* 3 · Refund payments */}
+          {/* 4 · Refund payments */}
           <section>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[12.5px] font-medium text-ink-2">Refund payments</span>
@@ -374,7 +532,7 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
             )}
           </section>
 
-          {/* 4 · Remaining owed */}
+          {/* 5 · Remaining owed */}
           {(refundOwed > 0 || totalRefunded > 0) && (
             <div className={`flex items-center justify-between rounded-lg px-3 py-2 border ${remaining > 0 ? "bg-danger-bg border-danger" : "bg-success-bg border-success"}`}>
               <span className={`text-[12px] font-medium ${remaining > 0 ? "text-danger-ink" : "text-success-ink"}`}>

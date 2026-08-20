@@ -1671,4 +1671,67 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE invoices ADD COLUMN return_policy TEXT DEFAULT '';
         "#,
     ),
+    (
+        80,
+        // The dual-role party link (R-175, decided 2026-08-19). Plenty of the companies
+        // here BUY from us and SELL to us, so the same business already exists twice:
+        // once in `clients`, once in `suppliers`.
+        //
+        // This LINKS the two records, it does not merge them. A client row's
+        // `linked_party_id` holds the id of the supplier record that is the same
+        // company, and the supplier row's holds the client's id — a symmetric pair of
+        // pointers. Deliberately NOT a `parties` table with a foreign key from both
+        // sides: that would re-key two of the most heavily referenced tables in the
+        // schema, and every SUM, invoice, deal and payout that joins on client_id or
+        // supplier_id would have to be rewritten at once.
+        //
+        // Money is NEVER netted across the link. What we pay them is cost and what they
+        // pay us is revenue; the two stay separate figures. If the UI wants one number
+        // for the pair it is called `position` — never profit.
+        //
+        // Nullable, no NOT NULL, no CHECK, and NOT a foreign key: a partial upsert that
+        // violates one on a row that does not exist yet is dropped by INSERT OR IGNORE
+        // (insert branch) or errors and rewinds the pull cursor (update branch) — see
+        // migration 77 and architecture/sync-engine §10. A FK would additionally break
+        // sync ordering, because the two sides arrive as separate events and either can
+        // land first. An id pointing at a row this device has not pulled yet must read
+        // as "not linked here yet", not as an error.
+        //
+        // Mirrored in clienthub-api (schema.sql + sync.rs ensure_meta_tables); the
+        // server must be DEPLOYED FIRST or apply_upsert logs SCHEMA DRIFT and drops the
+        // link out of every clients and suppliers event.
+        r#"
+        ALTER TABLE clients ADD COLUMN linked_party_id TEXT;
+        ALTER TABLE suppliers ADD COLUMN linked_party_id TEXT;
+        "#,
+    ),
+    (
+        81,
+        // Short-shipped units and what the supplier owes back for them (R-163).
+        //
+        // `shortage_units` is how many units of the deal never arrived; it is a COUNT,
+        // not money, and is kept apart from the money on purpose — the unit shortfall is
+        // agreed with the supplier long before anyone settles on a figure, and a deal
+        // can be short with nothing owed (credited on the next load instead).
+        //
+        // `supplier_refund_owed` is money the SUPPLIER owes US, which is the opposite
+        // direction to `deal_flows.refund_owed` (what we owe the buyer). They are two
+        // columns because they are two obligations to two parties: netting them into one
+        // figure would make a deal that owes the buyer $5k and is owed $5k look settled
+        // when two payments still have to happen.
+        //
+        // It is an obligation, not a receipt: it does not become revenue, and it does
+        // not raise the deal's profit until the money actually lands as a bank txn.
+        //
+        // Nullable, no NOT NULL, no CHECK — same reason as migration 77 and 80. NULL
+        // means "nobody has recorded a shortage", which is not the same statement as 0.
+        //
+        // Mirrored in clienthub-api (schema.sql + sync.rs ensure_meta_tables); the
+        // server must be DEPLOYED FIRST or apply_upsert logs SCHEMA DRIFT and drops both
+        // columns out of every deal_flows event.
+        r#"
+        ALTER TABLE deal_flows ADD COLUMN shortage_units INTEGER;
+        ALTER TABLE deal_flows ADD COLUMN supplier_refund_owed REAL;
+        "#,
+    ),
 ];

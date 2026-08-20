@@ -5051,17 +5051,206 @@ pub async fn list_refunds(deal_flow_id: String) -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
 
+/// Set what we owe the buyer back, and — when the refund came from a SHORT
+/// SHIPMENT — the unit shortfall behind it and what the supplier owes us for it
+/// (R-163).
+///
+/// Called with two arguments this is exactly what it always was. The three
+/// shortage arguments are optional and merge-on-write: a caller that omits them
+/// (the mobile app, the Financials booking path) leaves `shortage_units` and
+/// `supplier_refund_owed` untouched rather than NULLing a shortage somebody else
+/// recorded.
+///
+/// The units and both money figures are written in ONE call on purpose. Recorded
+/// separately there is a window where the deal says ten units short while
+/// `refund_owed` still says nothing is owed, and every badge and liability total
+/// reads that window as fact.
+///
+/// `shortage_units` is never written back as NULL. NULL means nobody has looked;
+/// 0 means somebody looked and the load was complete. Those are different
+/// statements and the UI must be able to make the second one.
+///
+/// The invoice is NOT touched here, or anywhere in this flow. It keeps its
+/// original quantity and face value — the shortage restates the DEAL, never the
+/// document the buyer was sent.
 #[tauri::command]
-pub async fn set_refund_owed(deal_flow_id: String, amount: f64) -> Result<(), String> {
+pub async fn set_refund_owed(
+    deal_flow_id: String, amount: f64,
+    shortage_units: Option<i64>, supplier_refund_owed: Option<f64>,
+) -> Result<(), String> {
     let owed = r2(amount.max(0.0));
+    let short = shortage_units.map(|u| u.max(0));
+    let sup_owed = supplier_refund_owed.map(|v| r2(v.max(0.0)));
     let now = Utc::now().to_rfc3339();
     let mut cols = Map::new();
     cols.insert("refund_owed".into(), json!(owed));
+    if let Some(u) = short { cols.insert("shortage_units".into(), json!(u)); }
+    if let Some(v) = sup_owed { cols.insert("supplier_refund_owed".into(), json!(v)); }
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("deal_flows", &deal_flow_id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute("UPDATE deal_flows SET refund_owed=?1, updated_at=?2 WHERE id=?3", rusqlite::params![owed, now, deal_flow_id]).map_err(|e| e.to_string())?;
+    // Separate statements so an omitted argument leaves its column alone; one
+    // full-column UPDATE here would blank a shortage every time Financials booked
+    // a refund through the two-argument form.
+    if let Some(u) = short {
+        conn.execute("UPDATE deal_flows SET shortage_units=?1 WHERE id=?2", rusqlite::params![u, deal_flow_id]).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = sup_owed {
+        conn.execute("UPDATE deal_flows SET supplier_refund_owed=?1 WHERE id=?2", rusqlite::params![v, deal_flow_id]).map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+/// The per-unit rates a deal was actually written at, read from the records that
+/// already exist: the buyer's from the invoice line items, ours from the recorded
+/// supplier payments. Documenting a shortage must never ask anyone to retype a
+/// price they already entered — a retyped rate is a second version of the truth.
+///
+/// Both rates are BLENDED when a deal carries several lines (total ÷ total
+/// units), which is the only defensible single rate for a mixed load. The flags
+/// say so, because a blended rate is an average and must never be presented as
+/// the price on any one line.
+struct DealUnitRates {
+    invoice_units: f64,
+    /// The line items' own total. Stands in for `gross_revenue` before a deal is
+    /// completed, when that column is still 0.
+    invoice_value: f64,
+    buyer_rate: f64,
+    buyer_blended: bool,
+    supplier_rate: f64,
+    /// The recorded supplier cost, standing in for `total_cost` the same way.
+    supplier_cost: f64,
+    /// True when no supplier payment recorded a quantity, so the rate is the
+    /// recorded cost spread over the INVOICE's units — a guess about what one
+    /// unit cost, not a figure anybody entered.
+    supplier_estimated: bool,
+}
+
+fn deal_unit_rates(conn: &rusqlite::Connection, deal_flow_id: &str) -> DealUnitRates {
+    let (items_json, sp_json, supplier_cost): (String, String, f64) = conn.query_row(
+        "SELECT COALESCE(i.line_items_json,'[]'), COALESCE(NULLIF(df.supplier_payments_json,''),'[]'), COALESCE(df.total_supplier_cost,0)
+         FROM deal_flows df LEFT JOIN invoices i ON i.id=df.invoice_id WHERE df.id=?1",
+        [deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ).unwrap_or_else(|_| ("[]".into(), "[]".into(), 0.0));
+
+    let items: Vec<crate::invoice::LineItem> = serde_json::from_str(&items_json).unwrap_or_default();
+    let priced: Vec<&crate::invoice::LineItem> = items.iter().filter(|l| l.qty > 0.0).collect();
+    let invoice_units: f64 = priced.iter().map(|l| l.qty).sum();
+    // `amount` is the line's real total (a discounted line can carry an amount that
+    // isn't qty × rate), so blend on amounts and fall back to qty × rate only for a
+    // line that never had its amount filled in.
+    let invoice_value: f64 = priced.iter().map(|l| if l.amount != 0.0 { l.amount } else { l.qty * l.rate }).sum();
+    let buyer_blended = priced.len() > 1;
+    let buyer_rate = if priced.len() == 1 && priced[0].rate > 0.0 { priced[0].rate }
+                     else if invoice_units > 0.0 { invoice_value / invoice_units }
+                     else { 0.0 };
+
+    let payments: Vec<SupplierPayment> = serde_json::from_str(&sp_json).unwrap_or_default();
+    // A KEPT leg was never paid, so it is not a cost and cannot be refunded back to
+    // us. Freight and wire fees are per-load charges, not per-unit goods cost —
+    // folding them into a unit rate would claim a $25 wire fee comes back with the
+    // units. Both are excluded exactly as `total_supplier_cost` excludes kept legs.
+    let goods: Vec<&SupplierPayment> = payments.iter()
+        .filter(|p| !p.kept && matches!(p.category.as_deref(), None | Some("") | Some("supplier")))
+        .collect();
+    let sup_units: f64 = goods.iter().filter_map(|p| p.quantity).filter(|q| *q > 0.0).sum();
+    let sup_value: f64 = goods.iter().filter(|p| p.quantity.map(|q| q > 0.0).unwrap_or(false)).map(|p| p.amount).sum();
+    let (supplier_rate, supplier_estimated) = if sup_units > 0.0 {
+        (sup_value / sup_units, false)
+    } else if invoice_units > 0.0 {
+        (supplier_cost / invoice_units, true)
+    } else {
+        (0.0, true)
+    };
+
+    DealUnitRates {
+        invoice_units, invoice_value: r2(invoice_value),
+        buyer_rate: r2(buyer_rate), buyer_blended,
+        supplier_rate: r2(supplier_rate), supplier_cost: r2(supplier_cost), supplier_estimated,
+    }
+}
+
+/// The units-driven shortage picture for one deal (R-163) — the whole reason the
+/// units are recorded at all, and the only place they are read back.
+///
+/// Jack's case: 100 units sold at $10 that cost $9, ten of which are refunded.
+/// The deal restates to 90 sold — units, revenue, cost and profit — while the
+/// invoice keeps saying 100.
+///
+/// EXPECTED versus ACTUAL, and never one merged figure. Expected is the deal if
+/// the supplier takes the short units back and pays what is owed. Actual counts
+/// only money that has really moved: buyer refunds actually paid, and supplier
+/// money that has landed as a `refund_in` allocation with a live bank
+/// transaction behind it. When the supplier does NOT take the units back, cost
+/// does not fall and this deal's profit is zero — never the $90 the unit math
+/// alone suggests. Same expected/actual idiom, and the same
+/// `EXISTS (bank_txn)` guard, as `deal_bank_actuals`: an allocation with no
+/// surviving transaction is not money.
+///
+/// `suggested_*` are SUGGESTIONS. Nothing here writes; the figures are offered
+/// to `set_refund_owed` only when somebody saves.
+fn deal_shortage_value(
+    conn: &rusqlite::Connection, deal_flow_id: &str,
+    gross: f64, total_cost: f64, buyer_refund_actual: f64,
+) -> Value {
+    let (stored_units, stored_supplier_owed): (Option<i64>, Option<f64>) = conn.query_row(
+        "SELECT shortage_units, supplier_refund_owed FROM deal_flows WHERE id=?1",
+        [deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap_or((None, None));
+
+    let rates = deal_unit_rates(conn, deal_flow_id);
+    // `gross_revenue` and `total_cost` are only written at completion. Before that
+    // they are 0, and restating a shortage against 0 would report negative revenue.
+    // Fall back to the deal's own live records — the invoice's line total and the
+    // recorded supplier cost — so a short load can be documented the day it lands.
+    let gross = if gross > 0.0 { gross } else { rates.invoice_value };
+    let total_cost = if total_cost > 0.0 { total_cost } else { rates.supplier_cost };
+    let short = stored_units.unwrap_or(0).max(0) as f64;
+    // The shortfall can't exceed what was sold; a stale count against a re-issued
+    // invoice would otherwise restate the deal to negative units.
+    let short = if rates.invoice_units > 0.0 { short.min(rates.invoice_units) } else { short };
+    let kept_units = (rates.invoice_units - short).max(0.0);
+
+    let supplier_refund_actual: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(a.amount),0) FROM bank_allocation a
+         WHERE a.deal_flow_id=?1 AND a.role='refund_in'
+           AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)",
+        [deal_flow_id], |r| r.get(0),
+    ).unwrap_or(0.0);
+
+    let suggested_buyer = r2(short * rates.buyer_rate);
+    let suggested_supplier = r2(short * rates.supplier_rate);
+    // A shortage can be agreed with nothing owed back — credited on the next load
+    // instead — so an explicit stored figure (including 0) always wins over the
+    // suggestion. Only an unrecorded shortage falls back to the unit math.
+    let supplier_expected = stored_supplier_owed.unwrap_or(suggested_supplier);
+
+    let exp_rev = r2(gross - suggested_buyer);
+    let exp_cost = r2(total_cost - supplier_expected);
+    let act_rev = r2(gross - buyer_refund_actual);
+    let act_cost = r2(total_cost - supplier_refund_actual);
+
+    json!({
+        "recorded": stored_units.is_some(),
+        "invoice_units": rates.invoice_units,
+        "shortage_units": stored_units,
+        "kept_units": kept_units,
+        "buyer_rate": rates.buyer_rate,
+        "buyer_rate_blended": rates.buyer_blended,
+        "supplier_rate": rates.supplier_rate,
+        "supplier_rate_estimated": rates.supplier_estimated,
+        "suggested_buyer_refund": suggested_buyer,
+        "suggested_supplier_refund": suggested_supplier,
+        "supplier_refund_owed": stored_supplier_owed,
+        "supplier_refund_expected": r2(supplier_expected),
+        "supplier_refund_actual": r2(supplier_refund_actual),
+        // What the supplier still has to send before the kept-units cost is real.
+        // Never netted against what we owe the buyer: two obligations, two parties.
+        "supplier_gap": r2((supplier_expected - supplier_refund_actual).max(0.0)),
+        "expected": { "units": kept_units, "revenue": exp_rev, "cost": exp_cost, "profit": r2(exp_rev - exp_cost) },
+        "actual":   { "units": kept_units, "revenue": act_rev, "cost": act_cost, "profit": r2(act_rev - act_cost) },
+    })
 }
 
 #[tauri::command]
@@ -5323,9 +5512,9 @@ pub async fn save_payout_split(shares: Vec<Value>) -> Result<(), String> {
 pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
     let enabled = setting_bool("rep_payouts_enabled");
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let (net, gross, refund_owed, payout_included, meta_raw): (f64, f64, f64, bool, Option<String>) = conn.query_row(
-        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(refund_owed,0), COALESCE(json_extract(metadata,'$.payout_included'),0), metadata FROM deal_flows WHERE id=?1",
-        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0, r.get(4)?))).map_err(|_| "Deal not found".to_string())?;
+    let (net, gross, total_cost, refund_owed, payout_included, meta_raw): (f64, f64, f64, f64, bool, Option<String>) = conn.query_row(
+        "SELECT COALESCE(net_profit,0), COALESCE(gross_revenue,0), COALESCE(total_cost,0), COALESCE(refund_owed,0), COALESCE(json_extract(metadata,'$.payout_included'),0), metadata FROM deal_flows WHERE id=?1",
+        [&deal_flow_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0, r.get(5)?))).map_err(|_| "Deal not found".to_string())?;
     // Resolve the rep: a manual per-deal override (deal_reps) wins; otherwise the
     // deal earns for its CLIENT's assigned rep (client.metadata.lead_representative),
     // matched to an active employee by name. If the client has a rep name that isn't
@@ -5382,6 +5571,10 @@ pub async fn deal_flow_payout(deal_flow_id: String) -> Result<Value, String> {
         "lead_rep_id": rep_id, "lead_rep_name": rep_name, "commission_pct": pct, "pay_type": pay_type, "hide_pay_cuts": hide != 0,
         "net_profit": net, "refunded": r2(refunded), "effective_net": r2(eff_net),
         "refund_owed": r2(refund_owed), "owed_remaining": r2((refund_owed - refunded).max(0.0)),
+        // The short-shipment picture (R-163). Rides along here because this is the
+        // one call the refund workspace already makes for a deal's money, and
+        // `refunded` above is exactly the buyer-refund ACTUAL it needs.
+        "shortage": deal_shortage_value(&conn, &deal_flow_id, gross, total_cost, r2(refunded)),
         "keep_rep_cut": keep != 0,
         "rep_unmatched": rep_unmatched,
         "unmatched_rep_name": unmatched_name,
@@ -6059,8 +6252,9 @@ pub struct Supplier {
 ///  * **Apportion, never duplicate.** A deal's profit is split across its suppliers by their
 ///    share of that deal's payments. Summing whole `net_profit` per supplier would count the
 ///    same profit once per supplier the moment a two-supplier deal exists.
-///  * **Refunds are capped per deal flow**, identical to `buyer_tiers.profit_map` — a refund
-///    returns revenue, so it can zero a deal's profit but must not invert it.
+///  * **Refunds subtract in full per deal flow** (Jack, 2026-08-19: "if there are refunds
+///    in a specific deal flow, the refunds negate that suppliers payment for that deal").
+///    A supplier's share of a loss-making deal is a loss. No cap, no floor.
 ///  * **One deal flow per invoice** (`MIN(d2.id)`) — duplicate 'complete' rows would double
 ///    both the amount paid and the deal count.
 const SUPPLIER_STATS_SQL: &str = "
@@ -6075,14 +6269,13 @@ const SUPPLIER_STATS_SQL: &str = "
       SELECT json_extract(sp.value, '$.supplier_id') AS sup_id,
              df.id AS df_id, df.completed_at, df.gross_revenue,
              CAST(json_extract(sp.value, '$.amount') AS REAL) AS amt,
-             df.net_profit - MIN(
+             df.net_profit -
                  COALESCE((SELECT SUM(x.amt2) FROM (
                      SELECT r.amount AS amt2, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
                      UNION ALL
                      SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
                        AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)
-                   ) x WHERE x.dfid = df.id),0),
-                 MAX(df.net_profit, 0)) AS eff_profit,
+                   ) x WHERE x.dfid = df.id),0) AS eff_profit,
              (SELECT SUM(CAST(json_extract(sp2.value, '$.amount') AS REAL))
                 FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp2
                WHERE json_extract(sp2.value, '$.supplier_id') IS NOT NULL) AS df_total
@@ -9310,6 +9503,36 @@ pub async fn sync_is_encrypted() -> Result<bool, String> {
 //  Dashboard stats
 // ============================================================
 
+/// Refund-aware profit for one completed `deal_flows` row aliased `df`. Extracted
+/// verbatim from the correct copy inside `SUPPLIER_STATS_SQL` so the dashboard can't
+/// drift into yet another refund rule - it previously used a third one, in the same
+/// response that reports `refunded_total` by the right one.
+///
+/// Two rules are load-bearing:
+///  * **One refund, one count.** Non-bank-linked `refunds` rows + every `refund_out`
+///    allocation backed by a real `bank_txn`. A bank-linked refund lives in BOTH
+///    tables and must count once; a refund booked from Financials writes only the
+///    allocation, so reading `refunds` alone misses it entirely.
+///  * **Uncapped.** Jack's rule, 2026-08-19: "i want profit to reflect how much we
+///    made on every deal, and if we have to refund, that should subtract from profit."
+///    A refund is money that left, so it subtracts in full and a deal CAN go negative.
+///    Do not reintroduce a cap or a floor here without asking him again.
+const DF_EFF_PROFIT_SQL: &str =
+    "(df.net_profit - \
+        COALESCE((SELECT SUM(x.amt) FROM ( \
+            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')='' \
+            UNION ALL \
+            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out' \
+              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id) \
+          ) x WHERE x.dfid = df.id),0))";
+
+/// One deal flow per invoice (`MIN(d2.id)`), the same survivor rule `SUPPLIER_STATS_SQL`
+/// uses: duplicate 'complete' rows would double every SUM taken over `df`. `df` must be
+/// in scope.
+const DF_SURVIVOR_SQL: &str =
+    "df.id = (SELECT MIN(d2.id) FROM deal_flows d2 \
+              WHERE d2.invoice_id = df.invoice_id AND d2.stage='complete' AND COALESCE(d2.archived,0)=0)";
+
 #[tauri::command]
 pub async fn dashboard_stats() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -9395,11 +9618,13 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 
     let monthly_profit: Vec<Value> = {
         let mut stmt = conn.prepare(
+            &format!(
             "SELECT strftime('%Y-%m', df.completed_at) as m, COALESCE(SUM(df.gross_revenue),0), COALESCE(SUM(df.total_cost),0), \
-                    COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0)
+                    COALESCE(SUM({np}),0)
              FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
              WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
-               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 GROUP BY m ORDER BY m"
+               AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} GROUP BY m ORDER BY m",
+            np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL)
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
@@ -9546,20 +9771,25 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
         [], |r| r.get(0)
     ).unwrap_or(0.0);
-    // Profit is refund-aware (refunds come off the deal's profit) and fell-through
-    // deals (voided/archived invoice) are excluded — the same accuracy rules as the
-    // brief, so the two surfaces can never disagree by construction.
-    const PROFIT_MONTH_SQL: &str =
-        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+    // Profit is refund-aware (refunds come off the deal's profit, capped at it) and
+    // fell-through deals (voided/archived invoice) are excluded — the same accuracy
+    // rules as the brief, so the two surfaces can never disagree by construction.
+    let profit_month_sql = format!(
+        "SELECT COALESCE(SUM({np}),0) \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
          WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
-           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND strftime('%Y-%m', df.completed_at) = ?1";
-    let profit_mtd: f64 = conn.query_row(PROFIT_MONTH_SQL, [&this_month], |r| r.get(0)).unwrap_or(0.0);
-    let profit_prev_month: f64 = conn.query_row(PROFIT_MONTH_SQL, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+           AND strftime('%Y-%m', df.completed_at) = ?1",
+        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL);
+    let profit_mtd: f64 = conn.query_row(&profit_month_sql, [&this_month], |r| r.get(0)).unwrap_or(0.0);
+    let profit_prev_month: f64 = conn.query_row(&profit_month_sql, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
     let profit_all_time: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+        &format!(
+        "SELECT COALESCE(SUM({np}),0) \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND {one}",
+        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let deals_mtd: i64 = conn.query_row(
@@ -9622,16 +9852,22 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     ).unwrap_or(0);
 
     // All-time totals from completed deal flows — fell-through excluded, profit
-    // refund-aware (revenue stays gross; refunds are surfaced as their own stat).
+    // refund-aware and capped (revenue stays gross; refunds are surfaced as their
+    // own stat, by the same rule).
     let all_time_revenue: f64 = conn.query_row(
+        &format!(
         "SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND {one}", one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let all_time_profit: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0) \
+        &format!(
+        "SELECT COALESCE(SUM({np}),0) \
          FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0",
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND {one}",
+        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     // Refund story for the analytics dashboard: total refunded (rule: non-bank-linked
