@@ -9578,8 +9578,15 @@ const DF_SURVIVOR_SQL: &str =
 #[tauri::command]
 pub async fn dashboard_stats() -> Result<Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // A rejected lead was never accepted as a client, so it stays out of the
+    // headline — the same rule the Clients screen's "Total Clients" uses. Counting
+    // them here made the dashboard read two higher than the Clients screen.
     let total_clients: i64 = conn
-        .query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM clients WHERE COALESCE(approval_status,'active')<>'rejected'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     let total_invoices: i64 = conn
         .query_row("SELECT COUNT(*) FROM invoices WHERE COALESCE(archived,0)=0", [], |r| r.get(0))
