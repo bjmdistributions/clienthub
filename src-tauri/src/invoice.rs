@@ -1439,11 +1439,11 @@ fn pdf_output_dir() -> std::path::PathBuf {
     crate::db::app_data_dir().join("invoices")
 }
 
-fn short_date(rfc3339: &str) -> String {
+pub(crate) fn short_date(rfc3339: &str) -> String {
     rfc3339.split('T').next().unwrap_or(rfc3339).to_string()
 }
 
-fn fmt_dollar(n: f64) -> String {
+pub(crate) fn fmt_dollar(n: f64) -> String {
     let int_part = n.trunc() as i64;
     let frac = ((n.fract().abs() * 100.0).round() as i64) % 100;
     let abs = int_part.abs();

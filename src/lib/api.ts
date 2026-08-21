@@ -929,6 +929,118 @@ export interface ReleaseLetterInput {
   output_path: string;
 }
 
+// ---- Client statement / receipt (R-190) ----
+// One PDF covering many deals for one client. Deliberately carries no cost, margin
+// or supplier field — it is handed to the customer.
+
+export interface StatementPayment {
+  id: string;
+  date: string;
+  amount: number;
+  method: string;
+  reference: string;
+  /** 'bank' = a real bank line behind it; 'recorded' = the figure typed on the deal. */
+  source: 'bank' | 'recorded';
+  date_missing: boolean;
+  method_missing: boolean;
+}
+
+export interface StatementRefund {
+  id: string;
+  date: string;
+  amount: number;
+  method: string;
+  reason: string;
+}
+
+export interface StatementDeal {
+  deal_flow_id: string;
+  invoice_id: string;
+  invoice_number: string;
+  name: string;
+  stage: string;
+  issue_date: string;
+  due_date: string;
+  closed_date: string;
+  pickup_date: string;
+  delivery_date: string;
+  items: LineItem[];
+  /** Stands in for the item table when the invoice has none. */
+  label: string;
+  subtotal: number;
+  tax: number;
+  total: number;
+  payments: StatementPayment[];
+  refunds: StatementRefund[];
+  paid: number;
+  refunded: number;
+  balance: number;
+}
+
+export interface StatementClient {
+  id: string;
+  name: string;
+  company: string;
+  email: string;
+  phone: string;
+  address_lines: string[];
+}
+
+/** A blank the document would print. `writes_back` says whether filling it in updates
+ *  the record or only this one PDF — payment dates/methods live on bank_txn, and
+ *  rewriting a posted date would move the deal's closed date. */
+export interface StatementGap {
+  kind: 'client_email' | 'client_address' | 'deal_label' | 'payment_date' | 'payment_method';
+  target_id: string;
+  deal_flow_id: string;
+  label: string;
+  writes_back: boolean;
+}
+
+export interface StatementTotals {
+  invoiced: number;
+  paid: number;
+  refunded: number;
+  net_received: number;
+  balance: number;
+}
+
+export interface StatementData {
+  client: StatementClient;
+  deals: StatementDeal[];
+  gaps: StatementGap[];
+  totals: StatementTotals;
+}
+
+export interface StatementOptions {
+  include_items: boolean;
+  include_payments: boolean;
+  include_refunds: boolean;
+  include_dates: boolean;
+  include_summary: boolean;
+  include_balance: boolean;
+  title: string;
+  intro: string;
+}
+
+export interface StatementOverrides {
+  /** allocation id -> YYYY-MM-DD */
+  payment_dates: Record<string, string>;
+  /** allocation id -> how it arrived */
+  payment_methods: Record<string, string>;
+  /** deal_flow id -> what the deal was, when the invoice has no item lines */
+  deal_labels: Record<string, string>;
+}
+
+export interface StatementInput {
+  client_id: string;
+  /** Ticked deals. Empty = every deal the client has. */
+  deal_ids: string[];
+  options: StatementOptions;
+  overrides: StatementOverrides;
+  output_path: string;
+}
+
 export interface Quote {
   id: string;
   client_id: string;
@@ -2157,6 +2269,16 @@ export const api = {
   // Release letter — one-page closeout authorization PDF on our invoice branding.
   generateReleaseLetter: (input: ReleaseLetterInput) =>
     invoke<string>("generate_release_letter", { input }),
+  // Client statement / receipt (R-190) — many deals, one client, one PDF.
+  clientStatementData: (clientId: string) =>
+    invoke<StatementData>("client_statement_data", { clientId }),
+  generateClientStatement: (input: StatementInput) =>
+    invoke<string>("generate_client_statement", { input }),
+  /** Merge-on-write: an omitted field is left alone, never NULLed over. */
+  saveStatementClientFills: (clientId: string, fills: {
+    email?: string; streetAddress?: string; city?: string;
+    state?: string; zipCode?: string; country?: string;
+  }) => invoke<void>("save_statement_client_fills", { clientId, ...fills }),
   markInvoicePaid: (invoiceId: string, paidDate: string, paymentMethodLabel?: string, paymentReference?: string) =>
     invoke<void>("mark_invoice_paid", { invoiceId, paidDate, paymentMethodLabel, paymentReference }),
   // Void / un-void an invoice ("deal fell through"). Voided invoices drop out of

@@ -35,6 +35,7 @@ import {
   Archive as ArchiveIcon,
   CopyPlus,
   FileCheck2,
+  Receipt,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -57,6 +58,7 @@ import DataSafetyView from "./components/DataSafetyView";
 import ArchiveView from "./components/ArchiveView";
 import SheetCopyView from "./components/SheetCopyView";
 import ReleaseLetterView from "./components/ReleaseLetterView";
+import ClientStatementView from "./components/ClientStatementView";
 import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
 import { FeedbackModal } from "./components/FeedbackModal";
@@ -113,7 +115,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
 /** Below this window width the sidebar collapses itself.
  *
@@ -508,6 +510,7 @@ export default function App() {
     ] },
     { id: "quotes", label: "Quote", icon: FileSignature, children: [
       { id: "releaseletter", label: "Release letter", icon: FileCheck2 },
+      { id: "clientreceipt", label: "Client receipt", icon: Receipt },
     ] },
     { id: "financials", label: "Financials", icon: Landmark },
     { id: "email", label: "Newsletter", icon: Mail },
@@ -615,6 +618,7 @@ export default function App() {
             {t === "payables"   && <PayablesView />}
             {t === "quotes"     && <QuotesView onNavigate={setTab} />}
             {t === "releaseletter" && <ReleaseLetterView />}
+            {t === "clientreceipt" && <ClientStatementView />}
             {t === "dealflow"   && <DealFlowView />}
             {t === "suppliers"  && <SuppliersView />}
             {t === "inventory"  && <InventoryView />}

@@ -9,7 +9,7 @@ export type Feature =
   | "dashboard" | "clients" | "invoices" | "quotes" | "deals" | "dealflow"
   | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings"
   | "health" | "inventory" | "automation" | "notes" | "receivables" | "payables"
-  | "financials";
+  | "financials" | "clientreceipt";
 
 /** True if the user holds a permission (wildcard "*" grants everything). */
 export function can(me: Perms | null | undefined, perm: string): boolean {
@@ -34,6 +34,9 @@ export function tabPerm(feature: Feature): string | null {
     case "receivables":
     case "payables":     return "deal_flow:view";
     case "quotes":       return "quotes:view";
+    // The receipt builder lists a client's deals and what they paid, so it rides
+    // deal access rather than the document-maker default of everyone-signed-in.
+    case "clientreceipt": return "deal_flow:view";
     // The books (bank balances, allocations, free cash). Admins also reach this
     // via `*`/admin:manage — see the financials case in App.tsx's `visible`.
     case "financials":   return "financials:view";

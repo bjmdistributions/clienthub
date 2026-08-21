@@ -37,6 +37,7 @@ import {
   Unlink,
   Banknote,
   Truck,
+  Receipt,
 } from "lucide-react";
 
 /* ── The party profile (R-153) ───────────────────────────────────────────────
@@ -152,6 +153,12 @@ const WAITING_ON: Record<string, string> = {
 const openDeal = (invoiceNumber: string) => {
   try { localStorage.setItem("dealflow_invoice_filter", invoiceNumber); } catch { /* ignore */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
+};
+
+/** Open the receipt builder on this client — same stash-then-switch handoff. */
+const openStatement = (clientId: string) => {
+  try { localStorage.setItem("statement_client_id", clientId); } catch { /* ignore */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "clientreceipt" }));
 };
 
 const openInvoices = () => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
@@ -1104,6 +1111,13 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
               >
                 <Send size={13} /> Send our details
+              </button>
+              <button
+                onClick={() => openStatement(client.id)}
+                title="Build a receipt covering their deals — every payment with its date — to download or email."
+                className="inline-flex items-center gap-1.5 px-3 h-7 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors"
+              >
+                <Receipt size={13} /> Receipt
               </button>
               <button
                 onClick={() => onEdit?.(client)}
