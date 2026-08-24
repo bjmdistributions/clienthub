@@ -1,0 +1,749 @@
+<!doctype html><html><head><!-- frame-runtime --><base href="/_f/1787322900-67dd/"><script>window.__FRAME_PREAMBLE={"capabilities":{"artifact":"artifact.oqIe8shs.js","assets":"assets.BkxVItX2.js","comments":"comments.GLuHR3zP.js","db":"db.CRhVHzSt.js","downloads":"downloads.C3GSvEDP.js","embed":"embed.CZsbekoQ.js","mcp":"mcp.D3B2EyQu.js","permissions":"permissions.BNySkLV5.js","room":"room.DE7EMui-.js","sample":"sample.C7z_6W62.js","self":"artifact.oqIe8shs.js","user":"user.BpKav-Rf.js"},"transforms":"_transforms.h3_8GSUa.js","comments":"_comments.BOgkE6qU.js","translate":"_translate.5HCW4BJh.js"}</script><script>(function(){"use strict";var Y=["light","dark","system"],X=/^[A-Za-z0-9_-]{1,64}$/,D=/^[a-zA-Z_:][a-zA-Z0-9_:.-]{0,127}$/,G=new Set(["class","hidden","value","checked"]);function V(e){const t=e.toLowerCase();return t.startsWith("data-")||t.startsWith("aria-")||G.has(t)}var be="http://www.w3.org/1999/xhtml",Z="http://www.w3.org/2000/svg",J=new Set(["script","style","iframe","noscript","noframes","noembed","xmp","plaintext","template","title","textarea","object","embed"]),Q=new Set(["script","style"]);function ee(e){const t=e.localName.toLowerCase();return e.namespaceURI==="http://www.w3.org/1999/xhtml"?!J.has(t):e.namespaceURI===Z?!Q.has(t):!1}var te=new Set(["html","head","body","frameset"]);function re(e){return e.namespaceURI==="http://www.w3.org/1999/xhtml"&&te.has(e.localName)}function ne(e){if(e===null||typeof e!="object")return!1;const t=e;if(typeof t.target!="string"||!X.test(t.target)||t.text!==void 0&&typeof t.text!="string")return!1;if(t.attrsSet!==void 0){if(t.attrsSet===null||typeof t.attrsSet!="object")return!1;for(const[n,s]of Object.entries(t.attrsSet))if(!D.test(n)||typeof s!="string")return!1}if(t.attrsRemoved!==void 0){if(!Array.isArray(t.attrsRemoved))return!1;for(const n of t.attrsRemoved)if(typeof n!="string"||!D.test(n))return!1}return!0}function se(e,t){if(e===null||typeof e!="object")return!1;const{seq:n,elements:s}=e;if(typeof n!="number"||!Number.isSafeInteger(n)||!Array.isArray(s)||s.length===0||s.length>64)return!1;for(let o=0;o<s.length;o++)if(!t(s[o]))return!1;return!0}function ae(e){return e===null||typeof e!="object"?!1:se(e.__frame_patch,ne)}function oe(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_init;return t!==null&&typeof t=="object"}function ie(e){return e!==null&&typeof e=="object"&&e.__frame_size_poke===!0}function le(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_theme;if(t===null||typeof t!="object")return!1;const n=t.theme;return typeof n=="string"&&Y.includes(n)}var O="__frame_scroll",ce=150,ue=310,fe=160,pe=3e4;function de(){let e=0,t=!1,n=!1,s=!1,o=0,l=null;const c=i=>{try{sessionStorage.setItem(O,JSON.stringify({y:i}))}catch{}},f=()=>{if(clearTimeout(e),l===null)return;const i=l;l=null,c(i)},S=()=>{if(t){t=!1;return}n=!0,l=scrollY,clearTimeout(e),e=setTimeout(f,ce)};try{addEventListener("scroll",S,{passive:!0}),addEventListener("pagehide",f)}catch{}const v=()=>{let i;try{i=sessionStorage.getItem(O)}catch{return null}if(i===null)return null;let d;try{d=JSON.parse(i)}catch{d=null}const u=d?.y;if(!(typeof u=="number"&&Number.isFinite(u)&&u>=0)){try{sessionStorage.removeItem(O)}catch{}return null}return u};let b=!1;const m=i=>{try{const d=scrollY;scrollTo({top:i,left:0,behavior:"instant"}),o=i,s=!0,clearTimeout(e),l=null,c(i);const u=scrollY;u!==d&&(t=!0),u!==i&&!b&&(b=!0,addEventListener("load",()=>{try{if(scrollY===u){const h=v();m(h!==null?h:o)}}catch{}},{once:!0}))}catch{}},y=()=>{try{return!!location.hash}catch{return!0}};let g=!1;const E=()=>{try{if(g||innerWidth>ue||innerHeight>fe)return;g=!0;const i=Date.now(),d=()=>{try{removeEventListener("resize",d)}catch{}if(Date.now()-i>pe||n||y())return;const u=v();m(u!==null?u:o)};addEventListener("resize",d)}catch{}};let r=!1,p=!1;return{restore(){if(r||(r=!0,y()))return;const i=v();i!==null&&(m(i),E())},promoted(){if(p||(p=!0,y()))return;const i=v();i!==null?(m(i),E()):s&&m(o)}}}var Ee="modulepreload",Ae=function(e){return"/"+e},Re={},me=function(t,n,s){let o=Promise.resolve();function l(c){const f=new Event("vite:preloadError",{cancelable:!0});if(f.payload=c,window.dispatchEvent(f),!f.defaultPrevented)throw c}return o.then(c=>{for(const f of c||[])f.status==="rejected"&&l(f.reason);return t().catch(l)})};(function(){const e=Object.defineProperty,t=globalThis,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription","RTCRtpSender","RTCRtpReceiver"];let s=0;for(let o=0;o<n.length;o++){const l=n[o];try{e(t,l,{value:void 0,writable:!1,configurable:!1})}catch{try{delete t[l]}catch{}try{e(t,l,{value:void 0,writable:!1,configurable:!0})}catch{}}typeof t[l]=="function"&&s++}if(s&&window!==top)try{parent.postMessage({__frame_rtc_lockdown_failed:s},"*")}catch{}})();var he=1e4,_e=Object.freeze([...window.__FRAME_PREAMBLE?.origins??["https://claude.ai","https://preview.claude.ai"]]);function F(e){for(const t of _e)if(t.endsWith(":*"))try{const n=new URL(e);if(`${n.protocol}//${n.hostname}:*`===t)return!0}catch{}else if(e===t)return!0;return!1}var M=Object.freeze({...window.__FRAME_PREAMBLE?.capabilities}),j=window.__FRAME_PREAMBLE?.transforms,N=window.__FRAME_PREAMBLE?.comments,I=window.__FRAME_PREAMBLE?.translate,L=/^[\w.-]+\.js$/;function T(e){return me(()=>import("/_runtime/"+e),void 0)}function z(e,t){return{contract:e.contract,changes:new Set(e.changes??[]),flags:new Set(e.flags??[]),capabilities:e.capabilities??{},capBudgets:e.capBudgets??{},transforms:new Map,shellOrigin:t,mount:W,pipe:()=>({wrap:(n,s)=>(...o)=>{try{return s(...o)}catch(l){return Promise.reject(l)}}})}}var P=null,w=null;function q(e,t,n){try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!1,enumerable:!0})}catch{try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!0,enumerable:!0})}catch{}}}var B=!1;function ve(e,t){const n=[];for(const s of e.elements){const o=document.querySelector(`[data-id="${s.target}"]`);if(!o){parent.postMessage({__frame_patch_miss:{seq:e.seq}},t);return}if([...Object.keys(s.attrsSet??{}),...s.attrsRemoved??[]].some(l=>!V(l))){parent.postMessage({__frame_patch_miss:{seq:e.seq}},t);return}if(s.text!==void 0&&(!ee(o)||re(o))){parent.postMessage({__frame_patch_miss:{seq:e.seq}},t);return}for(const[l,c]of Object.entries(s.attrsSet??{}))if(!$(o,l)){try{o.setAttribute(l,c)}catch{}H(o,l,c)}for(const l of s.attrsRemoved??[])$(o,l)||(o.removeAttribute(l),H(o,l,null));typeof s.text=="string"&&(o.textContent=s.text),n.push(s.target)}try{document.dispatchEvent(new CustomEvent("claude:edit",{detail:{seq:e.seq,targets:n}}))}catch{}}function H(e,t,n){if(!(e instanceof HTMLInputElement))return;const s=t.toLowerCase();s==="checked"?e.checked=n!==null:s==="value"&&e.type!=="file"&&(e.value=n??"")}function $(e,t){const n=t.toLowerCase(),s=e;return n==="data-id"||(n==="value"||n==="checked")&&(s.__artifactSecret===!0||/^(password|hidden|file)$/.test(s.type??"")||/(^|\s)(cc-|one-time-code|current-password|new-password)/i.test(`${e.getAttribute("autocomplete")??""} ${s.autocomplete??""}`))}function K(e){const t=document.documentElement;e==="light"||e==="dark"?(t.dataset.theme=e,t.style.colorScheme=e,B=!0):B&&(delete t.dataset.theme,t.style.colorScheme="",B=!1)}var R=new Map;function ye(){let e;const t={u:new Promise(n=>{e=n}),r:n=>{t.done=!0,e(n)},done:!1,nulled:!1};return t}var ge=Object.freeze(Object.assign(Object.create(null),{call:Function.prototype.call,apply:Function.prototype.apply,bind:Function.prototype.bind})),W=(e,t)=>{const n=R.get(e);if(!n||n.done){n?.nulled&&w&&parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:e}},w);return}const s=typeof t=="function"?Object.setPrototypeOf(t,ge):Object.assign(Object.create(null),t);typeof s.then=="function"&&delete s.then,n.r(Object.freeze(s))},U=Object.getOwnPropertyDescriptor(window,"claude");if(window!==top&&!(U&&U.writable===!1)){const e=j&&L.test(j)?T(j).catch(()=>{}):Promise.resolve(void 0),t=r=>{if(r.type==="auxclick"&&r.button!==1)return;const p=r.target,i=p&&p.closest?p.closest("a[href],area[href]"):null;if(!i)return;const d=i.getAttribute("href");if(!d)return;let u,h;try{u=new URL(d,document.baseURI),h=new URL(document.baseURI).origin}catch{return}if((u.protocol==="http:"||u.protocol==="https:")&&u.origin!==h){r.preventDefault();const _=(i.getAttribute("target")??"").toLowerCase(),C=r.type==="auxclick"||r.metaKey||r.ctrlKey||r.shiftKey||r.altKey||!["","_self","_top","_parent"].includes(_);parent.postMessage({__frame_nav:!0,url:u.href,newTab:C},"*")}};addEventListener("click",t,!0),addEventListener("auxclick",t,!0);const n={},s=r=>{r.isTrusted&&(n.pointer=!0)},o=r=>{r.isTrusted&&(n.click=!0)};addEventListener("pointermove",s,{capture:!0,passive:!0}),addEventListener("click",o,{capture:!0,passive:!0}),e.then(r=>{r?.wireNav&&(r.wireNav(),removeEventListener("click",t,!0),removeEventListener("auxclick",t,!0),removeEventListener("pointermove",s,!0),removeEventListener("click",o,!0),r.wireEngagement?.(n))});let l=null;try{l=de()}catch{}const c=U?.value??{};q(window,"claude",c);for(const r of Object.keys(M)){if(c[r]!==void 0){q(c,r,c[r]);continue}R.set(r,ye())}if(c.use===void 0){const r=p=>{if(typeof p!="string"||!Object.hasOwn(M,p))return Promise.resolve(null);const i=R.get(p);return i?i.u:Promise.resolve(c[p]??null)};try{Object.defineProperty(c,"use",{value:r,writable:!0,configurable:!0,enumerable:!1})}catch{}}let f=null,S=null,v=0;const b=r=>{r.source!==parent||!F(r.origin)||oe(r.data)&&(f=r.data.__frame_init,w=r.origin,removeEventListener("message",b),clearTimeout(v),S?.())};addEventListener("message",b),parent.postMessage({__frame_connect:!0},"*");const m=new Promise(r=>{S=r,v=setTimeout(()=>{removeEventListener("message",b),r()},he)}),y=document.readyState==="loading"?new Promise(r=>document.addEventListener("DOMContentLoaded",()=>r(),{once:!0})):Promise.resolve();y.then(()=>{try{l?.restore()}catch{}});const g={cb:null},E=r=>{if(!(r.source!==parent||!F(r.origin))&&ie(r.data)){try{l?.promoted()}catch{}g.cb?.()}};addEventListener("message",E),m.then(async()=>{if(!f||!w){for(const a of R.values())a.nulled=!0,a.r(null);return}K(f.theme);const r=w;let p=!1,i=!1;addEventListener("message",a=>{if(a.source!==parent||a.origin!==r)return;le(a.data)&&K(a.data.__frame_theme.theme),ae(a.data)&&ve(a.data.__frame_patch,r);const k=a.data?.__fc_mode;k&&typeof k=="object"&&!p&&N&&L.test(N)&&(p=!0,T(N).then(x=>x.install?.(r,k.on===!0)).catch(()=>{}));const A=a.data?.__ft_cmd;A&&typeof A=="object"&&!i&&I&&L.test(I)&&(i=!0,T(I).then(x=>x.install?.(r,A)).catch(()=>{}))});const d=Object.keys(f.capabilities??{}).filter(a=>Object.hasOwn(M,a)).map(a=>[a,M[a]]).filter(a=>typeof a[1]=="string"&&L.test(a[1])),u=await Promise.allSettled(d.map(([,a])=>T(a))),h=await e,_=w;if(h?.buildBoot||parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:"_transforms"}},_),h?.buildBoot)try{P=h.buildBoot(f,h.TRANSFORMS??{},{shellOrigin:_,mount:W},a=>parent.postMessage({__frame_cap_telemetry:a},_))}catch{parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:"_transforms"}},_),P=z(f,_)}else P=z(f,_);const C=a=>parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:a}},_),we=P;u.forEach((a,k)=>{const A=d[k][0];if(a.status!=="fulfilled"){C(A);return}try{a.value?.install?.(we)}catch{C(A)}});for(const a of R.values())a.done||(a.nulled=!0,a.r(null));await y,parent.postMessage({__frame_ready:!0},w),e.then(a=>a?.installSizeReporter?.(_,g))})}})();</script><!-- /frame-runtime --><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>Lot Engine Spec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --paper:#fbfbf9;
+  --raise:#f3f4f0;
+  --ink:#14181c;
+  --body:#2b3238;
+  --muted:#6a7480;
+  --rule:#e0e3dd;
+  --rule-hard:#c7ccc3;
+  --accent:#0f6e63;
+  --accent-ink:#0a4f47;
+  --accent-wash:#e2efec;
+  --warn:#a2570f;
+  --warn-wash:#f8ecdc;
+  --code-bg:#f1f3ee;
+  --measure:68ch;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0f1316;
+    --raise:#171c20;
+    --ink:#eef1ee;
+    --body:#c3cac9;
+    --muted:#8b949c;
+    --rule:#242b30;
+    --rule-hard:#39424a;
+    --accent:#4fbfae;
+    --accent-ink:#8fd8cb;
+    --accent-wash:#122b28;
+    --warn:#e0a15c;
+    --warn-wash:#2a2016;
+    --code-bg:#141a1e;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0f1316;
+  --raise:#171c20;
+  --ink:#eef1ee;
+  --body:#c3cac9;
+  --muted:#8b949c;
+  --rule:#242b30;
+  --rule-hard:#39424a;
+  --accent:#4fbfae;
+  --accent-ink:#8fd8cb;
+  --accent-wash:#122b28;
+  --warn:#e0a15c;
+  --warn-wash:#2a2016;
+  --code-bg:#141a1e;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--paper);color:var(--body);
+  font-family:"Source Serif 4",Georgia,serif;font-size:17px;line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px 120px;
+  display:grid;grid-template-columns:206px minmax(0,1fr);gap:56px;align-items:start}
+@media (max-width:900px){.wrap{grid-template-columns:1fr;gap:0}nav.toc{display:none}}
+
+header.top{border-bottom:2px solid var(--ink);margin-bottom:44px;padding:56px 0 20px}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1{font-family:Archivo,system-ui,sans-serif;font-weight:700;font-size:clamp(34px,6vw,54px);
+  line-height:1.02;letter-spacing:-.022em;color:var(--ink);margin:0 0 16px;text-wrap:balance}
+.standfirst{font-size:20px;line-height:1.5;color:var(--body);max-width:60ch;margin:0}
+.mastfoot{display:flex;flex-wrap:wrap;gap:26px;margin-top:26px;
+  font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted);
+  letter-spacing:.04em;text-transform:uppercase}
+.mastfoot b{display:block;font-weight:600;color:var(--ink);font-size:17px;
+  letter-spacing:0;text-transform:none;font-variant-numeric:tabular-nums;margin-top:3px}
+
+nav.toc{position:sticky;top:32px;padding-top:56px}
+nav.toc ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
+nav.toc a{font-family:Archivo,sans-serif;font-size:12.5px;line-height:1.3;color:var(--muted);
+  text-decoration:none;display:flex;gap:9px;border-left:2px solid var(--rule);padding-left:11px}
+nav.toc a:hover{color:var(--accent);border-left-color:var(--accent)}
+nav.toc a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+nav.toc .n{font-family:"IBM Plex Mono",monospace;font-size:10.5px;padding-top:1px;opacity:.7}
+
+section{padding-top:16px;margin-bottom:56px;scroll-margin-top:24px}
+h2{font-family:Archivo,sans-serif;font-weight:700;font-size:27px;letter-spacing:-.014em;
+  color:var(--ink);margin:0 0 6px;text-wrap:balance;line-height:1.15}
+h2 .hn{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--accent);
+  font-weight:500;margin-right:12px;letter-spacing:.06em}
+h3{font-family:Archivo,sans-serif;font-weight:600;font-size:17.5px;color:var(--ink);
+  margin:34px 0 8px;letter-spacing:-.005em}
+p{max-width:var(--measure);margin:0 0 15px}
+.lede{font-size:18.5px;color:var(--body);max-width:64ch}
+ul,ol.body{max-width:var(--measure);padding-left:20px;margin:0 0 15px}
+li{margin-bottom:7px}
+strong{color:var(--ink);font-weight:600}
+a{color:var(--accent-ink)}
+code{font-family:"IBM Plex Mono",monospace;font-size:.855em;background:var(--code-bg);
+  padding:1.5px 5px;border-radius:3px;color:var(--ink)}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:6px;
+  padding:15px 17px;overflow-x:auto;margin:0 0 18px;line-height:1.55}
+pre code{background:none;padding:0;font-size:12.9px}
+
+.axiom{border:2px solid var(--ink);border-radius:2px;padding:24px 26px;margin:0 0 26px;background:var(--raise)}
+.axiom p{margin:0;font-size:20px;line-height:1.45;color:var(--ink);max-width:56ch}
+.axiom p + p{margin-top:12px}
+.axiom .tag{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--accent);display:block;margin-bottom:10px}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-wash);
+  padding:14px 18px;margin:0 0 18px;max-width:var(--measure);border-radius:0 4px 4px 0}
+.note p:last-child{margin-bottom:0}
+.note .lbl{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--accent-ink);display:block;margin-bottom:6px;font-weight:600}
+.trap{border-left-color:var(--warn);background:var(--warn-wash)}
+.trap .lbl{color:var(--warn)}
+
+.funnel{display:flex;flex-direction:column;gap:2px;margin:0 0 22px}
+.fstep{display:grid;grid-template-columns:26px 1fr;gap:12px;align-items:center}
+.fstep .fn{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);text-align:right}
+.fbar{background:var(--raise);border:1px solid var(--rule);border-radius:3px;
+  padding:7px 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;position:relative;overflow:hidden}
+.fbar i{position:absolute;inset:0 auto 0 0;background:var(--accent-wash);border-right:2px solid var(--accent);z-index:0}
+.fbar span{position:relative;z-index:1}
+.fbar .fl{font-family:Archivo,sans-serif;font-weight:600;font-size:13.5px;color:var(--ink)}
+.fbar .fv{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+  margin-left:auto;font-variant-numeric:tabular-nums}
+
+.tw{overflow-x:auto;margin:0 0 20px;border:1px solid var(--rule);border-radius:5px}
+table{border-collapse:collapse;width:100%;font-family:"IBM Plex Mono",monospace;font-size:12.5px}
+th,td{text-align:left;padding:8px 13px;border-bottom:1px solid var(--rule);vertical-align:top}
+thead th{background:var(--raise);color:var(--muted);font-weight:600;font-size:10.5px;
+  letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+td b{color:var(--ink)}
+.tnote{font-family:"Source Serif 4",serif;font-size:14px;color:var(--muted);
+  margin:-12px 0 22px;max-width:var(--measure)}
+
+.stage{border-top:1px solid var(--rule-hard);padding-top:18px;margin-bottom:30px}
+.stage-h{display:flex;gap:12px;align-items:baseline;margin-bottom:8px;flex-wrap:wrap}
+.stage-n{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;
+  color:var(--paper);background:var(--accent);border-radius:3px;padding:2px 7px;letter-spacing:.06em}
+.stage-t{font-family:Archivo,sans-serif;font-weight:600;font-size:18px;color:var(--ink)}
+.stage-sub{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted);margin-left:auto}
+
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 18px;max-width:var(--measure);
+  font-size:15px;margin:0 0 16px}
+.kv dt{font-family:"IBM Plex Mono",monospace;font-size:11px;text-transform:uppercase;
+  letter-spacing:.09em;color:var(--muted);padding-top:5px}
+.kv dd{margin:0}
+
+.changed{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:9.5px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--warn);background:var(--warn-wash);
+  border-radius:20px;padding:2px 8px;vertical-align:middle;margin-left:10px;font-weight:600}
+
+footer{border-top:2px solid var(--ink);padding-top:20px;margin-top:24px;
+  font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted);
+  display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<nav class="toc" aria-label="Contents">
+  <ol>
+    <li><a href="#rule"><span class="n">01</span><span>The two rules</span></a></li>
+    <li><a href="#model"><span class="n">02</span><span>Data model</span></a></li>
+    <li><a href="#pipeline"><span class="n">03</span><span>Cleaning pipeline</span></a></li>
+    <li><a href="#classify"><span class="n">04</span><span>Classification</span></a></li>
+    <li><a href="#trust"><span class="n">05</span><span>What the manifest vouches for</span></a></li>
+    <li><a href="#engine"><span class="n">06</span><span>Lot engine</span></a></li>
+    <li><a href="#outputs"><span class="n">07</span><span>Outputs</span></a></li>
+    <li><a href="#state"><span class="n">08</span><span>State &amp; persistence</span></a></li>
+    <li><a href="#ingest"><span class="n">09</span><span>Sheet ingestion</span></a></li>
+    <li><a href="#conflicts"><span class="n">10</span><span>Conflicts screen</span></a></li>
+    <li><a href="#traps"><span class="n">11</span><span>Traps &amp; invariants</span></a></li>
+    <li><a href="#port"><span class="n">12</span><span>Build order</span></a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="top">
+  <p class="eyebrow">Build specification &middot; revision 2</p>
+  <h1>Warehouse sheet to sellable lot</h1>
+  <p class="standfirst">How the lot builder turns a raw 144,635-row warehouse manifest into
+  priced, pickable lots &mdash; and what you have to get right to rebuild it.</p>
+  <div class="mastfoot">
+    <div>Input rows<b>144,635</b></div>
+    <div>Canonical stacks<b>96,834</b></div>
+    <div>Distinct products<b>15,217</b></div>
+    <div>Units<b>179,672</b></div>
+    <div>Locations<b>7,680</b></div>
+    <div>MSRP<b>$17,074,851</b></div>
+  </div>
+</header>
+
+<section id="rule">
+  <h2><span class="hn">01</span>The two rules</h2>
+  <div class="axiom">
+    <span class="tag">Rule one &mdash; the lot</span>
+    <p>A warehouse location is <strong>all or nothing</strong>. If a slot is worth taking
+    for its Nike, every other brand in that slot comes too.</p>
+  </div>
+  <div class="axiom">
+    <span class="tag">Rule two &mdash; the product</span>
+    <p><strong>Two rows typed differently are two products.</strong> Always. Same barcode,
+    same brand, doesn't matter.</p>
+    <p style="font-size:16px;color:var(--muted)">The buyer reads the title. Nothing may
+    silently rewrite it.</p>
+  </div>
+  <p class="lede">Everything downstream is a consequence of these two. Both are
+  counter-intuitive, and both were learned by getting them wrong first.</p>
+
+  <h3>Why rule one</h3>
+  <p>A SKU-level allocator was built first. It answered <em>"give me 676 Nike"</em> perfectly
+  and produced a lot spread across <strong>3,545 pick slots</strong>. Nobody can pull that.
+  The atom must be the location, because the location is what a person walks to.</p>
+  <ul>
+    <li>Filters do not select items. They <strong>rank and qualify locations</strong>.</li>
+    <li>Adding a location takes 100% of its contents, including brands you did not ask for.</li>
+    <li>"Only footwear" cannot mean "filter out the apparel". It has to mean
+    <strong>"only show slots containing nothing but footwear"</strong>.</li>
+  </ul>
+
+  <h3>Why rule two <span class="changed">changed in rev 2</span></h3>
+  <p>Revision 1 collapsed differently-typed titles within a brand, on the theory that they
+  were the same shoe worded twice. Of the 2,154 titles it merged, only <strong>60</strong>
+  were the same text with different punctuation. The other 2,094 &mdash; 16,551 units &mdash;
+  were genuinely different wording, and at least one pair was a different shoe:</p>
+<pre><code>Barcode 197968446084
+  380 units   New Balance 9060 Big Kid Shoes, Great Plains/Twilight Haze, Size 6.5
+    1 unit    New Balance 550 - Men's (Navy/Electric Sky) Size 12</code></pre>
+  <p>Merging relabelled the 550 as a 9060. No rule can reliably separate a re-wording from
+  a different model, so no rule should try.</p>
+  <div class="note"><span class="lbl">The trade, stated plainly</span>
+    <p>Removing the merge took 96,675 stacks to 96,834 and 13,063 products to 15,217. The
+    same shoe can now appear twice in a manifest under two names. That is correct: a
+    duplicate line is a cosmetic annoyance, a relabelled line is a dispute.</p></div>
+</section>
+
+<section id="model">
+  <h2><span class="hn">02</span>Data model</h2>
+
+  <h3>Input</h3>
+  <p>Six columns. Everything else is ignored. Column order does not matter; the header row
+  may sit below junk rows.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><b>UPC/EAN</b></td><td>string</td><td>Never parse as a number &mdash; leading zeros and 13-digit codes both break</td></tr>
+      <tr><td><b>Location</b></td><td>string</td><td>Free text in practice. See stage 2</td></tr>
+      <tr><td><b>Box #</b></td><td>string</td><td>82% empty. Only meaningful inside its own location</td></tr>
+      <tr><td><b>Remaining</b></td><td>int</td><td>Units on this row. Rows repeat per scan</td></tr>
+      <tr><td><b>Title</b></td><td>string</td><td>8% empty. Carries brand, model, gender, size &mdash; all unstructured</td></tr>
+      <tr><td><b>MSRP</b></td><td>money</td><td>May carry <code>$</code> and commas</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Canonical row</h3>
+  <p>The pipeline collapses input rows into <strong>stacks</strong>. One stack is one product
+  sitting in one slot.</p>
+<pre><code>stack {
+  location   "43-127-04A"     // canonical ZZ-RRR-SS[A-D]
+  box        "BOX3" | ""      // scoped to the location
+  upc        "196969506827"
+  title      "Nike Air Max ..."   // exactly as typed. never rewritten
+  units      46
+  msrp       190.00
+  brand      "Nike"           // all four derived from title
+  category   "Footwear"
+  segment    "Kids"
+  size_us    6.5 | null
+  desc_known    1 | 0         // quality flags, see section 05
+  title_risk    0 | 1 | 2 | 3
+  upc_ambiguous 1 | 0
+}</code></pre>
+
+  <div class="note trap">
+    <span class="lbl">The key that matters</span>
+    <p>The stack key is <code>(location, box, upc, <strong>title</strong>)</code>. Two
+    products under one barcode must stay two rows, and the title is the only thing that
+    separates them. 12,452 barcodes resolve to <strong>15,217 products</strong>.</p>
+  </div>
+
+  <h3>Derived hierarchy</h3>
+  <p>Locations parse as <code>ZZ-RRR-SS[A-D]</code> &mdash; zone, rack, shelf, sub-slot.
+  Slicing the canonical string gives you the pick path for free, and sorting by it is a
+  warehouse walk in aisle order.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Level</th><th>Slice</th><th class="n">Count</th><th class="n">Median units</th></tr></thead>
+    <tbody>
+      <tr><td>Zone</td><td><code>[0:2]</code></td><td class="n">16</td><td class="n">&mdash;</td></tr>
+      <tr><td>Rack</td><td><code>[0:6]</code></td><td class="n">385</td><td class="n">412</td></tr>
+      <tr><td>Location</td><td>full</td><td class="n">7,680</td><td class="n">17</td></tr>
+    </tbody>
+  </table></div>
+  <p class="tnote">Median location holds 17 units at about $1,875 MSRP; 90th percentile is
+  38; the largest is 697. That spread is why lots are built by adding slots one at a time
+  rather than by splitting a target evenly.</p>
+</section>
+
+<section id="pipeline">
+  <h2><span class="hn">03</span>Cleaning pipeline</h2>
+  <p class="lede">Seven stages, strictly ordered &mdash; later stages depend on earlier ones
+  having run.</p>
+
+  <div class="funnel">
+    <div class="fstep"><span class="fn">in</span><div class="fbar"><i style="width:100%"></i>
+      <span class="fl">Raw sheet rows</span><span class="fv">144,635</span></div></div>
+    <div class="fstep"><span class="fn">1</span><div class="fbar"><i style="width:99.9%"></i>
+      <span class="fl">Junk &amp; flag rows dropped</span><span class="fv">144,634</span></div></div>
+    <div class="fstep"><span class="fn">2</span><div class="fbar"><i style="width:99.9%"></i>
+      <span class="fl">Locations resolved <code>8,250 &rarr; 7,680</code></span><span class="fv">6,292 repaired</span></div></div>
+    <div class="fstep"><span class="fn">3</span><div class="fbar"><i style="width:99.9%"></i>
+      <span class="fl">Titles backfilled</span><span class="fv">8,689 recovered</span></div></div>
+    <div class="fstep"><span class="fn">7</span><div class="fbar"><i style="width:66.9%"></i>
+      <span class="fl">Rolled into stacks</span><span class="fv">96,834</span></div></div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">01</span><span class="stage-t">Drop what isn't inventory</span>
+      <span class="stage-sub">before anything else</span></div>
+    <p><strong>Totals rows.</strong> Exported sheets frequently end with a <code>SUM()</code>
+    row: no UPC, no title, and a <code>Remaining</code> equal to the entire sheet. One such
+    row doubles your inventory. Detect as <em>UPC is empty</em>, drop, and report the phantom
+    units by name so it's visible rather than silent.</p>
+    <p><strong>Approval flags.</strong> Order sheets often carry an extra column of
+    <code>yes</code>/<code>no</code>. Detect any non-required column whose non-empty values
+    are all in <code>{yes,no,y,n,true,false,x}</code>, and drop the negatives.</p>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">02</span><span class="stage-t">Normalise locations</span>
+      <span class="stage-sub">8,250 spellings &rarr; 7,680 slots</span></div>
+    <p>The highest-leverage stage in the system. The same physical shelf appears under many
+    spellings; unmerged, your inventory fragments into slots that don't exist.</p>
+<pre><code>43-127-01B   43 127 01b   43'127'01B   43--127-01B
+43-127--01B  43-12701B    43-11O-03A   &larr; letter O for zero</code></pre>
+    <p>The repair ladder, in order:</p>
+    <ol class="body">
+      <li>Uppercase and trim.</li>
+      <li>If the string contains <code>O</code>/<code>I</code>/<code>L</code> and swapping
+      them for <code>0</code>/<code>1</code>/<code>1</code> leaves something purely numeric,
+      take the swap.</li>
+      <li>Collapse every run of non-alphanumerics to a single space.</li>
+      <li>If fewer than three parts remain, try to split a glued run: <code>4312701B</code>
+      &rarr; <code>43 127 01B</code>.</li>
+      <li>Match <code>(\d{1,3}) (\d{1,4}) (\d{1,3})([A-D]?)</code>, zero-pad to
+      <code>ZZ-RRR-SS[A-D]</code>.</li>
+      <li>No match &rarr; mark <code>unparsed</code> and exclude from lots. Never guess.</li>
+    </ol>
+    <p>Emit a raw&rarr;canonical map as an artifact. It is how you audit an unexpected merge,
+    and how the warehouse finds spellings worth fixing at source.</p>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">03</span><span class="stage-t">Backfill missing titles</span>
+      <span class="stage-sub">11,403 blank &rarr; 2,714 unknown</span></div>
+    <p>8% of rows have no description. The same barcode is usually described on another row,
+    so build a UPC&rarr;title catalogue from the rows that have one and fill from it. That
+    recovers 76%.</p>
+    <p>This is <em>the only</em> place a barcode decides what a title says, so record it:
+    every filled row gets <code>title_risk</code> 1 or 2, and every unfillable row gets 3.
+    Section 05 covers what those mean.</p>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">04</span><span class="stage-t">Grade barcodes &mdash; merge nothing</span>
+      <span class="stage-sub">rewritten in rev 2</span></div>
+    <p><strong>Do not collapse titles.</strong> Classify a provisional brand per title and
+    use it only to <em>grade</em> the barcode, never to rewrite anything.</p>
+    <p>A barcode whose rows disagree on brand is <em>conflicted</em>. But a conflicted
+    barcode is usually a typo, not an ambiguity: 89% of them are a single stray unit against
+    hundreds. Only flag <code>upc_ambiguous</code> when the runner-up product is
+    <strong>at least 3 units and at least 5%</strong> of the barcode.</p>
+    <div class="tw"><table>
+      <thead><tr><th class="n">Barcodes</th><th>Shape</th><th>Treatment</th></tr></thead>
+      <tbody>
+        <tr><td class="n">999</td><td>a single stray scan</td><td>conflicted, not flagged</td></tr>
+        <tr><td class="n">739</td><td>one brand under several names</td><td>not conflicted &mdash; separate products</td></tr>
+        <tr><td class="n">131</td><td>mixed brands, small numbers</td><td>conflicted, not flagged</td></tr>
+        <tr><td class="n"><b>38</b></td><td><b>two brands in real quantity</b></td><td><code>upc_ambiguous = 1</code>, 1,586 units</td></tr>
+      </tbody>
+    </table></div>
+    <p>Also emit every barcode carrying two or more product names (1,907 of them, 77,740
+    units) with all its names. That table is what the conflicts screen in section 10 renders.</p>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">05</span><span class="stage-t">Resolve prices</span>
+      <span class="stage-sub">one product, one price</span></div>
+    <p>Group by <strong>exact title</strong> and take the modal price. Backfill <code>$0</code>
+    rows from the same UPC. Then level: every stack of the same product carries the same price.</p>
+    <div class="note trap"><span class="lbl">Two bugs worth pre-empting</span>
+      <p><strong>Grouping on empty titles.</strong> If blank titles are included, every
+      undescribed row becomes one pseudo-product and gets stamped with its modal price. That
+      fabricated $45,335 of MSRP. Exclude empty titles from price resolution.</p>
+      <p><strong>Skipping the levelling pass.</strong> Without it a stack whose rows were all
+      $0 keeps 0 while a sibling stack of the same product carries the real price, and the
+      UI's per-product index then disagrees with the pipeline's own total.</p></div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">06</span><span class="stage-t">Classify</span>
+      <span class="stage-sub">see section 04</span></div>
+    <p>Derive brand, category, segment and size from the title. Do this once per distinct
+    title (~15,000) and join, never once per row (145,000).</p>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="stage-n">07</span><span class="stage-t">Roll up to stacks</span>
+      <span class="stage-sub">144,634 &rarr; 96,834</span></div>
+    <p>Group by <code>(location, box, upc, title)</code>, sum units, take the worst
+    <code>title_risk</code> in the group. Drop rows whose location never parsed. Sort by
+    location so the location index can be a contiguous range per slot &mdash; that single
+    choice is what makes re-ranking 7,680 locations on every keystroke imperceptible.</p>
+  </div>
+</section>
+
+<section id="classify">
+  <h2><span class="hn">04</span>Classification</h2>
+  <p class="lede">Everything the buyer filters on is inferred from one unstructured text
+  field. The dictionaries matter less than the resolution order.</p>
+
+  <h3>Brand: literal beats silhouette</h3>
+  <ol class="body">
+    <li><strong>Literal names.</strong> If the title spells exactly one known brand outright,
+    that wins. No further checks.</li>
+    <li><strong>Model names.</strong> Otherwise fall through to silhouette patterns &mdash;
+    <code>samba</code>, <code>air max</code>, <code>chuck taylor</code>, <code>9060</code>,
+    <code>classic clog</code>.</li>
+  </ol>
+  <div class="note trap"><span class="lbl">Why the order is not optional</span>
+    <p><code>WMNS</code> is Nike's own women's prefix, so it sat in the Nike pattern list.
+    This data uses it generically, and Nike was checked before adidas &mdash; so
+    <em>"adidas Sambae WMNS Sneakers"</em> classified as <strong>Nike</strong>. 32 titles,
+    707 units, invisible until someone cross-checked a brand total against a spreadsheet
+    filter.</p></div>
+  <p>Roughly 1,700 units of Crocs carry no literal brand at all &mdash; they are titled
+  <em>"Classic Clog K Lagoon J6"</em> or <em>"Gothic Punk Love Jibbitz Pin Set of 5"</em>.
+  Tier 2 catches them, which is why a plain text search undercounts a brand by 30%.</p>
+
+  <h3>Category cascade</h3>
+  <p>First match wins; non-footwear is tested first, because a shoe title rarely says
+  "coverall" but an apparel title often says "crew" or "low".</p>
+<pre><code>socks &rarr; underwear &rarr; apparel-bottom &rarr; apparel-top &rarr; bag &rarr; headwear
+      &rarr; accessory &rarr; boots &rarr; sandals &rarr; clogs &rarr; slippers &rarr; cleats
+      &rarr; footwear keyword or silhouette   &rarr; Footwear
+      &rarr; apparel size marker (2XL, W42 x L36) &rarr; Apparel-Other
+      &rarr; a parseable US shoe size        &rarr; Footwear
+      &rarr; Uncategorized</code></pre>
+  <p>The last two fallbacks matter: 43% of titles carry no category word at all, and the size
+  test alone rescues most of them. Residual <code>Uncategorized</code> is 6%.</p>
+
+  <h3>Size</h3>
+  <p>Five ordered patterns &mdash; <code>9.5 US</code>, <code>Size 11</code>, trailing
+  <code>, 7.5 M</code>, <code>10 M</code>, <code>7Y</code>. Accept only 0.5&ndash;20 to
+  reject EU sizes and style numbers. Apply case-insensitivity to <em>every</em> pattern; one
+  of the five was missing the flag, so lowercase <code>Size 6w</code> never matched.</p>
+
+  <h3>Keep one source of truth</h3>
+  <p>If the system has both a server-side cleaner and a client-side one, do not maintain two
+  copies of these tables. Define them once and serialise them into the client at build time.
+  Write every pattern in the intersection of Python <code>re</code> and JavaScript
+  <code>RegExp</code> &mdash; no named groups, no lookbehind, no inline flags &mdash; so the
+  same strings compile in both.</p>
+</section>
+
+<section id="trust">
+  <h2><span class="hn">05</span>What the manifest vouches for<span class="changed">new in rev 2</span></h2>
+  <p class="lede">The buyer reads the description, not the barcode. So the description is what
+  gets graded, and the grade travels all the way to the manifest.</p>
+  <div class="tw"><table>
+    <thead><tr><th class="n">title_risk</th><th class="n">Units</th><th>Meaning</th><th>Manifest note</th></tr></thead>
+    <tbody>
+      <tr><td class="n">0</td><td class="n">167,139</td><td>typed into the source sheet</td><td><em>(blank)</em></td></tr>
+      <tr><td class="n">1</td><td class="n">7,030</td><td>row was blank; named from a clean barcode</td><td>description taken from the same barcode elsewhere</td></tr>
+      <tr><td class="n">2</td><td class="n"><b>2,011</b></td><td>row was blank; barcode reads as several products</td><td><b>VERIFY</b> &mdash; description guessed from a barcode used for several products</td></tr>
+      <tr><td class="n">3</td><td class="n"><b>3,492</b></td><td>nothing in the source to go on</td><td><b>NO DESCRIPTION</b> in the source sheet</td></tr>
+    </tbody>
+  </table></div>
+  <p>Only grades 2 and 3 can mis-describe a lot, and together they are 3% of stock. A typical
+  3,000-unit lot lands at 2,967 typed / 32 soft / 4 to verify &mdash; a handful of lines to
+  eyeball, not a wall of noise.</p>
+  <div class="note"><span class="lbl">Grade the right object</span>
+    <p>Revision 1 warned on <code>upc_ambiguous</code>, which flagged 6,338 units in a lot and
+    was mostly noise &mdash; a barcode being reused does not touch a row whose title was typed
+    by a human. Grading the description instead cut the real exposure to 2,014 units and made
+    the warning actionable.</p></div>
+</section>
+
+<section id="engine">
+  <h2><span class="hn">06</span>Lot engine</h2>
+  <p class="lede">The whole engine is a ranking over locations plus a set of chosen ones.
+  No allocation, no optimiser.</p>
+
+  <h3>Two filters, not one</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Filter</th><th>Fields</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td><b>WANT</b></td><td>brand, size range, MSRP range</td><td>Ranks slots. Excludes nothing</td></tr>
+      <tr><td><b>ALLOW</b></td><td>category, segment, described-only, brand-lock</td><td>Decides which slots qualify at all</td></tr>
+    </tbody>
+  </table></div>
+  <p>WANT is always a subset of ALLOW. Collapsing them into one filter is wrong in both
+  directions:</p>
+  <div class="tw"><table>
+    <thead><tr><th>Query: Nike + footwear</th><th class="n">Slots</th><th>Problem</th></tr></thead>
+    <tbody>
+      <tr><td>One filter, no strictness</td><td class="n">4,477</td><td>1,921 of them contain apparel</td></tr>
+      <tr><td>One filter, strict</td><td class="n">179</td><td>Demands 100% <em>Nike</em> footwear; discards a slot that's 95% Nike + 5% adidas</td></tr>
+      <tr><td><b>Two filters, strict</b></td><td class="n"><b>2,449</b></td><td>Slots holding nothing but footwear, ranked by Nike content</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Ranking</h3>
+<pre><code>for each location L not already picked or removed:
+    total   = sum(units in L)
+    allowed = sum(units in L matching ALLOW)
+    want    = sum(units in L matching WANT)      // WANT is a subset of ALLOW
+    breaks  = total - allowed
+
+    if ALLOW is set and breaks / total &gt; slack:  skip
+    if WANT  is set and want == 0:               skip
+    emit { L, total, want, breaks, pct: want/total }
+
+sort by pct desc            // concentration, the default
+     or want desc           // volume</code></pre>
+  <p><code>slack</code> is the one dial: the share of a slot allowed to violate ALLOW. Zero is
+  strict. It is the honest expression of "I'd take a little apparel to get more volume".</p>
+  <div class="note"><span class="lbl">Surface what the sort costs</span>
+    <p>Sorting by concentration puts tiny slots on top &mdash; of the top 100 by percentage
+    the median slot is 8 units, and the whole top 100 totals 1,100 units. Sorting by volume
+    gets 1,940 units from the same 100. Ship a minimum-size input and say which trade the
+    current sort is making.</p></div>
+
+  <h3>What a card must show</h3>
+  <p>Because the take is all-or-nothing, the decision needs the whole slot visible before the
+  click, not after:</p>
+<pre><code>43-127-04A                                  96% of it
+48 units &middot; 10 styles &middot; $4,690 MSRP &middot; 46 you want
+  Nike         ####################  46
+  New Balance  #                      2
+  Comes with 2 other units: New Balance 2
+  [ Add whole location &rarr; ]</code></pre>
+  <p>The <em>"Comes with"</em> line is the single most important element in the interface.
+  Aggregate it too: taking all 2,449 slots in that query brings 12,865 Nike units inside
+  44,563 total &mdash; about 2.5 units of something else for every unit you wanted.</p>
+
+  <h3>Live selection totals</h3>
+  <p>When several categories are ticked, show the combined figure. Tick Footwear, Boots,
+  Sandals, Clogs, Slippers and Cleats and the panel reads
+  <code>Total 131,978 &middot; $13,436,733</code>. Count <strong>available</strong> stock only,
+  so the total drops as slots are staged and removed.</p>
+</section>
+
+<section id="outputs">
+  <h2><span class="hn">07</span>Outputs</h2>
+  <p class="lede">Three artifacts, three audiences. They must reconcile to the same unit total
+  or none of them can be trusted.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Artifact</th><th>For</th><th>Contains</th></tr></thead>
+    <tbody>
+      <tr><td><b>Manifest</b></td><td>Buyer</td><td>Header totals, brand counts, locations, then every line with UPC, description, brand, category, segment, size, MSRP, qty, extended, <code>Description check</code></td></tr>
+      <tr><td><b>Brand counts</b></td><td>Sales</td><td>Brand &rarr; units, % of lot, styles, MSRP, and how many locations hold it</td></tr>
+      <tr><td><b>Pull sheet</b></td><td>Warehouse</td><td>Location &rarr; units, styles, MSRP, brands in that slot, box numbers. Sorted in walk order</td></tr>
+    </tbody>
+  </table></div>
+  <p>Two details that make them usable rather than merely correct. Brand counts belong
+  <em>inside</em> the manifest &mdash; the buyer's first question is always "how much of each
+  brand". And the bare list of location codes needs to be copyable in one action, because it
+  gets pasted into a message to the floor.</p>
+  <div class="note"><span class="lbl">Test to write first</span>
+    <p><code>sum(manifest.qty) == sum(pull_sheet.units) == sum(brand_counts.units) == lot.units</code>.
+    It catches key collisions, double-counting, and filter leakage in one assertion. Address
+    columns by header name, not position &mdash; the manifest gained a column and a
+    position-based test silently checked the wrong one.</p></div>
+</section>
+
+<section id="state">
+  <h2><span class="hn">08</span>State &amp; persistence<span class="changed">expanded in rev 2</span></h2>
+
+  <h3>Start empty</h3>
+  <p>The app ships with <strong>no data in it</strong>. Sheets arrive by drag-and-drop and are
+  kept in client-side storage. Rebuilding the app must not touch what the user loaded, and
+  must not reintroduce sheets they removed. This also took the shipped file from 2.8&nbsp;MB
+  to 100&nbsp;KB.</p>
+
+  <h3>Three states per location, per sheet</h3>
+  <dl class="kv">
+    <dt>Available</dt><dd>In the pool, appears in results.</dd>
+    <dt>Staged</dt><dd>In the lot being built. Leaves the pool immediately, so header counts
+      and every later search only show what's unclaimed.</dd>
+    <dt>Removed</dt><dd>Physically gone. Never reappears, including after the next data refresh.</dd>
+  </dl>
+
+  <h3>Storage map</h3>
+  <div class="tw"><table>
+    <thead><tr><th>What</th><th>Where</th><th>Keyed by</th></tr></thead>
+    <tbody>
+      <tr><td>Staged + removed locations</td><td>localStorage, per sheet</td><td>location <b>code</b></td></tr>
+      <tr><td>Hidden sheets</td><td>localStorage</td><td>sheet slug</td></tr>
+      <tr><td>Loaded sheet data</td><td>IndexedDB</td><td>sheet slug</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note trap"><span class="lbl">Key by code, never by index</span>
+    <p>Row indices shift every time the export changes; codes don't. Keep removed codes that
+    are absent from the current export rather than pruning them &mdash; absent means shipped,
+    not undone.</p></div>
+  <p>Removed state has no other copy, so ship an export and a matching import. Browser storage
+  can be cleared.</p>
+  <div class="note trap"><span class="lbl">Initialisation order &mdash; this bit twice</span>
+    <p>Both storage layers silently failed because their key constants were declared
+    <em>below</em> the startup code. <code>var</code> hoists the name but not the value, so at
+    startup the app read <code>localStorage.getItem(undefined)</code> and opened an IndexedDB
+    database literally named <code>"undefined"</code>. Both looked like "persistence doesn't
+    work". <strong>Run startup last</strong>, after every definition, and the whole class of
+    bug disappears.</p></div>
+</section>
+
+<section id="ingest">
+  <h2><span class="hn">09</span>Sheet ingestion</h2>
+  <p class="lede">A 4.4&nbsp;MB workbook of 144,635 rows parses and cleans in about one second
+  in the browser, with no library.</p>
+  <p>An <code>.xlsx</code> is a ZIP of XML. Modern browsers inflate it natively:</p>
+  <ol class="body">
+    <li>Read the End of Central Directory record, walk the central directory, take each
+    entry's compressed bytes from its local header offset.</li>
+    <li><code>DecompressionStream('deflate-raw')</code> for method 8, raw bytes for method 0.
+    Feature-detect it and fall back to asking for CSV rather than failing obscurely.</li>
+    <li><code>xl/sharedStrings.xml</code> &rarr; an array; scan <code>&lt;si&gt;</code>,
+    concatenating the <code>&lt;t&gt;</code> runs inside each.</li>
+    <li>Scan the sheet XML with a stateful regex over <code>&lt;row&gt;</code> and
+    <code>&lt;c&gt;</code>. Do not use <code>DOMParser</code> &mdash; the sheet here is 32&nbsp;MB
+    uncompressed.</li>
+    <li>Resolve each cell by its <code>r="AB12"</code> reference, not by position. Empty cells
+    are omitted entirely from the XML.</li>
+    <li>Pick the tab with the most rows. Real files carry notes tabs.</li>
+  </ol>
+  <p>Cell type matters: <code>t="s"</code> indexes shared strings, <code>t="inlineStr"</code>
+  holds text inline, anything else is a literal in <code>&lt;v&gt;</code>. Unescape the five
+  XML entities plus numeric character references.</p>
+  <div class="note"><span class="lbl">Prove the two paths agree</span>
+    <p>With a server cleaner and a browser cleaner, diff them on a real file and assert
+    field-by-field equality across every row &mdash; not just totals. Doing this surfaced four
+    real bugs: the fabricated $45k of MSRP, the missing case-insensitive flag, a null-skipping
+    aggregate that took a title from one product and a size from another, and a composite key
+    joined with an empty separator. Totals alone would have hidden all four.</p></div>
+</section>
+
+<section id="conflicts">
+  <h2><span class="hn">10</span>Conflicts screen<span class="changed">new in rev 2</span></h2>
+  <p class="lede">Because nothing is merged, the app owes the user a way to see what a barcode
+  actually means. This screen is not a nicety &mdash; it is the counterweight to rule two.</p>
+  <p>List every barcode carrying more than one product name. Click one to expand every name
+  on it with units, share of the barcode, how many slots each sits in, and price. Grade each
+  barcode with the same precedence the rows are labelled with, so the tallies add up:</p>
+<pre><code>split        runner-up is 3+ units AND 5%+ of the barcode, different brands
+stray        runner-up is 1-2 units
+sameBrand    all names share a brand
+other        mixed brands, small numbers</code></pre>
+  <p>Two annotations earn their place on an expanded card:</p>
+  <ul>
+    <li><strong>One price across every name.</strong> 370 of the conflicted barcodes carry a
+    single price across an average of three products &mdash; the signature of a barcode used
+    as a <em>price tier</em> rather than a product code. Worth telling the user, because it is
+    a floor-process habit, not a data-entry typo.</li>
+    <li><strong>Same brand, different names.</strong> Say explicitly that these are kept as
+    separate products and the buyer gets exactly the line they were shown. This is where a
+    user will otherwise assume the app has duplicated something.</li>
+  </ul>
+  <p>Ship search across barcode, brand and name, plus a CSV export &mdash; the list is what
+  the warehouse needs in order to fix the habit at source.</p>
+</section>
+
+<section id="traps">
+  <h2><span class="hn">11</span>Traps &amp; invariants</h2>
+
+  <h3>Assert these</h3>
+  <ul>
+    <li>Manifest, pull sheet and brand counts agree on units.</li>
+    <li>Sum of stack units equals sum of input <code>Remaining</code>, minus explicitly
+    reported drops. Report every drop with a reason and a count.</li>
+    <li>No location appears in two lots.</li>
+    <li>Every stack's brand, category and size derive from that stack's own title.</li>
+    <li>No title in the output is absent from the input.</li>
+    <li>One product has exactly one price across every stack.</li>
+  </ul>
+
+  <h3>Traps, in the order they bit</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Trap</th><th>Symptom</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td>Location spelling drift</td><td>8,250 "slots" that should be 7,680</td><td>Repair ladder, keep an audit map</td></tr>
+      <tr><td>Totals row</td><td>Inventory exactly doubles</td><td>Drop rows with no UPC, report phantom units</td></tr>
+      <tr><td>Brand pattern collision</td><td><code>WMNS</code> pulls adidas into Nike</td><td>Literal names beat model names</td></tr>
+      <tr><td><b>Merging titles</b></td><td>A 550 relabelled as a 9060</td><td><b>Never merge. Two names, two products</b></td></tr>
+      <tr><td>Blank titles as a group key</td><td>$45,335 of invented MSRP</td><td>Exclude empty titles from grouping</td></tr>
+      <tr><td>Null-skipping aggregate</td><td>Title from one product, size from another</td><td>Key the group so it can't mix</td></tr>
+      <tr><td>Empty separator in a composite key</td><td>Silent key collisions</td><td>Join with a character that can't occur in the data</td></tr>
+      <tr><td>Constants declared after startup</td><td>Persistence silently never works</td><td>Run startup last</td></tr>
+      <tr><td>Index-keyed state</td><td>Removed lots reappear after a refresh</td><td>Persist location codes</td></tr>
+      <tr><td>Warning on the wrong object</td><td>6,338-unit alarm, mostly noise</td><td>Grade the description, not the barcode</td></tr>
+      <tr><td>Text search vs classification</td><td>Crocs reads 6,421 or 9,442 depending who asks</td><td>Explain the gap; both are right for their question</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Report quality, don't silently fix it</h3>
+  <p>Every run should emit a plain-text report: what was repaired, what was dropped and why,
+  which barcodes carry several names, what remains unidentifiable. The 38 genuinely split
+  barcodes can't be resolved by software &mdash; but they can be handed back to the warehouse
+  as a list, which is the only thing that actually fixes them.</p>
+</section>
+
+<section id="port">
+  <h2><span class="hn">12</span>Build order</h2>
+  <p class="lede">Each step is useful on its own, and each depends only on the ones above it.</p>
+  <div class="tw"><table>
+    <thead><tr><th class="n">#</th><th>Build</th><th>Done when</th></tr></thead>
+    <tbody>
+      <tr><td class="n">1</td><td>Parser + location normaliser</td><td>Spelling count collapses and the audit map looks right</td></tr>
+      <tr><td class="n">2</td><td>Stack roll-up on the 4-part key</td><td>Units reconcile to the input exactly</td></tr>
+      <tr><td class="n">3</td><td>Quality report</td><td>Every dropped row is accounted for by reason</td></tr>
+      <tr><td class="n">4</td><td>Classifier + shared dictionaries</td><td>Brand totals survive a spot-check against text search, gap explained</td></tr>
+      <tr><td class="n">5</td><td>Title-risk grading</td><td>Every row can say where its description came from</td></tr>
+      <tr><td class="n">6</td><td>Location index sorted by code</td><td>Re-ranking all slots is imperceptible</td></tr>
+      <tr><td class="n">7</td><td>WANT / ALLOW ranking + slack</td><td>The three-row table in section 06 reproduces</td></tr>
+      <tr><td class="n">8</td><td>Cards with the "comes with" line</td><td>You can decide without opening the slot</td></tr>
+      <tr><td class="n">9</td><td>Staged / removed state, keyed by code</td><td>Removals survive a rebuild</td></tr>
+      <tr><td class="n">10</td><td>The three exports</td><td>The reconciliation assertion passes</td></tr>
+      <tr><td class="n">11</td><td>Browser ingestion + empty-first shell</td><td>Field-by-field parity with the server cleaner</td></tr>
+      <tr><td class="n">12</td><td>Conflicts screen</td><td>A user can see what any barcode means</td></tr>
+    </tbody>
+  </table></div>
+  <p>Steps 1&ndash;3 are where the value is. A perfect interface over unnormalised locations
+  and merged products will confidently sell stock that isn't there.</p>
+</section>
+
+<footer>
+  <span>Lot engine &mdash; build specification, revision 2</span>
+  <span>Figures from a 144,635-row export, 2026-08-21</span>
+</footer>
+</main>
+</div>
+
+</body></html>

@@ -13,6 +13,7 @@ mod form_parser;
 mod geocode;
 mod google_contacts;
 mod invoice;
+mod lot_engine;
 mod manifest;
 mod oauth_flow;
 mod plaid;
