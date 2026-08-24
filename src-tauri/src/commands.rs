@@ -31,11 +31,16 @@ pub(crate) fn central_week_start() -> chrono::NaiveDate {
 ///    `deal_flows.completed_at` (the buyer's bank payment day) and `invoices.issue_date`.
 ///  * `utc_lo`/`utc_hi` (those same two Central midnights, expressed in UTC) for columns
 ///    holding a real **instant** — `invoices.paid_at`.
+///  * `tz_shift` shifts an instant to its Central wall clock, so a daily GROUP BY buckets
+///    by Central day. Taken at the window's start: the offset only moves on the
+///    March/November transition days, which can shift one row by a day *inside* the
+///    window but never across its edges — those use the exact instants above, so a daily
+///    series always sums to the same total as the headline.
 ///
-/// Never bucket a month with `strftime('%Y-%m', ts)` over an instant column: UTC is
-/// already the next day from 6/7pm Central, so an invoice paid on the last evening of
-/// a month lands in the following one.
-pub(crate) struct MonthWindow {
+/// Never bucket with `strftime('%Y-%m', ts)` over an instant column: UTC is already the
+/// next day from 6/7pm Central, so an invoice paid on the last evening of a month lands
+/// in the following one. Weeks (Mon–Sun) use `central_day_window` directly.
+pub(crate) struct CentralWindow {
     pub day_lo: String,
     pub day_hi: String,
     pub utc_lo: String,
@@ -45,7 +50,7 @@ pub(crate) struct MonthWindow {
 }
 
 /// `month` is `YYYY-MM`; anything unparseable falls back to the current Central month.
-pub(crate) fn central_month_window(month: &str) -> MonthWindow {
+pub(crate) fn central_month_window(month: &str) -> CentralWindow {
     let fallback = || { let t = central_today(); (t.year(), t.month()) };
     let (y, m) = month
         .split_once('-')
@@ -57,24 +62,21 @@ pub(crate) fn central_month_window(month: &str) -> MonthWindow {
         (Some(lo), Some(hi)) => (lo, hi),
         _ => { let (y, m) = fallback(); (first(y, m).unwrap(), if m == 12 { first(y + 1, 1).unwrap() } else { first(y, m + 1).unwrap() }) }
     };
-    // Central midnight -> UTC. A month always begins at a real local time (the DST gap
-    // is 2am on a Sunday in March), so `earliest()` is never None here.
-    let to_utc = |d: chrono::NaiveDate| {
-        d.and_hms_opt(0, 0, 0)
-            .and_then(|naive| chrono_tz::America::Chicago.from_local_datetime(&naive).earliest())
-            .map(|t| t.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S%:z").to_string())
-            .unwrap_or_else(|| format!("{}T00:00:00+00:00", d))
-    };
-    // SQLite modifier that turns a stored UTC instant into its Central wall clock, so a
-    // daily bucket is a Central day. Taken at the month's start: the offset only moves on
-    // the March/November transition days, which can shift a single row by one day inside
-    // the month but never across its boundaries (those use the exact instants above), so
-    // the daily series still sums to the headline.
-    let tz_shift = format!("{} hours", lo.and_hms_opt(0, 0, 0)
-        .and_then(|naive| chrono_tz::America::Chicago.from_local_datetime(&naive).earliest())
+    central_day_window(lo, hi)
+}
+
+/// The same half-open window over an arbitrary Central date range `[lo, hi)` — weeks for
+/// the brief, months via `central_month_window`. Both bounds are Central calendar days.
+pub(crate) fn central_day_window(lo: chrono::NaiveDate, hi: chrono::NaiveDate) -> CentralWindow {
+    let central_midnight = |d: chrono::NaiveDate| d.and_hms_opt(0, 0, 0)
+        .and_then(|naive| chrono_tz::America::Chicago.from_local_datetime(&naive).earliest());
+    let to_utc = |d: chrono::NaiveDate| central_midnight(d)
+        .map(|t| t.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .unwrap_or_else(|| format!("{}T00:00:00+00:00", d));
+    let tz_shift = format!("{} hours", central_midnight(lo)
         .map(|t| (t.naive_local() - t.naive_utc()).num_hours())
         .unwrap_or(-6));
-    MonthWindow {
+    CentralWindow {
         day_lo: lo.format("%Y-%m-%d").to_string(),
         day_hi: hi.format("%Y-%m-%d").to_string(),
         utc_lo: to_utc(lo),
@@ -9663,23 +9665,29 @@ fn month_profit_sql(select: &str, extra: &str) -> String {
         one = DF_SURVIVOR_SQL)
 }
 
-/// The one month-REVENUE population: PAID invoices inside the Central month. Same
-/// contract as `month_profit_sql` - hero and chart share it, so the cumulative revenue
-/// line always ends exactly on the hero's Revenue card.
+/// **The** revenue definition (R-202): PAID invoice totals, non-void, non-archived. The
+/// dashboard hero, its cumulative chart and the brief all read revenue through here, so
+/// the three cannot report different revenue for the same period. Profit has its own
+/// population (`month_profit_sql`) because a deal closes when the goods land, not when
+/// the buyer's money does — that timing difference is real, not a bug.
 ///
-/// `invoices.paid_at` holds a UTC INSTANT, so it is windowed on the month's UTC
-/// boundaries; rows too old to carry a `paid_at` fall back to `issue_date`, a calendar
-/// date, and use the day boundaries. Binds ?1 = `day_lo`, ?2 = `day_hi`,
-/// ?3 = `utc_lo`, ?4 = `utc_hi`.
-fn month_revenue_sql(select: &str) -> String {
+/// `window` is the date predicate (`INV_WINDOW_SQL`, or `""` for all time); `join` and
+/// `filters` carry the brief's per-rep restriction, which reaches the rep through the
+/// invoice's client.
+fn paid_revenue_sql(select: &str, join: &str, window: &str, filters: &str) -> String {
     format!(
-        "SELECT {select} \
-         FROM invoices i \
-         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
-           AND (CASE WHEN COALESCE(i.paid_at,'')<>'' \
-                     THEN datetime(i.paid_at) >= datetime(?3) AND datetime(i.paid_at) < datetime(?4) \
-                     ELSE i.issue_date >= ?1 AND i.issue_date < ?2 END)")
+        "SELECT {select} FROM invoices i {join} \
+         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 {window}{filters}")
 }
+
+/// Half-open Central window over `invoices` for `paid_revenue_sql`. `paid_at` is a UTC
+/// instant, so it compares against the window's UTC bounds; rows too old to carry one
+/// fall back to `issue_date`, a calendar date, against the day bounds.
+/// Binds ?1 = `day_lo`, ?2 = `day_hi`, ?3 = `utc_lo`, ?4 = `utc_hi`.
+const INV_WINDOW_SQL: &str =
+    "AND (CASE WHEN COALESCE(i.paid_at,'')<>'' \
+               THEN datetime(i.paid_at) >= datetime(?3) AND datetime(i.paid_at) < datetime(?4) \
+               ELSE i.issue_date >= ?1 AND i.issue_date < ?2 END)";
 
 #[tauri::command]
 pub async fn dashboard_stats() -> Result<Value, String> {
@@ -9921,8 +9929,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     };
     let win = central_month_window(&this_month);
     let prev_win = central_month_window(&prev_month);
-    let rev_month_sql = month_revenue_sql("COALESCE(SUM(i.total),0)");
-    let rev_of = |w: &MonthWindow| -> f64 {
+    let rev_month_sql = paid_revenue_sql("COALESCE(SUM(i.total),0)", "", INV_WINDOW_SQL, "");
+    let rev_of = |w: &CentralWindow| -> f64 {
         conn.query_row(&rev_month_sql, rusqlite::params![&w.day_lo, &w.day_hi, &w.utc_lo, &w.utc_hi], |r| r.get(0)).unwrap_or(0.0)
     };
     let revenue_mtd = rev_of(&win);
@@ -9935,7 +9943,7 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     // fell-through deals (voided/archived invoice) are excluded — the same accuracy
     // rules as the brief, so the two surfaces can never disagree by construction.
     let profit_month_sql = month_profit_sql(&format!("COALESCE(SUM({np}),0)", np = DF_EFF_PROFIT_SQL), "");
-    let profit_of = |w: &MonthWindow| -> f64 {
+    let profit_of = |w: &CentralWindow| -> f64 {
         conn.query_row(&profit_month_sql, rusqlite::params![&w.day_lo, &w.day_hi], |r| r.get(0)).unwrap_or(0.0)
     };
     let profit_mtd = profit_of(&win);
@@ -10147,8 +10155,9 @@ pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok()).collect();
 
-    let revenue_sql = format!("{} GROUP BY d ORDER BY d", month_revenue_sql(
-        "CASE WHEN COALESCE(i.paid_at,'')<>'' THEN date(i.paid_at, ?5) ELSE date(i.issue_date) END AS d, COALESCE(SUM(i.total),0)"));
+    let revenue_sql = format!("{} GROUP BY d ORDER BY d", paid_revenue_sql(
+        "CASE WHEN COALESCE(i.paid_at,'')<>'' THEN date(i.paid_at, ?5) ELSE date(i.issue_date) END AS d, COALESCE(SUM(i.total),0)",
+        "", INV_WINDOW_SQL, ""));
     let mut stmt = conn.prepare(&revenue_sql).map_err(|e| e.to_string())?;
     let revenue_by_day: std::collections::BTreeMap<String, f64> = stmt
         .query_map(rusqlite::params![&win.day_lo, &win.day_hi, &win.utc_lo, &win.utc_hi, &win.tz_shift],
@@ -10786,14 +10795,34 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // brief's profit above the dashboard card for the same month.
     let np = DF_EFF_PROFIT_SQL;
 
-    let revenue_this_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
-        [&week_start, &end_excl], |r| r.get(0)
-    ).unwrap_or(0.0);
-    let revenue_last_week: f64 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
-        [&last_week_start, &week_start], |r| r.get(0)
-    ).unwrap_or(0.0);
+    // R-202, Jack's call: the brief reports the SAME revenue as the dashboard - paid
+    // invoice totals by paid date, not deal `gross_revenue` by closed date. The two used
+    // to be \$83k apart for a month by definition, on two screens showing one business.
+    // The per-rep filter still applies: a rep is a property of the invoice's CLIENT, so
+    // it reaches invoices by the same join it reached deal flows by.
+    // Margins below stay on the deal population (deal profit / that deal's own revenue) -
+    // they live under "Profit from deal flows" and a margin is only meaningful when its
+    // numerator and denominator come from the same deals.
+    //
+    // Month stats follow the browsed anchor's calendar month (Central), 1st to 1st. The
+    // open-ended `completed_at >= 1st` this replaces let a deal closed-dated into a later
+    // month leak into "this month".
+    let month_win = central_month_window(&now_date.format("%Y-%m").to_string());
+    let month_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
+    let (revenue_this_week, revenue_last_week, revenue_this_month, revenue_all_time) = {
+        let join = if rep_name.is_some() { "JOIN clients c ON c.id=i.client_id" } else { "" };
+        let windowed = paid_revenue_sql("COALESCE(SUM(i.total),0)", join, INV_WINDOW_SQL, &rep_filter);
+        let of = |w: &CentralWindow| -> f64 {
+            conn.query_row(&windowed, rusqlite::params![&w.day_lo, &w.day_hi, &w.utc_lo, &w.utc_hi], |r| r.get(0)).unwrap_or(0.0)
+        };
+        let all_time: f64 = conn.query_row(
+            &paid_revenue_sql("COALESCE(SUM(i.total),0)", join, "", &rep_filter), [], |r| r.get(0)
+        ).unwrap_or(0.0);
+        (of(&central_day_window(ws_date, end_excl_date)),
+         of(&central_day_window(lws_date, ws_date)),
+         of(&month_win),
+         all_time)
+    };
     let profit_this_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM({np}),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| r.get(0)
@@ -10807,24 +10836,13 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     let margin_q = |from: &str| -> String {
         format!("SELECT COALESCE(SUM({np}) / NULLIF(SUM(gross_revenue),0) * 100, 0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{from}{rep_filter}")
     };
-    let rev_q = |from: &str| -> String {
-        format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{from}{rep_filter}")
-    };
     let avg_margin_this_week: f64 = conn.query_row(
         &margin_q(" AND df.completed_at >= ?1 AND df.completed_at < ?2"), [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
 
-    // Month stats follow the browsed anchor's calendar month (Central), 1st to 1st.
-    // The open-ended `completed_at >= 1st` this replaces let a deal closed-dated into a
-    // later month leak into "this month".
-    let month_win = central_month_window(&now_date.format("%Y-%m").to_string());
-    let month_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
-
     // Explicit margins per bucket (Jack's ask): calendar month + all-time.
     let avg_margin_this_month: f64 = conn.query_row(&margin_q(month_bounds), [&month_win.day_lo, &month_win.day_hi], |r| r.get(0)).unwrap_or(0.0);
     let avg_margin_all_time: f64  = conn.query_row(&margin_q(""), [], |r| r.get(0)).unwrap_or(0.0);
-    let revenue_this_month: f64   = conn.query_row(&rev_q(month_bounds), [&month_win.day_lo, &month_win.day_hi], |r| r.get(0)).unwrap_or(0.0);
-    let revenue_all_time: f64     = conn.query_row(&rev_q(""), [], |r| r.get(0)).unwrap_or(0.0);
 
     // All-time per-calendar-month history — fixes the Brief only ever showing the
     // two rolling windows. Every month with a completed deal appears.
