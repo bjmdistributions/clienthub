@@ -3,7 +3,7 @@
 
 use crate::db::pool;
 use crate::sync;
-use chrono::{Utc, Datelike};
+use chrono::{Utc, Datelike, TimeZone};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -19,6 +19,68 @@ pub(crate) fn central_today() -> chrono::NaiveDate {
 pub(crate) fn central_week_start() -> chrono::NaiveDate {
     let today = central_today();
     today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64)
+}
+
+/// R-159: a calendar month runs from the 1st at 00:00 **Central** to the 1st of the
+/// next month at 00:00 Central, half-open. Every "this month" figure on every surface
+/// goes through this window, so the hero card, the chart and the brief cannot disagree
+/// about where the month starts and ends.
+///
+/// Two boundary pairs come back because the two date columns hold different things:
+///  * `day_lo`/`day_hi` (`YYYY-MM-DD`) for columns holding a **calendar date** —
+///    `deal_flows.completed_at` (the buyer's bank payment day) and `invoices.issue_date`.
+///  * `utc_lo`/`utc_hi` (those same two Central midnights, expressed in UTC) for columns
+///    holding a real **instant** — `invoices.paid_at`.
+///
+/// Never bucket a month with `strftime('%Y-%m', ts)` over an instant column: UTC is
+/// already the next day from 6/7pm Central, so an invoice paid on the last evening of
+/// a month lands in the following one.
+pub(crate) struct MonthWindow {
+    pub day_lo: String,
+    pub day_hi: String,
+    pub utc_lo: String,
+    pub utc_hi: String,
+    /// SQLite date modifier (e.g. `"-5 hours"`) that shifts a UTC instant to Central.
+    pub tz_shift: String,
+}
+
+/// `month` is `YYYY-MM`; anything unparseable falls back to the current Central month.
+pub(crate) fn central_month_window(month: &str) -> MonthWindow {
+    let fallback = || { let t = central_today(); (t.year(), t.month()) };
+    let (y, m) = month
+        .split_once('-')
+        .and_then(|(y, m)| Some((y.parse::<i32>().ok()?, m.parse::<u32>().ok()?)))
+        .filter(|(_, m)| (1..=12).contains(m))
+        .unwrap_or_else(fallback);
+    let first = |y: i32, m: u32| chrono::NaiveDate::from_ymd_opt(y, m, 1);
+    let (lo, hi) = match (first(y, m), if m == 12 { first(y + 1, 1) } else { first(y, m + 1) }) {
+        (Some(lo), Some(hi)) => (lo, hi),
+        _ => { let (y, m) = fallback(); (first(y, m).unwrap(), if m == 12 { first(y + 1, 1).unwrap() } else { first(y, m + 1).unwrap() }) }
+    };
+    // Central midnight -> UTC. A month always begins at a real local time (the DST gap
+    // is 2am on a Sunday in March), so `earliest()` is never None here.
+    let to_utc = |d: chrono::NaiveDate| {
+        d.and_hms_opt(0, 0, 0)
+            .and_then(|naive| chrono_tz::America::Chicago.from_local_datetime(&naive).earliest())
+            .map(|t| t.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+            .unwrap_or_else(|| format!("{}T00:00:00+00:00", d))
+    };
+    // SQLite modifier that turns a stored UTC instant into its Central wall clock, so a
+    // daily bucket is a Central day. Taken at the month's start: the offset only moves on
+    // the March/November transition days, which can shift a single row by one day inside
+    // the month but never across its boundaries (those use the exact instants above), so
+    // the daily series still sums to the headline.
+    let tz_shift = format!("{} hours", lo.and_hms_opt(0, 0, 0)
+        .and_then(|naive| chrono_tz::America::Chicago.from_local_datetime(&naive).earliest())
+        .map(|t| (t.naive_local() - t.naive_utc()).num_hours())
+        .unwrap_or(-6));
+    MonthWindow {
+        day_lo: lo.format("%Y-%m-%d").to_string(),
+        day_hi: hi.format("%Y-%m-%d").to_string(),
+        utc_lo: to_utc(lo),
+        utc_hi: to_utc(hi),
+        tz_shift,
+    }
 }
 
 // ============================================================
@@ -4466,7 +4528,10 @@ pub async fn complete_deal_flow(id: String, shipping_status: Option<String>, com
             let conn = pool().get().map_err(|e| e.to_string())?;
             buyer_bank_paid_date(&conn, &id)
                 .or_else(|| df.payment_received_at.clone().filter(|s| !s.is_empty()))
-                .unwrap_or_else(|| Utc::now().to_rfc3339())
+                // R-159: a closed date is a CENTRAL calendar day, and every month
+                // window reads this column as one. A UTC instant here would file a
+                // deal closed after 7pm on the last of the month into the next month.
+                .unwrap_or_else(|| format!("{}T00:00:00Z", central_today().format("%Y-%m-%d")))
         }
     };
     // Bank actuals win: if the deal has linked bank transactions, its recorded
@@ -9453,11 +9518,14 @@ pub struct ProfitForecast {
 pub async fn get_profit_forecast() -> Result<ProfitForecast, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = central_today();
-    let month_start = format!("{}-01", now.format("%Y-%m"));
 
+    // The dashboard's Profit hero, not a second opinion on it: raw net_profit with no
+    // refund netting, no fell-through guard and no survivor dedupe made the forecast
+    // open from a higher base than the card the user had just read.
+    let win = central_month_window(&now.format("%Y-%m").to_string());
     let profit_mtd: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(net_profit),0) FROM deal_flows WHERE stage='complete' AND completed_at >= ?1",
-        [&month_start], |r| r.get(0),
+        &month_profit_sql(&format!("COALESCE(SUM({np}),0)", np = DF_EFF_PROFIT_SQL), ""),
+        rusqlite::params![&win.day_lo, &win.day_hi], |r| r.get(0),
     ).unwrap_or(0.0);
 
     let cutoff = (now - chrono::Duration::days(90)).format("%Y-%m-%d").to_string();
@@ -9574,6 +9642,44 @@ const DF_EFF_PROFIT_SQL: &str =
 const DF_SURVIVOR_SQL: &str =
     "df.id = (SELECT MIN(d2.id) FROM deal_flows d2 \
               WHERE d2.invoice_id = df.invoice_id AND d2.stage='complete' AND COALESCE(d2.archived,0)=0)";
+
+/// The one month-PROFIT population, shared verbatim by the dashboard hero, the
+/// cumulative chart, the loss card and the brief. Anything that renders a "profit this
+/// month" builds its SELECT through here, so the number on the card and the last point
+/// on the line are the same query with a different projection - they cannot drift apart
+/// again the way the chart's private refund rule let them.
+///
+/// `deal_flows.completed_at` holds a calendar DATE (the buyer's bank payment day), so
+/// the month is a plain half-open day window. Binds ?1 = `day_lo`, ?2 = `day_hi`.
+/// `extra` is an additional predicate (`""` for none), so a narrowing card like the
+/// loss tile stays on this population instead of hand-rolling its own.
+fn month_profit_sql(select: &str, extra: &str) -> String {
+    format!(
+        "SELECT {select} \
+         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
+         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
+           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
+           AND df.completed_at >= ?1 AND df.completed_at < ?2 {extra}",
+        one = DF_SURVIVOR_SQL)
+}
+
+/// The one month-REVENUE population: PAID invoices inside the Central month. Same
+/// contract as `month_profit_sql` - hero and chart share it, so the cumulative revenue
+/// line always ends exactly on the hero's Revenue card.
+///
+/// `invoices.paid_at` holds a UTC INSTANT, so it is windowed on the month's UTC
+/// boundaries; rows too old to carry a `paid_at` fall back to `issue_date`, a calendar
+/// date, and use the day boundaries. Binds ?1 = `day_lo`, ?2 = `day_hi`,
+/// ?3 = `utc_lo`, ?4 = `utc_hi`.
+fn month_revenue_sql(select: &str) -> String {
+    format!(
+        "SELECT {select} \
+         FROM invoices i \
+         WHERE i.status='paid' AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
+           AND (CASE WHEN COALESCE(i.paid_at,'')<>'' \
+                     THEN datetime(i.paid_at) >= datetime(?3) AND datetime(i.paid_at) < datetime(?4) \
+                     ELSE i.issue_date >= ?1 AND i.issue_date < ?2 END)")
+}
 
 #[tauri::command]
 pub async fn dashboard_stats() -> Result<Value, String> {
@@ -9733,11 +9839,15 @@ pub async fn dashboard_stats() -> Result<Value, String> {
                GROUP BY df.invoice_id) WHERE best < 4",
             [], |r| r.get(0),
         ).unwrap_or(0);
-    let completed_this_month: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM deal_flows WHERE stage='complete' AND COALESCE(archived,0)=0 AND strftime('%Y-%m', completed_at) = ?1",
-            [central_today().format("%Y-%m").to_string()], |r| r.get(0),
-        ).unwrap_or(0);
+    // Counts the deals the month's Profit hero is made of - same window, same survivor
+    // rule, same fell-through exclusion. Counting raw rows read higher than the money.
+    let completed_this_month: i64 = {
+        let w = central_month_window(&central_today().format("%Y-%m").to_string());
+        conn.query_row(
+            &month_profit_sql("COUNT(DISTINCT df.invoice_id)", ""),
+            rusqlite::params![&w.day_lo, &w.day_hi], |r| r.get(0),
+        ).unwrap_or(0)
+    };
 
     let incomplete_shipping: i64 = conn
         .query_row(
@@ -9798,24 +9908,25 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    let month_start = format!("{}-01", central_today().format("%Y-%m"));
-
     // Hero Revenue + Profit with [This month | All time] toggle + prev-month delta.
-    // Revenue = PAID invoice totals (non-void, non-archived), month-matched on
-    // paid_at with an issue_date fallback for old rows that never set paid_at.
-    // Profit = completed deal_flows net_profit (non-archived) by completed_at.
+    // Both figures run the SHARED month builders, and so does the cumulative chart
+    // beside them (`get_monthly_profit`) - that is what keeps the card and the last
+    // point on the line equal. R-159: the month is 1st-to-1st in Central, never a
+    // strftime bucket over a UTC instant.
     let this_month = central_today().format("%Y-%m").to_string();
     let prev_month = {
         let now = central_today();
         let (y, m) = (now.year(), now.month());
         if m == 1 { format!("{}-12", y - 1) } else { format!("{}-{:02}", y, m - 1) }
     };
-    const REV_MONTH_SQL: &str =
-        "SELECT COALESCE(SUM(total),0) FROM invoices \
-         WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0 \
-           AND strftime('%Y-%m', COALESCE(NULLIF(paid_at,''), issue_date)) = ?1";
-    let revenue_mtd: f64 = conn.query_row(REV_MONTH_SQL, [&this_month], |r| r.get(0)).unwrap_or(0.0);
-    let revenue_prev_month: f64 = conn.query_row(REV_MONTH_SQL, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
+    let win = central_month_window(&this_month);
+    let prev_win = central_month_window(&prev_month);
+    let rev_month_sql = month_revenue_sql("COALESCE(SUM(i.total),0)");
+    let rev_of = |w: &MonthWindow| -> f64 {
+        conn.query_row(&rev_month_sql, rusqlite::params![&w.day_lo, &w.day_hi, &w.utc_lo, &w.utc_hi], |r| r.get(0)).unwrap_or(0.0)
+    };
+    let revenue_mtd = rev_of(&win);
+    let revenue_prev_month = rev_of(&prev_win);
     let revenue_all_time: f64 = conn.query_row(
         "SELECT COALESCE(SUM(total),0) FROM invoices WHERE status='paid' AND COALESCE(voided,0)=0 AND COALESCE(archived,0)=0",
         [], |r| r.get(0)
@@ -9823,15 +9934,12 @@ pub async fn dashboard_stats() -> Result<Value, String> {
     // Profit is refund-aware (refunds come off the deal's profit, capped at it) and
     // fell-through deals (voided/archived invoice) are excluded — the same accuracy
     // rules as the brief, so the two surfaces can never disagree by construction.
-    let profit_month_sql = format!(
-        "SELECT COALESCE(SUM({np}),0) \
-         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
-           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND {one} \
-           AND strftime('%Y-%m', df.completed_at) = ?1",
-        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL);
-    let profit_mtd: f64 = conn.query_row(&profit_month_sql, [&this_month], |r| r.get(0)).unwrap_or(0.0);
-    let profit_prev_month: f64 = conn.query_row(&profit_month_sql, [&prev_month], |r| r.get(0)).unwrap_or(0.0);
+    let profit_month_sql = month_profit_sql(&format!("COALESCE(SUM({np}),0)", np = DF_EFF_PROFIT_SQL), "");
+    let profit_of = |w: &MonthWindow| -> f64 {
+        conn.query_row(&profit_month_sql, rusqlite::params![&w.day_lo, &w.day_hi], |r| r.get(0)).unwrap_or(0.0)
+    };
+    let profit_mtd = profit_of(&win);
+    let profit_prev_month = profit_of(&prev_win);
     let profit_all_time: f64 = conn.query_row(
         &format!(
         "SELECT COALESCE(SUM({np}),0) \
@@ -9842,10 +9950,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         [], |r| r.get(0)
     ).unwrap_or(0.0);
     let deals_mtd: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 \
-           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 AND df.completed_at >= ?1",
-        [&month_start], |r| r.get(0)
+        &month_profit_sql("COUNT(DISTINCT df.invoice_id)", ""),
+        rusqlite::params![&win.day_lo, &win.day_hi], |r| r.get(0)
     ).unwrap_or(0);
 
     // Top suppliers by total paid — payments are stored as JSON in deal_flows
@@ -9876,17 +9982,17 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // The loss card sits next to the Profit hero, so it reads losses the same way the
+    // hero reads profit: refund-netted (a refund can push a won deal negative) and one
+    // survivor row per invoice, over the same Central month window.
+    let is_loss = format!("AND {np} < 0", np = DF_EFF_PROFIT_SQL);
     let loss_deals_this_month: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
-           AND df.completed_at >= ?1 AND df.net_profit < 0",
-        [&month_start], |r| r.get(0)
+        &month_profit_sql("COUNT(*)", &is_loss),
+        rusqlite::params![&win.day_lo, &win.day_hi], |r| r.get(0)
     ).unwrap_or(0);
     let loss_total_this_month: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(df.net_profit),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
-           AND df.completed_at >= ?1 AND df.net_profit < 0",
-        [&month_start], |r| r.get(0)
+        &month_profit_sql(&format!("COALESCE(SUM({np}),0)", np = DF_EFF_PROFIT_SQL), &is_loss),
+        rusqlite::params![&win.day_lo, &win.day_hi], |r| r.get(0)
     ).unwrap_or(0.0);
     // All-time deal outcomes for the analytics dashboard: won = distinct invoices
     // with a completed live flow; lost = fell-through (voided) invoices.
@@ -10016,28 +10122,48 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Daily profit and revenue for one month, for the dashboard's cumulative chart.
+///
+/// Both series are the hero's own queries with a per-day projection - profit through
+/// `month_profit_sql`, revenue through `month_revenue_sql` - so cumulating them to the
+/// end of the month lands exactly on `profit_mtd` and `revenue_mtd`. The chart used to
+/// run its own SQL for both: a stale refund rule that could not see refunds booked as
+/// `refund_out` bank allocations, no survivor dedupe, and a "revenue" taken from
+/// `deal_flows.gross_revenue` by closed date rather than from paid invoices by paid
+/// date. Those three differences are the whole reason the card and the line disagreed.
+///
+/// Profit buckets on `completed_at`, a calendar date. Revenue buckets on `paid_at`, a
+/// UTC instant, shifted to its Central day by `win.tz_shift`.
 #[tauri::command]
 pub async fn get_monthly_profit(month: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    // Refund-netted and fell-through-guarded, exactly like the hero
-    // (PROFIT_MONTH_SQL) and the server's /api/dashboard/monthly-profit. Without
-    // these this daily series disagreed with the dashboard's OWN refund-aware hero
-    // on the same screen — a month containing a refund or a voided-but-complete deal
-    // made the cumulative chart read high.
-    let mut stmt = conn.prepare(
-        "SELECT date(df.completed_at) as d,
-                COALESCE(SUM(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0)),0),
-                COALESCE(SUM(df.gross_revenue),0)
-         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0
-           AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
-           AND strftime('%Y-%m', df.completed_at) = ?1
-         GROUP BY d ORDER BY d"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([&month], |r| {
-        Ok(json!({ "day": r.get::<_, String>(0)?, "profit": r.get::<_, f64>(1)?, "revenue": r.get::<_, f64>(2)? }))
-    }).map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let win = central_month_window(&month);
+
+    let profit_sql = format!("{} GROUP BY d ORDER BY d",
+        month_profit_sql(&format!("date(df.completed_at) AS d, COALESCE(SUM({np}),0)", np = DF_EFF_PROFIT_SQL), ""));
+    let mut stmt = conn.prepare(&profit_sql).map_err(|e| e.to_string())?;
+    let profit_by_day: std::collections::BTreeMap<String, f64> = stmt
+        .query_map(rusqlite::params![&win.day_lo, &win.day_hi], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok()).collect();
+
+    let revenue_sql = format!("{} GROUP BY d ORDER BY d", month_revenue_sql(
+        "CASE WHEN COALESCE(i.paid_at,'')<>'' THEN date(i.paid_at, ?5) ELSE date(i.issue_date) END AS d, COALESCE(SUM(i.total),0)"));
+    let mut stmt = conn.prepare(&revenue_sql).map_err(|e| e.to_string())?;
+    let revenue_by_day: std::collections::BTreeMap<String, f64> = stmt
+        .query_map(rusqlite::params![&win.day_lo, &win.day_hi, &win.utc_lo, &win.utc_hi, &win.tz_shift],
+                   |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok()).collect();
+
+    let mut days: Vec<String> = profit_by_day.keys().chain(revenue_by_day.keys()).cloned().collect();
+    days.sort();
+    days.dedup();
+    Ok(days.into_iter().map(|d| json!({
+        "day": d,
+        "profit": profit_by_day.get(&d).copied().unwrap_or(0.0),
+        "revenue": revenue_by_day.get(&d).copied().unwrap_or(0.0),
+    })).collect())
 }
 
 /// Accounts-receivable aging: open invoices (sent/overdue) bucketed by days past
@@ -10649,9 +10775,16 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     // - `np` is refund-aware net profit — a deal's refunds come straight off its
     //   profit (locked P&L rule: refunds reduce profit), so a refunded deal can't
     //   keep inflating the brief.
-    let live = " AND COALESCE(df.archived,0)=0 AND NOT EXISTS (SELECT 1 FROM invoices iv \
-                 WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1))";
-    let np = "(df.net_profit - COALESCE((SELECT SUM(amount) FROM refunds r WHERE r.deal_flow_id=df.id),0))";
+    // - duplicate 'complete' rows on one invoice are collapsed to their survivor, or
+    //   every SUM below counts that deal twice.
+    let live = format!(" AND COALESCE(df.archived,0)=0 AND NOT EXISTS (SELECT 1 FROM invoices iv \
+                 WHERE iv.id=df.invoice_id AND (COALESCE(iv.voided,0)=1 OR COALESCE(iv.archived,0)=1)) AND {one}",
+                 one = DF_SURVIVOR_SQL);
+    let live = live.as_str();
+    // The dashboard's refund rule, not a second one: reading `refunds` alone cannot see
+    // a refund booked from Financials as a `refund_out` bank allocation, which left the
+    // brief's profit above the dashboard card for the same month.
+    let np = DF_EFF_PROFIT_SQL;
 
     let revenue_this_week: f64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(gross_revenue),0) FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
@@ -10681,13 +10814,16 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         &margin_q(" AND df.completed_at >= ?1 AND df.completed_at < ?2"), [&week_start, &end_excl], |r| r.get(0)
     ).unwrap_or(0.0);
 
-    // Month stats follow the browsed anchor's calendar month (Central), not UTC-now.
-    let month_start = format!("{}-01", now_date.format("%Y-%m"));
+    // Month stats follow the browsed anchor's calendar month (Central), 1st to 1st.
+    // The open-ended `completed_at >= 1st` this replaces let a deal closed-dated into a
+    // later month leak into "this month".
+    let month_win = central_month_window(&now_date.format("%Y-%m").to_string());
+    let month_bounds = " AND df.completed_at >= ?1 AND df.completed_at < ?2";
 
     // Explicit margins per bucket (Jack's ask): calendar month + all-time.
-    let avg_margin_this_month: f64 = conn.query_row(&margin_q(" AND df.completed_at >= ?1"), [&month_start], |r| r.get(0)).unwrap_or(0.0);
+    let avg_margin_this_month: f64 = conn.query_row(&margin_q(month_bounds), [&month_win.day_lo, &month_win.day_hi], |r| r.get(0)).unwrap_or(0.0);
     let avg_margin_all_time: f64  = conn.query_row(&margin_q(""), [], |r| r.get(0)).unwrap_or(0.0);
-    let revenue_this_month: f64   = conn.query_row(&rev_q(" AND df.completed_at >= ?1"), [&month_start], |r| r.get(0)).unwrap_or(0.0);
+    let revenue_this_month: f64   = conn.query_row(&rev_q(month_bounds), [&month_win.day_lo, &month_win.day_hi], |r| r.get(0)).unwrap_or(0.0);
     let revenue_all_time: f64     = conn.query_row(&rev_q(""), [], |r| r.get(0)).unwrap_or(0.0);
 
     // All-time per-calendar-month history — fixes the Brief only ever showing the
@@ -10722,8 +10858,8 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
     ).unwrap_or(0.0);
 
     let df_mtd: DfProfit = conn.query_row(
-        &format!("SELECT COUNT(*), COALESCE(SUM({np}),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1{rep_filter}"),
-        [&month_start],
+        &format!("SELECT COUNT(*), COALESCE(SUM({np}),0), COALESCE(SUM(profit_jack),0), COALESCE(SUM(profit_ben),0), COALESCE(SUM(profit_business),0), 0, 0 FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{month_bounds}{rep_filter}"),
+        [&month_win.day_lo, &month_win.day_hi],
         |r| Ok(DfProfit { count: r.get::<_,i64>(0).unwrap_or(0) as u32, net_profit: r.get(1)?, jack: r.get(2)?, ben: r.get(3)?, business: r.get(4)?, loss_count: 0, loss_total: 0.0 })
     ).unwrap_or(DfProfit { count: 0, net_profit: 0.0, jack: 0.0, ben: 0.0, business: 0.0, loss_count: 0, loss_total: 0.0 });
 
@@ -10747,8 +10883,8 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         [&week_start, &end_excl], |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0.0, 0.0));
     let split_month: (f64, f64) = conn.query_row(
-        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{live} AND df.completed_at >= ?1{rep_filter}"),
-        [&month_start], |r| Ok((r.get(0)?, r.get(1)?))
+        &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{month_bounds}{rep_filter}"),
+        [&month_win.day_lo, &month_win.day_hi], |r| Ok((r.get(0)?, r.get(1)?))
     ).unwrap_or((0.0, 0.0));
     let split_all: (f64, f64) = conn.query_row(
         &format!("SELECT {net_incl}, {net_excl} FROM deal_flows df {rep_join} WHERE df.stage='complete'{live}{rep_filter}"),
@@ -15573,6 +15709,47 @@ pub async fn linked_party_payments(ctype: String, id: String) -> Result<Value, S
         "sales": linked_side_json("client", cli, sales),
         "duplicates_dropped": dropped,
     }))
+}
+
+#[cfg(test)]
+mod month_window_tests {
+    use super::central_month_window;
+
+    /// A month is the 1st to the 1st, and the instant bounds are Central midnight
+    /// expressed in UTC — CDT in August (UTC-5), CST in January (UTC-6). Getting this
+    /// wrong is what files an invoice paid on the last evening of a month into the next.
+    #[test]
+    fn month_runs_first_to_first_anchored_on_central() {
+        let aug = central_month_window("2026-08");
+        assert_eq!(aug.day_lo, "2026-08-01");
+        assert_eq!(aug.day_hi, "2026-09-01");
+        assert_eq!(aug.utc_lo, "2026-08-01T05:00:00+00:00");
+        assert_eq!(aug.utc_hi, "2026-09-01T05:00:00+00:00");
+        assert_eq!(aug.tz_shift, "-5 hours");
+
+        let jan = central_month_window("2026-01");
+        assert_eq!(jan.day_hi, "2026-02-01", "January rolls into February");
+        assert_eq!(jan.utc_lo, "2026-01-01T06:00:00+00:00", "CST is UTC-6");
+        assert_eq!(jan.tz_shift, "-6 hours");
+    }
+
+    /// December must roll the year, not produce a month 13.
+    #[test]
+    fn december_rolls_into_january() {
+        let dec = central_month_window("2026-12");
+        assert_eq!(dec.day_lo, "2026-12-01");
+        assert_eq!(dec.day_hi, "2027-01-01");
+    }
+
+    /// Garbage in falls back to the current Central month rather than a window that
+    /// silently matches nothing.
+    #[test]
+    fn unparseable_month_falls_back_to_now() {
+        let now = super::central_today().format("%Y-%m-01").to_string();
+        for bad in ["", "not-a-month", "2026-13", "2026"] {
+            assert_eq!(central_month_window(bad).day_lo, now, "input {bad:?}");
+        }
+    }
 }
 
 #[cfg(test)]
