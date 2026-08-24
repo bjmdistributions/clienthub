@@ -7,6 +7,7 @@ import RecurringView from "./RecurringView";
 import InvoicePreview, { DEFAULT_INVOICE_TEMPLATE } from "./InvoicePreview";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
+import InvoiceCostSection from "./InvoiceCostSection";
 import { toast } from "./Toast";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
@@ -1073,6 +1074,18 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
             <div className="bg-surface-2 border border-line px-4 py-3 rounded-xl text-[12px] text-ink-2">
               {invoice.notes}
             </div>
+          )}
+
+          {/* Cost & profit — the DEAL's costs, with supplier search. Never stored on the
+              invoice: `/costs` writes the same three columns the deal-flow pipeline owns,
+              so a cost typed against an invoice fights the deal for them and is reverted
+              the next time it recomputes. No deal yet → nothing to cost, and no editor. */}
+          {dealFlow && (
+            <InvoiceCostSection
+              flow={dealFlow}
+              invoiceTotal={invoice.total}
+              onReload={() => api.getDealFlowByInvoice(invoice.id).then(setDealFlow).catch(() => {})}
+            />
           )}
 
           {/* Pair the buyer payment to this invoice's deal, then run any refund. */}

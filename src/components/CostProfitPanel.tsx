@@ -12,12 +12,21 @@ import { fmtAmount } from "../lib/format";
 export default function CostProfitPanel({
   flow,
   recipients,
+  fallbackRevenue,
 }: {
   flow: DealFlow;
   recipients: PayoutShare[];
+  /**
+   * Revenue to measure against while the deal is open and the buyer has not paid yet.
+   * Without it an unpaid invoice reads as a total loss — the deal's costs against zero
+   * revenue. True of the cash that has moved, and useless as a margin.
+   */
+  fallbackRevenue?: number;
 }) {
   const isComplete = flow.stage === "complete";
-  const gross  = isComplete ? flow.gross_revenue : flow.payment_received_amount;
+  const gross  = isComplete
+    ? flow.gross_revenue
+    : (flow.payment_received_amount > 0 ? flow.payment_received_amount : (fallbackRevenue ?? 0));
   const cost   = isComplete ? flow.total_cost    : flow.total_supplier_cost;
   const profit = gross - cost;
   const margin = gross > 0 ? (profit / gross) * 100 : 0;
