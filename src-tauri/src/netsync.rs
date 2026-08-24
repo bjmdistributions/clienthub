@@ -48,6 +48,10 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts",
     // Booking memory (R-018): rules are org knowledge since v0.15.139.
     "txn_rule",
+    // Lot engine (R-200). Small by construction: one row per sheet, one per saved lot,
+    // and one per slot actually touched — never one per cleaned stack. The stacks are an
+    // artifact fetched over an authenticated route, not oplog rows.
+    "lot_sheet", "lot_slot_state", "lot_build",
 ];
 
 pub fn ensure_tables() -> Result<()> {
@@ -1479,8 +1483,15 @@ pub async fn materialize_email_secrets_from_server() -> Result<u32, String> {
     let need_imap = on_org && crate::email::cred_opt("imap_pass").filter(|p| !p.is_empty()).is_none();
     // Any org monitor inbox whose per-inbox keyring secret is missing on this
     // device also needs materializing.
+    //
+    // A Google-linked mailbox has no password BY DESIGN, so it must never appear
+    // here: it would be treated as "missing" and the org copy written straight back
+    // into the keyring, silently returning the mailbox to password auth. Filtering
+    // only the caller's trigger is not enough - any unrelated materialize (say a
+    // missing legacy password) runs this same loop.
     let missing_inbox_ids: Vec<String> = crate::email::load_org_inboxes()
         .into_iter()
+        .filter(|ib| ib.auth_method == crate::email::AuthMethod::Password)
         .filter(|ib| crate::email::cred_opt(&format!("imap_pass_{}", ib.id)).filter(|p| !p.is_empty()).is_none())
         .map(|ib| ib.id)
         .collect();
@@ -1568,13 +1579,21 @@ pub async fn push_all_secrets_to_server() -> Result<u32, String> {
 
     // Keyring-backed credentials (via the encrypted secret_store).
     for key in ["smtp_pass", "imap_pass", "stripe_publishable_key", "stripe_secret_key",
-                "stripe_webhook_secret", "oauth_refresh_token", "gcontacts_refresh_token"] {
+                "stripe_webhook_secret", "oauth_refresh_token", "gcontacts_refresh_token",
+                // The client id/secret are useless without the refresh token and the
+                // refresh token is useless without them - ship the set or none of it.
+                "oauth_client_id", "oauth_client_secret"] {
         if let Some(v) = crate::email::cred_opt(key).filter(|p| !p.is_empty()) {
             secrets.insert(key.into(), serde_json::Value::String(v));
         }
     }
     // Per-org-inbox IMAP passwords (keyed `imap_pass_{id}`).
-    for ib in crate::email::load_org_inboxes() {
+    //
+    // Password-auth inboxes ONLY. A Google-linked mailbox has no password by design,
+    // and a device whose keyring still holds a stale copy would otherwise re-upload
+    // it here - resurrecting, in the second org store, the credential that signing in
+    // with Google deleted. Revoking one copy is not revoking the secret.
+    for ib in crate::email::load_org_inboxes().into_iter().filter(|ib| ib.auth_method == crate::email::AuthMethod::Password) {
         let k = format!("imap_pass_{}", ib.id);
         if let Some(v) = crate::email::cred_opt(&k).filter(|p| !p.is_empty()) {
             secrets.insert(k, serde_json::Value::String(v));
@@ -1662,7 +1681,22 @@ pub async fn materialize_all_secrets_from_server() -> Result<u32, String> {
             if settings_get(skey).is_none() { settings_put(skey, value); cached += 1; }
         } else {
             // Everything else is a keyring-backed credential.
-            if crate::email::cred_opt(skey).filter(|p| !p.is_empty()).is_none()
+            //
+            // EXCEPT an app password for a mailbox that has since moved to Google
+            // sign-in. This is the last of three paths that could resurrect it: the
+            // org-secrets store is a separate upsert-only table from the settings
+            // bridge, so a teammate's device that still held the old password could
+            // re-upload it and every device would re-cache it here - silently undoing
+            // a revocation the owner believes is complete.
+            let revoked_inbox_password = skey
+                .strip_prefix("imap_pass_")
+                .is_some_and(|id| {
+                    crate::email::load_org_inboxes()
+                        .iter()
+                        .any(|ib| ib.id == id && ib.auth_method == crate::email::AuthMethod::Oauth2)
+                });
+            if !revoked_inbox_password
+                && crate::email::cred_opt(skey).filter(|p| !p.is_empty()).is_none()
                 && crate::email::save_cred(skey, value).is_ok() { cached += 1; }
         }
     }
@@ -1822,6 +1856,95 @@ pub async fn upload_inventory_manifest(lot_id: &str, rel: &str) -> Result<(), St
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------
+// Lot engine artifacts (R-200)
+//
+// A `lot_sheet` row replicates over the oplog, but it is only a summary — every ranking
+// reads the cleaned stacks, which are ~97k rows and never go near the oplog. They move as
+// a `stacks.jsonl` file over these three calls.
+//
+// Deliberately NOT the `/media` route the photos and manifests take. That mount is served
+// with no auth at all, which is right for a buyer's manifest and wrong for this: the file
+// is every product, price and shelf in the warehouse. These endpoints sit inside the
+// server's protected router and are scoped to the caller's org.
+// ---------------------------------------------------------------------------------------
+
+fn lot_artifact_url(sheet_id: &str) -> Option<String> {
+    let cfg = config()?;
+    Some(format!(
+        "{}/api/lot-engine/sheets/{}/artifact",
+        cfg.url.trim_end_matches('/'),
+        sheet_id
+    ))
+}
+
+/// Does the server already hold this sheet's stacks? Any error counts as "no", so we err
+/// toward re-uploading rather than assuming.
+pub async fn server_has_lot_artifact(sheet_id: &str) -> bool {
+    let (Some(url), Some(cfg)) = (lot_artifact_url(sheet_id), config()) else {
+        return false;
+    };
+    match http().head(url).bearer_auth(&cfg.token).send().await {
+        Ok(r) => r.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+/// Send this device's cleaned stacks for a sheet to the server.
+pub async fn upload_lot_artifact(sheet_id: &str, local: &std::path::Path) -> Result<(), String> {
+    let cfg = config().ok_or("not signed in")?;
+    let url = lot_artifact_url(sheet_id).ok_or("not signed in")?;
+    let bytes = std::fs::read(local).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("the local stacks file is empty".into());
+    }
+    let resp = http()
+        .post(url)
+        .bearer_auth(&cfg.token)
+        .header("content-type", "application/x-ndjson")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("server returned {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Fetch a sheet's cleaned stacks from the server into `local`.
+///
+/// Written to a temporary file and renamed, so a connection that drops halfway leaves no
+/// half-written artifact behind — a truncated `stacks.jsonl` would be read as a short lot,
+/// and a short lot reads as a legal answer.
+pub async fn download_lot_artifact(sheet_id: &str, local: &std::path::Path) -> Result<(), String> {
+    let cfg = config().ok_or("this sheet was imported on another device — sign in to fetch it")?;
+    let url = lot_artifact_url(sheet_id).ok_or("not signed in")?;
+    let resp = http()
+        .get(url)
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|_| "couldn't reach the server".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "the server does not have this sheet's data yet ({})",
+            resp.status()
+        ));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("the server returned an empty file".into());
+    }
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = local.with_extension("part");
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, local).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Does the server already hold this media file? HEADs the public `/media` mount
 /// (the same path the storefront serves from). Lets the reconcile skip re-uploading
 /// bytes the server already has. Any error / non-2xx counts as "not present" so we
@@ -1918,17 +2041,32 @@ pub async fn push_media_pending() {
         }
     };
     for (rel, lot_id, kind, attempts) in rows {
+        // A lot sheet's stacks live outside `sync/media/` and travel an authenticated
+        // route, so their local path and their presence check are both different.
+        let is_lot_sheet = kind == "lotsheet";
+        let local = if is_lot_sheet {
+            crate::db::app_data_dir().join(&rel)
+        } else {
+            crate::db::app_data_dir().join("sync").join(&rel)
+        };
         // Nothing to upload if the local file is gone — drop it.
-        if !crate::db::app_data_dir().join("sync").join(&rel).exists() {
+        if !local.exists() {
             media_dequeue(&rel);
             continue;
         }
         // Already on the server (e.g. the inline attempt landed) — dequeue without re-sending.
-        if server_has_media(&rel).await {
+        let present = if is_lot_sheet {
+            server_has_lot_artifact(&lot_id).await
+        } else {
+            server_has_media(&rel).await
+        };
+        if present {
             media_dequeue(&rel);
             continue;
         }
-        let result = if kind == "manifest" {
+        let result = if is_lot_sheet {
+            upload_lot_artifact(&lot_id, &local).await
+        } else if kind == "manifest" {
             upload_inventory_manifest(&lot_id, &rel).await
         } else {
             upload_inventory_photo(&lot_id, &rel).await
@@ -1937,7 +2075,13 @@ pub async fn push_media_pending() {
             Ok(()) => media_dequeue(&rel),
             Err(e) => {
                 let next = attempts + 1;
-                if next >= MAX_MEDIA_RETRIES {
+                // A sheet artifact is refused until its row has replicated, so the first
+                // attempts can legitimately fail. `push_pending` runs earlier in the same
+                // tick, so that is usually one tick — but a slow or wedged push queue
+                // makes it longer, and giving up after four minutes would strand the only
+                // copy of a sheet on this device.
+                let ceiling = if is_lot_sheet { 60 } else { MAX_MEDIA_RETRIES };
+                if next >= ceiling {
                     tracing::error!("netsync: giving up on media upload {} after {} attempts: {}", rel, next, e);
                     media_dequeue(&rel);
                 } else if let Ok(conn) = pool().get() {
@@ -2334,4 +2478,29 @@ pub async fn netsync_whoami() -> Result<serde_json::Value, String> {
         return Err(e.to_string());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod lot_sync_tests {
+    use super::SNAPSHOT_TABLES;
+
+    /// The desktop's snapshot list must mirror the server's, or a Repair sync silently
+    /// leaves a table behind — the device looks healed and is not.
+    #[test]
+    fn the_lot_engine_tables_are_cloned_by_repair() {
+        for t in ["lot_sheet", "lot_slot_state", "lot_build"] {
+            assert!(
+                SNAPSHOT_TABLES.contains(&t),
+                "{t} missing from SNAPSHOT_TABLES — a repaired device would never see it"
+            );
+            assert!(
+                crate::sync::is_synced_table(t),
+                "{t} missing from sync::ALLOWED_TABLES — its events would be dead-lettered"
+            );
+        }
+        // The cleaned stacks are an artifact, never rows. ~97k of them through the oplog is
+        // two orders of magnitude past what this spine was built for.
+        assert!(!SNAPSHOT_TABLES.contains(&"lot_stack"));
+        assert!(!crate::sync::is_synced_table("lot_stack"));
+    }
 }

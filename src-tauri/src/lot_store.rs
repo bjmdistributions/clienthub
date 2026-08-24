@@ -12,10 +12,12 @@
 //! pruning anywhere in either engine — and a batch too large for the push endpoint retries
 //! every 20 seconds forever, blocking every later write in the org behind it.
 //!
-//! So the stacks are a `stacks.jsonl` artifact under
-//! `sync/media/lotsheets/<sheet_id>/`, the same durable, retrying media path lot photos and
-//! manifests already take. Only the small rows — the sheet summary, the slots you touched,
-//! and the lots you saved — are database rows.
+//! So the stacks are a `stacks.jsonl` artifact under `lot-engine/<sheet_id>/`, moved
+//! between devices by the same durable, retrying queue lot photos use — but over an
+//! AUTHENTICATED route rather than the public `/media` mount, because the file is every
+//! product, price and shelf in the warehouse. Only the small rows — the sheet summary, the
+//! slots you touched, and the lots you saved — are database rows, and those three do
+//! replicate over the oplog.
 //!
 //! Ranking reads from an in-memory cache, filled once per sheet, so re-ranking every slot
 //! on a keystroke never touches disk.
@@ -42,14 +44,39 @@ const CONFLICTS_FILE: &str = "barcode-conflicts.csv";
 // Paths and the stack cache
 // ---------------------------------------------------------------------------------------
 
+/// Where a sheet's artifacts live on this device.
+///
+/// **Not under `sync/media/`.** That tree is uploaded to the server's public `/media`
+/// mount, which has no auth — correct for lot photos and buyer manifests, wrong for
+/// `stacks.jsonl`, which is every product, price and shelf in the warehouse. The artifact
+/// moves between devices over an authenticated, org-scoped route instead
+/// (`netsync::push_lot_artifacts` / `netsync::download_lot_artifact`).
 fn sheet_dir(sheet_id: &str) -> Result<PathBuf, String> {
-    let dir = crate::db::app_data_dir()
-        .join("sync")
-        .join("media")
-        .join("lotsheets")
-        .join(sheet_id);
+    let dir = crate::db::app_data_dir().join("lot-engine").join(sheet_id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// True when this device already holds the cleaned stacks for a sheet. A sheet that
+/// arrived over sync is a summary row and nothing else until the artifact follows it.
+pub fn has_artifact(sheet_id: &str) -> bool {
+    crate::db::app_data_dir()
+        .join("lot-engine")
+        .join(sheet_id)
+        .join(STACKS_FILE)
+        .exists()
+}
+
+/// Fetch the stacks from the server if this device does not have them yet.
+///
+/// Called by every command that needs stacks, so a sheet imported on the phone (or on
+/// another desktop) becomes usable here the first time it is opened rather than erroring.
+async fn ensure_artifact(sheet_id: &str) -> Result<(), String> {
+    if has_artifact(sheet_id) {
+        return Ok(());
+    }
+    let dir = sheet_dir(sheet_id)?;
+    crate::netsync::download_lot_artifact(sheet_id, &dir.join(STACKS_FILE)).await
 }
 
 fn cache() -> &'static Mutex<HashMap<String, std::sync::Arc<Vec<Stack>>>> {
@@ -97,11 +124,52 @@ fn write_stacks(sheet_id: &str, stacks: &[Stack]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// A path relative to the app-data root, for storing in a row. Kept relative so a row that
+/// syncs to another device does not carry this machine's directory layout with it.
 fn rel(path: &PathBuf) -> String {
-    let root = crate::db::app_data_dir().join("sync").join("media");
-    path.strip_prefix(&root)
-        .map(|p| format!("media/{}", p.to_string_lossy().replace('\\', "/")))
+    let root = crate::db::app_data_dir();
+    path.strip_prefix(root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+// ---------------------------------------------------------------------------------------
+// Oplog
+//
+// The three small tables replicate; the stacks never do. `org_id` is deliberately absent
+// from these events — the server stamps the pushing session's org onto every column map it
+// accepts, and a desktop that guessed its own org could write into another one's.
+//
+// A failure to emit is logged, not returned: the local row is already written and correct,
+// and refusing the whole command because replication is queued would be worse.
+// ---------------------------------------------------------------------------------------
+
+fn emit(table: &str, id: &str, cols: serde_json::Map<String, serde_json::Value>) {
+    if let Err(e) = crate::sync::record_upsert(table, id, cols) {
+        tracing::warn!("lot engine: could not record {table}/{id} for sync: {e}");
+    }
+}
+
+fn cols(pairs: Vec<(&str, serde_json::Value)>) -> serde_json::Map<String, serde_json::Value> {
+    pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+}
+
+fn emit_slot(sheet_id: &str, loc: &str, state: &str, lot_id: Option<&str>, now: &str) {
+    let key = format!("{sheet_id}{}{loc}", crate::lot_engine::model::KEY_SEP);
+    emit(
+        "lot_slot_state",
+        &key,
+        cols(vec![
+            ("sheet_id", serde_json::json!(sheet_id)),
+            ("location_code", serde_json::json!(loc)),
+            ("state", serde_json::json!(state)),
+            ("lot_id", serde_json::json!(lot_id)),
+            // NOT NULL on the far side, so a peer seeing this row for the first time needs
+            // one. Per-column last-writer-wins keeps the original on a row that exists.
+            ("created_at", serde_json::json!(now)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -127,11 +195,16 @@ pub struct LotSheet {
     /// Slots already in a lot, and slots taken off the master list.
     pub staged_slots: i64,
     pub removed_slots: i64,
+    /// True when the cleaned stacks are on THIS device. A sheet imported elsewhere arrives
+    /// as a summary row first; the artifact follows over its own route, and until it does
+    /// the sheet can be listed but not ranked.
+    pub has_stacks: bool,
 }
 
 fn row_to_sheet(r: &rusqlite::Row) -> rusqlite::Result<LotSheet> {
+    let id: String = r.get(0)?;
     Ok(LotSheet {
-        id: r.get(0)?,
+        id: id.clone(),
         name: r.get(1)?,
         source_filename: r.get(2)?,
         imported_at: r.get(3)?,
@@ -147,6 +220,7 @@ fn row_to_sheet(r: &rusqlite::Row) -> rusqlite::Result<LotSheet> {
         archived: r.get::<_, i64>(13)? != 0,
         staged_slots: r.get(14)?,
         removed_slots: r.get(15)?,
+        has_stacks: has_artifact(&id),
     })
 }
 
@@ -235,6 +309,34 @@ pub async fn import_lot_sheet(path: String, name: Option<String>) -> Result<Impo
         )
         .map_err(|e| e.to_string())?;
     }
+
+    emit(
+        "lot_sheet",
+        &id,
+        cols(vec![
+            ("name", serde_json::json!(display_name)),
+            ("source_filename", serde_json::json!(source_filename)),
+            ("imported_at", serde_json::json!(now)),
+            ("rows_in", serde_json::json!(q.rows_in as i64)),
+            ("stacks", serde_json::json!(q.stacks as i64)),
+            ("products", serde_json::json!(q.products as i64)),
+            ("units", serde_json::json!(q.units)),
+            ("locations", serde_json::json!(q.locations as i64)),
+            ("msrp_total", serde_json::json!(q.msrp_total)),
+            ("quality_json", serde_json::json!(serde_json::to_string(&q).unwrap_or_default())),
+            (
+                "detection_json",
+                serde_json::json!(serde_json::to_string(&cleaned.detection).unwrap_or_default()),
+            ),
+            ("archived", serde_json::json!(0)),
+            ("created_at", serde_json::json!(now)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    // The row alone is a summary. Queue the cleaned stacks so the other devices can
+    // actually rank against this sheet — durable, so closing the app mid-upload retries
+    // rather than stranding the only copy here.
+    crate::netsync::media_enqueue(&id, &rel(&artifact), "lotsheet");
 
     cache()
         .lock()
@@ -328,11 +430,23 @@ pub async fn lot_sheet_report(sheet_id: String) -> Result<SheetReport, String> {
 #[tauri::command]
 pub async fn rename_lot_sheet(sheet_id: String, name: String) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE lot_sheet SET name = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![sheet_id, name, chrono::Utc::now().to_rfc3339()],
-    )
-    .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_sheet SET name = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![sheet_id, name, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_sheet",
+        &sheet_id,
+        cols(vec![
+            ("name", serde_json::json!(name)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
     Ok(())
 }
 
@@ -341,11 +455,23 @@ pub async fn rename_lot_sheet(sheet_id: String, name: String) -> Result<(), Stri
 #[tauri::command]
 pub async fn archive_lot_sheet(sheet_id: String, archived: bool) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE lot_sheet SET archived = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![sheet_id, archived as i64, chrono::Utc::now().to_rfc3339()],
-    )
-    .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_sheet SET archived = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![sheet_id, archived as i64, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_sheet",
+        &sheet_id,
+        cols(vec![
+            ("archived", serde_json::json!(archived as i64)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
     Ok(())
 }
 
@@ -394,6 +520,7 @@ pub struct Facets {
 
 #[tauri::command]
 pub async fn lot_sheet_facets(sheet_id: String) -> Result<Facets, String> {
+    ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
     let gone = unavailable(&sheet_id)?;
 
@@ -471,6 +598,7 @@ pub async fn rank_lot_slots(
     opts: RankOpts,
     exclude: Option<Vec<String>>,
 ) -> Result<RankResult, String> {
+    ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
     let mut gone = unavailable(&sheet_id)?;
     // Slots already picked into the lot on screen but not yet saved. They leave the pool
@@ -494,6 +622,7 @@ pub async fn preview_lot_totals(
     price_pct: f64,
     price_overrides: Option<String>,
 ) -> Result<LotTotals, String> {
+    ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
     let want: HashSet<&str> = slots.iter().map(|s| s.as_str()).collect();
     let lot: Vec<Stack> = stacks
@@ -507,6 +636,7 @@ pub async fn preview_lot_totals(
 /// Everything in one slot — what you are actually taking.
 #[tauri::command]
 pub async fn lot_slot_contents(sheet_id: String, location: String) -> Result<Vec<Stack>, String> {
+    ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
     Ok(stacks
         .iter()
@@ -559,6 +689,10 @@ pub async fn set_lot_slot_state(
         )
         .map_err(|e| e.to_string())?;
         n += 1;
+    }
+    drop(conn);
+    for loc in &locations {
+        emit_slot(&sheet_id, loc, &state, lot_id.as_deref(), &now);
     }
     Ok(n)
 }
@@ -671,6 +805,7 @@ pub async fn save_lot_build(
     price_overrides: Option<String>,
     notes: Option<String>,
 ) -> Result<LotBuild, String> {
+    ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
     let want: HashSet<&str> = slots.iter().map(|s| s.as_str()).collect();
     let lot: Vec<Stack> = stacks
@@ -726,6 +861,32 @@ pub async fn save_lot_build(
         .map_err(|e| e.to_string())?;
     }
 
+    emit(
+        "lot_build",
+        &id,
+        cols(vec![
+            ("sheet_id", serde_json::json!(sheet_id)),
+            ("name", serde_json::json!(name)),
+            ("status", serde_json::json!("saved")),
+            ("price_pct", serde_json::json!(pricing.pct)),
+            ("price_pct_json", serde_json::json!(serde_json::to_string(&pricing.overrides).ok())),
+            ("locations", serde_json::json!(t.locations as i64)),
+            ("units", serde_json::json!(t.units)),
+            ("styles", serde_json::json!(t.styles as i64)),
+            ("msrp_total", serde_json::json!(t.msrp)),
+            ("ask_total", serde_json::json!(t.ask)),
+            ("brands_json", serde_json::json!(serde_json::to_string(&t.by_brand).ok())),
+            ("categories_json", serde_json::json!(serde_json::to_string(&t.by_category).ok())),
+            ("title_risk_json", serde_json::json!(serde_json::to_string(&t.title_risk_units).ok())),
+            ("slots_json", serde_json::json!(serde_json::to_string(&ordered).ok())),
+            ("notes", serde_json::json!(notes)),
+            ("archived", serde_json::json!(0)),
+            ("created_at", serde_json::json!(now)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+
+    // Staging emits its own slot events.
     set_lot_slot_state(
         sheet_id.clone(),
         ordered.clone(),
@@ -752,6 +913,7 @@ pub async fn lot_build_detail(build_id: String) -> Result<LotBuildDetail, String
         conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
             .map_err(|e| e.to_string())?
     };
+    ensure_artifact(&build.sheet_id).await?;
     let lot = build_stacks(&build)?;
     let pricing = pricing_from(build.price_pct, build.price_pct_json.as_deref());
     Ok(LotBuildDetail {
@@ -814,16 +976,43 @@ pub async fn archive_lot_build(build_id: String, archived: bool) -> Result<(), S
         )
         .map_err(|e| e.to_string())?;
     }
+    emit(
+        "lot_build",
+        &build_id,
+        cols(vec![
+            ("archived", serde_json::json!(archived as i64)),
+            ("updated_at", serde_json::json!(chrono::Utc::now().to_rfc3339())),
+        ]),
+    );
     if archived {
         // Only slots this lot staged go back — a slot already taken off the master list
-        // stays off it.
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE lot_slot_state SET state = 'available', lot_id = NULL, updated_at = ?2 \
-             WHERE lot_id = ?1 AND state = 'staged'",
-            rusqlite::params![build_id, chrono::Utc::now().to_rfc3339()],
-        )
-        .map_err(|e| e.to_string())?;
+        // stays off it. Read them by name first, so each one can be replicated.
+        let now = chrono::Utc::now().to_rfc3339();
+        let freed: Vec<(String, String)> = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let mut st = conn
+                .prepare(
+                    "SELECT sheet_id, location_code FROM lot_slot_state \
+                     WHERE lot_id = ?1 AND state = 'staged'",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = st
+                .query_map([&build_id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE lot_slot_state SET state = 'available', lot_id = NULL, updated_at = ?2 \
+                 WHERE lot_id = ?1 AND state = 'staged'",
+                rusqlite::params![build_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        for (sheet_id, loc) in &freed {
+            emit_slot(sheet_id, loc, "available", None, &now);
+        }
     } else {
         set_lot_slot_state(
             build.sheet_id.clone(),
@@ -866,16 +1055,24 @@ pub async fn remove_lot_from_master_list(
         }),
     )
     .await?;
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE lot_build SET status = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![
-            build_id,
-            if removed { "sent" } else { "saved" },
-            chrono::Utc::now().to_rfc3339()
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let status = if removed { "sent" } else { "saved" };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET status = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![build_id, status, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_build",
+        &build_id,
+        cols(vec![
+            ("status", serde_json::json!(status)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
     Ok(n)
 }
 
@@ -963,6 +1160,7 @@ pub async fn lot_sheet_conflicts(
 ) -> Result<Vec<crate::lot_engine::model::UpcConflict>, String> {
     // Recomputed from the stacks rather than stored twice, so it can never disagree with
     // the data the ranking uses.
+    ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
     let conflicts = crate::lot_engine::pipeline::conflicts_of(&stacks);
     let q = query.unwrap_or_default().to_ascii_lowercase();
@@ -981,6 +1179,104 @@ pub async fn lot_sheet_conflicts(
         })
         .collect();
     out.truncate(limit.unwrap_or(200));
+    Ok(out)
+}
+
+/// Re-emit every lot engine row this device holds, so they replicate again.
+///
+/// The escape hatch for one specific ordering failure. A push for a table the server does
+/// not yet accept is REJECTED, and `push_pending` treats a rejection as an acknowledgement
+/// and drops the event — so a desktop that shipped before the server was updated would hold
+/// sheets that exist here and nowhere else, with nothing left in the queue to retry. This
+/// puts them all back on the wire.
+///
+/// Idempotent: the far side applies per-column last-writer-wins, so re-emitting a row that
+/// already replicated changes nothing. Safe to run whenever a device looks out of step.
+#[tauri::command]
+pub async fn resync_lot_engine() -> Result<usize, String> {
+    #[allow(clippy::type_complexity)]
+    let (sheets, slots, builds): (Vec<String>, Vec<String>, Vec<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let ids = |sql: &str| -> Result<Vec<String>, String> {
+            let mut st = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = st
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        };
+        (
+            ids("SELECT id FROM lot_sheet")?,
+            ids("SELECT id FROM lot_slot_state")?,
+            ids("SELECT id FROM lot_build")?,
+        )
+    };
+
+    let mut n = 0usize;
+    for (table, ids) in [
+        ("lot_sheet", &sheets),
+        ("lot_slot_state", &slots),
+        ("lot_build", &builds),
+    ] {
+        for id in ids {
+            // The whole row, read back out, rather than a remembered column set — a
+            // re-emit that carried fewer columns than the row has would quietly clear them
+            // on every peer.
+            let cols = match row_columns(table, id) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("lot engine resync: skipping {table}/{id}: {e}");
+                    continue;
+                }
+            };
+            emit(table, id, cols);
+            n += 1;
+        }
+    }
+    // The rows are only half of it: a sheet without its stacks is a summary nobody can rank
+    // against. Re-queue every artifact this device holds.
+    for id in &sheets {
+        if has_artifact(id) {
+            let rel_path = format!("lot-engine/{id}/{STACKS_FILE}");
+            crate::netsync::media_enqueue(id, &rel_path, "lotsheet");
+        }
+    }
+    tracing::info!("lot engine resync: re-emitted {n} rows and re-queued {} artifacts", sheets.len());
+    Ok(n)
+}
+
+/// Read one row back as a column map, so a re-emit carries everything the row has.
+fn row_columns(
+    table: &str,
+    id: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // `table` is one of three compile-time constants from the caller, never user input.
+    let mut st = conn
+        .prepare(&format!("SELECT * FROM {table} WHERE id = ?1"))
+        .map_err(|e| e.to_string())?;
+    let names: Vec<String> = st.column_names().into_iter().map(|s| s.to_string()).collect();
+    let mut rows = st.query([id]).map_err(|e| e.to_string())?;
+    let row = rows
+        .next()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "row vanished".to_string())?;
+    let mut out = serde_json::Map::new();
+    for (i, name) in names.iter().enumerate() {
+        // `id` is the key, not a column to write; `org_id` is the server's to stamp.
+        if name == "id" || name == "org_id" {
+            continue;
+        }
+        let v = match row.get_ref(i).map_err(|e| e.to_string())? {
+            rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+            rusqlite::types::ValueRef::Integer(n) => serde_json::json!(n),
+            rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
+            rusqlite::types::ValueRef::Text(t) => {
+                serde_json::json!(String::from_utf8_lossy(t).to_string())
+            }
+            rusqlite::types::ValueRef::Blob(_) => continue,
+        };
+        out.insert(name.clone(), v);
+    }
     Ok(out)
 }
 

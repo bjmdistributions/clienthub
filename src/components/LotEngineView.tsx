@@ -287,6 +287,13 @@ function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null 
     { label: "Off the list", value: n(sheet.removed_slots) },
   ];
   return (
+    <>
+      {!sheet.has_stacks && (
+        <p className="text-[11.5px] text-info-ink bg-info-bg border border-info rounded-lg px-3 py-2 mb-2.5 leading-snug">
+          This sheet was imported on another device. Its rows are here — the stock itself is
+          being fetched, and the numbers below fill in once it lands.
+        </p>
+      )}
     <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2.5">
       {cells.map((c) => (
         <div key={c.label} className="bg-surface-2 rounded-lg px-3.5 py-2.5 min-w-0">
@@ -295,6 +302,7 @@ function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null 
         </div>
       ))}
     </div>
+    </>
   );
 }
 

@@ -3180,6 +3180,10 @@ export const api = {
     }),
   lotBuildLocationCodes: (buildId: string) =>
     invoke<string>("lot_build_location_codes", { buildId }),
+  // Re-emit every lot engine row so it replicates again. The escape hatch for a desktop
+  // that pushed sheets to a server which did not yet accept the tables — those events are
+  // rejected, and a rejection is treated as an acknowledgement, so nothing is left to retry.
+  resyncLotEngine: () => invoke<number>("resync_lot_engine"),
   lotSheetConflicts: (sheetId: string, query?: string, limit?: number) =>
     invoke<LotUpcConflict[]>("lot_sheet_conflicts", {
       sheetId,
@@ -3225,6 +3229,8 @@ export interface LotSheet {
   archived: boolean;
   staged_slots: number;
   removed_slots: number;
+  /** False when this sheet was imported elsewhere and its stacks have not arrived yet. */
+  has_stacks: boolean;
 }
 
 export interface LotDropReason {
