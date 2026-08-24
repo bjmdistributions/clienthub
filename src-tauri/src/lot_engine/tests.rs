@@ -238,7 +238,10 @@ fn fnv1a(bytes: &[u8], mut h: u64) -> u64 {
 pub fn module_tree_hash() -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     // Line endings differ between checkouts; the content does not.
+    // `tests.rs` is hashed too, so the two copies cannot drift in what they assert. The
+    // pinned constant is stripped before hashing, or the hash would chase its own tail.
     for src in [
+        include_str!("tests.rs"),
         include_str!("mod.rs"),
         include_str!("classify.rs"),
         include_str!("export.rs"),
@@ -250,7 +253,12 @@ pub fn module_tree_hash() -> u64 {
         include_str!("read.rs"),
         include_str!("slot.rs"),
     ] {
-        let normalised: Vec<u8> = src.bytes().filter(|b| *b != b'\r').collect();
+        let normalised: Vec<u8> = src
+            .lines()
+            .filter(|l| !l.contains("PINNED_TREE_HASH"))
+            .flat_map(|l| l.bytes().chain(std::iter::once(b'\n')))
+            .filter(|b| *b != b'\r')
+            .collect();
         h = fnv1a(&normalised, h);
     }
     h
@@ -266,13 +274,8 @@ pub fn module_tree_hash() -> u64 {
 /// the same sheet, and the disagreement is invisible until a buyer counts the units.
 #[test]
 fn module_tree_hash_is_pinned() {
-    const PINNED_TREE_HASH: u64 = 0;
+    const PINNED_TREE_HASH: u64 = 0x6ae6ad82bdf10cb7;
     let actual = module_tree_hash();
-    if PINNED_TREE_HASH == 0 {
-        // Not yet pinned — the second copy does not exist. Print the number so it can be.
-        println!("lot_engine tree hash: {actual:#x}");
-        return;
-    }
     assert_eq!(
         actual, PINNED_TREE_HASH,
         "lot_engine has changed. Copy the whole directory into the other repository and \
