@@ -983,3 +983,91 @@ pub async fn lot_sheet_conflicts(
     out.truncate(limit.unwrap_or(200));
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::lot_engine::pipeline;
+    use rust_xlsxwriter::Workbook;
+
+    /// Reads a REAL `.xlsx` — written here, then parsed by the engine's own reader.
+    ///
+    /// Every other test in `lot_engine` feeds the pipeline a `Sheet` built in memory, which
+    /// proves the arithmetic but not the file format. This one goes through calamine, the
+    /// sheet picker, the header scan below junk rows, and the numeric-cell rendering that
+    /// turns 250.0 back into "250" — the parts that only fail on a real workbook.
+    #[test]
+    fn a_real_xlsx_round_trips_through_the_reader() {
+        let mut wb = Workbook::new();
+
+        // Real exports carry a notes tab first. The reader must pick the one with the data.
+        let notes = wb.add_worksheet();
+        notes.set_name("Notes").unwrap();
+        notes.write_string(0, 0, "Generated for the buyer").unwrap();
+
+        let ws = wb.add_worksheet();
+        ws.set_name("Inventory").unwrap();
+        // Junk above the header, exactly as they arrive.
+        ws.write_string(0, 0, "ACME WAREHOUSE").unwrap();
+        ws.write_string(1, 0, "weekly export").unwrap();
+        for (i, h) in ["UPC/EAN", "Location", "Box #", "Remaining", "Title", "MSRP"]
+            .iter()
+            .enumerate()
+        {
+            ws.write_string(3, i as u16, *h).unwrap();
+        }
+        let rows: [(&str, &str, &str, f64, &str, f64); 4] = [
+            ("196969506827", "43-127-01B", "BOX3", 40.0, "Nike Air Max 90 Big Kid Shoes, Size 6.5", 190.0),
+            ("196969506827", "4312701B", "BOX3", 20.0, "Nike Air Max 90 Big Kid Shoes, Size 6.5", 190.0),
+            ("197968446084", "43-11O-03A", "", 380.0, "New Balance 9060 Big Kid Shoes, Size 6.5", 150.0),
+            ("197968446084", "43-110-03A", "", 1.0, "New Balance 550 - Men's Size 12", 110.0),
+        ];
+        for (r, (upc, loc, bx, qty, title, msrp)) in rows.iter().enumerate() {
+            let row = 4 + r as u32;
+            // The barcode goes in as TEXT. Written as a number it would come back in
+            // scientific notation and lose its identity.
+            ws.write_string(row, 0, *upc).unwrap();
+            ws.write_string(row, 1, *loc).unwrap();
+            ws.write_string(row, 2, *bx).unwrap();
+            ws.write_number(row, 3, *qty).unwrap();
+            ws.write_string(row, 4, *title).unwrap();
+            ws.write_number(row, 5, *msrp).unwrap();
+        }
+
+        let path = std::env::temp_dir().join("ecliptr-lot-engine-test.xlsx");
+        wb.save(&path).unwrap();
+
+        let r = pipeline::clean_path(&path.to_string_lossy()).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // It read the data tab, not the notes tab.
+        assert_eq!(r.detection.sheet.as_deref(), Some("Inventory"));
+        assert_eq!(r.detection.format, "xlsx");
+        assert_eq!(r.detection.header_row, 4);
+        assert_eq!(r.detection.upc_col.as_deref(), Some("UPC/EAN"));
+
+        // Two spellings of one shelf became one slot; the letter O became a zero.
+        let mut locs: Vec<&str> = r.stacks.iter().map(|s| s.location.as_str()).collect();
+        locs.sort();
+        locs.dedup();
+        assert_eq!(locs, vec!["43-110-03A", "43-127-01B"]);
+
+        // The barcode survived as text, with all twelve digits.
+        assert!(r.stacks.iter().all(|s| s.upc.len() == 12));
+
+        // Rule two held through a real file: the 550 is still its own line.
+        let nb: Vec<_> = r.stacks.iter().filter(|s| s.location == "43-110-03A").collect();
+        assert_eq!(nb.len(), 2);
+
+        assert_eq!(r.quality.units, 441);
+        assert_eq!(r.quality.reconciliation_gap(), 0);
+
+        // Stacks come out in walk order, so 43-110 precedes 43-127. Classification survived
+        // the round trip on both shelves.
+        assert_eq!(r.stacks[0].location, "43-110-03A");
+        assert_eq!(r.stacks[0].brand.as_deref(), Some("New Balance"));
+        let nike = r.stacks.iter().find(|s| s.location == "43-127-01B").unwrap();
+        assert_eq!(nike.brand.as_deref(), Some("Nike"));
+        assert_eq!(nike.units, 60, "two spellings of one shelf, one product, 40 + 20");
+        assert_eq!(nike.size_us, Some(6.5));
+    }
+}
