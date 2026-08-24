@@ -1390,6 +1390,41 @@ function EmailTab() {
   );
 }
 
+// The clause toggles (R-162). Module scope on purpose: declared inside PolicyClauseCard
+// it was a NEW component type on every render, so React tore the button down and rebuilt
+// it on each keystroke in either textarea — the knob never slid, it snapped, and the
+// control flickered while typing.
+//
+// Colours are tokens, never literals, because two themes invert them. The knob was
+// hardcoded `bg-white`: fine on orange, invisible on mono-dark's near-white accent, and
+// invisible again OFF, where a white knob sits on a near-white track (`surface-3` is
+// rgb(240,239,236) against a white card — a 1.15:1 track you cannot see). So the knob
+// takes `on-accent`, the token that exists to stay legible on the accent fill, and a
+// muted fill when off; the ring gives the pill an edge in every theme so an OFF switch
+// still reads as a control rather than a smudge. Measured 2.15-17.72:1 across the five
+// theme combos, against 1.15-1.22:1 for the white knob it replaces.
+function ClauseSwitch({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
+  return (
+    <button type="button" onClick={onClick} role="switch" aria-checked={on} aria-label={label}
+      className={`w-11 h-6 rounded-full relative flex-shrink-0 transition-colors ring-1 ${on ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
+      <span className={`absolute top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
+    </button>
+  );
+}
+
+// Wording saved with the switch off renders nowhere — by design, so a half-configured
+// clause can never reach a buyer. But nothing said so, and the state is indistinguishable
+// from a working one: the text is right there in the box. Both clauses sat filled-in and
+// switched off, and every invoice went out without them. Say it out loud.
+function OffWithText({ on, text }: { on: boolean; text: string }) {
+  if (on || !text.trim()) return null;
+  return (
+    <p className="text-[11.5px] text-warning-ink bg-warning-bg border border-warning/30 rounded-lg px-2.5 py-1.5 mt-1.5">
+      Saved, but the switch is off — this wording is not on any invoice, quote or email.
+    </p>
+  );
+}
+
 // Standing policy clauses that ride outbound documents (R-162). Both print at the foot
 // of the document AND repeat in the send email, so a buyer who never opens the PDF has
 // still been told. The 24-hour notice rides invoices and quotes; the return policy is an
@@ -1414,12 +1449,7 @@ function PolicyClauseCard() {
     setBusy(false);
   };
   const ta = "w-full bg-surface-2 border border-line rounded-lg px-3 py-2 text-[13px] text-ink resize-y focus:outline-none focus:border-accent";
-  const Switch = ({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) => (
-    <button onClick={onClick} role="switch" aria-checked={on} aria-label={label}
-      className={`w-11 h-6 rounded-full relative flex-shrink-0 transition-colors ${on ? "bg-accent" : "bg-surface-3"}`}>
-      <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`} />
-    </button>
-  );
+  const Switch = ClauseSwitch;
   return (
     <div className="bg-surface border border-line rounded-xl p-4 space-y-4">
       <div>
@@ -1438,6 +1468,7 @@ function PolicyClauseCard() {
         </div>
         <textarea value={c.notice_24h_text} onChange={(e) => setC({ ...c, notice_24h_text: e.target.value })}
           rows={3} className={ta} placeholder="Your 24-hour notification wording" />
+        <OffWithText on={c.notice_24h_enabled} text={c.notice_24h_text} />
       </div>
       <div>
         <div className="flex items-center gap-3 mb-1.5">
@@ -1448,6 +1479,7 @@ function PolicyClauseCard() {
         </div>
         <textarea value={c.return_policy_text} onChange={(e) => setC({ ...c, return_policy_text: e.target.value })}
           rows={3} className={ta} placeholder="Your return policy wording" />
+        <OffWithText on={c.return_policy_enabled} text={c.return_policy_text} />
       </div>
       <button onClick={save} disabled={busy} className="px-4 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:opacity-90 disabled:opacity-50 transition-opacity">
         {saved ? "Saved" : busy ? "Saving…" : "Save clauses"}

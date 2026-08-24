@@ -757,10 +757,13 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       <div className="mb-5">
         <div className="flex items-center gap-3 mb-1.5">
           <label className="text-[11px] font-medium text-muted">Return policy</label>
-          <button onClick={() => setPolicyOn((v) => !v)} role="switch" aria-checked={policyOn}
+          {/* Same token treatment as the Settings clause switch: a white knob vanished
+              against both the near-white OFF track and mono-dark's near-white accent,
+              so an OFF toggle read as nothing at all. See ClauseSwitch in SettingsView. */}
+          <button type="button" onClick={() => setPolicyOn((v) => !v)} role="switch" aria-checked={policyOn}
             aria-label="Include the return policy on this invoice"
-            className={`w-11 h-6 rounded-full relative transition-colors ${policyOn ? "bg-accent" : "bg-surface-3"}`}>
-            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${policyOn ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+            className={`w-11 h-6 rounded-full relative transition-colors ring-1 ${policyOn ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform ${policyOn ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
           </button>
           {policyOn && !policyText.trim() && (
             <span className="text-[11px] text-muted">Add the wording in Settings, or type it here.</span>
