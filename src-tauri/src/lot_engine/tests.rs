@@ -246,6 +246,7 @@ pub fn module_tree_hash() -> u64 {
         include_str!("pipeline.rs"),
         include_str!("price.rs"),
         include_str!("rank.rs"),
+        include_str!("report.rs"),
         include_str!("read.rs"),
         include_str!("slot.rs"),
     ] {

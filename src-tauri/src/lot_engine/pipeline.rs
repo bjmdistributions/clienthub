@@ -96,6 +96,148 @@ fn modal_price(values: &[f64]) -> f64 {
         .unwrap_or(0.0)
 }
 
+// ---------------------------------------------------------------------------------------
+// Barcode grading — shared by stage 4 and by the conflicts screen
+// ---------------------------------------------------------------------------------------
+
+struct NameAgg {
+    units: i64,
+    locations: HashSet<String>,
+    prices: Vec<f64>,
+}
+
+type UpcIndex = HashMap<String, HashMap<String, NameAgg>>;
+
+fn index_name(
+    idx: &mut UpcIndex,
+    upc: &str,
+    title: &str,
+    units: i64,
+    msrp: f64,
+    location: Option<&str>,
+) {
+    if upc.is_empty() {
+        return;
+    }
+    let e = idx
+        .entry(upc.to_string())
+        .or_default()
+        .entry(title.to_string())
+        .or_insert_with(|| NameAgg {
+            units: 0,
+            locations: HashSet::new(),
+            prices: Vec::new(),
+        });
+    e.units += units;
+    if let Some(l) = location {
+        e.locations.insert(l.to_string());
+    }
+    if msrp > 0.0 {
+        e.prices.push(msrp);
+    }
+}
+
+struct Graded {
+    conflicts: Vec<UpcConflict>,
+    ambiguous: HashSet<String>,
+    ambiguous_units: i64,
+    multi_name: usize,
+}
+
+/// Grade every barcode carrying more than one product name.
+///
+/// **Nothing is merged here.** A provisional brand per title is used only to grade the
+/// barcode. The precedence is fixed so the tallies add up:
+///
+/// * `split` — runner-up is 3+ units AND 5%+ of the barcode, and the brands differ. This is
+///   the only grade that sets `upc_ambiguous`. Revision 1 flagged every conflicted barcode
+///   and produced a 6,338-unit alarm that was 89% single stray scans.
+/// * `stray` — runner-up is 1-2 units. A typo, not an ambiguity.
+/// * `same_brand` — every name shares a brand. Separate products, kept separate.
+/// * `other` — mixed brands, small numbers.
+fn grade_upcs(by_upc: &UpcIndex, brand_of: &dyn Fn(&str) -> Option<String>) -> Graded {
+    let mut out = Graded {
+        conflicts: Vec::new(),
+        ambiguous: HashSet::new(),
+        ambiguous_units: 0,
+        multi_name: 0,
+    };
+
+    for (upc, names) in by_upc {
+        if names.len() < 2 {
+            continue;
+        }
+        out.multi_name += 1;
+
+        let total: i64 = names.values().map(|n| n.units).sum();
+        let mut list: Vec<(&String, &NameAgg)> = names.iter().collect();
+        list.sort_by(|a, b| b.1.units.cmp(&a.1.units).then(a.0.cmp(b.0)));
+
+        let brands: HashSet<Option<String>> = list.iter().map(|(t, _)| brand_of(t)).collect();
+        let runner_up = list.get(1).map(|(_, a)| a.units).unwrap_or(0);
+        let share = if total > 0 { runner_up as f64 / total as f64 } else { 0.0 };
+        let different_brands = brands.len() > 1;
+
+        let grade = if runner_up >= AMBIGUOUS_MIN_UNITS
+            && share >= AMBIGUOUS_MIN_SHARE
+            && different_brands
+        {
+            out.ambiguous.insert(upc.clone());
+            out.ambiguous_units += total;
+            "split"
+        } else if runner_up <= 2 {
+            "stray"
+        } else if !different_brands {
+            "same_brand"
+        } else {
+            "other"
+        };
+
+        // One price across every name is the signature of a barcode used as a price tier
+        // rather than a product code — a floor-process habit, not a data-entry typo.
+        let all_prices: HashSet<u64> = list
+            .iter()
+            .flat_map(|(_, a)| a.prices.iter().map(|p| (p * 100.0).round() as u64))
+            .collect();
+
+        out.conflicts.push(UpcConflict {
+            upc: upc.clone(),
+            grade: grade.to_string(),
+            units: total,
+            one_price: all_prices.len() == 1 && list.len() >= 2,
+            names: list
+                .iter()
+                .map(|(t, a)| UpcConflictName {
+                    title: (*t).clone(),
+                    brand: brand_of(t),
+                    units: a.units,
+                    share: if total > 0 { a.units as f64 / total as f64 } else { 0.0 },
+                    locations: a.locations.len(),
+                    msrp: modal_price(&a.prices),
+                })
+                .collect(),
+        });
+    }
+    out.conflicts
+        .sort_by(|a, b| b.units.cmp(&a.units).then(a.upc.cmp(&b.upc)));
+    out
+}
+
+/// The conflicts screen's data, recomputed from cleaned stacks.
+///
+/// Derived from the same stacks the ranking uses rather than stored a second time at import,
+/// so the screen can never disagree with what a lot is actually made of.
+pub fn conflicts_of(stacks: &[Stack]) -> Vec<UpcConflict> {
+    let mut idx: UpcIndex = HashMap::new();
+    let mut brands: HashMap<&str, Option<String>> = HashMap::new();
+    for s in stacks {
+        index_name(&mut idx, &s.upc, &s.title, s.units, s.msrp, Some(&s.location));
+        brands.entry(s.title.as_str()).or_insert_with(|| s.brand.clone());
+    }
+    let brand_of = |t: &str| -> Option<String> { brands.get(t).cloned().flatten() };
+    grade_upcs(&idx, &brand_of).conflicts
+}
+
 /// Clean a sheet from disk.
 pub fn clean_path(path: &str) -> Result<CleanResult> {
     let sheet = read_sheet(path)?;
@@ -313,95 +455,29 @@ pub fn clean_sheet(sheet: &Sheet) -> Result<CleanResult> {
         title_class.entry(t.to_string()).or_insert_with(|| classify(t));
     }
 
-    struct NameAgg {
-        units: i64,
-        locations: HashSet<String>,
-        prices: Vec<f64>,
-    }
-    let mut by_upc: HashMap<String, HashMap<String, NameAgg>> = HashMap::new();
+    let brand_of = |t: &str| -> Option<String> {
+        title_class.get(t.trim()).and_then(|c| c.brand.clone())
+    };
+    let mut by_upc: UpcIndex = HashMap::new();
     for row in &rows {
-        if row.upc.is_empty() {
-            continue;
-        }
-        let e = by_upc
-            .entry(row.upc.clone())
-            .or_default()
-            .entry(row.title.clone())
-            .or_insert_with(|| NameAgg {
-                units: 0,
-                locations: HashSet::new(),
-                prices: Vec::new(),
-            });
-        e.units += row.units;
-        if let Some(l) = &row.location {
-            e.locations.insert(l.clone());
-        }
-        if row.msrp > 0.0 {
-            e.prices.push(row.msrp);
-        }
+        index_name(
+            &mut by_upc,
+            &row.upc,
+            &row.title,
+            row.units,
+            row.msrp,
+            row.location.as_deref(),
+        );
     }
 
     q.upcs = by_upc.len();
-    let mut conflicts: Vec<UpcConflict> = Vec::new();
-    let mut ambiguous_upcs: HashSet<String> = HashSet::new();
+    let graded = grade_upcs(&by_upc, &brand_of);
+    q.upcs_multi_name = graded.multi_name;
+    q.upcs_ambiguous = graded.ambiguous.len();
+    q.units_ambiguous = graded.ambiguous_units;
+    let ambiguous_upcs = graded.ambiguous;
+    let conflicts = graded.conflicts;
 
-    for (upc, names) in &by_upc {
-        if names.len() < 2 {
-            continue;
-        }
-        q.upcs_multi_name += 1;
-
-        let total: i64 = names.values().map(|n| n.units).sum();
-        let mut list: Vec<(&String, &NameAgg)> = names.iter().collect();
-        list.sort_by(|a, b| b.1.units.cmp(&a.1.units).then(a.0.cmp(b.0)));
-
-        let brand_of = |t: &str| -> Option<String> {
-            title_class.get(t.trim()).and_then(|c| c.brand.clone())
-        };
-        let brands: HashSet<Option<String>> = list.iter().map(|(t, _)| brand_of(t)).collect();
-        let runner_up = list.get(1).map(|(_, a)| a.units).unwrap_or(0);
-        let share = if total > 0 { runner_up as f64 / total as f64 } else { 0.0 };
-        let different_brands = brands.len() > 1;
-
-        // Precedence, in this order, so the tallies add up.
-        let grade = if runner_up >= AMBIGUOUS_MIN_UNITS && share >= AMBIGUOUS_MIN_SHARE && different_brands
-        {
-            ambiguous_upcs.insert(upc.clone());
-            q.upcs_ambiguous += 1;
-            q.units_ambiguous += total;
-            "split"
-        } else if runner_up <= 2 {
-            "stray"
-        } else if !different_brands {
-            "same_brand"
-        } else {
-            "other"
-        };
-
-        let all_prices: HashSet<u64> = list
-            .iter()
-            .flat_map(|(_, a)| a.prices.iter().map(|p| (p * 100.0).round() as u64))
-            .collect();
-
-        conflicts.push(UpcConflict {
-            upc: upc.clone(),
-            grade: grade.to_string(),
-            units: total,
-            one_price: all_prices.len() == 1 && list.len() >= 2,
-            names: list
-                .iter()
-                .map(|(t, a)| UpcConflictName {
-                    title: (*t).clone(),
-                    brand: brand_of(t),
-                    units: a.units,
-                    share: if total > 0 { a.units as f64 / total as f64 } else { 0.0 },
-                    locations: a.locations.len(),
-                    msrp: modal_price(&a.prices),
-                })
-                .collect(),
-        });
-    }
-    conflicts.sort_by(|a, b| b.units.cmp(&a.units).then(a.upc.cmp(&b.upc)));
 
     // -----------------------------------------------------------------------------------
     // Stage 5 — resolve prices

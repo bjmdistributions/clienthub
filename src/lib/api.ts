@@ -3098,4 +3098,363 @@ export const api = {
 
   // Forecast
   getProfitForecast: () => invoke<ProfitForecast>("get_profit_forecast"),
+
+  // ===== Lot engine (R-200) =====
+  // A warehouse sheet becomes priced, pickable lots. Every number below is computed in
+  // Rust by `src-tauri/src/lot_engine/`, which is shared byte-for-byte with the server so
+  // the phone and the desktop cannot disagree. Nothing here re-implements the maths.
+  importLotSheet: (path: string, name?: string) =>
+    invoke<LotImportResult>("import_lot_sheet", { path, name: name ?? null }),
+  listLotSheets: (includeArchived?: boolean) =>
+    invoke<LotSheet[]>("list_lot_sheets", { includeArchived: includeArchived ?? false }),
+  lotSheetReport: (sheetId: string) => invoke<LotSheetReport>("lot_sheet_report", { sheetId }),
+  renameLotSheet: (sheetId: string, name: string) =>
+    invoke<void>("rename_lot_sheet", { sheetId, name }),
+  archiveLotSheet: (sheetId: string, archived: boolean) =>
+    invoke<void>("archive_lot_sheet", { sheetId, archived }),
+  lotSheetFacets: (sheetId: string) => invoke<LotFacets>("lot_sheet_facets", { sheetId }),
+  // Called on every keystroke behind a debounce. Ranks every available slot, returns the top
+  // `limit` — the ranking itself always runs over the whole pool.
+  // `exclude` is the slots already picked into the lot on screen but not yet saved — they
+  // leave the pool the moment they are picked.
+  rankLotSlots: (sheetId: string, want: LotWant, allow: LotAllow, opts: LotRankOpts, exclude?: string[]) =>
+    invoke<LotRankResult>("rank_lot_slots", { sheetId, want, allow, opts, exclude: exclude ?? null }),
+  // Running totals for a lot being built. Goes to Rust rather than adding prices up here, so
+  // the figures on screen are the ones the manifest will carry.
+  previewLotTotals: (sheetId: string, slots: string[], pricePct: number, priceOverrides?: string) =>
+    invoke<LotTotals>("preview_lot_totals", {
+      sheetId,
+      slots,
+      pricePct,
+      priceOverrides: priceOverrides ?? null,
+    }),
+  lotSlotContents: (sheetId: string, location: string) =>
+    invoke<LotStack[]>("lot_slot_contents", { sheetId, location }),
+  setLotSlotState: (
+    sheetId: string,
+    locations: string[],
+    state: "available" | "staged" | "removed",
+    lotId?: string,
+    note?: string,
+  ) =>
+    invoke<number>("set_lot_slot_state", {
+      sheetId,
+      locations,
+      state,
+      lotId: lotId ?? null,
+      note: note ?? null,
+    }),
+  listLotSlotStates: (sheetId: string) => invoke<LotSlotState[]>("list_lot_slot_states", { sheetId }),
+  saveLotBuild: (p: {
+    sheetId: string;
+    buildId?: string;
+    name: string;
+    slots: string[];
+    pricePct: number;
+    priceOverrides?: string;
+    notes?: string;
+  }) =>
+    invoke<LotBuild>("save_lot_build", {
+      sheetId: p.sheetId,
+      buildId: p.buildId ?? null,
+      name: p.name,
+      slots: p.slots,
+      pricePct: p.pricePct,
+      priceOverrides: p.priceOverrides ?? null,
+      notes: p.notes ?? null,
+    }),
+  lotBuildDetail: (buildId: string) => invoke<LotBuildDetail>("lot_build_detail", { buildId }),
+  listLotBuilds: (sheetId?: string) =>
+    invoke<LotBuild[]>("list_lot_builds", { sheetId: sheetId ?? null }),
+  archiveLotBuild: (buildId: string, archived: boolean) =>
+    invoke<void>("archive_lot_build", { buildId, archived }),
+  // The deliberate half: staging is automatic, taking stock off the master list is a button.
+  removeLotFromMasterList: (buildId: string, removed: boolean) =>
+    invoke<number>("remove_lot_from_master_list", { buildId, removed }),
+  exportLotBuild: (buildId: string, kind: "manifest" | "brands" | "pull", includeSlots?: boolean, destDir?: string) =>
+    invoke<LotExportResult>("export_lot_build", {
+      buildId,
+      kind,
+      includeSlots: includeSlots ?? false,
+      destDir: destDir ?? null,
+    }),
+  lotBuildLocationCodes: (buildId: string) =>
+    invoke<string>("lot_build_location_codes", { buildId }),
+  lotSheetConflicts: (sheetId: string, query?: string, limit?: number) =>
+    invoke<LotUpcConflict[]>("lot_sheet_conflicts", {
+      sheetId,
+      query: query ?? null,
+      limit: limit ?? null,
+    }),
 };
+
+// ===== Lot engine types =====
+
+/** One product sitting in one slot. The key is (location, box, upc, title) — INCLUDING the
+ *  title, because two rows typed differently are two products. */
+export interface LotStack {
+  location: string;
+  box: string;
+  upc: string;
+  title: string;
+  units: number;
+  msrp: number;
+  brand: string | null;
+  category: string | null;
+  segment: string | null;
+  size_us: number | null;
+  /** 0 typed · 1 named from a clean barcode · 2 VERIFY · 3 no description in the source. */
+  title_risk: number;
+  upc_ambiguous: boolean;
+}
+
+export interface LotSheet {
+  id: string;
+  name: string;
+  source_filename: string | null;
+  imported_at: string;
+  rows_in: number;
+  stacks: number;
+  products: number;
+  units: number;
+  locations: number;
+  msrp_total: number;
+  artifact_path: string | null;
+  report_path: string | null;
+  audit_map_path: string | null;
+  archived: boolean;
+  staged_slots: number;
+  removed_slots: number;
+}
+
+export interface LotDropReason {
+  reason: string;
+  rows: number;
+  units: number;
+  examples: string[];
+}
+
+export interface LotQuality {
+  rows_in: number;
+  units_in: number;
+  rows_dropped: number;
+  units_dropped: number;
+  drops: LotDropReason[];
+  location_spellings: number;
+  locations: number;
+  locations_repaired: number;
+  locations_unparsed: number;
+  titles_blank: number;
+  titles_backfilled: number;
+  titles_unknown: number;
+  title_risk_units: [number, number, number, number];
+  upcs: number;
+  upcs_multi_name: number;
+  upcs_ambiguous: number;
+  units_ambiguous: number;
+  products: number;
+  stacks: number;
+  units: number;
+  msrp_total: number;
+  zero_price_stacks: number;
+  zero_price_units: number;
+  warnings: string[];
+}
+
+/** What the reader actually did — surfaced on purpose, because accepting every file format
+ *  is worthless if a mis-detected location column is wrong in silence. */
+export interface LotDetection {
+  format: string;
+  sheet: string | null;
+  header_row: number;
+  upc_col: string | null;
+  location_col: string | null;
+  box_col: string | null;
+  units_col: string | null;
+  title_col: string | null;
+  msrp_col: string | null;
+  flag_cols: string[];
+  note: string | null;
+}
+
+export interface LotImportResult {
+  sheet: LotSheet;
+  quality: LotQuality;
+  detection: LotDetection;
+  report_text: string;
+}
+
+export interface LotSheetReport {
+  sheet: LotSheet;
+  quality: LotQuality | null;
+  detection: LotDetection | null;
+  report_text: string;
+  report_path: string | null;
+  audit_map_path: string | null;
+}
+
+export interface LotFacet {
+  name: string;
+  units: number;
+  slots: number;
+}
+
+export interface LotFacets {
+  brands: LotFacet[];
+  categories: LotFacet[];
+  segments: LotFacet[];
+  size_min: number | null;
+  size_max: number | null;
+  msrp_min: number;
+  msrp_max: number;
+  pool_slots: number;
+  pool_units: number;
+  pool_msrp: number;
+}
+
+/** WANT ranks slots and excludes nothing. */
+export interface LotWant {
+  brands: string[];
+  size_min: number | null;
+  size_max: number | null;
+  msrp_min: number | null;
+  msrp_max: number | null;
+}
+
+/** ALLOW decides which slots qualify at all. WANT is always a subset of ALLOW. */
+export interface LotAllow {
+  categories: string[];
+  segments: string[];
+  described_only: boolean;
+  brand_lock: string[];
+}
+
+export interface LotRankOpts {
+  /** Share of a slot allowed to violate ALLOW, 0–1. Zero is strict. */
+  slack: number;
+  sort: "concentration" | "volume";
+  min_units: number;
+  limit: number;
+}
+
+export interface LotSlice {
+  name: string;
+  units: number;
+}
+
+export interface LotRankedSlot {
+  location: string;
+  total: number;
+  allowed: number;
+  want: number;
+  breaks: number;
+  pct: number;
+  msrp: number;
+  styles: number;
+  brands: LotSlice[];
+  /** What you did not ask for but are taking. The most important line on the card. */
+  comes_with: LotSlice[];
+  boxes: string[];
+  unverified_units: number;
+}
+
+export interface LotRankResult {
+  slots: LotRankedSlot[];
+  matched_slots: number;
+  pool_slots: number;
+  matched_units: number;
+  matched_want_units: number;
+  matched_msrp: number;
+  /** Units of something else per unit you wanted, across the whole match. */
+  tagalong_ratio: number;
+  rejected_by_allow: number;
+  rejected_by_want: number;
+  rejected_by_size: number;
+  sort_note: string;
+}
+
+export interface LotSlotState {
+  location_code: string;
+  state: string;
+  lot_id: string | null;
+  updated_at: string;
+}
+
+export interface LotGroupTotal {
+  name: string;
+  units: number;
+  styles: number;
+  locations: number;
+  msrp: number;
+  ask: number;
+  /** Ask divided by units — $75 of retail at 26% reads as 19.50 here. */
+  per_unit: number;
+  share: number;
+}
+
+export interface LotTotals {
+  locations: number;
+  stacks: number;
+  styles: number;
+  units: number;
+  msrp: number;
+  ask: number;
+  effective_pct: number;
+  per_unit: number;
+  by_brand: LotGroupTotal[];
+  by_category: LotGroupTotal[];
+  title_risk_units: [number, number, number, number];
+}
+
+export interface LotBuild {
+  id: string;
+  sheet_id: string;
+  sheet_name: string | null;
+  name: string;
+  status: string;
+  price_pct: number;
+  price_pct_json: string | null;
+  locations: number;
+  units: number;
+  styles: number;
+  msrp_total: number;
+  ask_total: number;
+  slots: string[];
+  notes: string | null;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LotBuildDetail {
+  build: LotBuild;
+  totals: LotTotals;
+  /** Walk-ordered slot codes, ready to paste into a message to the floor. */
+  location_codes: string;
+}
+
+export interface LotExportResult {
+  path: string;
+  rows: number;
+  /** True when the manifest, brand counts and pull sheet agree on the unit total. */
+  reconciled: boolean;
+}
+
+export interface LotUpcConflictName {
+  title: string;
+  brand: string | null;
+  units: number;
+  share: number;
+  locations: number;
+  msrp: number;
+}
+
+export interface LotUpcConflict {
+  upc: string;
+  /** split · stray · same_brand · other */
+  grade: string;
+  units: number;
+  names: LotUpcConflictName[];
+  /** One price across every name — a barcode used as a price tier, not a product code. */
+  one_price: boolean;
+}

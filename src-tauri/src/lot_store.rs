@@ -1,0 +1,985 @@
+//! Desktop storage and Tauri commands for the lot engine.
+//!
+//! The engine itself (`crate::lot_engine`) is pure and shared with the server. This module
+//! is the desktop half that the engine must not know about: where the cleaned stacks live,
+//! which slots are staged or removed, and what a saved lot is.
+//!
+//! # Where the stacks live
+//!
+//! **Not in SQLite, and not in the oplog.** A cleaned sheet is ~97k stacks; one row per
+//! stack through `sync::record_upsert` would write ~97k event files and ~1.16M `row_clocks`
+//! rows against a design assumption of about a thousand events on a heavy day, with no
+//! pruning anywhere in either engine — and a batch too large for the push endpoint retries
+//! every 20 seconds forever, blocking every later write in the org behind it.
+//!
+//! So the stacks are a `stacks.jsonl` artifact under
+//! `sync/media/lotsheets/<sheet_id>/`, the same durable, retrying media path lot photos and
+//! manifests already take. Only the small rows — the sheet summary, the slots you touched,
+//! and the lots you saved — are database rows.
+//!
+//! Ranking reads from an in-memory cache, filled once per sheet, so re-ranking every slot
+//! on a keystroke never touches disk.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+use serde::{Deserialize, Serialize};
+
+use crate::db::pool;
+use crate::lot_engine::export::{self, ManifestOpts};
+use crate::lot_engine::model::{CleanResult, Stack};
+use crate::lot_engine::price::{lot_totals, LotTotals, Pricing};
+use crate::lot_engine::rank::{rank, Allow, RankOpts, RankResult, Want};
+use crate::lot_engine::{pipeline, report};
+
+const STACKS_FILE: &str = "stacks.jsonl";
+const REPORT_FILE: &str = "quality-report.txt";
+const AUDIT_FILE: &str = "location-audit-map.csv";
+const CONFLICTS_FILE: &str = "barcode-conflicts.csv";
+
+// ---------------------------------------------------------------------------------------
+// Paths and the stack cache
+// ---------------------------------------------------------------------------------------
+
+fn sheet_dir(sheet_id: &str) -> Result<PathBuf, String> {
+    let dir = crate::db::app_data_dir()
+        .join("sync")
+        .join("media")
+        .join("lotsheets")
+        .join(sheet_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn cache() -> &'static Mutex<HashMap<String, std::sync::Arc<Vec<Stack>>>> {
+    static C: OnceLock<Mutex<HashMap<String, std::sync::Arc<Vec<Stack>>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Stacks for a sheet, from memory if they are there and from the artifact if not.
+///
+/// One line of JSON per stack. A line that will not parse aborts the load with its line
+/// number rather than being skipped: an importer that silently yields fewer stacks than the
+/// file holds produces an empty lot, and an empty lot reads as a legal answer.
+fn stacks_of(sheet_id: &str) -> Result<std::sync::Arc<Vec<Stack>>, String> {
+    if let Some(v) = cache().lock().map_err(|e| e.to_string())?.get(sheet_id) {
+        return Ok(v.clone());
+    }
+    let path = sheet_dir(sheet_id)?.join(STACKS_FILE);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("this sheet's data is missing from disk ({}): {e}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let s: Stack = serde_json::from_str(line)
+            .map_err(|e| format!("line {} of {STACKS_FILE} is unreadable: {e}", i + 1))?;
+        out.push(s);
+    }
+    let arc = std::sync::Arc::new(out);
+    cache()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(sheet_id.to_string(), arc.clone());
+    Ok(arc)
+}
+
+fn write_stacks(sheet_id: &str, stacks: &[Stack]) -> Result<PathBuf, String> {
+    let path = sheet_dir(sheet_id)?.join(STACKS_FILE);
+    let mut out = String::with_capacity(stacks.len() * 180);
+    for s in stacks {
+        out.push_str(&serde_json::to_string(s).map_err(|e| e.to_string())?);
+        out.push('\n');
+    }
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn rel(path: &PathBuf) -> String {
+    let root = crate::db::app_data_dir().join("sync").join("media");
+    path.strip_prefix(&root)
+        .map(|p| format!("media/{}", p.to_string_lossy().replace('\\', "/")))
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+// ---------------------------------------------------------------------------------------
+// Rows
+// ---------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LotSheet {
+    pub id: String,
+    pub name: String,
+    pub source_filename: Option<String>,
+    pub imported_at: String,
+    pub rows_in: i64,
+    pub stacks: i64,
+    pub products: i64,
+    pub units: i64,
+    pub locations: i64,
+    pub msrp_total: f64,
+    pub artifact_path: Option<String>,
+    pub report_path: Option<String>,
+    pub audit_map_path: Option<String>,
+    pub archived: bool,
+    /// Slots already in a lot, and slots taken off the master list.
+    pub staged_slots: i64,
+    pub removed_slots: i64,
+}
+
+fn row_to_sheet(r: &rusqlite::Row) -> rusqlite::Result<LotSheet> {
+    Ok(LotSheet {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        source_filename: r.get(2)?,
+        imported_at: r.get(3)?,
+        rows_in: r.get(4)?,
+        stacks: r.get(5)?,
+        products: r.get(6)?,
+        units: r.get(7)?,
+        locations: r.get(8)?,
+        msrp_total: r.get(9)?,
+        artifact_path: r.get(10)?,
+        report_path: r.get(11)?,
+        audit_map_path: r.get(12)?,
+        archived: r.get::<_, i64>(13)? != 0,
+        staged_slots: r.get(14)?,
+        removed_slots: r.get(15)?,
+    })
+}
+
+/// The 16 columns `row_to_sheet` reads, in its order. Kept apart from the FROM clause so a
+/// caller can append its own columns without splicing text into the middle of a statement.
+const SHEET_COLS: &str = "s.id, s.name, s.source_filename, s.imported_at, s.rows_in, \
+    s.stacks, s.products, s.units, s.locations, s.msrp_total, s.artifact_path, s.report_path, \
+    s.audit_map_path, s.archived, \
+    (SELECT COUNT(*) FROM lot_slot_state x WHERE x.sheet_id = s.id AND x.state = 'staged'), \
+    (SELECT COUNT(*) FROM lot_slot_state x WHERE x.sheet_id = s.id AND x.state = 'removed')";
+const SHEET_FROM: &str = " FROM lot_sheet s";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportResult {
+    pub sheet: LotSheet,
+    pub quality: crate::lot_engine::model::QualityReport,
+    pub detection: crate::lot_engine::model::SheetDetection,
+    pub report_text: String,
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — sheets
+// ---------------------------------------------------------------------------------------
+
+/// Read a warehouse sheet, clean it, and keep it.
+///
+/// Import is additive. A sheet is never overwritten in place and slot state is never
+/// touched, so a refreshed export becomes a new sheet rather than silently rewriting the
+/// one a lot was built against.
+#[tauri::command]
+pub async fn import_lot_sheet(path: String, name: Option<String>) -> Result<ImportResult, String> {
+    let started = std::time::Instant::now();
+    let source_filename = std::path::Path::new(&path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string());
+    let display_name = name
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| source_filename.clone())
+        .unwrap_or_else(|| "Warehouse sheet".to_string());
+
+    let cleaned: CleanResult =
+        tokio::task::spawn_blocking(move || pipeline::clean_path(&path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let dir = sheet_dir(&id)?;
+
+    let artifact = write_stacks(&id, &cleaned.stacks)?;
+    let report_text = report::quality_report_text(&cleaned, &display_name);
+    let report_path = dir.join(REPORT_FILE);
+    std::fs::write(&report_path, &report_text).map_err(|e| e.to_string())?;
+    let audit_path = dir.join(AUDIT_FILE);
+    std::fs::write(&audit_path, report::audit_map_csv(&cleaned)).map_err(|e| e.to_string())?;
+    let conflicts_path = dir.join(CONFLICTS_FILE);
+    std::fs::write(&conflicts_path, report::conflicts_csv(&cleaned)).map_err(|e| e.to_string())?;
+
+    let q = cleaned.quality.clone();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO lot_sheet (id, name, source_filename, imported_at, rows_in, stacks, \
+             products, units, locations, msrp_total, artifact_path, report_path, audit_map_path, \
+             quality_json, detection_json, archived, created_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?16)",
+            rusqlite::params![
+                id,
+                display_name,
+                source_filename,
+                now,
+                q.rows_in as i64,
+                q.stacks as i64,
+                q.products as i64,
+                q.units,
+                q.locations as i64,
+                q.msrp_total,
+                rel(&artifact),
+                rel(&report_path),
+                rel(&audit_path),
+                serde_json::to_string(&q).map_err(|e| e.to_string())?,
+                serde_json::to_string(&cleaned.detection).map_err(|e| e.to_string())?,
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    cache()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(id.clone(), std::sync::Arc::new(cleaned.stacks));
+
+    tracing::info!(
+        "lot sheet {} imported: {} rows -> {} stacks in {:?}",
+        id,
+        q.rows_in,
+        q.stacks,
+        started.elapsed()
+    );
+
+    let sheet = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("SELECT {SHEET_COLS}{SHEET_FROM} WHERE s.id = ?1"), [&id], row_to_sheet)
+            .map_err(|e| e.to_string())?
+    };
+
+    Ok(ImportResult {
+        sheet,
+        quality: q,
+        detection: cleaned.detection,
+        report_text,
+    })
+}
+
+#[tauri::command]
+pub async fn list_lot_sheets(include_archived: Option<bool>) -> Result<Vec<LotSheet>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = if include_archived.unwrap_or(false) {
+        format!("SELECT {SHEET_COLS}{SHEET_FROM} ORDER BY s.imported_at DESC")
+    } else {
+        format!("SELECT {SHEET_COLS}{SHEET_FROM} WHERE s.archived = 0 ORDER BY s.imported_at DESC")
+    };
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = st.query_map([], row_to_sheet).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetReport {
+    pub sheet: LotSheet,
+    pub quality: serde_json::Value,
+    pub detection: serde_json::Value,
+    pub report_text: String,
+    pub report_path: Option<String>,
+    pub audit_map_path: Option<String>,
+}
+
+/// Everything the import said about itself, for the quality screen.
+#[tauri::command]
+pub async fn lot_sheet_report(sheet_id: String) -> Result<SheetReport, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (sheet, quality_json, detection_json): (LotSheet, Option<String>, Option<String>) = conn
+        .query_row(
+            &format!("SELECT {SHEET_COLS}, s.quality_json, s.detection_json{SHEET_FROM} WHERE s.id = ?1"),
+            [&sheet_id],
+            |r| Ok((row_to_sheet(r)?, r.get(16)?, r.get(17)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // json_valid guards every read: json_extract RAISES on an empty string rather than
+    // returning NULL, and one bad row blanked every financial screen once.
+    let parse = |s: Option<String>| -> serde_json::Value {
+        s.filter(|t| !t.trim().is_empty())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+
+    let report_text = sheet_dir(&sheet_id)
+        .ok()
+        .and_then(|d| std::fs::read_to_string(d.join(REPORT_FILE)).ok())
+        .unwrap_or_default();
+
+    Ok(SheetReport {
+        report_path: sheet.report_path.clone(),
+        audit_map_path: sheet.audit_map_path.clone(),
+        sheet,
+        quality: parse(quality_json),
+        detection: parse(detection_json),
+        report_text,
+    })
+}
+
+#[tauri::command]
+pub async fn rename_lot_sheet(sheet_id: String, name: String) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE lot_sheet SET name = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![sheet_id, name, chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Archive, never delete. A sheet holds the only record of which slots were removed from
+/// the master list, and removed means shipped.
+#[tauri::command]
+pub async fn archive_lot_sheet(sheet_id: String, archived: bool) -> Result<(), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE lot_sheet SET archived = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![sheet_id, archived as i64, chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — the pool, the facets and the ranking
+// ---------------------------------------------------------------------------------------
+
+/// Slots that are not in the pool: staged into a lot, or taken off the master list.
+fn unavailable(sheet_id: &str) -> Result<HashSet<String>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut st = conn
+        .prepare("SELECT location_code FROM lot_slot_state WHERE sheet_id = ?1 AND state IN ('staged','removed')")
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([sheet_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = HashSet::new();
+    for r in rows {
+        out.insert(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Facet {
+    pub name: String,
+    pub units: i64,
+    pub slots: usize,
+}
+
+/// What is actually in the pool, so the filter panel offers real choices with real counts
+/// rather than a list of everything the dictionary knows about.
+#[derive(Debug, Clone, Serialize)]
+pub struct Facets {
+    pub brands: Vec<Facet>,
+    pub categories: Vec<Facet>,
+    pub segments: Vec<Facet>,
+    pub size_min: Option<f64>,
+    pub size_max: Option<f64>,
+    pub msrp_min: f64,
+    pub msrp_max: f64,
+    pub pool_slots: usize,
+    pub pool_units: i64,
+    pub pool_msrp: f64,
+}
+
+#[tauri::command]
+pub async fn lot_sheet_facets(sheet_id: String) -> Result<Facets, String> {
+    let stacks = stacks_of(&sheet_id)?;
+    let gone = unavailable(&sheet_id)?;
+
+    let mut brands: HashMap<String, (i64, HashSet<&str>)> = HashMap::new();
+    let mut cats: HashMap<String, (i64, HashSet<&str>)> = HashMap::new();
+    let mut segs: HashMap<String, (i64, HashSet<&str>)> = HashMap::new();
+    let mut slots: HashSet<&str> = HashSet::new();
+    let (mut units, mut msrp) = (0i64, 0.0f64);
+    let (mut smin, mut smax): (Option<f64>, Option<f64>) = (None, None);
+    let (mut pmin, mut pmax) = (f64::MAX, 0.0f64);
+
+    for s in stacks.iter() {
+        if gone.contains(&s.location) {
+            continue;
+        }
+        slots.insert(s.location.as_str());
+        units += s.units;
+        msrp += s.msrp * s.units as f64;
+        if s.msrp > 0.0 {
+            pmin = pmin.min(s.msrp);
+            pmax = pmax.max(s.msrp);
+        }
+        if let Some(z) = s.size_us {
+            smin = Some(smin.map_or(z, |m: f64| m.min(z)));
+            smax = Some(smax.map_or(z, |m: f64| m.max(z)));
+        }
+        for (map, key) in [
+            (&mut brands, s.brand.clone()),
+            (&mut cats, s.category.clone()),
+            (&mut segs, s.segment.clone()),
+        ] {
+            let Some(k) = key else { continue };
+            let e = map.entry(k).or_insert((0, HashSet::new()));
+            e.0 += s.units;
+            e.1.insert(s.location.as_str());
+        }
+    }
+
+    let finish = |m: HashMap<String, (i64, HashSet<&str>)>| -> Vec<Facet> {
+        let mut v: Vec<Facet> = m
+            .into_iter()
+            .map(|(name, (units, slots))| Facet {
+                name,
+                units,
+                slots: slots.len(),
+            })
+            .collect();
+        v.sort_by(|a, b| b.units.cmp(&a.units).then(a.name.cmp(&b.name)));
+        v
+    };
+
+    Ok(Facets {
+        brands: finish(brands),
+        categories: finish(cats),
+        segments: finish(segs),
+        size_min: smin,
+        size_max: smax,
+        msrp_min: if pmin == f64::MAX { 0.0 } else { pmin },
+        msrp_max: pmax,
+        pool_slots: slots.len(),
+        pool_units: units,
+        pool_msrp: msrp,
+    })
+}
+
+/// The headline. Ranks every available slot and returns the top ones.
+///
+/// Runs against the in-memory cache, so the whole pass is a linear walk over stacks already
+/// sorted by location. Called on every keystroke behind the UI's debounce.
+#[tauri::command]
+pub async fn rank_lot_slots(
+    sheet_id: String,
+    want: Want,
+    allow: Allow,
+    opts: RankOpts,
+    exclude: Option<Vec<String>>,
+) -> Result<RankResult, String> {
+    let stacks = stacks_of(&sheet_id)?;
+    let mut gone = unavailable(&sheet_id)?;
+    // Slots already picked into the lot on screen but not yet saved. They leave the pool
+    // the moment they are picked, so the header counts and every later search only show
+    // what is still unclaimed.
+    if let Some(x) = exclude {
+        gone.extend(x);
+    }
+    Ok(rank(&stacks, &want, &allow, &opts, &gone))
+}
+
+/// Totals for a lot being built, before it is saved.
+///
+/// Exists so the running figures on screen come from the same `lot_totals` the manifest and
+/// the saved record use. A UI that added up its own prices would drift from the document the
+/// buyer receives, and per-category percentages make that drift silent.
+#[tauri::command]
+pub async fn preview_lot_totals(
+    sheet_id: String,
+    slots: Vec<String>,
+    price_pct: f64,
+    price_overrides: Option<String>,
+) -> Result<LotTotals, String> {
+    let stacks = stacks_of(&sheet_id)?;
+    let want: HashSet<&str> = slots.iter().map(|s| s.as_str()).collect();
+    let lot: Vec<Stack> = stacks
+        .iter()
+        .filter(|s| want.contains(s.location.as_str()))
+        .cloned()
+        .collect();
+    Ok(lot_totals(&lot, &pricing_from(price_pct, price_overrides.as_deref())))
+}
+
+/// Everything in one slot — what you are actually taking.
+#[tauri::command]
+pub async fn lot_slot_contents(sheet_id: String, location: String) -> Result<Vec<Stack>, String> {
+    let stacks = stacks_of(&sheet_id)?;
+    Ok(stacks
+        .iter()
+        .filter(|s| s.location == location)
+        .cloned()
+        .collect())
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — slot state
+// ---------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SlotState {
+    pub location_code: String,
+    pub state: String,
+    pub lot_id: Option<String>,
+    pub updated_at: String,
+}
+
+/// Move slots between available, staged and removed.
+///
+/// `state` is `available`, `staged` or `removed`. Returning a slot to the pool UPDATES its
+/// row to `available`; it never deletes it. A delete would write a permanent tombstone and
+/// `apply_upsert` skips any later event whose tombstone is at or past its clock, so a
+/// staged → available → staged cycle would make the slot unrecreatable under the same key.
+#[tauri::command]
+pub async fn set_lot_slot_state(
+    sheet_id: String,
+    locations: Vec<String>,
+    state: String,
+    lot_id: Option<String>,
+    note: Option<String>,
+) -> Result<usize, String> {
+    if !matches!(state.as_str(), "available" | "staged" | "removed") {
+        return Err(format!("{state:?} is not a slot state"));
+    }
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut n = 0usize;
+    for loc in &locations {
+        // Composite key joined with a character that cannot occur in the data.
+        let id = format!("{sheet_id}\u{1}{loc}");
+        conn.execute(
+            "INSERT INTO lot_slot_state (id, sheet_id, location_code, state, lot_id, note, created_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?7) \
+             ON CONFLICT(id) DO UPDATE SET state=excluded.state, lot_id=excluded.lot_id, \
+             note=COALESCE(excluded.note, lot_slot_state.note), updated_at=excluded.updated_at",
+            rusqlite::params![id, sheet_id, loc, state, lot_id, note, now],
+        )
+        .map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+pub async fn list_lot_slot_states(sheet_id: String) -> Result<Vec<SlotState>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut st = conn
+        .prepare(
+            "SELECT location_code, state, lot_id, updated_at FROM lot_slot_state \
+             WHERE sheet_id = ?1 AND state <> 'available' ORDER BY location_code",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([&sheet_id], |r| {
+            Ok(SlotState {
+                location_code: r.get(0)?,
+                state: r.get(1)?,
+                lot_id: r.get(2)?,
+                updated_at: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — saved lots
+// ---------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LotBuild {
+    pub id: String,
+    pub sheet_id: String,
+    pub sheet_name: Option<String>,
+    pub name: String,
+    pub status: String,
+    pub price_pct: f64,
+    pub price_pct_json: Option<String>,
+    pub locations: i64,
+    pub units: i64,
+    pub styles: i64,
+    pub msrp_total: f64,
+    pub ask_total: f64,
+    pub slots: Vec<String>,
+    pub notes: Option<String>,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
+    let slots_json: Option<String> = r.get(12)?;
+    Ok(LotBuild {
+        id: r.get(0)?,
+        sheet_id: r.get(1)?,
+        name: r.get(2)?,
+        status: r.get(3)?,
+        price_pct: r.get(4)?,
+        price_pct_json: r.get(5)?,
+        locations: r.get(6)?,
+        units: r.get(7)?,
+        styles: r.get(8)?,
+        msrp_total: r.get(9)?,
+        ask_total: r.get(10)?,
+        notes: r.get(11)?,
+        slots: slots_json
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        archived: r.get::<_, i64>(13)? != 0,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
+        sheet_name: r.get(16)?,
+    })
+}
+
+const BUILD_SELECT: &str = "SELECT b.id, b.sheet_id, b.name, b.status, b.price_pct, \
+    b.price_pct_json, b.locations, b.units, b.styles, b.msrp_total, b.ask_total, b.notes, \
+    b.slots_json, b.archived, b.created_at, b.updated_at, s.name \
+    FROM lot_build b LEFT JOIN lot_sheet s ON s.id = b.sheet_id";
+
+fn pricing_from(pct: f64, overrides: Option<&str>) -> Pricing {
+    let mut p = Pricing::flat(pct);
+    if let Some(j) = overrides.filter(|s| !s.trim().is_empty()) {
+        if let Ok(m) = serde_json::from_str::<std::collections::BTreeMap<String, f64>>(j) {
+            p.overrides = m;
+        }
+    }
+    p
+}
+
+/// Save the lot being built, and stage its slots so nothing can be sold twice.
+///
+/// Staging is automatic — the slots leave the pool the moment the lot is saved. Taking them
+/// off the master list for good is a separate, deliberate action:
+/// [`remove_lot_from_master_list`].
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn save_lot_build(
+    sheet_id: String,
+    build_id: Option<String>,
+    name: String,
+    slots: Vec<String>,
+    price_pct: f64,
+    price_overrides: Option<String>,
+    notes: Option<String>,
+) -> Result<LotBuild, String> {
+    let stacks = stacks_of(&sheet_id)?;
+    let want: HashSet<&str> = slots.iter().map(|s| s.as_str()).collect();
+    let lot: Vec<Stack> = stacks
+        .iter()
+        .filter(|s| want.contains(s.location.as_str()))
+        .cloned()
+        .collect();
+    if lot.is_empty() {
+        return Err("that lot has no stock in it — add some locations first".into());
+    }
+
+    let pricing = pricing_from(price_pct, price_overrides.as_deref());
+    let t: LotTotals = lot_totals(&lot, &pricing);
+
+    let id = build_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut ordered: Vec<String> = slots.clone();
+    ordered.sort();
+    ordered.dedup();
+
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO lot_build (id, sheet_id, name, status, price_pct, price_pct_json, \
+             locations, units, styles, msrp_total, ask_total, brands_json, categories_json, \
+             title_risk_json, slots_json, notes, archived, created_at, updated_at) \
+             VALUES (?1,?2,?3,'saved',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?16) \
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, price_pct=excluded.price_pct, \
+             price_pct_json=excluded.price_pct_json, locations=excluded.locations, \
+             units=excluded.units, styles=excluded.styles, msrp_total=excluded.msrp_total, \
+             ask_total=excluded.ask_total, brands_json=excluded.brands_json, \
+             categories_json=excluded.categories_json, title_risk_json=excluded.title_risk_json, \
+             slots_json=excluded.slots_json, notes=excluded.notes, updated_at=excluded.updated_at",
+            rusqlite::params![
+                id,
+                sheet_id,
+                name,
+                pricing.pct,
+                serde_json::to_string(&pricing.overrides).ok(),
+                t.locations as i64,
+                t.units,
+                t.styles as i64,
+                t.msrp,
+                t.ask,
+                serde_json::to_string(&t.by_brand).ok(),
+                serde_json::to_string(&t.by_category).ok(),
+                serde_json::to_string(&t.title_risk_units).ok(),
+                serde_json::to_string(&ordered).ok(),
+                notes,
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    set_lot_slot_state(
+        sheet_id.clone(),
+        ordered.clone(),
+        "staged".into(),
+        Some(id.clone()),
+        None,
+    )
+    .await?;
+
+    lot_build_detail(id).await.map(|d| d.build)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LotBuildDetail {
+    pub build: LotBuild,
+    pub totals: LotTotals,
+    pub location_codes: String,
+}
+
+#[tauri::command]
+pub async fn lot_build_detail(build_id: String) -> Result<LotBuildDetail, String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    let lot = build_stacks(&build)?;
+    let pricing = pricing_from(build.price_pct, build.price_pct_json.as_deref());
+    Ok(LotBuildDetail {
+        totals: lot_totals(&lot, &pricing),
+        location_codes: export::location_codes(&lot),
+        build,
+    })
+}
+
+fn build_stacks(build: &LotBuild) -> Result<Vec<Stack>, String> {
+    let stacks = stacks_of(&build.sheet_id)?;
+    let want: HashSet<&str> = build.slots.iter().map(|s| s.as_str()).collect();
+    Ok(stacks
+        .iter()
+        .filter(|s| want.contains(s.location.as_str()))
+        .cloned()
+        .collect())
+}
+
+#[tauri::command]
+pub async fn list_lot_builds(sheet_id: Option<String>) -> Result<Vec<LotBuild>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (sql, args): (String, Vec<String>) = match sheet_id {
+        Some(s) => (
+            format!("{BUILD_SELECT} WHERE b.archived = 0 AND b.sheet_id = ?1 ORDER BY b.updated_at DESC"),
+            vec![s],
+        ),
+        None => (
+            format!("{BUILD_SELECT} WHERE b.archived = 0 ORDER BY b.updated_at DESC"),
+            vec![],
+        ),
+    };
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map(rusqlite::params_from_iter(args.iter()), row_to_build)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Archive a saved lot and return its slots to the pool.
+///
+/// Archiving is not deletion: the row stays, and slots go back to `available` rather than
+/// having their state row removed.
+#[tauri::command]
+pub async fn archive_lot_build(build_id: String, archived: bool) -> Result<(), String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET archived = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![build_id, archived as i64, chrono::Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if archived {
+        // Only slots this lot staged go back — a slot already taken off the master list
+        // stays off it.
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_slot_state SET state = 'available', lot_id = NULL, updated_at = ?2 \
+             WHERE lot_id = ?1 AND state = 'staged'",
+            rusqlite::params![build_id, chrono::Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        set_lot_slot_state(
+            build.sheet_id.clone(),
+            build.slots.clone(),
+            "staged".into(),
+            Some(build_id),
+            None,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Take a saved lot's slots off the master list for good.
+///
+/// The deliberate half of the rule. Staging keeps a slot out of the pool while a lot is
+/// being negotiated and is reversible; this says the stock has physically left, and a
+/// removed code stays removed even when a later export no longer lists it — absent means
+/// shipped, not undone. Nothing is deleted: the state row is updated in place.
+#[tauri::command]
+pub async fn remove_lot_from_master_list(
+    build_id: String,
+    removed: bool,
+) -> Result<usize, String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    let state = if removed { "removed" } else { "staged" };
+    let n = set_lot_slot_state(
+        build.sheet_id.clone(),
+        build.slots.clone(),
+        state.into(),
+        Some(build_id.clone()),
+        Some(if removed {
+            "removed from the master list".into()
+        } else {
+            "returned to the lot".into()
+        }),
+    )
+    .await?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE lot_build SET status = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![
+            build_id,
+            if removed { "sent" } else { "saved" },
+            chrono::Utc::now().to_rfc3339()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — exports
+// ---------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportResult {
+    pub path: String,
+    pub rows: usize,
+    /// True when the manifest, brand counts and pull sheet agree on the unit total.
+    pub reconciled: bool,
+}
+
+/// Write one of the three artifacts to disk as CSV.
+///
+/// `kind` is `manifest`, `brands` or `pull`. All three are generated every time so the
+/// reconciliation assertion can run — an export that does not agree with its siblings is
+/// reported rather than quietly handed to a buyer.
+#[tauri::command]
+pub async fn export_lot_build(
+    build_id: String,
+    kind: String,
+    include_slots: Option<bool>,
+    dest_dir: Option<String>,
+) -> Result<ExportResult, String> {
+    let detail = lot_build_detail(build_id.clone()).await?;
+    let lot = build_stacks(&detail.build)?;
+    let pricing = pricing_from(detail.build.price_pct, detail.build.price_pct_json.as_deref());
+
+    let opts = ManifestOpts {
+        lot_name: detail.build.name.clone(),
+        include_slots: include_slots.unwrap_or(false),
+    };
+    let m = export::manifest(&lot, &pricing, &opts);
+    let b = export::brand_counts(&lot, &pricing, &detail.build.name);
+    let p = export::pull_sheet(&lot, &pricing, &detail.build.name);
+    let reconciled = export::reconcile(&m, &b, &p, detail.totals.units).is_ok();
+
+    let doc = match kind.as_str() {
+        "manifest" => &m,
+        "brands" => &b,
+        "pull" => &p,
+        other => return Err(format!("{other:?} is not one of manifest, brands or pull")),
+    };
+
+    let safe: String = detail
+        .build
+        .name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let dir = match dest_dir {
+        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
+        _ => sheet_dir(&detail.build.sheet_id)?.join("lots"),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{safe}-{kind}.csv"));
+    std::fs::write(&path, export::to_csv(doc)).map_err(|e| e.to_string())?;
+
+    Ok(ExportResult {
+        path: path.to_string_lossy().to_string(),
+        rows: doc.sections.last().map(|s| s.rows.len()).unwrap_or(0),
+        reconciled,
+    })
+}
+
+/// The bare list of slot codes, in walk order, for pasting into a message to the floor.
+#[tauri::command]
+pub async fn lot_build_location_codes(build_id: String) -> Result<String, String> {
+    Ok(lot_build_detail(build_id).await?.location_codes)
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — conflicts
+// ---------------------------------------------------------------------------------------
+
+/// Because nothing is merged, the app owes the user a way to see what a barcode means.
+#[tauri::command]
+pub async fn lot_sheet_conflicts(
+    sheet_id: String,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::lot_engine::model::UpcConflict>, String> {
+    // Recomputed from the stacks rather than stored twice, so it can never disagree with
+    // the data the ranking uses.
+    let stacks = stacks_of(&sheet_id)?;
+    let conflicts = crate::lot_engine::pipeline::conflicts_of(&stacks);
+    let q = query.unwrap_or_default().to_ascii_lowercase();
+    let mut out: Vec<_> = conflicts
+        .into_iter()
+        .filter(|c| {
+            q.is_empty()
+                || c.upc.to_ascii_lowercase().contains(&q)
+                || c.names.iter().any(|n| {
+                    n.title.to_ascii_lowercase().contains(&q)
+                        || n.brand
+                            .as_deref()
+                            .map(|b| b.to_ascii_lowercase().contains(&q))
+                            .unwrap_or(false)
+                })
+        })
+        .collect();
+    out.truncate(limit.unwrap_or(200));
+    Ok(out)
+}

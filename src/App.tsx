@@ -48,6 +48,7 @@ import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
 import InventoryView from "./components/InventoryView";
 import ManifestView from "./components/ManifestView";
+import LotEngineView from "./components/LotEngineView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import BriefView from "./components/BriefView";
@@ -115,7 +116,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
 /** Below this window width the sidebar collapses itself.
  *
@@ -499,6 +500,7 @@ export default function App() {
     ] },
     { id: "suppliers", label: "Suppliers", icon: Package },
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
+      { id: "lotengine", label: "Lot engine", icon: Layers },
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
     { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
@@ -541,6 +543,7 @@ export default function App() {
     : id === "sheetcopy" ? (plan === "unlimited") // top-tier only (server also enforces)
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
+    : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
     : canViewTab(me, id as any);
 
   // Flat list of every visible destination (mains + sub-items + utility) — used by
@@ -623,6 +626,7 @@ export default function App() {
             {t === "suppliers"  && <SuppliersView />}
             {t === "inventory"  && <InventoryView />}
             {t === "manifest"   && <ManifestView onNavigate={setTab} />}
+            {t === "lotengine"  && <LotEngineView />}
             {t === "sheetcopy"  && <SheetCopyView />}
             {t === "financials" && <FinancialsView />}
             {t === "deals"      && <CloseoutView />}

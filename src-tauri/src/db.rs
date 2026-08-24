@@ -1742,4 +1742,91 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE deal_flows ADD COLUMN supplier_refund_owed REAL;
         "#,
     ),
+    (
+        82,
+        // The lot engine (R-200): a warehouse manifest becomes priced, pickable lots by
+        // ranking and taking WHOLE locations.
+        //
+        // Three tables, all small on purpose. The cleaned stacks -- 96,834 rows for the
+        // reference export -- are deliberately NOT here. They live as a `stacks.jsonl`
+        // artifact under sync/media/lotsheets/<sheet_id>/ and travel by the durable media
+        // queue, because one row per stack through the oplog would write ~97k event files
+        // and ~1.16M row_clocks rows against a design assumption of about a thousand
+        // events on a heavy day, with no pruning anywhere in either engine.
+        //
+        // NOT YET IN ANY SYNC LIST. These tables are desktop-local until the server has
+        // them too -- the server must be deployed FIRST or apply_upsert logs SCHEMA DRIFT
+        // and silently drops the columns out of every event. Adding them to
+        // sync.rs ALLOWED_TABLES, netsync.rs SNAPSHOT_TABLES and the server's three lists
+        // is a deliberate later step, not a side effect of this migration.
+        //
+        // lot_slot_state carries the rule that matters most: a location is `staged` when it
+        // is in a lot being built, and `removed` only when a person presses the button that
+        // says so. Absent row means available. Rows are UPDATED in place on a stable
+        // (sheet_id, location_code) key and NEVER deleted -- a delete would write a
+        // permanent tombstone, and a staged to available to staged cycle would then make
+        // the slot unrecreatable under the same key. Removed codes are kept even when a
+        // later export no longer lists them, because absent means shipped, not undone.
+        r#"
+        CREATE TABLE IF NOT EXISTS lot_sheet (
+            id TEXT PRIMARY KEY,
+            org_id TEXT,
+            name TEXT NOT NULL,
+            source_filename TEXT,
+            imported_at TEXT NOT NULL,
+            imported_by TEXT,
+            rows_in INTEGER NOT NULL DEFAULT 0,
+            stacks INTEGER NOT NULL DEFAULT 0,
+            products INTEGER NOT NULL DEFAULT 0,
+            units INTEGER NOT NULL DEFAULT 0,
+            locations INTEGER NOT NULL DEFAULT 0,
+            msrp_total REAL NOT NULL DEFAULT 0,
+            artifact_path TEXT,
+            report_path TEXT,
+            audit_map_path TEXT,
+            quality_json TEXT,
+            detection_json TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS lot_slot_state (
+            id TEXT PRIMARY KEY,
+            org_id TEXT,
+            sheet_id TEXT NOT NULL,
+            location_code TEXT NOT NULL,
+            state TEXT NOT NULL,
+            lot_id TEXT,
+            note TEXT,
+            changed_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lot_slot_state_sheet ON lot_slot_state(sheet_id, state);
+        CREATE TABLE IF NOT EXISTS lot_build (
+            id TEXT PRIMARY KEY,
+            org_id TEXT,
+            sheet_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            price_pct REAL NOT NULL DEFAULT 0,
+            price_pct_json TEXT,
+            locations INTEGER NOT NULL DEFAULT 0,
+            units INTEGER NOT NULL DEFAULT 0,
+            styles INTEGER NOT NULL DEFAULT 0,
+            msrp_total REAL NOT NULL DEFAULT 0,
+            ask_total REAL NOT NULL DEFAULT 0,
+            brands_json TEXT,
+            categories_json TEXT,
+            title_risk_json TEXT,
+            slots_json TEXT,
+            notes TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lot_build_sheet ON lot_build(sheet_id, archived);
+        "#,
+    ),
 ];

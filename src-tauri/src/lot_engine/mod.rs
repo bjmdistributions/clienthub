@@ -34,6 +34,7 @@ pub mod pipeline;
 pub mod price;
 pub mod rank;
 pub mod read;
+pub mod report;
 pub mod slot;
 
 #[cfg(test)]
@@ -43,6 +44,7 @@ pub use classify::{classify, Classified};
 pub use pipeline::{clean_path, clean_sheet};
 pub use export::{brand_counts, location_codes, manifest, pull_sheet, reconcile, to_csv, Doc, ManifestOpts, Section};
 pub use price::{lot_totals, GroupTotal, LotTotals, Pricing};
+pub use report::{audit_map_csv, conflicts_csv, quality_report_text};
 pub use rank::{rank, Allow, RankOpts, RankResult, RankedSlot, Sort, Want};
 pub use model::{
     CleanResult, DropReason, LocationRepair, QualityReport, SheetDetection, Stack, TitleRisk,

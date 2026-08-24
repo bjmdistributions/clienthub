@@ -14,6 +14,7 @@ mod geocode;
 mod google_contacts;
 mod invoice;
 mod lot_engine;
+mod lot_store;
 mod manifest;
 mod oauth_flow;
 mod plaid;
@@ -917,6 +918,26 @@ fn main() {
             save_portal_base_url,
             // Manifest
             analyze_manifest,
+            // Lot engine (R-200): a warehouse sheet becomes priced, pickable lots.
+            lot_store::import_lot_sheet,
+            lot_store::list_lot_sheets,
+            lot_store::lot_sheet_report,
+            lot_store::rename_lot_sheet,
+            lot_store::archive_lot_sheet,
+            lot_store::lot_sheet_facets,
+            lot_store::rank_lot_slots,
+            lot_store::preview_lot_totals,
+            lot_store::lot_slot_contents,
+            lot_store::set_lot_slot_state,
+            lot_store::list_lot_slot_states,
+            lot_store::save_lot_build,
+            lot_store::lot_build_detail,
+            lot_store::list_lot_builds,
+            lot_store::archive_lot_build,
+            lot_store::remove_lot_from_master_list,
+            lot_store::export_lot_build,
+            lot_store::lot_build_location_codes,
+            lot_store::lot_sheet_conflicts,
             // Forecast
             get_profit_forecast,
             // Sync
