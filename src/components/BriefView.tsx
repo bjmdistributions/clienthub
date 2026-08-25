@@ -275,13 +275,23 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
               {brief.monthly_breakdown?.length > 0 && (
                 <div className="pt-3" style={{ borderTop: "1px solid var(--t-b1)" }}>
                   <div className="text-[12px] font-medium text-ink-2 mb-2">Every month you've closed deals</div>
+                  {/* These rows are deal-scoped, so the money column is the deals' own
+                      revenue — not the paid-invoice revenue in the headline above, which
+                      is a different (larger) figure. The header says so explicitly. */}
+                  <div className="flex items-center gap-3 text-[11px] text-muted mb-1">
+                    <span className="w-24">Month</span>
+                    <span className="w-16">Deals</span>
+                    <span className="flex-1">Deal revenue</span>
+                    <span className="w-20 text-right">Profit</span>
+                    <span className="w-14 text-right">Margin</span>
+                  </div>
                   <div className="space-y-1">
                     {[...brief.monthly_breakdown].reverse().map((m) => (
                       <div key={m.month} className="flex items-center gap-3 text-[12px]">
                         <span className="w-24 text-ink-2 font-medium">{parseLocalDay(m.month).toLocaleString("en-US", { month: "short", year: "numeric" })}</span>
-                        <span className="text-muted w-16 tabular-nums">{m.count} deal{m.count !== 1 ? "s" : ""}</span>
+                        <span className="text-muted w-16 tabular-nums">{m.count}</span>
                         <span className="text-muted tabular-nums flex-1">{fmtAmount(m.revenue)}</span>
-                        <span className={`tabular-nums font-medium ${m.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(m.net_profit)}</span>
+                        <span className={`tabular-nums font-medium w-20 text-right ${m.net_profit >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(m.net_profit)}</span>
                         <span className="text-muted tabular-nums w-14 text-right">{(+m.margin_pct || 0).toFixed(1)}%</span>
                       </div>
                     ))}
