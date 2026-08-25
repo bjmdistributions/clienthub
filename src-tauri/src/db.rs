@@ -1749,16 +1749,18 @@ const MIGRATIONS: &[(u32, &str)] = &[
         //
         // Three tables, all small on purpose. The cleaned stacks -- 96,834 rows for the
         // reference export -- are deliberately NOT here. They live as a `stacks.jsonl`
-        // artifact under sync/media/lotsheets/<sheet_id>/ and travel by the durable media
+        // artifact under lot-engine/<sheet_id>/ and travel by the durable media
         // queue, because one row per stack through the oplog would write ~97k event files
         // and ~1.16M row_clocks rows against a design assumption of about a thousand
         // events on a heavy day, with no pruning anywhere in either engine.
         //
-        // NOT YET IN ANY SYNC LIST. These tables are desktop-local until the server has
-        // them too -- the server must be deployed FIRST or apply_upsert logs SCHEMA DRIFT
-        // and silently drops the columns out of every event. Adding them to
-        // sync.rs ALLOWED_TABLES, netsync.rs SNAPSHOT_TABLES and the server's three lists
-        // is a deliberate later step, not a side effect of this migration.
+        // SYNCED since 2026-08-24 (af09c47 / e5ddc13): all three are in sync.rs
+        // ALLOWED_TABLES and netsync.rs SNAPSHOT_TABLES here, and in ALLOWED_TABLES,
+        // PUSHABLE and SNAPSHOT_TABLES on the server. The SERVER MUST BE DEPLOYED FIRST or
+        // apply_upsert logs SCHEMA DRIFT and silently drops the columns out of every event
+        // -- and worse, a push for a table the server does not accept is REJECTED, which
+        // push_pending treats as an acknowledgement and drops. `resync_lot_engine` re-emits
+        // every row if that order goes wrong.
         //
         // lot_slot_state carries the rule that matters most: a location is `staged` when it
         // is in a lot being built, and `removed` only when a person presses the button that
