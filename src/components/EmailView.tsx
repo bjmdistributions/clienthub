@@ -4,6 +4,7 @@ import { api, ParsedEmail, EmailDraft, Client, Newsletter, Category, NewsletterS
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import VariablePicker, { VariableReference } from "./VariablePicker";
+import NumberInput from "./NumberInput";
 import { NewsletterSchedule } from "../lib/api";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
@@ -1584,8 +1585,8 @@ function RecurringTab() {
                 </div>
                 <div>
                   <label className={lbl}>Every</label>
-                  <input type="number" min={1} className={inp} value={intervalValue}
-                    onChange={(e) => setIntervalValue(Math.max(1, parseInt(e.target.value) || 1))} />
+                  <NumberInput integer className={inp} value={intervalValue}
+                    onValue={(n) => setIntervalValue(Math.max(1, n || 1))} />
                 </div>
                 <div>
                   <label className={lbl}>At hour</label>

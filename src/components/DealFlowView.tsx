@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type KeyboardEvent } from "react";
 import {
   Check, ChevronDown, ChevronRight, Search, Plus, X,
   AlertTriangle, RotateCcw, RefreshCw, Trash2,
@@ -7,14 +7,24 @@ import {
 import {
   api, DealFlow, SupplierPayment, Invoice, Supplier, PayoutShare, dealPayoutSplit,
 } from "../lib/api";
-import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay } from "../lib/format";
+import { fmtAmount, primarySupplierLabel, localDay, parseLocalDay, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
-function parseAmt(v: string): number { return parseFloat(v.replace(/,/g, "")) || 0; }
+
+/** A drawer bar opens from anywhere along it, not just the label and the arrow
+ *  (R-205). Buttons that sit inside the bar stop the click themselves. */
+const barToggle = (toggle: () => void) => ({
+  role: "button",
+  tabIndex: 0,
+  onClick: toggle,
+  onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  },
+});
 
 const STAGES = ["invoiced", "payment_received", "supplier_paid", "complete"] as const;
 type Stage = typeof STAGES[number];
@@ -31,14 +41,10 @@ const inp =
   "border border-line px-3 h-9 rounded-lg text-[13px] w-full bg-surface " +
   "focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
-// Non-supplier deal costs (freight, wire fees) — entered as categorized cost lines
-// so net_profit reflects them. `supplier` is the default for existing/normal lines.
-const COST_CATS: { value: string; label: string }[] = [
-  { value: "freight",  label: "Freight" },
-  { value: "wire_in",  label: "Incoming wire fee" },
-  { value: "wire_out", label: "Outgoing wire fee" },
-  { value: "other",    label: "Other cost" },
-];
+// Freight and wire fees are no longer entered here (R-205) — everything a deal is
+// charged rides the invoice, and the invoice screen's cost editor
+// (`InvoiceCostSection`) still writes these same rows for anything that does not.
+// Existing cost lines keep their category badge, so nothing recorded is hidden.
 const catLabel = (c?: string | null) =>
   c === "freight" ? "Freight" : c === "wire_in" ? "Wire in" :
   c === "wire_out" ? "Wire out" : c === "other" ? "Other" : "Supplier";
@@ -414,8 +420,9 @@ export default function DealFlowView() {
       {/* ── Waiting on pickup or delivery (R-154) ───────────────────────── */}
       {(lane.length > 0 || noAnswer > 0) && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="w-full flex items-center justify-between gap-3 px-5 py-3.5">
-            <button onClick={() => setLaneOpen(!laneOpen)} className="flex items-center gap-2.5 text-left min-w-0">
+          <div {...barToggle(() => setLaneOpen(!laneOpen))}
+            className="w-full flex items-center justify-between gap-3 px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
+            <div className="flex items-center gap-2.5 text-left min-w-0">
               <Truck size={14} className="text-accent flex-shrink-0" />
               <span className="text-[13px] font-semibold text-ink">Waiting on pickup or delivery</span>
               <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{lane.length}</span>
@@ -424,10 +431,10 @@ export default function DealFlowView() {
                   <AlertTriangle size={10} /> {overdueCount} past {overdueCount === 1 ? "its" : "their"} date
                 </span>
               )}
-            </button>
-            <button onClick={() => setLaneOpen(!laneOpen)} className="p-1 rounded-lg hover:bg-surface-3 transition-colors">
+            </div>
+            <span className="p-1 rounded-lg">
               <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${laneOpen ? "rotate-180" : ""}`} />
-            </button>
+            </span>
           </div>
           {/* This week. Counted as events among active deals — one deal can both
               pick up and land inside the window, so these are not deal counts. */}
@@ -459,8 +466,9 @@ export default function DealFlowView() {
       {/* ── Completed deals drawer ──────────────────────────────────────── */}
       {totalCompleted > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
-          <div className="w-full flex items-center justify-between px-5 py-3.5">
-            <button onClick={() => setDrawerOpen(!drawerOpen)} className="flex items-center gap-2.5 text-left min-w-0">
+          <div {...barToggle(() => setDrawerOpen(!drawerOpen))}
+            className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
+            <div className="flex items-center gap-2.5 text-left min-w-0">
               <CheckCircle2 size={14} className="text-success-ink flex-shrink-0" />
               <span className="text-[13px] font-semibold text-ink">Completed deals</span>
               <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{totalCompleted}</span>
@@ -469,16 +477,16 @@ export default function DealFlowView() {
                   <AlertTriangle size={10} /> {needsWorkCount} need review
                 </span>
               )}
-            </button>
+            </div>
             <div className="flex items-center gap-2">
-              <button onClick={syncCompleted} disabled={syncing}
+              <button onClick={(e) => { e.stopPropagation(); syncCompleted(); }} disabled={syncing}
                 className="flex items-center gap-1.5 text-[12px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg hover:bg-surface-3 disabled:opacity-50 transition-colors"
                 title="Re-pull recorded numbers from the bank and date each completed deal to when the supplier was actually paid">
                 <RefreshCw size={13} className={syncing ? "animate-spin" : ""} /> Sync from bank
               </button>
-              <button onClick={() => setDrawerOpen(!drawerOpen)} className="p-1 rounded-lg hover:bg-surface-3 transition-colors">
+              <span className="p-1 rounded-lg">
                 <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${drawerOpen ? "rotate-180" : ""}`} />
-              </button>
+              </span>
             </div>
           </div>
           {drawerOpen && (
@@ -501,49 +509,36 @@ export default function DealFlowView() {
       {refundAll.length > 0 && (
         <div className="bg-surface border border-line rounded-xl overflow-hidden">
           {/* Drawer header */}
-          <div className="w-full flex items-center justify-between px-5 py-3.5">
-            <button onClick={() => setRefundsOpen(!refundsOpen)} className="flex items-center gap-2.5 text-left min-w-0">
+          <div {...barToggle(() => setRefundsOpen(!refundsOpen))}
+            className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-surface-2/40 transition-colors">
+            <div className="flex items-center gap-2.5 text-left min-w-0">
               <RotateCcw size={14} className="text-danger-ink flex-shrink-0" />
               <span className="text-[13px] font-semibold text-ink">Refunds</span>
-              <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{refundFlows.length}</span>
-            </button>
+              {/* Nothing open reads inline on the bar. It used to be the drawer's
+                  entire body — a sentence behind a click, with the way back
+                  ("Show done") already sitting up here anyway. */}
+              {refundFlows.length > 0 ? (
+                <span className="text-[11px] font-medium text-muted bg-surface-3 px-2 py-0.5 rounded-full">{refundFlows.length}</span>
+              ) : (
+                <span className="text-[11.5px] text-muted truncate">Every refund is closed out</span>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               {doneRefundCount > 0 && (
-                <button onClick={() => setShowDoneRefunds((v) => !v)}
+                <button onClick={(e) => { e.stopPropagation(); setShowDoneRefunds((v) => !v); }}
                   className={`text-[11.5px] font-medium px-2.5 h-8 rounded-lg border transition-colors ${showDoneRefunds ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:text-ink-2"}`}>
                   {showDoneRefunds ? "Hide done" : `Show done (${doneRefundCount})`}
                 </button>
               )}
-              <button onClick={() => setRefundsOpen(!refundsOpen)} className="p-1 rounded-lg hover:bg-surface-3 transition-colors">
+              <span className="p-1 rounded-lg">
                 <ChevronDown size={14} className={`text-muted transition-transform duration-200 ${refundsOpen ? "rotate-180" : ""}`} />
-              </button>
+              </span>
             </div>
           </div>
 
           {/* Drawer body */}
-          {refundsOpen && (
+          {refundsOpen && refundFlows.length > 0 && (
             <div className="border-t border-line divide-y divide-line-2">
-              {refundFlows.length === 0 && (
-                <div className="px-5 py-6 text-[12.5px] text-muted">
-                  {doneRefundCount > 0 ? (
-                    <>
-                      {/* Booking the last refund payment closes the deal out, which hides
-                          it — so the drawer looked empty right after the work landed.
-                          Name the count and make the way back a button, not a hint. */}
-                      Every refund is closed out —{" "}
-                      <button
-                        onClick={() => setShowDoneRefunds(true)}
-                        className="font-medium text-accent hover:text-accent-hover"
-                      >
-                        show {doneRefundCount} closed refund{doneRefundCount === 1 ? "" : "s"}
-                      </button>
-                      .
-                    </>
-                  ) : (
-                    "No refunds on any deal."
-                  )}
-                </div>
-              )}
               {refundFlows.map((flow) => {
                 const r = refundMap[flow.id];
                 const isExp = expandedRefund === flow.id;
@@ -1253,12 +1248,11 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   const [suppResults, setSuppResults] = useState<Supplier[]>([]);
   const [selSupplier, setSelSupplier] = useState<Supplier | null>(null);
   const [items, setItems] = useState<{ description: string; qty: number; clientRate: number; myRate: string }[]>([]);
-  const [showForm, setShowForm] = useState(false);
+  // Open on the form when there is nothing recorded yet — that is the whole reason
+  // this section is on screen. Once a cost line exists it collapses to one button,
+  // so a settled deal is not sitting under an empty form (R-205).
+  const [showForm, setShowForm] = useState((flow.supplier_payments || []).length === 0);
   const [saving,   setSaving]   = useState(false);
-  const [showCost, setShowCost] = useState(false);
-  const [costType, setCostType] = useState("freight");
-  const [costAmt,  setCostAmt]  = useState("");
-  const [costNote, setCostNote] = useState("");
 
   useEffect(() => {
     api.getInvoice(flow.invoice_id).then((inv) => {
@@ -1276,8 +1270,10 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
   }, [suppName, selSupplier?.name]);
 
   const existingPayments = flow.supplier_payments || [];
-  const anyRateEntered   = items.some((it) => parseAmt(it.myRate) > 0);
-  const suppTotal        = items.reduce((s, it) => s + it.qty * parseAmt(it.myRate), 0);
+  const anyRateEntered   = items.some((it) => parseAmount(it.myRate) > 0);
+  const suppTotal        = items.reduce((s, it) => s + it.qty * parseAmount(it.myRate), 0);
+  // Something typed and not yet saved — what Continue has to deal with.
+  const formDirty        = showForm && (suppName.trim() !== "" || items.some((it) => it.myRate.trim() !== ""));
   // A kept leg was never paid, so it is not a cost — same rule as
   // `total_supplier_cost`, and now visible here because the kept toggle lives on
   // these rows (R-132).
@@ -1289,11 +1285,13 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
 
   const pickSupplier = (s: Supplier) => { setSelSupplier(s); setSuppName(s.name); setSuppResults([]); };
 
-  const handleAddSupplier = async () => {
-    if (!suppName.trim()) return;
-    const filledItems = items.filter((it) => parseAmt(it.myRate) > 0);
+  /** Returns false when nothing was saved, so Continue can stay put instead of
+   *  advancing away from work that is still sitting in the form. */
+  const handleAddSupplier = async (): Promise<boolean> => {
+    if (!suppName.trim()) return false;
+    const filledItems = items.filter((it) => parseAmount(it.myRate) > 0);
     const zeroCost = filledItems.length === 0;
-    if (zeroCost && !confirm("Submit $0 as the supplier cost for this deal? Your profit will equal the full revenue. Are you sure?")) return;
+    if (zeroCost && !confirm("Submit $0 as the supplier cost for this deal? Your profit will equal the full revenue. Are you sure?")) return false;
     setSaving(true);
     try {
       if (zeroCost) {
@@ -1304,7 +1302,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
         });
       } else {
         for (const it of filledItems) {
-          const rate = parseAmt(it.myRate);
+          const rate = parseAmount(it.myRate);
           await api.addSupplierPayment(flow.id, {
             supplier_name: suppName.trim(), supplier_id: selSupplier?.id || null,
             amount: it.qty * rate, quantity: it.qty, unit_price: rate,
@@ -1318,22 +1316,19 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
       // Keep completed-deal numbers correct after a manual cost edit.
       if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
       onReload();
-    } catch (e: any) { toast(String(e), "error"); }
+    } catch (e: any) { toast(String(e), "error"); setSaving(false); return false; }
     setSaving(false);
+    return true;
   };
 
-  const handleAddCost = async () => {
-    const amt = parseAmt(costAmt);
-    if (amt <= 0) { toast("Enter a cost amount", "error"); return; }
-    setSaving(true);
-    try {
-      const label = COST_CATS.find((c) => c.value === costType)?.label || "Cost";
-      await api.addSupplierPayment(flow.id, { supplier_name: costNote.trim() || label, supplier_id: null, amount: amt, category: costType });
-      setCostAmt(""); setCostNote(""); setShowCost(false);
-      if (flow.stage === "complete") { try { await api.recalcDealFromBank(flow.id); } catch {} }
-      onReload();
-    } catch (e: any) { toast(String(e), "error"); }
-    setSaving(false);
+  // Typed-in work is not lost by moving on: Continue saves the form first, and stays
+  // put if that save does not go through (R-205). Nothing typed, nothing to save.
+  const handleContinue = async () => {
+    if (formDirty) {
+      if (!suppName.trim()) { toast("Add the supplier's name, or clear the amounts, before continuing", "error"); return; }
+      if (!(await handleAddSupplier())) return;
+    }
+    onAdvance();
   };
 
   const removePayment = async (pid: string) => {
@@ -1448,36 +1443,12 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
 
       {locked ? null : (
       <>
-      {/* Chooser */}
-      {!showForm && !showCost && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button onClick={() => { setShowForm(true); setShowCost(false); }}
-            className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
-            <Package size={16} className="text-accent shrink-0 mt-0.5" />
-            <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Supplier cost</div><div className="text-[11.5px] text-muted">What you pay for the goods, itemized</div></div>
-          </button>
-          <button onClick={() => { setShowCost(true); setShowForm(false); }}
-            className="flex items-start gap-2.5 p-3 rounded-xl border border-line bg-surface hover:bg-surface-2 hover:border-accent/40 text-left transition-colors">
-            <Truck size={16} className="text-accent shrink-0 mt-0.5" />
-            <div className="min-w-0"><div className="text-[13px] font-medium text-ink">Freight or fee</div><div className="text-[11.5px] text-muted">Shipping, wire fees, other costs</div></div>
-          </button>
-        </div>
-      )}
-
-      {/* Freight / fee form */}
-      {showCost && (
-        <div className="bg-surface border border-line rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-2"><Truck size={15} className="text-accent" /><div className="text-[13px] font-medium text-ink">Freight or fee</div></div>
-          <select value={costType} onChange={(e) => setCostType(e.target.value)} className={inp}>
-            {COST_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
-          <input type="text" placeholder="Note (optional — e.g. DHL, bank ref)" value={costNote} onChange={(e) => setCostNote(e.target.value)} className={inp} />
-          <input type="number" inputMode="decimal" placeholder="Amount" value={costAmt} onChange={(e) => setCostAmt(e.target.value)} className={inp} />
-          <div className="flex gap-2">
-            <button onClick={handleAddCost} disabled={saving} className="flex-1 h-9 rounded-lg bg-accent text-on-accent text-[13px] font-semibold disabled:opacity-50">Add cost</button>
-            <button onClick={() => { setShowCost(false); setCostAmt(""); setCostNote(""); }} className="px-4 h-9 rounded-lg border border-line text-[13px] text-muted">Cancel</button>
-          </div>
-        </div>
+      {/* Add another — the form is already open when the deal has no cost yet */}
+      {!showForm && (
+        <button onClick={() => setShowForm(true)}
+          className="flex items-center gap-1.5 text-[12.5px] text-muted hover:text-ink-2 px-2.5 h-8 rounded-lg border border-line hover:bg-surface-2 transition-colors">
+          <Plus size={13} /> Add supplier
+        </button>
       )}
 
       {/* Supplier form */}
@@ -1520,7 +1491,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                   <span>Item</span><span className="text-center">Qty</span><span className="text-right">Our quote</span><span className="text-right">My rate</span><span className="text-right">My total</span>
                 </div>
                 {items.map((item, i) => {
-                  const myRate = parseAmt(item.myRate);
+                  const myRate = parseAmount(item.myRate);
                   const myTotal = item.qty * myRate;
                   const clientTotal = item.qty * item.clientRate;
                   const saving_pct = clientTotal > 0 && myTotal > 0 ? ((clientTotal - myTotal) / clientTotal) * 100 : null;
@@ -1531,7 +1502,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                       <span className="text-[12px] text-muted text-right tabular-nums">{fmtAmount(item.clientRate)}</span>
                       <div className="relative">
                         <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted text-[11px] pointer-events-none">$</span>
-                        <input type="number" inputMode="decimal" step="0.01" placeholder="0.00" value={item.myRate}
+                        <input type="text" inputMode="decimal" placeholder="0.00" value={item.myRate}
                           onChange={(e) => { const copy = [...items]; copy[i] = { ...copy[i], myRate: e.target.value }; setItems(copy); }}
                           className="w-full border border-line pl-5 pr-1 h-8 rounded-md text-[12px] text-right focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent transition-colors tabular-nums" />
                       </div>
@@ -1557,7 +1528,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               <div className="text-[12.5px] font-medium text-muted">Amount</div>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                <input type="number" inputMode="decimal" step="0.01" placeholder="0.00" value={items[0]?.myRate ?? ""}
+                <input type="text" inputMode="decimal" placeholder="0.00" value={items[0]?.myRate ?? ""}
                   onChange={(e) => setItems([{ description: "Supplier cost", qty: 1, clientRate: flow.invoice_total, myRate: e.target.value }])}
                   className="w-full border border-line pl-8 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors" />
               </div>
@@ -1569,7 +1540,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
               <Plus size={13} /> Add supplier
             </button>
             <button onClick={() => { setShowForm(false); setSuppName(""); setSelSupplier(null); setSuppResults([]); setItems((prev) => prev.map((it) => ({ ...it, myRate: "" }))); }}
-              className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
+              className="text-[13px] text-muted hover:text-ink-2 px-3 h-9 hover:bg-surface-3 rounded-lg transition-colors">Clear</button>
           </div>
         </div>
       )}
@@ -1583,9 +1554,9 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
             : suppliersPaid ? "Cost recorded, every leg settled"
             : `${outstanding.length} leg${outstanding.length === 1 ? "" : "s"} still to send`}
         </span>
-        <button onClick={onAdvance}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium transition-colors">
-          Continue to financials <Check size={14} strokeWidth={2.5} />
+        <button onClick={handleContinue} disabled={saving}
+          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+          {formDirty ? "Save and continue" : "Continue to financials"} <Check size={14} strokeWidth={2.5} />
         </button>
       </div>
     </div>
@@ -1608,7 +1579,7 @@ function BuyerPayment({ flow, onReload, locked }: { flow: DealFlow; onReload: ()
   useEffect(() => { setDepositAmount(flow.deposit_amount ? flow.deposit_amount.toFixed(2) : ""); }, [flow.deposit_amount]);
 
   const handleMarkReceived = async () => {
-    const amt = parseFloat(receivedAmount);
+    const amt = parseAmount(receivedAmount, NaN);
     if (isNaN(amt) || amt < 0) { toast("Enter a valid amount received", "error"); return; }
     if (!hasSuppliers && !confirm("No supplier cost on this deal — it will be recorded as 100% profit. Mark payment received?")) return;
     setSaving(true);
@@ -1622,7 +1593,7 @@ function BuyerPayment({ flow, onReload, locked }: { flow: DealFlow; onReload: ()
     setSaving(false);
   };
   const handleSaveDeposit = async () => {
-    const amt = parseFloat(depositAmount) || 0;
+    const amt = parseAmount(depositAmount);
     if (amt < 0) { toast("Enter a valid deposit amount", "error"); return; }
     setSavingDeposit(true);
     try { await api.setDeposit(flow.id, amt); toast(amt > 0 ? "Deposit saved" : "Deposit cleared", "success"); onReload(); }
@@ -1651,11 +1622,11 @@ function BuyerPayment({ flow, onReload, locked }: { flow: DealFlow; onReload: ()
             <div className="flex items-center gap-2 flex-wrap">
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                <input type="number" step="0.01" min="0" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00"
+                <input type="text" inputMode="decimal" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00"
                   className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
               </div>
               {(() => {
-                const dep = parseFloat(depositAmount) || 0; const total = flow.invoice_total || 0;
+                const dep = parseAmount(depositAmount); const total = flow.invoice_total || 0;
                 if (dep <= 0) return <span className="text-[11px] text-muted">A partial payment now — the rest stays owed until paid in full</span>;
                 if (dep > total + 0.005) return <span className="text-[11px] font-medium text-danger-ink">exceeds invoice {fmtAmount(total)}</span>;
                 return <span className="text-[11px] font-medium text-ink-2 tabular-nums">balance owed {fmtAmount(Math.max(0, total - dep))} of {fmtAmount(total)}</span>;
@@ -1671,11 +1642,11 @@ function BuyerPayment({ flow, onReload, locked }: { flow: DealFlow; onReload: ()
             <div className="flex items-center gap-2 flex-wrap">
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-                <input type="number" step="0.01" min="0" value={receivedAmount} onChange={(e) => setReceivedAmount(e.target.value)}
+                <input type="text" inputMode="decimal" value={receivedAmount} onChange={(e) => setReceivedAmount(e.target.value)}
                   className="border border-line bg-surface text-ink pl-6 pr-3 h-9 rounded-lg text-[13px] w-40 tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent" />
               </div>
               {(() => {
-                const amt = parseFloat(receivedAmount); const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
+                const amt = parseAmount(receivedAmount, NaN); const diff = (isNaN(amt) ? 0 : amt) - (flow.invoice_total || 0);
                 if (!isFinite(diff) || Math.abs(diff) < 0.005) return <span className="text-[11px] text-muted">matches invoice {fmtAmount(flow.invoice_total)}</span>;
                 return <span className={`text-[11px] font-medium ${diff < 0 ? "text-danger-ink" : "text-success-ink"}`}>{diff < 0 ? "−" : "+"}{fmtAmount(Math.abs(diff))} vs invoice {fmtAmount(flow.invoice_total)}</span>;
               })()}

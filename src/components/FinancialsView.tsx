@@ -15,6 +15,7 @@ import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
 
+import { parseAmount } from "../lib/format";
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
 // often prefixed "Error:" by String(e). Strip the noise and never render an empty
 // toast — a failure with no message reads as nothing having happened at all.
@@ -1470,7 +1471,7 @@ export default function FinancialsView() {
       return;
     }
     if (!selectedDeal) { toast("Pick a deal first", "error"); return; }
-    const amt = parseFloat(amountStr);
+    const amt = parseAmount(amountStr, NaN);
     if (!(amt > 0)) { toast("Enter an amount", "error"); return; }
     setAllocBusy(true);
     try {
@@ -4684,7 +4685,7 @@ function AllocationPanel(props: {
   const submitNewDeal = async () => {
     const name = ndName.trim();
     const buyer = ndBuyer.trim();
-    const sale = parseFloat(ndSale);
+    const sale = parseAmount(ndSale, NaN);
     if (!name) { toast("Deal name required", "error"); return; }
     if (!buyer) { toast("Buyer name required", "error"); return; }
     if (!(sale > 0)) { toast("Enter an expected sale amount", "error"); return; }
@@ -4864,8 +4865,8 @@ function AllocationPanel(props: {
               )}
             </div>
             <input
-              type="number"
-              step="0.01"
+              type="text"
+              inputMode="decimal"
               value={amountStr}
               onChange={(e) => setAmountStr(e.target.value)}
               placeholder="Amount"
@@ -5014,7 +5015,7 @@ function AllocationPanel(props: {
             </label>
             <label className="block min-w-0">
               <span className="block text-[11px] text-muted mb-1">Expected sale</span>
-              <input type="number" step="0.01" value={ndSale} onChange={(e) => setNdSale(e.target.value)} placeholder="0.00" className={`${inp} tabular-nums`} />
+              <input type="text" inputMode="decimal" value={ndSale} onChange={(e) => setNdSale(e.target.value)} placeholder="0.00" className={`${inp} tabular-nums`} />
             </label>
             <label className="block min-w-0">
               <span className="block text-[11px] text-muted mb-1">Note (optional)</span>

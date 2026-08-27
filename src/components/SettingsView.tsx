@@ -38,7 +38,7 @@ import {
   NewsletterProductTemplate,
 } from "../lib/api";
 import { buildNewsletterBody } from "../lib/newsletter";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, parseAmount, parseCount } from "../lib/format";
 import { isAdmin } from "../lib/permissions";
 import {
   Save,
@@ -100,6 +100,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
 import VariablePicker from "./VariablePicker";
 import InvoicePreview from "./InvoicePreview";
+import NumberInput from "./NumberInput";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
 
@@ -1085,7 +1086,7 @@ function SendingCard() {
         <Advanced label="Advanced (mail server)">
           <div className="grid grid-cols-2 gap-3">
             <Field label="SMTP host"><input className={inpSm} value={settings.smtp_host} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} /></Field>
-            <Field label="SMTP port"><input type="number" className={inpSm} value={settings.smtp_port} onChange={(e) => setSettings({ ...settings, smtp_port: parseInt(e.target.value) || 587 })} /></Field>
+            <Field label="SMTP port"><NumberInput integer className={inpSm} value={settings.smtp_port} onValue={(n) => setSettings({ ...settings, smtp_port: n || 587 })} /></Field>
           </div>
           <p className="text-[11px] text-muted mt-1">Credentials are stored in your OS keychain — never written to disk or synced.</p>
         </Advanced>
@@ -1197,7 +1198,7 @@ function InboxCard() {
           <Advanced label="Advanced (mail server)">
             <div className="grid grid-cols-2 gap-3">
               <input className={inpSm} placeholder="IMAP host" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} />
-              <input className={inpSm} type="number" placeholder="Port" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
+              <NumberInput className={inpSm} integer placeholder="Port" value={form.port} onValue={(n) => setForm({ ...form, port: n })} />
             </div>
           </Advanced>
           <div className="flex gap-2">
@@ -3006,7 +3007,7 @@ function AutomationTab() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-[12.5px] font-medium text-muted mb-1.5">Days</label>
-                <input className={inp} type="number" value={fuForm.trigger_value} onChange={(e) => setFuForm({ ...fuForm, trigger_value: parseInt(e.target.value) || 0 })} />
+                <NumberInput className={inp} integer value={fuForm.trigger_value} onValue={(n) => setFuForm({ ...fuForm, trigger_value: n })} />
               </div>
               <div>
                 <label className="block text-[12.5px] font-medium text-muted mb-1.5">Action</label>
@@ -4343,7 +4344,7 @@ function SheetsTab() {
           )}
           <div className="w-32">
             <label className="block text-[10px] font-medium text-muted mb-1">Skip header rows</label>
-            <input type="number" min={0} value={config.skip_header_rows} onChange={(e) => setConfig({ ...config, skip_header_rows: Number(e.target.value) })} className={inpSm} />
+            <NumberInput integer value={config.skip_header_rows} onValue={(n) => setConfig({ ...config, skip_header_rows: Math.max(0, n) })} className={inpSm} />
           </div>
           </Advanced>
           <button
@@ -4566,7 +4567,7 @@ function SplitsTab() {
                 <Segmented value={(u as any).pay_type || "profit_pct"} onChange={(v) => setRepType(u.id, v)}
                   options={PAY_TYPES.map(([v, l]) => ({ value: v, label: l }))} />
                 <div className="flex items-center gap-1.5">
-                  <input type="number" min={0} step="0.1" defaultValue={u.commission_pct} onBlur={(e) => setRepVal(u.id, parseFloat(e.target.value) || 0)}
+                  <input type="text" inputMode="decimal" defaultValue={u.commission_pct} onBlur={(e) => setRepVal(u.id, parseAmount(e.target.value))}
                     className={`${inpSm} text-right tabular-nums`} />
                   <span className="w-3 shrink-0 text-[12px] text-muted">{((u as any).pay_type || "profit_pct") === "fixed" ? "$" : "%"}</span>
                 </div>
@@ -4633,7 +4634,7 @@ function SplitsTab() {
           <span className="text-[13px] text-muted">Amount to analyze</span>
           <div className="flex items-center gap-1.5">
             <span className="w-3 shrink-0 text-[12px] text-muted">$</span>
-            <input type="number" min={0} step="100" value={sample} onChange={(e) => setSample(Math.max(0, parseFloat(e.target.value) || 0))}
+            <NumberInput value={sample} onValue={(n) => setSample(Math.max(0, n))}
               className={`${inpSm} text-right tabular-nums`} />
           </div>
         </div>
@@ -5020,7 +5021,7 @@ function PeoplePanel() {
                 <option value="custom">Custom</option>
               </select>
               {rp.period === "custom" && (
-                <input type="number" min={1} defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseInt(e.target.value) || 14 })}
+                <input type="text" inputMode="numeric" defaultValue={rp.custom_days || 14} onBlur={(e) => saveRp({ customDays: parseCount(e.target.value, 14) || 14 })}
                   className="w-16 border border-line px-2 h-8 rounded-lg text-[12px]" />
               )}
               <span className="text-muted ml-auto text-[11px]">Completed deals only.</span>
@@ -5074,7 +5075,7 @@ function PeoplePanel() {
                     <option value="gross_pct">% gross</option>
                     <option value="fixed">fixed $</option>
                   </select>
-                  <input type="number" min={0} defaultValue={u.commission_pct} onBlur={(e) => setComm(u.id, parseFloat(e.target.value) || 0)}
+                  <input type="text" inputMode="decimal" defaultValue={u.commission_pct} onBlur={(e) => setComm(u.id, parseAmount(e.target.value))}
                     className="w-14 border border-line px-2 h-8 rounded-lg text-[12px]" />
                   <span className="text-[11px] text-muted">{((u as any).pay_type === "fixed") ? "$" : "%"}</span>
                   <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-1">
@@ -5326,13 +5327,13 @@ function InvoiceNumberingSection() {
         </div>
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1">Padding</label>
-          <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.padding}
-            onChange={(e) => update({ padding: parseInt(e.target.value) || 1 })} />
+          <NumberInput className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" integer value={cfg.padding}
+            onValue={(n) => update({ padding: n || 1 })} />
         </div>
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1">Start at</label>
-          <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.next_number}
-            onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
+          <NumberInput className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" integer value={cfg.next_number}
+            onValue={(n) => update({ next_number: n || 1 })} />
         </div>
       </div>
       <p className="text-[11px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>
@@ -5373,13 +5374,13 @@ function QuoteNumberingSection() {
         </div>
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1">Padding</label>
-          <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.padding}
-            onChange={(e) => update({ padding: parseInt(e.target.value) || 1 })} />
+          <NumberInput className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" integer value={cfg.padding}
+            onValue={(n) => update({ padding: n || 1 })} />
         </div>
         <div>
           <label className="block text-[12.5px] font-medium text-muted mb-1">Start at</label>
-          <input className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" type="number" value={cfg.next_number}
-            onChange={(e) => update({ next_number: parseInt(e.target.value) || 1 })} />
+          <NumberInput className="border border-line px-3 h-9 rounded-lg text-[13px] w-full" integer value={cfg.next_number}
+            onValue={(n) => update({ next_number: n || 1 })} />
         </div>
       </div>
       <p className="text-[11px] text-muted mb-3">Preview: <span className="tabular-nums font-semibold text-accent-hover">{cfg.preview}</span></p>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, EmailSettings, CompanyInfo, CsvPreview, ColumnMapping, ImportSummary } from "../lib/api";
 import { Upload, Check, AlertCircle, ArrowLeft, ArrowRight } from "lucide-react";
+import NumberInput from "./NumberInput";
 
 const PRESETS: Record<string, Partial<EmailSettings>> = {
   Gmail:   { smtp_host: "smtp.gmail.com",  smtp_port: 587, imap_host: "imap.gmail.com",  imap_port: 993 },
@@ -182,8 +183,8 @@ export default function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 <>
                   <Field label="SMTP Host"><input className={inp} value={emailSettings.smtp_host} onChange={(e) => setEmailSettings({ ...emailSettings, smtp_host: e.target.value })} /></Field>
                   <div className="grid grid-cols-2 gap-3">
-                    <Field label="SMTP Port"><input className={inp} type="number" value={emailSettings.smtp_port} onChange={(e) => setEmailSettings({ ...emailSettings, smtp_port: parseInt(e.target.value) || 587 })} /></Field>
-                    <Field label="IMAP Port"><input className={inp} type="number" value={emailSettings.imap_port} onChange={(e) => setEmailSettings({ ...emailSettings, imap_port: parseInt(e.target.value) || 993 })} /></Field>
+                    <Field label="SMTP Port"><NumberInput className={inp} integer value={emailSettings.smtp_port} onValue={(n) => setEmailSettings({ ...emailSettings, smtp_port: n || 587 })} /></Field>
+                    <Field label="IMAP Port"><NumberInput className={inp} integer value={emailSettings.imap_port} onValue={(n) => setEmailSettings({ ...emailSettings, imap_port: n || 993 })} /></Field>
                   </div>
                   <Field label="Username / Email"><input className={inp} value={emailSettings.user} onChange={(e) => setEmailSettings({ ...emailSettings, user: e.target.value })} placeholder="you@gmail.com" /></Field>
                   <Field label="Password"><input className={inp} type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="App Password for Gmail" /></Field>

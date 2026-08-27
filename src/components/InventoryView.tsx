@@ -11,6 +11,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
+import NumberInput from "./NumberInput";
 
 const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as const;
 type StatusFilter = typeof STATUS_FILTERS[number] | "all";
@@ -1419,12 +1420,12 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
               return (
                 <div key={ci} className="flex items-center gap-3 px-3 py-2">
                   <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{c.join(" / ")}</span>
-                  <input className={cellInp + " w-24 text-right tabular-nums"} type="number" inputMode="numeric" value={v?.qty || ""} placeholder="0"
-                    onChange={(e) => upsert(c, { qty: parseInt(e.target.value) || 0 })} />
+                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="0"
+                    onValue={(n) => upsert(c, { qty: n })} />
                   <div className="relative w-32">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                    <input className={cellInp + " w-32 pl-6 text-right tabular-nums"} type="number" step="0.01" value={v?.price ?? ""} placeholder="—"
-                      onChange={(e) => upsert(c, { price: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })} />
+                    <NumberInput className={cellInp + " w-32 pl-6 text-right tabular-nums"} value={v?.price ?? ""} placeholder="—"
+                      onValue={(n, raw) => upsert(c, { price: raw.trim() === "" ? null : n })} />
                   </div>
                 </div>
               );
@@ -1809,17 +1810,17 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                   </div>
                 ) : qtyBasis === "per_pallet" ? (
                   <div className="flex items-center gap-1.5">
-                    <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={perPallet || ""} onChange={(e) => setPerPallet(parseInt(e.target.value) || 0)} placeholder="450" />
+                    <NumberInput className={inp + " tabular-nums"} integer value={perPallet || ""} onValue={(n) => setPerPallet(n)} placeholder="450" />
                     <span className="text-[12px] text-muted flex-shrink-0">to</span>
-                    <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={perPalletMax || ""} onChange={(e) => setPerPalletMax(parseInt(e.target.value) || 0)} placeholder="optional" />
+                    <NumberInput className={inp + " tabular-nums"} integer value={perPalletMax || ""} onValue={(n) => setPerPalletMax(n)} placeholder="optional" />
                   </div>
                 ) : (
-                  <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={qty || ""} onChange={(e) => setQty(parseInt(e.target.value) || 0)} placeholder="0" />
+                  <NumberInput className={inp + " tabular-nums"} integer value={qty || ""} onValue={(n) => setQty(n)} placeholder="0" />
                 )}
               </div>
               <div>
                 <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Pallets</label>
-                <input className={inp + " tabular-nums"} type="number" inputMode="numeric" value={pallets || ""} onChange={(e) => setPallets(parseInt(e.target.value) || 0)} placeholder="0" />
+                <NumberInput className={inp + " tabular-nums"} integer value={pallets || ""} onValue={(n) => setPallets(n)} placeholder="0" />
               </div>
             </div>
 
@@ -1869,7 +1870,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">MSRP (total retail)</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                <input className={inp + " pl-6 tabular-nums"} type="number" step="0.01" value={msrp || ""} onChange={(e) => setMsrp(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+                <NumberInput className={inp + " pl-6 tabular-nums"} value={msrp || ""} onValue={(n) => setMsrp(n)} placeholder="0.00" />
               </div>
             </div>
             <div>
@@ -1888,7 +1889,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             ) : (
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                <input className={inp + " pl-6"} type="number" step="0.01" value={ask || ""} onChange={(e) => setAsk(parseFloat(e.target.value) || 0)}
+                <NumberInput className={inp + " pl-6"} value={ask || ""} onValue={(n) => setAsk(n)}
                   placeholder={priceMode === "per_pallet" ? "1500.00" : "0.00"} />
               </div>
             )}
@@ -2008,12 +2009,12 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 <label className="block text-[12.5px] font-medium text-muted mb-1">Your cost</label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                  <input className={inp + " pl-6"} type="number" step="0.01" value={cost || ""} onChange={(e) => setCost(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+                  <NumberInput className={inp + " pl-6"} value={cost || ""} onValue={(n) => setCost(n)} placeholder="0.00" />
                 </div>
               </div>
               <div>
                 <label className="block text-[12.5px] font-medium text-muted mb-1">MOQ (min order qty)</label>
-                <input className={inp + " tabular-nums"} type="number" value={moq || ""} onChange={(e) => setMoq(parseInt(e.target.value) || 0)} placeholder="0" />
+                <NumberInput className={inp + " tabular-nums"} integer value={moq || ""} onValue={(n) => setMoq(n)} placeholder="0" />
               </div>
             </div>
           </div>

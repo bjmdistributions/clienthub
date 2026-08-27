@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Save, Trash2, X, Pencil, CheckCircle2, Landmark, ChevronRight, Loader2, RotateCcw, RefreshCw, AlertTriangle } from "lucide-react";
 import { api, Loan, LoanLedger } from "../lib/api";
-import { fmtAmount, localDay } from "../lib/format";
+import { fmtAmount, localDay, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
 
 const today = () => localDay();
@@ -120,7 +120,7 @@ export default function LoansView() {
 
   const saveForm = async () => {
     if (!fName.trim()) return;
-    const principal = parseFloat(fPrincipal) || 0;
+    const principal = parseAmount(fPrincipal);
     setSaving(true);
     try {
       if (editingId) {
@@ -147,7 +147,7 @@ export default function LoansView() {
   };
 
   const saveAside = async (l: Loan) => {
-    const setAside = parseFloat(asideBuf) || 0;
+    const setAside = parseAmount(asideBuf);
     try {
       await api.updateLoan(l.id, l.name, l.lender, l.principal, setAside, l.status, l.note);
       setAsideId(null);
@@ -273,9 +273,8 @@ export default function LoansView() {
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                 <input
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  step="0.01"
                   placeholder="0.00"
                   value={fPrincipal}
                   onChange={(e) => setFPrincipal(e.target.value)}
@@ -431,9 +430,8 @@ export default function LoansView() {
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
                       <input
-                        type="number"
+                        type="text"
                         inputMode="decimal"
-                        step="0.01"
                         placeholder="0.00"
                         value={asideBuf}
                         onChange={(e) => setAsideBuf(e.target.value)}

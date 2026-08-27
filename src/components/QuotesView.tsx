@@ -3,6 +3,7 @@ import { api, Quote, Client, LineItem } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban, Search } from "lucide-react";
 import { toast } from "./Toast";
+import NumberInput from "./NumberInput";
 
 interface Props { onNavigate?: (t: any) => void; }
 
@@ -446,8 +447,8 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
               {items.map((it, i) => (
                 <div key={i} className="flex gap-2 items-center">
                   <input className={`${inpNarrow} flex-1 text-left`} placeholder="Description" value={it.description} onChange={(e) => setItem(i, "description", e.target.value)} />
-                  <input className={`${inpNarrow} w-16`} type="number" step="1" placeholder="Qty" value={it.qty || ""} onChange={(e) => setItem(i, "qty", parseFloat(e.target.value) || 0)} />
-                  <input className={`${inpNarrow} w-24`} type="number" step="0.01" placeholder="Rate" value={it.rate || ""} onChange={(e) => setItem(i, "rate", parseFloat(e.target.value) || 0)} />
+                  <NumberInput className={`${inpNarrow} w-16`} placeholder="Qty" value={it.qty || ""} onValue={(n) => setItem(i, "qty", n)} />
+                  <NumberInput className={`${inpNarrow} w-24`} placeholder="Rate" value={it.rate || ""} onValue={(n) => setItem(i, "rate", n)} />
                   <span className="w-24 text-right text-[13px] font-medium text-ink-2 tabular-nums flex-shrink-0">{fmtAmount(it.amount)}</span>
                   <button onClick={() => setItems(items.filter((_, idx) => idx !== i))} className="text-faint hover:text-danger-ink p-1 flex-shrink-0"><X size={14} /></button>
                 </div>
@@ -459,7 +460,7 @@ function QuoteForm({ initial, clients, onClose }: { initial: Quote | null; clien
           <div className="grid grid-cols-2 gap-3 items-end">
             <div>
               <label className="block text-[12.5px] font-medium text-muted mb-1">Tax %</label>
-              <input className={inp} type="number" step="0.1" value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value); setTaxRate(isNaN(v) ? 0 : v); }} />
+              <NumberInput className={inp} value={taxRate} onValue={(n) => setTaxRate(n)} />
             </div>
             <div className="text-right text-[12px] text-muted space-y-0.5 pb-1">
               <div>Subtotal <span className="font-medium text-ink tabular-nums ml-2">{fmtAmount(subtotal)}</span></div>

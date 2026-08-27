@@ -9,6 +9,7 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import InvoiceCostSection from "./InvoiceCostSection";
 import { toast } from "./Toast";
+import NumberInput from "./NumberInput";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
@@ -671,7 +672,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Issue date"><input type="date" className={inp} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
           <Field label="Tax %">
             <div className="relative">
-              <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
+              <NumberInput className={inp + " pr-8"} value={taxRate} onValue={(n) => setTaxRate(n)} />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">%</span>
             </div>
           </Field>
@@ -688,7 +689,7 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Issue date"><input type="date" className={inp} value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
           <Field label="Tax %">
             <div className="relative">
-              <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
+              <NumberInput className={inp + " pr-8"} value={taxRate} onValue={(n) => setTaxRate(n)} />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">%</span>
             </div>
           </Field>
@@ -717,12 +718,12 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <div key={i} className="grid grid-cols-12 gap-2 mb-1.5">
             <input className="col-span-6 border border-line px-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
               value={it.description} onChange={(e) => updateItem(i, "description", e.target.value)} />
-            <input type="number" inputMode="decimal" step="1" className="col-span-1 border border-line px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-              value={it.qty || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateItem(i, "qty", e.target.value === "" ? 0 : isNaN(v) ? 0 : v); }} />
+            <NumberInput className="col-span-1 border border-line px-2 h-9 rounded-lg text-[13px] text-center focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
+              value={it.qty || ""} onValue={(n) => updateItem(i, "qty", n)} />
             <div className="col-span-2 relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">$</span>
-              <input type="number" inputMode="decimal" step="0.01" className="w-full border border-line pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
-                value={it.rate || ""} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); updateItem(i, "rate", e.target.value === "" ? 0 : isNaN(v) ? 0 : v); }} />
+              <NumberInput className="w-full border border-line pl-7 pr-3 h-9 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40 transition-colors"
+                value={it.rate || ""} onValue={(n) => updateItem(i, "rate", n)} />
             </div>
             <input readOnly className="col-span-2 border border-line bg-surface-2 px-3 h-9 rounded-lg text-[13px] text-right text-muted tabular-nums"
               value={it.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} />
@@ -873,7 +874,7 @@ function InvoiceEditForm2({ invoice, onCancel, onSaved }: { invoice: Invoice; on
         </Field>
         <Field label="Tax %">
           <div className="relative">
-            <input type="number" inputMode="decimal" step="0.1" className={inp + " pr-8"} value={taxRate} onChange={(e) => { const v = parseFloat(e.target.value.replace(/,/g, '')); setTaxRate(isNaN(v) ? 0 : v); }} />
+            <NumberInput className={inp + " pr-8"} value={taxRate} onValue={(n) => setTaxRate(n)} />
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-[13px]">%</span>
           </div>
         </Field>

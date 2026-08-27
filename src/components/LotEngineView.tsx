@@ -12,10 +12,11 @@ import {
   LotUpcConflict,
   LotWant,
 } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, parseAmount } from "../lib/format";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
+import NumberInput from "./NumberInput";
 import {
   AlertTriangle,
   ArrowRight,
@@ -595,10 +596,8 @@ function Filters(p: {
   const toggle = (list: string[], v: string) =>
     list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 
-  const num = (v: string): number | null => {
-    const f = parseFloat(v);
-    return Number.isFinite(f) ? f : null;
-  };
+  // A cleared box means "no limit", not zero — so an empty string stays null.
+  const num = (v: string): number | null => (/\d/.test(v) ? parseAmount(v) : null);
 
   return (
     <div className="bg-surface-2 rounded-xl p-3.5 border border-line">
@@ -627,44 +626,38 @@ function Filters(p: {
         <div className="grid grid-cols-2 gap-2 mt-2.5">
           <label className="text-[11px] text-muted">
             Size from
-            <input
-              type="number"
-              step="0.5"
+            <NumberInput
               className={inp}
               placeholder={p.facets.size_min?.toString() ?? "any"}
               value={p.want.size_min ?? ""}
-              onChange={(e) => p.setWant({ ...p.want, size_min: num(e.target.value) })}
+              onValue={(_, raw) => p.setWant({ ...p.want, size_min: num(raw) })}
             />
           </label>
           <label className="text-[11px] text-muted">
             to
-            <input
-              type="number"
-              step="0.5"
+            <NumberInput
               className={inp}
               placeholder={p.facets.size_max?.toString() ?? "any"}
               value={p.want.size_max ?? ""}
-              onChange={(e) => p.setWant({ ...p.want, size_max: num(e.target.value) })}
+              onValue={(_, raw) => p.setWant({ ...p.want, size_max: num(raw) })}
             />
           </label>
           <label className="text-[11px] text-muted">
             Retail from
-            <input
-              type="number"
+            <NumberInput
               className={inp}
               placeholder={Math.floor(p.facets.msrp_min).toString()}
               value={p.want.msrp_min ?? ""}
-              onChange={(e) => p.setWant({ ...p.want, msrp_min: num(e.target.value) })}
+              onValue={(_, raw) => p.setWant({ ...p.want, msrp_min: num(raw) })}
             />
           </label>
           <label className="text-[11px] text-muted">
             to
-            <input
-              type="number"
+            <NumberInput
               className={inp}
               placeholder={Math.ceil(p.facets.msrp_max).toString()}
               value={p.want.msrp_max ?? ""}
-              onChange={(e) => p.setWant({ ...p.want, msrp_max: num(e.target.value) })}
+              onValue={(_, raw) => p.setWant({ ...p.want, msrp_max: num(raw) })}
             />
           </label>
         </div>
@@ -767,12 +760,12 @@ function Filters(p: {
         </div>
         <label className="text-[11px] text-muted block mt-2">
           Skip slots smaller than
-          <input
-            type="number"
+          <NumberInput
+            integer
             className={inp}
             placeholder="0"
             value={p.minUnits || ""}
-            onChange={(e) => p.setMinUnits(parseInt(e.target.value, 10) || 0)}
+            onValue={(n) => p.setMinUnits(n)}
           />
         </label>
       </Section>
@@ -1020,14 +1013,10 @@ function LotPanel(p: {
           <label className="text-[11px] text-muted block">
             Percent of retail
             <div className="flex items-center gap-2 mt-0.5">
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={0.5}
+              <NumberInput
                 className={inp}
                 value={p.pricePct}
-                onChange={(e) => p.setPricePct(parseFloat(e.target.value) || 0)}
+                onValue={(n) => p.setPricePct(n)}
               />
             </div>
           </label>
@@ -1043,17 +1032,12 @@ function LotPanel(p: {
                   <span className="text-[10.5px] text-muted tabular-nums w-14 text-right shrink-0">
                     {fmtAmount(c.per_unit)}/u
                   </span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={0.5}
+                  <NumberInput
                     placeholder={p.pricePct.toString()}
                     value={p.overrides[c.name] ?? ""}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
+                    onValue={(v) => {
                       const next = { ...p.overrides };
-                      if (Number.isFinite(v) && v > 0) next[c.name] = v;
+                      if (v > 0) next[c.name] = v;
                       else delete next[c.name];
                       p.setOverrides(next);
                     }}

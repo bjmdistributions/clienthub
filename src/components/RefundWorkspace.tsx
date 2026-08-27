@@ -4,7 +4,7 @@ import {
   CheckCircle2, AlertTriangle, ArrowDownLeft, ArrowUpRight,
 } from "lucide-react";
 import { api, DealAllocation, DealReceipt, DealShortage, RefundRow, UnallocatedTxn } from "../lib/api";
-import { fmtAmount, parseLocalDay } from "../lib/format";
+import { fmtAmount, parseLocalDay, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
 
 // ─── Refund workspace ───────────────────────────────────────────────────────
@@ -505,8 +505,8 @@ export default function RefundWorkspace({ dealFlowId, primary = false, onChange 
               <span className="tabular-nums text-[13px] font-semibold text-ink">{fmtAmount(refundOwed)}</span>
             ) : (<>
               <input
-                type="number" key={refundOwed} defaultValue={refundOwed || ""}
-                onBlur={(e) => { const v = parseFloat(e.target.value); if (isFinite(v)) run(async () => { await api.setRefundOwed(dealFlowId, v); }); }}
+                type="text" inputMode="decimal" key={refundOwed} defaultValue={refundOwed || ""}
+                onBlur={(e) => { const v = parseAmount(e.target.value, NaN); if (isFinite(v)) run(async () => { await api.setRefundOwed(dealFlowId, v); }); }}
                 placeholder="0.00"
                 className="bg-surface-2 border border-line rounded-lg h-8 px-2 w-28 text-[12px] text-ink tabular-nums text-right"
               />

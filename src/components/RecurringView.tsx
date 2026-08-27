@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Client, RecurringInvoice, RecurringInvoiceInput, LineItem } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, parseAmount } from "../lib/format";
+import NumberInput from "./NumberInput";
 import { Plus, X, Trash2, Pause, Play, Edit2 } from "lucide-react";
 
 const inp = "border border-line px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
@@ -65,10 +66,10 @@ export default function RecurringView() {
 
   const updateItem = (i: number, field: keyof LineItem, val: string) => {
     const copy = [...items];
-    if (field === "qty") { copy[i].qty = parseFloat(val) || 0; copy[i].amount = copy[i].qty * copy[i].rate; }
-    else if (field === "rate") { copy[i].rate = parseFloat(val) || 0; copy[i].amount = copy[i].qty * copy[i].rate; }
+    if (field === "qty") { copy[i].qty = parseAmount(val); copy[i].amount = copy[i].qty * copy[i].rate; }
+    else if (field === "rate") { copy[i].rate = parseAmount(val); copy[i].amount = copy[i].qty * copy[i].rate; }
     else if (field === "description") { copy[i].description = val; }
-    else if (field === "amount") { copy[i].amount = parseFloat(val) || 0; }
+    else if (field === "amount") { copy[i].amount = parseAmount(val); }
     setItems(copy);
   };
 
@@ -172,7 +173,7 @@ export default function RecurringView() {
               </div>
               <div>
                 <label className="block text-[12.5px] font-medium text-muted mb-1">Tax Rate (%)</label>
-                <input className={inp} type="number" step="0.1" value={taxRate || ""} onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)} placeholder="0" />
+                <NumberInput className={inp} value={taxRate || ""} onValue={(n) => setTaxRate(n)} placeholder="0" />
               </div>
               <div>
                 <label className="block text-[12.5px] font-medium text-muted mb-1">Line items</label>
@@ -180,8 +181,8 @@ export default function RecurringView() {
                   {items.map((li, i) => (
                     <div key={i} className="flex items-center gap-2">
                       <input className={inp + " flex-1"} placeholder="Description" value={li.description} onChange={(e) => updateItem(i, "description", e.target.value)} />
-                      <input className={inp + " w-[60px]"} type="number" placeholder="Qty" value={li.qty || ""} onChange={(e) => updateItem(i, "qty", e.target.value)} />
-                      <input className={inp + " w-[90px]"} type="number" step="0.01" placeholder="Rate" value={li.rate || ""} onChange={(e) => updateItem(i, "rate", e.target.value)} />
+                      <NumberInput className={inp + " w-[60px]"} placeholder="Qty" value={li.qty || ""} onValue={(_, raw) => updateItem(i, "qty", raw)} />
+                      <NumberInput className={inp + " w-[90px]"} placeholder="Rate" value={li.rate || ""} onValue={(_, raw) => updateItem(i, "rate", raw)} />
                       <span className="text-[11px] text-muted w-[70px] text-right tabular-nums">{fmtAmount(li.amount)}</span>
                       {items.length > 1 && (
                         <button onClick={() => setItems(items.filter((_, idx) => idx !== i))} className="text-faint hover:text-danger-ink flex-shrink-0"><X size={14} /></button>

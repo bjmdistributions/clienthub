@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { api } from "../lib/api";
-import { fmtAmount } from "../lib/format";
+import { fmtAmount, parseAmount } from "../lib/format";
 
 // Customer store-credit: balance + ledger, with issue (owed to customer) and
 // apply/use (drawn down toward a future deal). Overdraw is rejected by the engine.
@@ -23,7 +23,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
   const entries: any[] = data.entries || [];
 
   const act = (sign: number) => {
-    const n = parseFloat(amt.replace(/,/g, ""));
+    const n = parseAmount(amt, NaN);
     if (!isFinite(n) || n <= 0) { setErr("Enter an amount."); return; }
     setBusy(true); setErr(null);
     api.addClientCredit(clientId, sign * n, { note: note || undefined })
@@ -44,7 +44,7 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
       {open && (
         <div className="space-y-2 border-t border-line pt-2">
           <div className="flex items-center gap-2">
-            <input type="number" value={amt} onChange={(e) => setAmt(e.target.value)} placeholder="Amount"
+            <input type="text" inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value)} placeholder="Amount"
               className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 text-[12px] text-ink tabular-nums" />
             <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)"
               className="bg-surface-2 border border-line rounded-lg h-8 px-2 flex-1 text-[12px] text-ink" />

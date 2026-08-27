@@ -74,3 +74,25 @@ export function fmtCompactCurrency(n: number): string {
   }
   return sign + "$" + (abs / 1_000_000).toFixed(1) + "M";
 }
+
+/** Parse a number a person typed or PASTED — "$1,234.56", "1,234", " 12.50 " (R-206).
+ *
+ *  `<input type="number">` refuses a value it cannot parse, so a pasted "1,234.56"
+ *  leaves the element in bad-input state and `e.target.value` reads back as the
+ *  empty string. Every caller then did `parseFloat("") || 0` and stored **0** — the
+ *  bug Jack reported as "I paste a number and it saves as zero". Currency symbols,
+ *  thousands separators and spaces are stripped here instead, so the figure survives
+ *  whichever way it arrived. A string with no number in it returns `fallback`. */
+export function parseAmount(v: string | number | null | undefined, fallback = 0): number {
+  if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
+  if (v == null) return fallback;
+  const n = parseFloat(String(v).replace(/[^0-9.eE+-]/g, ""));
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** `parseAmount` for a whole-number field — quantities, pallets, ports, days.
+ *  "1,250" → 1250, "12.9" → 12 (truncated, the same as the parseInt it replaces). */
+export function parseCount(v: string | number | null | undefined, fallback = 0): number {
+  const n = parseAmount(v, NaN);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
