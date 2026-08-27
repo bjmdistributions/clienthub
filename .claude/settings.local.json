@@ -822,7 +822,27 @@
       "Bash(tasklist)",
       "Bash([ -s \"$L\" ])",
       "PowerShell($c = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; \"PID $\\($_.OwningProcess\\) $\\($p.ProcessName\\) started $\\($p.StartTime\\)\" } } else { \"nothing listening on 5173\" }; \"--- app processes ---\"; Get-Process | Where-Object { $_.ProcessName -match 'clienthub|tauri' } | Select-Object Id, ProcessName, StartTime | Format-Table -AutoSize | Out-String)",
-      "PowerShell(Get-Process clienthub -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, @{n='Window';e={$_.MainWindowTitle}}, @{n='RAM_MB';e={[math]::Round\\($_.WorkingSet64/1MB\\)}} | Format-Table -AutoSize | Out-String)"
+      "PowerShell(Get-Process clienthub -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, @{n='Window';e={$_.MainWindowTitle}}, @{n='RAM_MB';e={[math]::Round\\($_.WorkingSet64/1MB\\)}} | Format-Table -AutoSize | Out-String)",
+      "PowerShell($p = Get-Process clienthub -ErrorAction SilentlyContinue; if \\($p\\) { \"still running: PID $\\($p.Id\\)\" } else { \"clienthub is not running\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\Jack\\\\Desktop\\\\BUSINESS APP\"; foreach \\($t in @\\(\"v0.15.142\",\"v0.15.143\",\"v0.15.144\",\"v0.16.0\",\"v0.16.1\",\"v0.16.2\"\\)\\) { $v = \\(git show \"${t}:src-tauri/tauri.conf.json\" | Select-String -Pattern '\"version\"'\\).ToString\\(\\).Trim\\(\\); Write-Host \"$t -> $v\" })",
+      "Bash(bash deploy-47.sh)",
+      "Bash(ssh -o ConnectTimeout=10 root@161.35.106.143 \"grep -o 'app\\\\.js?v=[0-9][0-9]*' /home/ecliptr/clienthub-api/www/index.html | tail -1; echo -n 'served by http: '; curl -s http://127.0.0.1:8090/app | grep -o 'app\\\\.js?v=[0-9][0-9]*' | tail -1\")",
+      "Bash(ssh -o ConnectTimeout=10 root@161.35.106.143 \"cd /home/ecliptr/clienthub-data && sqlite3 -header -column brokr.db \\\\\"SELECT df.id, df.invoice_id, df.completed_at, df.net_profit, COALESCE\\(df.archived,0\\) arch FROM deal_flows df WHERE df.org_id='org_default' AND df.stage='complete' AND df.completed_at >= '2026-08-01' AND df.completed_at < '2026-09-01' ORDER BY df.completed_at\\\\\"\")",
+      "Bash(ssh -o ConnectTimeout=10 root@161.35.106.143 'cd /home/ecliptr/clienthub-data && sqlite3 -header -column brokr.db \" *)",
+      "Bash(cp \"C:/Users/Jack/AppData/Roaming/com.bjmdistributions.clienthub/clienthub.db\" db/live.db)",
+      "Bash(cp \"C:/Users/Jack/AppData/Roaming/com.bjmdistributions.clienthub/clienthub.db-wal\" db/live.db-wal)",
+      "Bash(cp \"C:/Users/Jack/AppData/Roaming/com.bjmdistributions.clienthub/clienthub.db-shm\" db/live.db-shm)",
+      "Bash(ssh -o ConnectTimeout=10 root@161.35.106.143 \"cd /home/ecliptr/clienthub-data && sqlite3 brokr.db \\\\\"SELECT COALESCE\\(SUM\\(i.total\\),0\\) FROM invoices i WHERE i.org_id='org_default' AND i.status='paid' AND COALESCE\\(i.voided,0\\)=0 AND COALESCE\\(i.archived,0\\)=0 AND \\(CASE WHEN COALESCE\\(i.paid_at,''\\)<>'' THEN datetime\\(i.paid_at\\) >= datetime\\('2026-08-01T05:00:00+00:00'\\) AND datetime\\(i.paid_at\\) < datetime\\('2026-09-01T05:00:00+00:00'\\) ELSE i.issue_date >= '2026-08-01' AND i.issue_date < '2026-09-01' END\\);\\\\\"; echo '--- all-time paid \\(brief\\) ---'; sqlite3 brokr.db \\\\\"SELECT COALESCE\\(SUM\\(total\\),0\\) FROM invoices WHERE org_id='org_default' AND status='paid' AND COALESCE\\(voided,0\\)=0 AND COALESCE\\(archived,0\\)=0;\\\\\"\")",
+      "Bash(ssh -o ConnectTimeout=10 root@161.35.106.143 \"cd /home/ecliptr/clienthub-api && ls -la target/release/ | grep -i rollback; echo '--- rollback dirs ---'; ls -d .rollback-* 2>/dev/null; echo '--- contents of .rollback-deploy47 ---'; ls -la .rollback-deploy47 2>/dev/null\")",
+      "Bash(ssh -o ConnectTimeout=10 root@161.35.106.143 \"cd /home/ecliptr/clienthub-api && cp -p target/release/clienthub-api.rollback-deploy47 target/release/clienthub-api.rollback-deploy49 && cp -rp .rollback-deploy47 .rollback-deploy49 && ls -la target/release/clienthub-api.rollback-deploy49 && ls .rollback-deploy49\")",
+      "Bash(bash deploy-51.sh)",
+      "Bash(git apply *)",
+      "Bash(curl -s 'https://ecliptr.app/app.js?v=120')",
+      "Bash(cd \"/c/Users/Jack/Documents/Obsidian Vault/Ecliptr\" && grep -n \"^| R-206\" requests/00-REQUESTS.md | cut -c1-80 && grep -n \"deploy-48\\\\|deploy-49\" 00-START-HERE.md | head -3)",
+      "Bash(bash deploy-50.sh)",
+      "Bash(is written *)",
+      "Bash(grep -rn \"deploy-50.sh written and NOT run\\\\|deploy-50.sh` is written and unrun\\\\|WRITTEN, NOT RUN\" . 2>/dev/null | head -5 || echo \"no stale 'not run' claims left\")",
+      "Bash(npx vitest *)"
     ]
   }
 }

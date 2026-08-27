@@ -2,6 +2,9 @@ node_modules
 dist
 target
 src-tauri/target
+# A second target directory for checking a COMMIT in a throwaway worktree without
+# fighting the main tree's incremental build — see gotchas §22. 5+ GB, never commit it.
+src-tauri/target-verify
 *.db
 *.db-journal
 .DS_Store

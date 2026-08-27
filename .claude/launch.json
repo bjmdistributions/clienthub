@@ -14,6 +14,12 @@
       "port": 5173
     },
     {
+      "name": "atlas",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/atlas", "run", "dev"],
+      "port": 4318
+    },
+    {
       "name": "bjm-web",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/Websites/bjmdistributions", "run", "dev", "--", "-p", "3100"],
