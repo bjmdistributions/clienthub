@@ -2029,10 +2029,25 @@ export interface BankSuggestCandidate {
   supplier_id: string | null;
   invoice_number: string;
   invoice_total: number;
+  /** What this leg still expects — one meaning everywhere since R-204. Buyer:
+   *  the invoice's outstanding balance. Supplier: the leg's amount. It used to
+   *  be three different things across the three server code paths. */
   leg_amount: number;
   score: number;
   tier: "certain" | "strong" | "weak";
   reason: string;
+  // ── R-204 ranking metadata. Optional: a server older than deploy-49 omits
+  // them and the picker falls back to the deal list's own stage field.
+  /** The deal's stage verbatim (`invoiced`, `payment_received`, `complete`…). */
+  stage?: string;
+  /** Still in the pipeline — anything but `complete`. */
+  active?: boolean;
+  /** Its buyer money already looks accounted for by some route (invoice stamped
+   *  paid, or recorded/bank payments cover the total). Ranked down, never
+   *  hidden: a late supplier leg or a refund still books against it. */
+  settled?: boolean;
+  /** Invoice total less what is already bank-linked. Buyer candidates only. */
+  outstanding?: number;
 }
 
 /// A PERSON the server thinks a transaction belongs to (R-156/W1-b) — the same
@@ -2843,6 +2858,10 @@ export const api = {
   // so a payment that belongs to nobody's deal can still be tagged. Optional: a
   // server older than deploy-41 omits it and the person picker falls back to
   // searching clients/suppliers by hand.
+  // `scanned`/`eligible`/`truncated` (R-204) describe scan scope: the sweep takes
+  // the newest N rows, so without them a transaction older than that cut-off is
+  // indistinguishable from one the engine looked at and found nothing for.
+  // Optional — an older server omits all three, which reads as not truncated.
   suggestBankTxnLinks: () =>
     invoke<{
       suggestions: {
@@ -2852,6 +2871,9 @@ export const api = {
         counterparty_candidates?: BankPersonCandidate[];
       }[];
       source?: "server" | "local";
+      scanned?: number;
+      eligible?: number;
+      truncated?: boolean;
     }>("suggest_bank_txn_links"),
   // `checked`/`truncated` describe scan scope: the server caps at the 30 newest
   // completed deals and flags when older ones were left unscanned. Optional —

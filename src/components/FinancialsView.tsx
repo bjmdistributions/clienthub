@@ -12,10 +12,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
 import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
+import DealPicker from "./DealPicker";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
-
 import { parseAmount } from "../lib/format";
+
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
 // often prefixed "Error:" by String(e). Strip the noise and never render an empty
 // toast — a failure with no message reads as nothing having happened at all.
@@ -233,45 +234,110 @@ const fmtTime = (s?: string | null) => {
   return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 };
 
-// Does this deal plausibly match a bank transaction — same buyer name, or same
-// amount as the invoice? Drives the "match" badge + surfacing the right deal.
-const dealMatchesTxn = (d: DealFlow, txn: { counterparty_name?: string | null; amount: number }) => {
-  const cp = (txn.counterparty_name || "").trim().toLowerCase();
-  const byName = cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp);
-  const byAmount = !!txn.amount && !!d.invoice_total && Math.abs(d.invoice_total - txn.amount) < 0.5;
-  return byName || byAmount;
+// What the row offers as a one-tap tie. Pass survivorDeals(deals) — never the raw
+// list — so a suggestion can't land on a duplicate deal_flow row the deal view hides.
+type DealChoice = { deal: DealFlow; reason: string; candidate?: BankSuggestCandidate };
+
+// Below this gap between the top two candidates the answer is a toss-up.
+const AMBIGUOUS_GAP = 20;
+const CONFIDENT_SCORE = 60;
+
+// The offline matcher, used when the server is unreachable. Same shape as the
+// server's signals, minus everything only the mirror can see.
+//
+// R-204 taught it the supplier side. It compared the payee against `client_name`
+// only, so on a money-out row — which is most of the booking work — it had
+// nothing to say at all whenever the server was down.
+const localChoices = (t: BankTxn, pool: DealFlow[]): DealChoice[] => {
+  const cp = (t.counterparty_name || "").trim().toLowerCase();
+  const hits: { deal: DealFlow; reason: string; score: number }[] = [];
+  for (const d of pool) {
+    if (t.direction === "out") {
+      for (const leg of d.supplier_payments || []) {
+        if (leg.paid || leg.kept || !(leg.amount > 0)) continue;
+        let score = 0;
+        if (cp.length > 2 && (leg.supplier_name || "").toLowerCase().includes(cp)) score += 100;
+        if (t.amount && Math.abs(leg.amount - t.amount) < 0.5) score += 60;
+        if (score >= CONFIDENT_SCORE) {
+          hits.push({
+            deal: d,
+            score,
+            reason: score >= 160 ? "supplier name and exact amount match" : score >= 100 ? "supplier name matches" : "exact amount match",
+          });
+        }
+      }
+    } else {
+      let score = 0;
+      if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
+      if (t.amount && d.invoice_total && Math.abs(d.invoice_total - t.amount) < 0.5) score += 60;
+      if (score >= CONFIDENT_SCORE) {
+        hits.push({
+          deal: d,
+          score,
+          reason: score >= 160 ? "payer name and exact amount match" : score >= 100 ? "payer name matches" : "exact amount match",
+        });
+      }
+    }
+  }
+  // One deal, one entry: two unpaid legs of the same deal are one answer here.
+  const best = new Map<string, { deal: DealFlow; reason: string; score: number }>();
+  for (const h of hits) {
+    const cur = best.get(h.deal.id);
+    if (!cur || h.score > cur.score) best.set(h.deal.id, h);
+  }
+  return [...best.values()]
+    .sort((a, b) => b.score - a.score)
+    .map(({ deal, reason }) => ({ deal, reason }));
 };
 
-// The one obvious deal for a transaction — same signals the deal picker ranks by
-// (payer name, exact invoice amount), but only surfaced when EXACTLY ONE deal in the
-// pool carries them. Two deals for the same amount, or a repeat buyer with several
-// open deals, means the answer isn't obvious, so the row says nothing rather than
-// guessing loudly. Pass survivorDeals(deals) — never the raw list — so a suggestion
-// can't land on a duplicate deal_flow row the deal view hides.
-const CONFIDENT_SCORE = 60;
-const confidentMatch = (t: BankTxn, pool: DealFlow[]): { deal: DealFlow; reason: string } | null => {
-  // Loan-tagged rows aren't deals; anything already tied (in part or in full) is a
-  // deliberate allocation and must not be second-guessed by a one-click button.
+// What to offer on a row: one deal when the answer is obvious, TWO when it is a
+// genuine toss-up, and a count of the rest.
+//
+// R-204 changed the "say nothing rather than guess loudly" rule, which had gone
+// one step too far: a second candidate within twenty points suppressed the whole
+// offer, so the most common real case — "it is one of these two" — showed
+// nothing at all, exactly where a two-option chooser is worth most. Saying
+// nothing and asking a question are different things.
+//
+// It also no longer refuses a partly-tied transaction. A split wire scored zero
+// suggestions for its remainder, which is the case that needs the most help.
+const dealOffer = (
+  t: BankTxn,
+  pool: DealFlow[],
+  cands?: BankSuggestCandidate[]
+): { choices: DealChoice[]; more: number } | null => {
+  // Loan-tagged rows aren't deals, and there is nothing to offer on money that
+  // is fully spoken for.
   if (t.counterparty_type === "loan") return null;
-  if (t.allocated > 0.0001) return null;
   if (!(t.unallocated > 0.0001)) return null;
-  const cp = (t.counterparty_name || "").trim().toLowerCase();
-  const hits: { d: DealFlow; score: number }[] = [];
-  for (const d of pool) {
-    let score = 0;
-    if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
-    if (t.amount && d.invoice_total && Math.abs(d.invoice_total - t.amount) < 0.5) score += 60;
-    if (score >= CONFIDENT_SCORE) hits.push({ d, score });
+
+  // One entry per deal, keeping its best-scoring candidate (a deal with two
+  // unpaid supplier legs can nominate itself twice).
+  const byDeal = new Map<string, { c: BankSuggestCandidate; deal: DealFlow }>();
+  for (const c of cands ?? []) {
+    const deal = pool.find((d) => d.id === c.deal_id);
+    if (!deal) continue;
+    const cur = byDeal.get(c.deal_id);
+    if (!cur || c.score > cur.c.score) byDeal.set(c.deal_id, { c, deal });
   }
-  if (hits.length !== 1) return null;
-  const { d, score } = hits[0];
-  return {
-    deal: d,
-    reason:
-      score >= 160 ? "payer name and exact amount match"
-      : score >= 100 ? "payer name matches"
-      : "exact amount match",
-  };
+  const ranked = [...byDeal.values()].sort((a, b) => b.c.score - a.c.score);
+  const solid = ranked.filter(({ c }) => c.tier === "certain" || c.tier === "strong");
+
+  if (solid.length > 0) {
+    const [top, second] = solid;
+    const toss = !!second && top.c.score - second.c.score < AMBIGUOUS_GAP;
+    const take = toss ? [top, second] : [top];
+    return {
+      choices: take.map(({ c, deal }) => ({ deal, reason: c.reason, candidate: c })),
+      more: ranked.length - take.length,
+    };
+  }
+
+  const local = localChoices(t, pool);
+  if (local.length === 0) return null;
+  // The offline matcher has no score to compare, so two hits are two answers.
+  const take = local.slice(0, 2);
+  return { choices: take, more: local.length - take.length };
 };
 
 // "#0041 · Costco pallets" — invoice first, then who the deal is with. Falls back to
@@ -283,51 +349,6 @@ const matchLabel = (d: DealFlow) => {
   return name === `Invoice #${d.invoice_number}` ? inv : `${inv} · ${name}`;
 };
 
-// Server-scored suggestion for a transaction (R-150): the mirror engine weighs
-// bank metadata (payer/payee/by_order_of, merchant), amounts against invoice
-// totals and unpaid supplier legs, date proximity, and invoice-number hits.
-// Only surfaced when unambiguous — a top candidate rated certain/strong with no
-// near-equal second — matching the local matcher's "say nothing rather than
-// guess loudly" rule.
-const serverMatchFor = (t: BankTxn, pool: DealFlow[], cands?: BankSuggestCandidate[]):
-  { deal: DealFlow; reason: string; candidate: BankSuggestCandidate } | null => {
-  if (!cands || cands.length === 0) return null;
-  if (t.allocated > 0.0001) return null;
-  if (!(t.unallocated > 0.0001)) return null;
-  const top = cands[0];
-  if (top.tier !== "certain" && top.tier !== "strong") return null;
-  const second = cands[1];
-  if (second && (second.tier === "certain" || top.score - second.score < 20)) return null;
-  const deal = pool.find((d) => d.id === top.deal_id);
-  if (!deal) return null;
-  return { deal, reason: top.reason, candidate: top };
-};
-
-// A rich, scannable deal row: buyer · date · amount · completed/open — used by both
-// the allocate picker and the bulk-tag modal so they stay identical.
-function DealRowContent({ d, match }: { d: DealFlow; match?: boolean }) {
-  const invLabel = d.invoice_number ? `Invoice #${d.invoice_number}` : "";
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <div className="min-w-0">
-        <div className="text-[12px] font-medium text-ink truncate flex items-center gap-1.5">
-          <span className="truncate">{dealLabel(d)}</span>
-          {match && <span className="text-[10px] text-accent font-semibold flex-shrink-0">match</span>}
-        </div>
-        <div className="text-[11px] text-muted truncate">
-          {d.completed_at ? fmtShortDate(d.completed_at) : "In progress"}
-          {invLabel && dealLabel(d) !== invLabel ? ` · #${d.invoice_number}` : ""}
-        </div>
-      </div>
-      <div className="text-right flex-shrink-0">
-        <div className="text-[12px] tabular-nums text-ink-2">{d.invoice_total ? fmtAmount(d.invoice_total) : "—"}</div>
-        <div className={`text-[10px] ${d.stage === "complete" ? "text-success-ink" : "text-muted"}`}>
-          {d.stage === "complete" ? "Completed" : "Open"}
-        </div>
-      </div>
-    </div>
-  );
-}
 const loanLabel = (l: Loan) => (l.name?.trim() || l.lender?.trim() || "Loan");
 // Loan tags live on the txn (counterparty_type "loan"); the backend derives the
 // category by direction — money-in is a loan drawdown, money-out a repayment.
@@ -750,7 +771,6 @@ export default function FinancialsView() {
   const [targetType, setTargetType]   = useState<"deal" | "loan" | "expense">("deal");
   const [dealQuery, setDealQuery]     = useState("");
   const [selectedDeal, setSelectedDeal] = useState<DealFlow | null>(null);
-  const [dealListOpen, setDealListOpen] = useState(false);
   const [loanQuery, setLoanQuery]     = useState("");
   const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
   const [loanListOpen, setLoanListOpen] = useState(false);
@@ -798,6 +818,8 @@ export default function FinancialsView() {
   // means older deals were left unscanned, so an empty list isn't an all-clear.
   const [missingLinksScope, setMissingLinksScope] = useState<{ checked?: number; truncated?: boolean }>({});
   const [attachBusy, setAttachBusy] = useState<string | null>(null);
+  // How much of the ledger the suggestion sweep covered (R-204).
+  const [suggScope, setSuggScope] = useState<{ scanned?: number; eligible?: number; truncated?: boolean }>({});
 
   // Fetch server-scored suggestions without blocking the ledger load — hints are
   // optional; a slow or unreachable server must never stall the money screen.
@@ -815,7 +837,22 @@ export default function FinancialsView() {
       }
       setServerSugg(m);
       setPersonSugg(p);
+      // R-204: how much of the ledger the sweep actually looked at. Without it,
+      // a transaction older than the newest N reads identically to one the
+      // engine scored and found nothing for.
+      setSuggScope({ scanned: r.scanned, eligible: r.eligible, truncated: r.truncated });
     } catch { /* offline — the local matcher stays */ }
+  };
+
+  // R-204: the missing-links scan runs on load so the button can carry a count.
+  // It was a modal you had to think to open, which meant unlinked completed
+  // deals sat there indefinitely because nothing on the screen mentioned them.
+  const probeMissingLinks = async () => {
+    try {
+      const r = await api.suggestReconciliationMissing();
+      setMissingLinks(r.deals || []);
+      setMissingLinksScope({ checked: r.checked, truncated: r.truncated });
+    } catch { /* offline — the button just carries no count */ }
   };
 
   // Both sides of the address book. Loaded once and kept: the picker searches it,
@@ -840,6 +877,7 @@ export default function FinancialsView() {
       setTxns(t); setSummary(s); setDeals(d); setLoans(ln); setRules(r);
       // Smart-link hints arrive separately and never block the ledger (R-150).
       loadServerSugg();
+      probeMissingLinks();
       loadPeople();
       // Heal payments paired to duplicate deal_flow rows AND archive the duplicate
       // rows so pickers/aggregates stay clean (idempotent; usually a no-op).
@@ -1294,12 +1332,14 @@ export default function FinancialsView() {
     if (openId === t.id) { setOpenId(null); return; }
     setOpenId(t.id);
     setTargetType("deal");
-    setDealQuery(""); setSelectedDeal(null); setDealListOpen(false); setNote("");
+    setDealQuery(""); setSelectedDeal(null); setNote("");
     setLoanQuery(""); setSelectedLoan(null); setLoanListOpen(false);
     setAllowSplit(false);
     setAllocs([]);
     setRole(t.direction === "out" ? "supplier_payment" : "buyer_payment");
-    setAmountStr(String(t.unallocated));
+    // Rounded: the raw float put tails like 4699.999999999999 straight into the
+    // amount box, which then reads as a typo the user has to fix by hand.
+    setAmountStr(t.unallocated.toFixed(2));
     setAllocLoading(true);
     api.listBankAllocationsForTxn(t.id)
       .then(setAllocs)
@@ -1516,7 +1556,28 @@ export default function FinancialsView() {
         api.tagBankTxnCounterparty(t.id, r === "supplier_payment" ? "supplier" : "client", cpid)
           .catch(() => toast("Booked, but the payment was not filed under anyone - set it on the row", "error"));
       }
-      toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)}`);
+      // Tie AND book, when the tie accounts for the whole payment (R-204).
+      // `allocate_bank_txn` deliberately does not set `reviewed`, so every
+      // one-click tie was followed by a second, redundant click on Book and the
+      // row's own subline said so: "Tied to a deal — book it". A partial tie
+      // still leaves the row in the queue, because the rest is still unfiled.
+      const fullyTied = amt + 0.005 >= t.unallocated;
+      let booked = false;
+      if (fullyTied && !t.reviewed) {
+        try {
+          await api.setBankTxnReview(t.id, { reviewed: true });
+          booked = true;
+        } catch {
+          // The money is tied either way; only the review flag is missing, and
+          // the row stays in the queue showing exactly that.
+          toast("Tied, but the row is still waiting to be booked", "error");
+        }
+      }
+      if (booked || (fullyTied && t.reviewed)) {
+        toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)} and booked it`);
+      } else if (!fullyTied) {
+        toast(`Tied ${fmtAmount(amt)} to ${dealLabel(d)} — ${fmtAmount(t.unallocated - amt)} still to file`);
+      }
       await refreshAll(true);
     } catch (e: any) { toast(errText(e), "error"); }
     finally { setTyingId(null); }
@@ -2127,46 +2188,23 @@ export default function FinancialsView() {
     setFromDate(`${v}-01-01`); setToDate(`${v}-12-31`);
   };
 
-  const filteredDeals = useMemo(() => {
-    const q = dealQuery.trim().toLowerCase();
-    const ot = openId ? txns.find((t) => t.id === openId) : null;
-    const cp = (ot?.counterparty_name || "").trim().toLowerCase();
-    const amt = ot?.amount || 0;
-    // Server-scored candidates (R-150) for the open transaction — the local
-    // ranking only knows buyer names, so supplier matches come from here.
-    const sc = openId ? serverSugg.get(openId) ?? [] : [];
-    return survivorDeals(deals)
-      .filter((d) => !q || `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(q))
-      .map((d) => {
-        // Rank deals that match the open transaction (same buyer / same amount) to
-        // the top so the right deal is one glance away.
-        let score = 0;
-        if (sc.some((c) => c.deal_id === d.id)) score += 250;
-        if (cp.length > 2 && (d.client_name || "").toLowerCase().includes(cp)) score += 100;
-        if (amt && d.invoice_total && Math.abs(d.invoice_total - amt) < 0.5) score += 60;
-        const when = Date.parse(d.completed_at || d.created_at || "") || 0;
-        return { d, score, when };
-      })
-      .sort((a, b) => b.score - a.score || b.when - a.when)
-      .slice(0, 20)
-      .map((x) => x.d);
-  }, [deals, dealQuery, openId, txns, serverSugg]);
+  // The candidate pool, deduped to one row per invoice. Both pickers take it
+  // whole and do their own sectioning — the old flat, pre-ranked, silently
+  // truncated list is what R-204 replaced.
+  const dealPool = useMemo(() => survivorDeals(deals), [deals]);
 
   // txn id → the single obvious deal for it, if there is one. Computed once per data
   // change (not per row render) and shared by every table instance. The server
   // engine (R-150) wins when it has an unambiguous answer; the local matcher stays
   // as the offline fallback.
-  const confidentMatches = useMemo(() => {
-    const pool = survivorDeals(deals);
-    const m = new Map<string, { deal: DealFlow; reason: string; candidate?: BankSuggestCandidate }>();
+  const dealOffers = useMemo(() => {
+    const m = new Map<string, { choices: DealChoice[]; more: number }>();
     for (const t of txns) {
-      const sc = serverMatchFor(t, pool, serverSugg.get(t.id));
-      if (sc) { m.set(t.id, sc); continue; }
-      const c = confidentMatch(t, pool);
-      if (c) m.set(t.id, c);
+      const o = dealOffer(t, dealPool, serverSugg.get(t.id));
+      if (o) m.set(t.id, o);
     }
     return m;
-  }, [txns, deals, serverSugg]);
+  }, [txns, dealPool, serverSugg]);
 
   // Booking memory — what the book itself already says about a payee. Only BOOKED
   // rows teach (reviewed = a human confirmed the classification; unreviewed Plaid
@@ -2344,7 +2382,7 @@ export default function FinancialsView() {
                 const memo = payee ? t.description : "";
                 // The obvious-deal suggestion. Hidden while the row is expanded — the
                 // full allocate panel is already open there.
-                const cm = openId === t.id ? null : confidentMatches.get(t.id) ?? null;
+                const offer = dealOffers.get(t.id) ?? null;
                 const mr = methodOf(t);
                 const linked = personOf(t);
                 const psug = personSuggestionFor(t);
@@ -2353,7 +2391,7 @@ export default function FinancialsView() {
                   <tr
                     data-txn-id={t.id}
                     onClick={() => toggleRow(t)}
-                    className={`${cm ? "" : "border-b border-line-2"} cursor-pointer transition-colors ${
+                    className={`${offer ? "" : "border-b border-line-2"} cursor-pointer transition-colors ${
                       selected.has(t.id) || openId === t.id ? "bg-surface-2" : "hover:bg-surface-2"
                     }`}
                   >
@@ -2590,22 +2628,38 @@ export default function FinancialsView() {
                     </tr>
                   )}
 
-                  {cm && (
+                  {offer && (
                     <tr className={`border-b border-line-2 ${selected.has(t.id) ? "bg-surface-2" : ""}`}>
                       <td colSpan={3} />
                       <td colSpan={6} className="pb-3 pr-3 align-top">
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
-                          <span className="text-[11.5px] text-muted min-w-0">
-                            Looks like <span className="text-ink-2 font-medium">{matchLabel(cm.deal)}</span> — {cm.reason}
+                          <span className="text-[11.5px] text-muted flex-shrink-0">
+                            {offer.choices.length > 1 ? "Could be either" : "Looks like"}
                           </span>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); tieMatch(t, cm.deal, cm.candidate); }}
-                            disabled={tyingId === t.id}
-                            title={`Tie to ${dealLabel(cm.deal)} as ${cm.candidate?.role === "supplier_payment" ? "a supplier payment" : cm.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${cm.reason}`}
-                            className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0"
-                          >
-                            {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />} Tie it
-                          </button>
+                          {offer.choices.map((c) => (
+                            <button
+                              key={c.deal.id}
+                              onClick={(e) => { e.stopPropagation(); tieMatch(t, c.deal, c.candidate); }}
+                              disabled={tyingId === t.id}
+                              title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${c.reason}`}
+                              className="flex items-center gap-1 h-6 px-2 rounded-md border border-accent/40 bg-accent/5 text-accent text-[11.5px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors flex-shrink-0 max-w-[280px]"
+                            >
+                              {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
+                              <span className="truncate">
+                                {matchLabel(c.deal)}
+                                {c.candidate?.supplier_name ? ` · ${c.candidate.supplier_name}` : ""}
+                              </span>
+                              <span className="text-muted font-normal truncate hidden xl:inline">— {c.reason}</span>
+                            </button>
+                          ))}
+                          {offer.more > 0 && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleRow(t); }}
+                              className="text-[11px] text-muted hover:text-ink-2 transition-colors flex-shrink-0"
+                            >
+                              {offer.more} more
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -2763,6 +2817,15 @@ export default function FinancialsView() {
             {toBookStats.needsDealAmt > 0.005 && (
               <span className="text-muted"> · <span className="tabular-nums">{fmtAmount(toBookStats.needsDealAmt)}</span> waiting on a deal</span>
             )}
+            {/* Say where the suggestions stop. A row past the sweep's cut-off
+                carries no chip for the same reason a genuinely unmatched row
+                does, and only one of those two is worth investigating. */}
+            {suggScope.truncated && (
+              <div className="text-[11.5px] text-muted mt-0.5">
+                Suggestions cover the newest <span className="tabular-nums">{suggScope.scanned}</span> of{" "}
+                <span className="tabular-nums">{suggScope.eligible}</span> unbooked transactions — older rows weren't scored.
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2.5 flex-wrap">
             <div className="flex items-center gap-1.5 min-w-[190px] bg-surface-2 border border-line rounded-lg px-2.5 h-9">
@@ -2789,9 +2852,18 @@ export default function FinancialsView() {
             <button
               onClick={openMissingLinks}
               title="Find completed deals whose payments were never linked to bank transactions, and suggest the matching transactions from history"
-              className="flex-shrink-0 flex items-center gap-1.5 px-4 h-9 border border-accent/40 bg-accent/5 text-accent rounded-lg text-[13px] font-semibold hover:bg-accent/10 transition-colors"
+              className={`flex-shrink-0 flex items-center gap-1.5 px-4 h-9 rounded-lg text-[13px] font-semibold transition-colors ${
+                missingLinks.length > 0
+                  ? "border border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
+                  : "border border-line text-ink-2 hover:bg-surface-2"
+              }`}
             >
               <Wand2 size={14} /> Find missing links
+              {missingLinks.length > 0 && (
+                <span className="tabular-nums text-[11.5px] px-1.5 rounded-md bg-accent text-on-accent ring-1 ring-accent/40">
+                  {missingLinks.length}
+                </span>
+              )}
             </button>
             <button
               onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
@@ -2845,9 +2917,19 @@ export default function FinancialsView() {
                             const txn = txns.find((x) => x.id === c.txn_id);
                             return (
                               <div key={c.txn_id} className="flex items-center justify-between gap-2 bg-surface-2 border border-line rounded-lg px-2.5 py-1.5">
-                                <div className="min-w-0 text-[12px] text-ink-2 truncate" title={c.reason}>
-                                  {txn ? `${fmtAmount(txn.amount)} · ${txn.counterparty_name || txn.description}` : c.txn_id}
-                                  <span className="text-muted"> — {c.reason}</span>
+                                <div className="min-w-0 flex-1" title={c.reason}>
+                                  <div className="text-[12px] text-ink-2 truncate flex items-center gap-1.5">
+                                    {txn && (txn.direction === "in"
+                                      ? <ArrowDownLeft size={11} className="text-success-ink flex-shrink-0" strokeWidth={2} />
+                                      : <ArrowUpRight size={11} className="text-danger-ink flex-shrink-0" strokeWidth={2} />)}
+                                    <span className="tabular-nums flex-shrink-0">{txn ? fmtAmount(txn.amount) : ""}</span>
+                                    <span className="truncate">{txn ? (txn.counterparty_name || txn.description) : c.txn_id}</span>
+                                  </div>
+                                  <div className="text-[11px] text-muted truncate">
+                                    {txn?.posted_at ? `${fmtShortDate(txn.posted_at)} · ` : ""}
+                                    {c.reason}
+                                    {c.tier === "certain" ? " · near certain" : c.tier === "weak" ? " · a guess" : ""}
+                                  </div>
                                 </div>
                                 <button
                                   onClick={() => attachMissing(c)}
@@ -3995,7 +4077,11 @@ export default function FinancialsView() {
                     const payee = t.counterparty_name?.trim();
                     const mainLabel = payee || t.description || "—";
                     const memo = payee ? t.description : "";
-                    const cm = openId === t.id ? null : confidentMatches.get(t.id) ?? null;
+                    // The offer stays visible while the drawer is open (R-204):
+                    // it used to vanish the moment you opened the full picker,
+                    // taking the app's own best answer off the screen exactly
+                    // when you had asked to see the options.
+                    const offer = dealOffers.get(t.id) ?? null;
                     const isLoan = t.counterparty_type === "loan";
                     return (
                       <div
@@ -4077,25 +4163,43 @@ export default function FinancialsView() {
                               </span>
                             )}
                           </span>
-                          {/* Deal — tie the obvious match in one click, or open the picker. */}
+                          {/* Deal — tie the obvious match in one click, choose between
+                              two when it is a toss-up, or open the picker. */}
                           <span className="flex-shrink-0 order-2 lg:order-none" onClick={(e) => e.stopPropagation()}>
                             {isLoan ? null : t.allocated > 0.0001 && t.unallocated <= 0.0001 ? (
                               <span className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-success-bg/60 border border-success/40 text-[12px] text-success-ink whitespace-nowrap">
                                 <Link2 size={11} /> Linked
                               </span>
-                            ) : cm ? (
-                              <button
-                                onClick={() => tieMatch(t, cm.deal, cm.candidate)}
-                                disabled={tyingId === t.id}
-                                title={`Tie to ${dealLabel(cm.deal)} as ${cm.candidate?.role === "supplier_payment" ? "a supplier payment" : cm.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${cm.reason}`}
-                                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap max-w-[220px]"
-                              >
-                                {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
-                                <span className="truncate">
-                                  Tie to {matchLabel(cm.deal)}
-                                  {cm.candidate?.supplier_name ? ` · ${cm.candidate.supplier_name}` : ""}
-                                </span>
-                              </button>
+                            ) : offer ? (
+                              <span className="inline-flex flex-col gap-1 items-stretch max-w-[240px]">
+                                {offer.choices.map((c) => (
+                                  <button
+                                    key={c.deal.id}
+                                    onClick={() => tieMatch(t, c.deal, c.candidate)}
+                                    disabled={tyingId === t.id}
+                                    title={`Tie to ${dealLabel(c.deal)} as ${c.candidate?.role === "supplier_payment" ? "a supplier payment" : c.candidate?.role === "buyer_payment" ? "a buyer payment" : t.direction === "out" ? "a supplier payment" : "a buyer payment"} — ${c.reason}`}
+                                    className={`inline-flex items-center gap-1.5 px-2.5 rounded-lg border border-accent/40 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-50 transition-colors whitespace-nowrap ${
+                                      offer.choices.length > 1 ? "h-7" : "h-8"
+                                    }`}
+                                  >
+                                    {tyingId === t.id ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
+                                    <span className="truncate">
+                                      {offer.choices.length > 1 ? "" : "Tie to "}
+                                      {matchLabel(c.deal)}
+                                      {c.candidate?.supplier_name ? ` · ${c.candidate.supplier_name}` : ""}
+                                    </span>
+                                  </button>
+                                ))}
+                                {(offer.choices.length > 1 || offer.more > 0) && (
+                                  <button
+                                    onClick={() => toggleRow(t)}
+                                    className="text-[10.5px] text-muted hover:text-ink-2 transition-colors text-left px-0.5"
+                                  >
+                                    {offer.choices.length > 1 ? "Two close matches — " : ""}
+                                    {offer.more > 0 ? `${offer.more} more` : "see all deals"}
+                                  </button>
+                                )}
+                              </span>
                             ) : (
                               <button
                                 onClick={() => toggleRow(t)}
@@ -4453,13 +4557,24 @@ export default function FinancialsView() {
               loading={allocLoading}
               targetType={targetType}
               setTargetType={setTargetType}
-              filteredDeals={filteredDeals}
+              dealPool={dealPool}
+              dealCandidates={serverSugg.get(openTxn.id) ?? []}
               dealQuery={dealQuery}
-              setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); setDealListOpen(true); }}
-              dealListOpen={dealListOpen}
-              setDealListOpen={setDealListOpen}
+              setDealQuery={(v) => { setDealQuery(v); setSelectedDeal(null); }}
               selectedDeal={selectedDeal}
-              onPickDeal={(d) => { setSelectedDeal(d); setDealQuery(dealLabel(d)); setDealListOpen(false); }}
+              // Picking a SUGGESTED row carries the engine's own answer with it:
+              // which leg this is, and what that leg still expects. Picking a
+              // supplier leg used to leave the role on "buyer payment" and the
+              // amount on the whole transaction.
+              onPickDeal={(d, cand) => {
+                setSelectedDeal(d);
+                setDealQuery(dealLabel(d));
+                if (cand && rolesFor(openTxn.direction).some((r) => r.value === cand.role)) {
+                  setRole(cand.role);
+                  const cap = Math.min(openTxn.unallocated, cand.leg_amount > 0 ? cand.leg_amount : openTxn.unallocated);
+                  if (cap > 0.005) setAmountStr(cap.toFixed(2));
+                }
+              }}
               filteredLoans={filteredLoans}
               loanQuery={loanQuery}
               setLoanQuery={(v) => { setLoanQuery(v); setSelectedLoan(null); setLoanListOpen(true); }}
@@ -4516,16 +4631,9 @@ function BulkAllocateModal({
 }) {
   const [mode, setMode] = useState<"deal" | "loan">("deal");
   const [q, setQ] = useState("");
-  const dealList = useMemo(() => {
-    const s = q.toLowerCase();
-    // Same survivor dedup as the single-row picker — a bulk tag must never land on
-    // a ghost duplicate the deal view hides.
-    return survivorDeals(deals)
-      .filter((d) => `${d.client_name || ""} ${d.name || ""} ${d.invoice_number || ""}`.toLowerCase().includes(s))
-      .sort((a, b) =>
-        (Date.parse(b.completed_at || b.created_at || "") || 0) - (Date.parse(a.completed_at || a.created_at || "") || 0))
-      .slice(0, 40);
-  }, [deals, q]);
+  // Same survivor dedup as the single-row picker — a bulk tag must never land on
+  // a ghost duplicate the deal view hides.
+  const dealPool = useMemo(() => survivorDeals(deals), [deals]);
   const loanList = useMemo(() => {
     const s = q.toLowerCase();
     return loans.filter((l) => `${l.name || ""} ${l.lender || ""}`.toLowerCase().includes(s)).slice(0, 30);
@@ -4572,31 +4680,38 @@ function BulkAllocateModal({
               </button>
             ))}
           </div>
-          <input
-            autoFocus
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder={mode === "deal" ? "Search a deal…" : "Search a loan…"}
-            className={inp}
-          />
+          {mode === "loan" && (
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search a loan…"
+              className={inp}
+            />
+          )}
         </div>
+        {mode === "deal" ? (
+          // The same sectioned picker the single-row flow uses. It was worth
+          // sharing rather than matching by hand: this list is the one that
+          // affects many rows at once, and it was the LESS careful of the two.
+          <div className="flex-1 min-h-0 overflow-hidden px-5 pt-3 pb-4 flex flex-col">
+            <DealPicker
+              variant="inline"
+              deals={dealPool}
+              candidates={[]}
+              txnAmount={0}
+              role="buyer_payment"
+              query={q}
+              onQueryChange={setQ}
+              onPick={(d) => onPickDeal(d)}
+              placeholder="Search a deal, or type an amount…"
+              autoFocus
+              busy={busy}
+            />
+          </div>
+        ) : (
         <div className="overflow-y-auto divide-y divide-line-2">
-          {mode === "deal" ? (
-            dealList.length === 0 ? (
-              <div className="text-center py-10 text-[12px] text-muted">No deals match</div>
-            ) : (
-              dealList.map((d) => (
-                <button
-                  key={d.id}
-                  onClick={() => onPickDeal(d)}
-                  disabled={busy}
-                  className="w-full text-left px-5 py-2.5 hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                >
-                  <DealRowContent d={d} />
-                </button>
-              ))
-            )
-          ) : loanList.length === 0 ? (
+          {loanList.length === 0 ? (
             <div className="text-center py-10 text-[12px] text-muted">No loans match</div>
           ) : (
             loanList.map((l) => (
@@ -4614,6 +4729,7 @@ function BulkAllocateModal({
             ))
           )}
         </div>
+        )}
       </div>
     </div>
   );
@@ -4625,13 +4741,12 @@ function AllocationPanel(props: {
   loading: boolean;
   targetType: "deal" | "loan" | "expense";
   setTargetType: (v: "deal" | "loan" | "expense") => void;
-  filteredDeals: DealFlow[];
+  dealPool: DealFlow[];
+  dealCandidates: BankSuggestCandidate[];
   dealQuery: string;
   setDealQuery: (v: string) => void;
-  dealListOpen: boolean;
-  setDealListOpen: (v: boolean) => void;
   selectedDeal: DealFlow | null;
-  onPickDeal: (d: DealFlow) => void;
+  onPickDeal: (d: DealFlow, cand?: BankSuggestCandidate) => void;
   filteredLoans: Loan[];
   loanQuery: string;
   setLoanQuery: (v: string) => void;
@@ -4656,7 +4771,7 @@ function AllocationPanel(props: {
   onCreateDeal: (t: BankTxn, name: string, buyer: string, sale: number, note: string) => Promise<boolean>;
 }) {
   const {
-    txn, allocs, loading, targetType, setTargetType, filteredDeals, dealQuery, setDealQuery, dealListOpen, setDealListOpen,
+    txn, allocs, loading, targetType, setTargetType, dealPool, dealCandidates, dealQuery, setDealQuery,
     selectedDeal, onPickDeal, filteredLoans, loanQuery, setLoanQuery, loanListOpen, setLoanListOpen, selectedLoan, onPickLoan,
     amountStr, setAmountStr, role, setRole, note, setNote, allowSplit, setAllowSplit, busy, onSubmit, onRemove, onUntagLoan, onCreateRule,
     newDealBusy, onCreateDeal,
@@ -4838,31 +4953,17 @@ function AllocationPanel(props: {
       {targetType === "deal" && (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start">
-            <div className="sm:col-span-5 relative min-w-0">
-              <input
-                value={dealQuery}
-                onChange={(e) => setDealQuery(e.target.value)}
-                onFocus={() => setDealListOpen(true)}
-                placeholder="Search a deal…"
-                className={inp}
+            <div className="sm:col-span-5 min-w-0">
+              <DealPicker
+                deals={dealPool}
+                candidates={dealCandidates}
+                txnAmount={txn.unallocated > 0.005 ? txn.unallocated : txn.amount}
+                direction={txn.direction === "out" ? "out" : "in"}
+                role={role}
+                query={dealQuery}
+                onQueryChange={setDealQuery}
+                onPick={onPickDeal}
               />
-              {dealListOpen && (
-                <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto bg-surface border border-line rounded-lg shadow-lg">
-                  {filteredDeals.length > 0 ? (
-                    filteredDeals.map((d) => (
-                      <button
-                        key={d.id}
-                        onClick={() => onPickDeal(d)}
-                        className="w-full text-left px-3 py-2 hover:bg-surface-2 transition-colors border-b border-line/40 last:border-0"
-                      >
-                        <DealRowContent d={d} match={dealMatchesTxn(d, txn)} />
-                      </button>
-                    ))
-                  ) : (
-                    <div className="px-3 py-3 text-[11px] text-muted">No deals match{dealQuery ? ` "${dealQuery}"` : " yet"}.</div>
-                  )}
-                </div>
-              )}
             </div>
             <input
               type="text"
@@ -4871,7 +4972,7 @@ function AllocationPanel(props: {
               onChange={(e) => setAmountStr(e.target.value)}
               placeholder="Amount"
               aria-label="Amount to allocate"
-              className={`${inp} sm:col-span-3 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
+              className={`${inp} sm:col-span-3 tabular-nums`}
             />
             <select
               value={role}
