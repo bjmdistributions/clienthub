@@ -434,7 +434,17 @@ fn create_client_from_customer_with_notes(
 fn log_signup_interaction(client_id: &str, email: &crate::email::ParsedEmail) -> Result<()> {
     let conn = pool().get()?;
     let interaction_id = Uuid::new_v4().to_string();
-    let now = Utc::now().to_rfc3339();
+    // The message's own date, matching `process_new_emails`. Signup-rule matches
+    // `continue` before that code runs, so without this a form email read late is
+    // logged as contact today - the same defect, on the branch that creates leads.
+    let now = email
+        .date
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+        .map(|d| d.with_timezone(&Utc).to_rfc3339())
+        .unwrap_or_else(|| Utc::now().to_rfc3339());
 
     let mut cols = serde_json::Map::new();
     cols.insert("client_id".into(), serde_json::Value::String(client_id.to_string()));

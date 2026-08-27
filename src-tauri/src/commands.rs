@@ -255,7 +255,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                     NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                                COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
-                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out')),'')),''),
                     MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active'),
@@ -326,7 +326,7 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
-                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out')),'')),''),
                 MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
@@ -1742,7 +1742,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
-                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting')),'')),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out')),'')),''),
                 MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}) AS total_revenue,
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
@@ -6905,13 +6905,30 @@ pub async fn get_email_inboxes() -> Result<Vec<crate::email::EmailInbox>, String
 /// by — every admin/device in the org; `"me"` writes a personal inbox that stays
 /// on this device only. Adding an org inbox is an admin action.
 #[tauri::command]
-pub async fn save_email_inbox(id: Option<String>, label: String, host: String, port: u16, user: String, password: Option<String>, scope: Option<String>) -> Result<String, String> {
+pub async fn save_email_inbox(id: Option<String>, label: String, host: String, port: u16, user: String, password: Option<String>, scope: Option<String>, read_from_now: Option<bool>) -> Result<String, String> {
     let scope = match scope.as_deref() { Some("me") => "me", _ => "org" };
     if scope == "org" && !crate::employees::session_is_privileged() {
         return Err("Admin permission required to set up the shared inbox.".into());
     }
+    let is_new = id.is_none();
     let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user, scope: scope.into(), demo: false };
+    // An edit must not reset the mailbox's auth method back to Password - that
+    // would strand a Google-connected inbox on a password it does not have.
+    // Keep the mailbox's existing auth method on edit - resetting it to Password
+    // would strand a Google-linked inbox on a password it does not have. The one
+    // exception is the deliberate way BACK: supplying a password means "use this
+    // instead", which is the only route off Google auth short of deleting the row.
+    let supplied_password = password.as_deref().map(str::trim).filter(|p| !p.is_empty()).is_some();
+    let auth_method = if supplied_password {
+        crate::email::AuthMethod::Password
+    } else {
+        crate::email::load_inboxes()
+            .into_iter()
+            .find(|i| i.id == id)
+            .map(|i| i.auth_method)
+            .unwrap_or_default()
+    };
+    let inbox = crate::email::EmailInbox { id: id.clone(), label, host, port, user, scope: scope.into(), demo: false, auth_method };
     // Edit the list that matches the target scope so org/personal stay separate.
     let mut list = if scope == "me" { crate::email::load_personal_inboxes() } else { crate::email::load_org_inboxes() };
     match list.iter_mut().find(|i| i.id == id) {
@@ -6933,7 +6950,176 @@ pub async fn save_email_inbox(id: Option<String>, label: String, host: String, p
             }
         }
     }
+    // Start a NEWLY linked mailbox at its current head unless the caller explicitly
+    // asks for the backlog. Without this the first scan searches `UID 1:*`, logs the
+    // whole mailbox as interactions stamped today, and rewrites every matched
+    // client's last-contact date on every surface. Best-effort: a mailbox we cannot
+    // reach yet stays at 0 and the user sees a failing Test, which is recoverable -
+    // whereas a silent backfill is not.
+    if is_new {
+        if read_from_now.unwrap_or(true) {
+            // Best-effort: this can legitimately fail when the mailbox has no
+            // credential yet (added blank, to be linked to Google next). It is safe
+            // to fail because `scan()` re-seeds and refuses to read an unseeded
+            // mailbox - the guard is enforced by the reader, not trusted from here.
+            match crate::email::seed_uid_cursor(&id).await {
+                Ok(max) => tracing::info!("inbox {} seeded at uid {}", id, max),
+                Err(e) => tracing::info!("inbox {} not seeded yet ({}); scan will seed it", id, e),
+            }
+        } else {
+            // The user explicitly asked to import the back catalogue.
+            crate::email::mark_backfill_allowed(&id);
+        }
+    }
     Ok(id)
+}
+
+/// Start the Google consent flow for ONE monitored mailbox, so its owner can link
+/// it by signing in as themselves - no app password is ever created or handed over.
+///
+/// Reuses the app-level Google Cloud client (the same Client ID/secret already
+/// entered for the primary account) but stores the resulting refresh token under
+/// this mailbox's own `inbox_oauth_{id}` prefix. So Ben consents to Jack's Cloud
+/// project, and only Ben's own grant is stored against Ben's inbox.
+#[tauri::command]
+pub async fn oauth_start_consent_for_inbox(
+    app_handle: tauri::AppHandle,
+    inbox_id: String,
+    client_id: String,
+    client_secret: String,
+) -> Result<(), String> {
+    let mut list = crate::email::load_inboxes();
+    let target = list.iter().find(|i| i.id == inbox_id).cloned()
+        .ok_or_else(|| "Inbox not found. Save it first, then connect Google.".to_string())?;
+    if target.scope == "org" && !crate::employees::session_is_privileged() {
+        return Err("Admin permission required to change the shared inbox.".into());
+    }
+
+    // Fall back to the primary account's Google client so a second mailbox does not
+    // need its own Cloud project.
+    let client_id = if client_id.trim().is_empty() {
+        crate::email::cred_opt("oauth_client_id").unwrap_or_default()
+    } else { client_id };
+    let client_secret = if client_secret.trim().is_empty() {
+        crate::email::cred_opt("oauth_client_secret").unwrap_or_default()
+    } else { client_secret };
+    if client_id.trim().is_empty() || client_secret.trim().is_empty() {
+        return Err("Set up the Google Client ID and secret on the main email account first, then connect this mailbox.".into());
+    }
+
+    let prefix = format!("inbox_oauth_{}", inbox_id);
+    // Reconnecting replaces a grant that may currently be WORKING. Keep the old one
+    // until the new one is proven, so a mistyped account or a cancelled consent
+    // cannot leave a previously-healthy mailbox unreadable.
+    let previous: Vec<(String, Option<String>)> = ["client_id", "client_secret", "refresh_token"]
+        .iter()
+        .map(|suffix| {
+            let k = format!("{}_{}", prefix, suffix);
+            let v = crate::email::cred_opt(&k);
+            (k, v)
+        })
+        .collect();
+    let restore_previous = || {
+        for (k, v) in &previous {
+            match v {
+                Some(val) => { let _ = crate::email::save_cred(k, val); }
+                None => { let _ = crate::email::delete_cred(k); }
+            }
+        }
+    };
+    crate::oauth_flow::start_consent_flow(
+        app_handle, client_id, client_secret, "https://mail.google.com/", &prefix,
+    ).await.map_err(|e| {
+        // A consent that fails partway can leave a NEW client_id/secret paired with
+        // the OLD refresh token - a set that authenticates as nobody. Put back
+        // whatever was there before rather than leaving the mixture.
+        restore_previous();
+        e.to_string()
+    })?;
+    crate::email::invalidate_token_cache(&prefix);
+
+    // The consent window is open for a while; the inbox can be removed meanwhile.
+    // Writing credentials for a row that no longer exists would orphan a live
+    // full-mailbox Google grant in the secret store with nothing left to delete it.
+    if !crate::email::load_inboxes().iter().any(|i| i.id == inbox_id) {
+        for suffix in ["client_id", "client_secret", "refresh_token"] {
+            let _ = crate::email::delete_cred(&format!("{}_{}", prefix, suffix));
+        }
+        crate::email::invalidate_token_cache(&prefix);
+        return Err("That inbox was removed while Google was open. Nothing was changed.".into());
+    }
+
+    // PROVE the grant opens this mailbox before committing to it. Consent can
+    // succeed for the WRONG Google account - Google signs in whoever is already in
+    // the browser - and that grant cannot read this mailbox. Flipping first would
+    // discard the app password on the strength of an unverified token and leave the
+    // inbox unreadable with no way back.
+    if let Err(e) = crate::email::verify_inbox_oauth(&inbox_id).await {
+        restore_previous();
+        crate::email::invalidate_token_cache(&prefix);
+        return Err(format!(
+            "Signed in, but that Google account can't open {}. Make sure you sign in as {} itself. Nothing was changed. ({})",
+            target.user, target.user, e
+        ));
+    }
+
+    // Only now flip the mailbox onto OAuth - if consent failed above we must not
+    // strand it on an auth method with no credential.
+    for i in list.iter_mut() {
+        if i.id == inbox_id { i.auth_method = crate::email::AuthMethod::Oauth2; }
+    }
+    let scope_is_me = target.scope == "me";
+    let mut scoped: Vec<crate::email::EmailInbox> = if scope_is_me {
+        crate::email::load_personal_inboxes()
+    } else {
+        crate::email::load_org_inboxes()
+    };
+    for i in scoped.iter_mut() {
+        if i.id == inbox_id { i.auth_method = crate::email::AuthMethod::Oauth2; }
+    }
+    if scope_is_me {
+        crate::email::save_personal_inboxes(&scoped).map_err(|e| e.to_string())?;
+    } else {
+        crate::email::save_inboxes(&scoped).map_err(|e| e.to_string())?;
+    }
+    // Seed the cursor now that the mailbox is readable. A mailbox added without a
+    // credential could not be seeded at add time, so this is the first moment it is
+    // possible. If it still fails, `scan()` re-seeds and declines to read until it
+    // succeeds - it never falls back to importing the history.
+    // ONLY if it has never been seeded. Re-seeding a mailbox that was already being
+    // read jumps its cursor to the head and silently skips everything that arrived
+    // since the last scan - switching how a mailbox authenticates must not discard
+    // unread mail.
+    if !crate::email::is_seeded(&inbox_id) {
+        match crate::email::seed_uid_cursor(&inbox_id).await {
+            Ok(max) => tracing::info!("inbox {} seeded at uid {} after Google sign-in", inbox_id, max),
+            Err(e) => tracing::warn!("inbox {} seed after sign-in failed ({}); scan will retry", inbox_id, e),
+        }
+    }
+
+    // The app password is now dead weight; remove it so the mailbox has exactly one
+    // way in. For a shared inbox also clear the server's copy - otherwise the next
+    // scan on any device materializes it straight back out of the org secret store,
+    // silently returning the mailbox to password auth.
+    let _ = crate::email::delete_cred(&format!("imap_pass_{}", inbox_id));
+    if !scope_is_me {
+        let _ = crate::netsync::push_inbox_secret_to_server(&inbox_id, "").await;
+    }
+    Ok(())
+}
+
+/// Whether a monitored mailbox is linked by Google sign-in rather than a password.
+/// Drives the per-row badge in Settings.
+#[tauri::command]
+pub async fn inbox_google_connected(inbox_id: String) -> Result<bool, String> {
+    let linked = crate::email::load_inboxes()
+        .into_iter()
+        .find(|i| i.id == inbox_id)
+        .map(|i| i.auth_method == crate::email::AuthMethod::Oauth2)
+        .unwrap_or(false);
+    Ok(linked
+        && crate::email::cred_opt(&format!("inbox_oauth_{}_refresh_token", inbox_id))
+            .is_some_and(|t| !t.is_empty()))
 }
 
 #[tauri::command]
@@ -6954,6 +7140,10 @@ pub async fn delete_email_inbox(id: String) -> Result<(), String> {
         crate::email::save_personal_inboxes(&list).map_err(|e| e.to_string())?;
     }
     let _ = crate::email::delete_cred(&format!("imap_pass_{id}"));
+    for suffix in ["client_id", "client_secret", "refresh_token"] {
+        let _ = crate::email::delete_cred(&format!("inbox_oauth_{id}_{suffix}"));
+    }
+    crate::email::invalidate_token_cache(&format!("inbox_oauth_{id}"));
     Ok(())
 }
 
@@ -7009,7 +7199,9 @@ pub async fn oauth_start_consent(
 ) -> Result<(), String> {
     crate::oauth_flow::start_consent_flow(app_handle, client_id, client_secret, "https://mail.google.com/ https://www.googleapis.com/auth/spreadsheets", "oauth")
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::email::invalidate_token_cache("oauth");
+    Ok(())
 }
 
 #[tauri::command]

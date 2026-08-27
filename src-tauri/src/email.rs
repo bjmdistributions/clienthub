@@ -99,6 +99,14 @@ pub struct EmailInbox {
     /// Absent in real rows → false.
     #[serde(default)]
     pub demo: bool,
+    /// How this mailbox authenticates. `Password` (an app password in
+    /// `imap_pass_{id}`) or `Oauth2` (a refresh token under the `inbox_oauth_{id}`
+    /// credential prefix, granted by that mailbox's own owner via Connect Google).
+    /// MUST keep `#[serde(default)]`: every inbox row stored before this field
+    /// existed has to keep parsing, or `read_inboxes_key`'s `unwrap_or_default()`
+    /// silently zeroes the whole inbox list.
+    #[serde(default)]
+    pub auth_method: AuthMethod,
 }
 
 fn default_inbox_scope() -> String { "org".into() }
@@ -199,6 +207,39 @@ fn uid_for(key: &str) -> u32 {
         .ok().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
+/// Whether this mailbox's cursor has been deliberately positioned.
+///
+/// Checked instead of `cursor != 0` because a cursor of 0 is ambiguous: it means
+/// both "never seeded" AND "seeded against an empty mailbox" (UIDNEXT 1 -> head 0).
+/// Reading it as "never seeded" left a newly-linked empty mailbox re-seeding on
+/// every pass and never reading its first message.
+///
+/// A pre-existing non-zero cursor counts as seeded, so mailboxes that were already
+/// scanning healthily before this guard existed are not re-seeded to head (which
+/// would skip anything that arrived since their last scan).
+pub fn is_seeded(inbox_id: &str) -> bool { seeded(inbox_id) }
+
+fn seeded(inbox_id: &str) -> bool {
+    let cursor_key = if inbox_id == "legacy" {
+        "last_seen_uid".to_string()
+    } else {
+        format!("last_seen_uid_{}", inbox_id)
+    };
+    uid_for(&format!("inbox_seeded_{}", inbox_id)) == 1 || uid_for(&cursor_key) > 0
+}
+
+/// Whether the user explicitly asked to import this mailbox's whole history.
+/// Absent (the default) means "read from now on".
+fn backfill_allowed(inbox_id: &str) -> bool {
+    uid_for(&format!("inbox_backfill_ok_{}", inbox_id)) == 1
+}
+
+/// Record that the user deliberately chose to import a mailbox's back catalogue.
+/// Without this marker `scan()` refuses to read a mailbox sitting at cursor 0.
+pub fn mark_backfill_allowed(inbox_id: &str) {
+    set_uid_for(&format!("inbox_backfill_ok_{}", inbox_id), 1);
+}
+
 fn set_uid_for(key: &str, uid: u32) {
     if let Ok(conn) = pool().get() {
         let _ = conn.execute(
@@ -224,11 +265,128 @@ pub struct EmailSettings {
     pub owner_staff_id: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
+    #[default]
     Password,
     Oauth2,
+}
+
+/// How to authenticate one IMAP session.
+///
+/// This exists because Gmail **rejects an OAuth access token in the LOGIN password
+/// slot** — it requires SASL `AUTHENTICATE XOAUTH2`. Flattening both kinds to a
+/// bare `String` (which is what the code did before) meant "Connect Google" made
+/// sending work and reading silently fail with an auth error. The auth kind now
+/// travels with the credential so a connect site cannot forget which one it holds.
+#[derive(Clone, Debug)]
+pub enum ImapAuth {
+    Password(String),
+    OAuth2(String),
+}
+
+/// SASL XOAUTH2 initial client response. The `imap` crate base64-encodes whatever
+/// `process` returns, so this is the raw form Google documents:
+/// `user=<addr>^Aauth=Bearer <token>^A^A`.
+struct GmailOAuth<'a> {
+    user: &'a str,
+    access_token: &'a str,
+}
+
+impl imap::Authenticator for GmailOAuth<'_> {
+    type Response = String;
+    fn process(&self, _challenge: &[u8]) -> Self::Response {
+        format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.access_token)
+    }
+}
+
+type ImapSession = imap::Session<native_tls::TlsStream<std::net::TcpStream>>;
+
+/// Connect + authenticate one IMAP session, honouring the auth kind. Every IMAP
+/// entry point goes through here so the password/XOAUTH2 choice is made in exactly
+/// one place. Safe under `spawn_blocking`.
+fn imap_session(host: &str, port: u16, user: &str, auth: &ImapAuth) -> Result<ImapSession> {
+    imap_session_with_socket(host, port, user, auth).map(|(s, _)| s)
+}
+
+/// As `imap_session`, but also hands back a cloned handle to the underlying socket.
+///
+/// The clone exists for one reason: IDLE. `wait_with_timeout` sets its own read
+/// deadline and then **clears it to `None`** rather than restoring ours, and the
+/// `Handle` is dropped inside that same call - so the `DONE` handshake, and the
+/// `logout` after it, run with no read timeout at all. On a blackholed socket (the
+/// precise fault a 4-minute idle connection is most exposed to) that read blocks
+/// forever inside a `spawn_blocking` task, which cannot be cancelled: the watcher
+/// never loops again and the thread is leaked, one per flap. Shutting the socket
+/// down from outside is the only way to unblock it.
+fn imap_session_with_socket(
+    host: &str,
+    port: u16,
+    user: &str,
+    auth: &ImapAuth,
+) -> Result<(ImapSession, std::net::TcpStream)> {
+    use std::net::ToSocketAddrs;
+    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
+
+    // Explicit socket timeouts. `imap::connect` sets none, so a half-open socket (a
+    // VPN flap, a firewall silently dropping the connection) blocks the read
+    // FOREVER inside spawn_blocking, which cannot be cancelled. That used to stall
+    // one mailbox; now that `scan()` is serialised it would stall every watcher, the
+    // safety sweep and the Settings command at once, while the app still looked
+    // healthy. The read timeout is deliberately longer than IDLE_CYCLE so a normal
+    // IDLE wait is never cut short (the crate re-arms the deadline itself anyway).
+    // Try EVERY resolved address, not just the first. `TcpStream::connect` did this
+    // for us; `connect_timeout` takes a single SocketAddr, so taking `.next()` quietly
+    // dropped the fallback. getaddrinfo returns AAAA first on any machine with a
+    // global IPv6 address, and imap.gmail.com has AAAA records - so on a box with
+    // configured-but-unroutable IPv6 (split-tunnel VPN, dead 6to4 remnant, an ISP
+    // prefix with no path) that turned a working mailbox into a permanent failure.
+    let addrs: Vec<std::net::SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .context("resolve IMAP host")?
+        .collect();
+    if addrs.is_empty() {
+        return Err(anyhow!("no address for {}", host));
+    }
+    // Keep the aggregate near 20s however many addresses come back.
+    let per_addr = std::time::Duration::from_secs(20) / (addrs.len().min(4) as u32);
+    let mut last_err: Option<std::io::Error> = None;
+    let stream = 'connected: {
+        for addr in &addrs {
+            match std::net::TcpStream::connect_timeout(addr, per_addr) {
+                Ok(s) => break 'connected s,
+                Err(e) => last_err = Some(e),
+            }
+        }
+        return Err(anyhow!(
+            "IMAP connect to {}: {}",
+            host,
+            last_err.map(|e| e.to_string()).unwrap_or_else(|| "no address reachable".into())
+        ));
+    };
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(300)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(60)))?;
+    let socket = stream.try_clone().context("clone IMAP socket")?;
+    let tls_stream = tls.connect(host, stream).context("IMAP TLS handshake")?;
+    let mut client = imap::Client::new(tls_stream);
+    // `imap::connect` did this for us. Login happens to tolerate an unconsumed
+    // greeting (it skips stray untagged lines), but relying on that means a server
+    // whose greeting the parser dislikes reports a LOGIN failure instead of a connect
+    // failure - and the watcher treats "IMAP login" errors as a long auth backoff.
+    client.read_greeting().map_err(|e| anyhow!("IMAP greeting: {}", e))?;
+    let session = match auth {
+        ImapAuth::Password(pass) => client
+            .login(user, pass)
+            .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?,
+        ImapAuth::OAuth2(token) => {
+            let authr = GmailOAuth { user, access_token: token };
+            client
+                .authenticate("XOAUTH2", &authr)
+                .map_err(|(e, _)| anyhow!("IMAP XOAUTH2: {}", e))?
+        }
+    };
+    Ok((session, socket))
 }
 
 fn read_settings_key(key: &str) -> Option<EmailSettings> {
@@ -365,15 +523,61 @@ pub async fn send_threaded(
 
 // ---------- OAuth2 ----------
 
+/// Cache of live access tokens, keyed by credential prefix.
+///
+/// Without this, every send, every 4-minute IDLE cycle and every scan did a full
+/// network refresh - Google tokens last ~3600s, so that is roughly 30x more token
+/// requests than needed, per mailbox. The visible symptom of hitting Google's rate
+/// limit is `invalid_grant`, which looks exactly like "Google keeps disconnecting".
+static TOKEN_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
+> = std::sync::OnceLock::new();
+
+fn token_cache(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>> {
+    TOKEN_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Drop any cached token for a prefix. Called after a fresh consent so the new
+/// grant is used immediately instead of the previous account's token.
+pub fn invalidate_token_cache(prefix: &str) {
+    if let Ok(mut m) = token_cache().lock() {
+        m.remove(prefix);
+    }
+}
+
+/// The primary/legacy account's Google access token (credential prefix `oauth`).
 pub async fn oauth2_access_token() -> Result<String> {
+    oauth_access_token_for("oauth").await
+}
+
+/// A mailbox-specific Google access token (credential prefix `inbox_oauth_{id}`).
+/// This is what lets a SECOND person connect their own mailbox without ever handing
+/// over a password: they consent as themselves, and only their refresh token is
+/// stored, under their own inbox's prefix.
+pub async fn inbox_access_token(inbox_id: &str) -> Result<String> {
+    oauth_access_token_for(&format!("inbox_oauth_{}", inbox_id)).await
+}
+
+/// Exchange the stored refresh token for an access token, cached until shortly
+/// before expiry. `prefix` selects which stored credential set to use.
+pub async fn oauth_access_token_for(prefix: &str) -> Result<String> {
     use oauth2::reqwest::async_http_client;
     use oauth2::{
         basic::BasicClient, AuthUrl, ClientId, ClientSecret, RefreshToken, TokenResponse, TokenUrl,
     };
 
-    let client_id = cred("oauth_client_id")?;
-    let client_secret = cred("oauth_client_secret")?;
-    let refresh = cred("oauth_refresh_token")?;
+    if let Ok(m) = token_cache().lock() {
+        if let Some((tok, expires_at)) = m.get(prefix) {
+            if std::time::Instant::now() < *expires_at {
+                return Ok(tok.clone());
+            }
+        }
+    }
+
+    let client_id = cred(&format!("{}_client_id", prefix))?;
+    let client_secret = cred(&format!("{}_client_secret", prefix))?;
+    let refresh = cred(&format!("{}_refresh_token", prefix))?;
 
     let client = BasicClient::new(
         ClientId::new(client_id),
@@ -388,32 +592,112 @@ pub async fn oauth2_access_token() -> Result<String> {
         .await
         .map_err(|e| anyhow!("oauth refresh: {}", e))?;
 
-    Ok(token.access_token().secret().clone())
+    let access = token.access_token().secret().clone();
+    // Refresh 5 minutes early so a long IDLE cycle never sends an expiring token.
+    let ttl = token
+        .expires_in()
+        .unwrap_or_else(|| std::time::Duration::from_secs(3600))
+        .saturating_sub(std::time::Duration::from_secs(300))
+        .max(std::time::Duration::from_secs(60));
+    if let Ok(mut m) = token_cache().lock() {
+        m.insert(prefix.to_string(), (access.clone(), std::time::Instant::now() + ttl));
+    }
+    Ok(access)
+}
+
+/// The IMAP auth for one configured inbox, honouring its own auth method.
+async fn inbox_auth(ib: &EmailInbox) -> Result<ImapAuth> {
+    match ib.auth_method {
+        AuthMethod::Oauth2 => Ok(ImapAuth::OAuth2(inbox_access_token(&ib.id).await?)),
+        AuthMethod::Password => Ok(ImapAuth::Password(
+            cred(&format!("imap_pass_{}", ib.id))
+                .map_err(|_| anyhow!("no password stored for this inbox"))?,
+        )),
+    }
+}
+
+/// The IMAP auth for the legacy/primary account in `EmailSettings`.
+async fn legacy_auth(s: &EmailSettings) -> Result<ImapAuth> {
+    match s.auth_method {
+        AuthMethod::Oauth2 => Ok(ImapAuth::OAuth2(oauth2_access_token().await?)),
+        AuthMethod::Password => Ok(ImapAuth::Password(cred("imap_pass")?)),
+    }
 }
 
 // ---------- IMAP ----------
 
 const SCAN_FOLDER: &str = "INBOX";
 
+/// How many unread MESSAGES a single scan will import before treating the backlog
+/// as pathological and keeping only the newest. Generous enough to cover a long
+/// genuine absence; tight enough that a cursor frozen for months does not trigger an
+/// unbounded import. Counted in messages, never in UID distance - see the clamp in
+/// `scan_blocking` for why that distinction matters on Gmail.
+const MAX_CATCHUP: usize = 5_000;
+
+/// The mailbox's current highest UID, without fetching a single message body.
+/// `UIDNEXT` is served straight from the SELECT response, so this is one round
+/// trip. Used to seed a cursor so a newly-linked mailbox starts from "now".
+fn current_max_uid_blocking(
+    imap_host: String,
+    imap_port: u16,
+    user: String,
+    auth: ImapAuth,
+) -> Result<u32> {
+    let mut session = imap_session(&imap_host, imap_port, &user, &auth)?;
+    let mailbox = session.select(SCAN_FOLDER).context("select inbox")?;
+    let max = match mailbox.uid_next {
+        Some(next) => next.saturating_sub(1),
+        // Rare: a server that omits UIDNEXT. Ask for the UID list instead - still
+        // no bodies fetched.
+        None => session
+            .uid_search("ALL")
+            .context("probe UID list (server gave no UIDNEXT)")?
+            .into_iter()
+            .max()
+            .unwrap_or(0),
+    };
+    let _ = session.logout();
+    Ok(max)
+}
+
+/// Seed an inbox's UID cursor to the mailbox's current head, so the first scan
+/// reads only mail that arrives from now on.
+///
+/// WHY THIS EXISTS: `uid_for` returns 0 for an unknown key, which makes
+/// `scan_blocking` search `UID 1:*` and fetch the ENTIRE mailbox. Every message is
+/// then logged as an interaction stamped `Utc::now()` (not the email's own date),
+/// so linking a mailbox with years of history would rewrite every matched client's
+/// "last contact" to today across desktop and mobile, and replay old form mail
+/// through the capture rules as fresh leads. Seeding the cursor first is what makes
+/// linking a second mailbox a safe, reversible action.
+pub async fn seed_uid_cursor(inbox_id: &str) -> Result<u32> {
+    let (host, port, user, auth, _label) = resolve_inbox_creds(inbox_id).await?;
+    let max = tokio::task::spawn_blocking(move || current_max_uid_blocking(host, port, user, auth))
+        .await
+        .context("imap uid probe task")??;
+    let key = if inbox_id == "legacy" {
+        "last_seen_uid".to_string()
+    } else {
+        format!("last_seen_uid_{}", inbox_id)
+    };
+    set_uid_for(&key, max);
+    // Record the FACT of seeding separately: `max` is legitimately 0 for an empty
+    // mailbox, and a 0 cursor is otherwise indistinguishable from "never seeded".
+    set_uid_for(&format!("inbox_seeded_{}", inbox_id), 1);
+    Ok(max)
+}
+
 /// Synchronous IMAP scan — safe to call from spawn_blocking.
 fn scan_blocking(
     imap_host: String,
     imap_port: u16,
     user: String,
-    password: String,
+    auth: ImapAuth,
     last_uid: u32,
+    allow_backfill: bool,
 ) -> Result<(Vec<ParsedEmail>, u32)> {
-    let tls = native_tls::TlsConnector::builder()
-        .build()
-        .context("TLS build")?;
-
-    let client =
-        imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
-            .context("IMAP connect")?;
-
-    let mut session = client
-        .login(&user, &password)
-        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    let mut session = imap_session(&imap_host, imap_port, &user, &auth)?;
 
     session.select(SCAN_FOLDER).context("select inbox")?;
 
@@ -428,12 +712,61 @@ fn scan_blocking(
         return Ok((results, max_uid));
     }
 
-    let uid_list: Vec<String> = uid_set.iter().map(|u| u.to_string()).collect();
-    let fetch_set = uid_list.join(",");
+    let mut uid_list: Vec<u32> = uid_set.into_iter().collect();
+    uid_list.sort_unstable();
+    // `UID N:*` returns the highest-UID message even when N is past it, so drop
+    // anything at or below the cursor before counting.
+    uid_list.retain(|u| *u > last_uid);
+    if uid_list.is_empty() {
+        let _ = session.logout();
+        return Ok((results, max_uid));
+    }
 
-    let messages = session
-        .uid_fetch(&fetch_set, "RFC822")
-        .context("uid_fetch")?;
+    // THE STALENESS CLAMP, measured in MESSAGES rather than UID distance.
+    //
+    // A cursor can fall behind legitimately (a laptop closed for a fortnight) or
+    // pathologically (a mailbox configured but silently unread for months). Only the
+    // second should be abandoned. Distance in UID-space cannot tell them apart: on
+    // Gmail the INBOX UID counter advances for every message that ever carried the
+    // label, including everything a filter auto-archived, so an inbox-zero user can
+    // be thousands of UIDs behind with a nearly empty INBOX. Clamping on that
+    // distance threw away real, wanted mail.
+    //
+    // When it does fire we keep the NEWEST MAX_CATCHUP messages rather than jumping
+    // to the head and processing none - the recent mail is the part worth having.
+    if !allow_backfill && uid_list.len() > MAX_CATCHUP {
+        let dropped = uid_list.len() - MAX_CATCHUP;
+        tracing::warn!(
+            "inbox {} has {} messages since uid {}; importing only the newest {} and skipping {}",
+            user, uid_list.len(), last_uid, MAX_CATCHUP, dropped
+        );
+        uid_list.drain(..dropped);
+    }
+
+    // Fetch in chunks. A comma-joined set over a whole mailbox builds an IMAP
+    // command line hundreds of kilobytes long (past what Gmail accepts) and
+    // materialises every full message body in memory at once; chunking bounds both.
+    // A chunk failure commits the completed PREFIX rather than discarding the pass.
+    // Chunks ascend and each is all-or-nothing, so every uid at or below `max_uid`
+    // has been parsed into `results`; returning them advances the cursor to exactly
+    // the last fully-processed uid. Without this, a backlog too large to finish in
+    // one session re-downloads from the start every pass and never catches up - and
+    // since `scan()` is serialised, every other mailbox queues behind the retries.
+    const FETCH_CHUNK: usize = 200;
+
+    for chunk in uid_list.chunks(FETCH_CHUNK) {
+    let fetch_set = chunk.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+
+    let messages = match session.uid_fetch(&fetch_set, "RFC822") {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                "inbox {} fetch failed after uid {}; keeping what was read and resuming there: {}",
+                user, max_uid, e
+            );
+            break;
+        }
+    };
 
     for msg in messages.iter() {
         let uid = msg.uid.unwrap_or(0);
@@ -494,6 +827,7 @@ fn scan_blocking(
             }
         }
     }
+    } // end fetch chunk
 
     let _ = session.logout();
     Ok((results, max_uid))
@@ -509,25 +843,54 @@ fn idle_once_blocking(
     imap_host: String,
     imap_port: u16,
     user: String,
-    password: String,
+    auth: ImapAuth,
     timeout: std::time::Duration,
 ) -> Result<bool> {
-    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
-    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
-        .context("IMAP connect")?;
-    let mut session = client
-        .login(&user, &password)
-        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (mut session, socket) = imap_session_with_socket(&imap_host, imap_port, &user, &auth)?;
     session.select(SCAN_FOLDER).context("select inbox")?;
 
-    let idle = session.idle().context("start IDLE")?;
-    // wait_with_timeout re-arms the read deadline internally; a MailboxChanged means
-    // new/changed mail (we then run the normal scan to fetch only genuinely-new UIDs).
-    let outcome = idle
-        .wait_with_timeout(timeout)
-        .context("IDLE wait")?;
-    let changed = matches!(outcome, imap::extensions::idle::WaitOutcome::MailboxChanged);
+    // Watchdog. `wait_with_timeout` arms its own deadline for the wait itself, but
+    // clears the socket's read timeout to None afterwards instead of restoring ours -
+    // and the Handle's Drop (which writes DONE and reads the ack) runs inside that
+    // same call, unprotected. Rather than trying to re-arm a timeout we never get a
+    // chance to set, bound the whole cycle from outside: if it overruns, shut the
+    // socket down, which makes any blocked read return immediately.
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let done = done.clone();
+        let socket = socket.try_clone().context("clone IMAP socket for watchdog")?;
+        let limit = timeout + std::time::Duration::from_secs(60);
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + limit;
+            while std::time::Instant::now() < deadline {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            if !done.load(Ordering::Relaxed) {
+                tracing::warn!("IDLE on {} overran; closing the socket to unblock it", user);
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+        })
+    };
+
+    // Immediately-invoked so the Handle's Drop (the DONE handshake) runs inside the
+    // watchdog window, AND so an early failure cannot skip the teardown below - a `?`
+    // here would return past the join and leave the watchdog to shut down a socket
+    // nobody is waiting on any more.
+    let outcome = (|| -> Result<imap::extensions::idle::WaitOutcome> {
+        let idle = session.idle().context("start IDLE")?;
+        idle.wait_with_timeout(timeout).context("IDLE wait")
+    })();
     let _ = session.logout();
+    done.store(true, Ordering::Relaxed);
+    let _ = watchdog.join();
+
+    // A MailboxChanged means new/changed mail; we then run the normal scan, which
+    // fetches only genuinely-new UIDs.
+    let changed = matches!(outcome?, imap::extensions::idle::WaitOutcome::MailboxChanged);
     Ok(changed)
 }
 
@@ -539,15 +902,10 @@ fn archive_uid_blocking(
     imap_host: String,
     imap_port: u16,
     user: String,
-    password: String,
+    auth: ImapAuth,
     uid: u32,
 ) -> Result<()> {
-    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
-    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
-        .context("IMAP connect")?;
-    let mut session = client
-        .login(&user, &password)
-        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    let mut session = imap_session(&imap_host, imap_port, &user, &auth)?;
     session.select(SCAN_FOLDER).context("select inbox")?;
 
     let uid_str = uid.to_string();
@@ -577,13 +935,8 @@ fn archive_uid_blocking(
 /// Verify an IMAP mailbox: connect + LOGIN + SELECT INBOX, then log out. Same
 /// connect/login path as `scan_blocking` (minus the fetch). Safe under
 /// spawn_blocking. Returns Ok(()) when the credentials work.
-fn test_imap_blocking(imap_host: String, imap_port: u16, user: String, password: String) -> Result<()> {
-    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
-    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
-        .context("IMAP connect")?;
-    let mut session = client
-        .login(&user, &password)
-        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+fn test_imap_blocking(imap_host: String, imap_port: u16, user: String, auth: ImapAuth) -> Result<()> {
+    let mut session = imap_session(&imap_host, imap_port, &user, &auth)?;
     session.select(SCAN_FOLDER).context("select inbox")?;
     let _ = session.logout();
     Ok(())
@@ -592,32 +945,28 @@ fn test_imap_blocking(imap_host: String, imap_port: u16, user: String, password:
 /// Resolve an inbox id to its IMAP connection details + password. `"legacy"` uses
 /// the account in EmailSettings (password or OAuth token); other ids use the
 /// stored `imap_pass_{id}` credential. Also returns the inbox label (its `source`).
-async fn resolve_inbox_creds(id: &str) -> Result<(String, u16, String, String, String)> {
+async fn resolve_inbox_creds(id: &str) -> Result<(String, u16, String, ImapAuth, String)> {
     if id == "legacy" {
         let s = load_settings().context("no email account configured")?;
         if s.imap_host.is_empty() {
             return Err(anyhow!("no IMAP host configured"));
         }
-        let pass = match s.auth_method {
-            AuthMethod::Oauth2 => oauth2_access_token().await?,
-            AuthMethod::Password => cred("imap_pass")?,
-        };
-        Ok((s.imap_host, s.imap_port, s.user.clone(), pass, s.user))
+        let auth = legacy_auth(&s).await?;
+        Ok((s.imap_host, s.imap_port, s.user.clone(), auth, s.user))
     } else {
         let ib = load_inboxes()
             .into_iter()
             .find(|i| i.id == id)
             .ok_or_else(|| anyhow!("inbox not found"))?;
-        let pass = cred(&format!("imap_pass_{}", id))
-            .map_err(|_| anyhow!("no password stored for this inbox"))?;
-        Ok((ib.host, ib.port, ib.user, pass, ib.label))
+        let auth = inbox_auth(&ib).await?;
+        Ok((ib.host, ib.port, ib.user, auth, ib.label))
     }
 }
 
 /// Resolve an inbox by its LABEL (what we stamp on captured clients as `src_inbox`,
 /// i.e. `ParsedEmail.source`). Falls back to the legacy account when the label
 /// matches its user. Returns the same tuple as `resolve_inbox_creds`.
-async fn resolve_inbox_creds_by_label(label: &str) -> Result<(String, u16, String, String, String)> {
+async fn resolve_inbox_creds_by_label(label: &str) -> Result<(String, u16, String, ImapAuth, String)> {
     if let Some(ib) = load_inboxes().into_iter().find(|i| i.label == label) {
         return resolve_inbox_creds(&ib.id).await;
     }
@@ -635,10 +984,25 @@ async fn resolve_inbox_creds_by_label(label: &str) -> Result<(String, u16, Strin
 /// `src_inbox` (the inbox label); `uid` is its stored `src_uid`. Best-effort — the
 /// caller treats a failure as non-fatal so approval is never blocked.
 pub async fn archive_source_email(inbox_label: &str, uid: u32) -> Result<()> {
-    let (host, port, user, password, _label) = resolve_inbox_creds_by_label(inbox_label).await?;
-    tokio::task::spawn_blocking(move || archive_uid_blocking(host, port, user, password, uid))
+    let (host, port, user, auth, _label) = resolve_inbox_creds_by_label(inbox_label).await?;
+    tokio::task::spawn_blocking(move || archive_uid_blocking(host, port, user, auth, uid))
         .await
         .context("imap archive task")?
+}
+
+/// Prove a mailbox's Google grant works by opening it with an OAuth token, without
+/// depending on the inbox's stored `auth_method`. Called immediately after consent
+/// so a bad or wrong-account grant is caught BEFORE the app password is discarded.
+pub async fn verify_inbox_oauth(inbox_id: &str) -> Result<()> {
+    let ib = load_inboxes()
+        .into_iter()
+        .find(|i| i.id == inbox_id)
+        .ok_or_else(|| anyhow!("inbox not found"))?;
+    let auth = ImapAuth::OAuth2(inbox_access_token(inbox_id).await?);
+    let (host, port, user) = (ib.host.clone(), ib.port, ib.user.clone());
+    tokio::task::spawn_blocking(move || test_imap_blocking(host, port, user, auth))
+        .await
+        .context("imap verify task")?
 }
 
 /// Test one configured inbox by id (matches `EmailInbox.id`; `"legacy"` uses the
@@ -646,8 +1010,8 @@ pub async fn archive_source_email(inbox_label: &str, uid: u32) -> Result<()> {
 /// the legacy account's password/OAuth token). Ok(()) means the connection + auth
 /// succeeded.
 pub async fn test_inbox(id: &str) -> Result<()> {
-    let (host, port, user, password, _label) = resolve_inbox_creds(id).await?;
-    tokio::task::spawn_blocking(move || test_imap_blocking(host, port, user, password))
+    let (host, port, user, auth, _label) = resolve_inbox_creds(id).await?;
+    tokio::task::spawn_blocking(move || test_imap_blocking(host, port, user, auth))
         .await
         .context("imap test task")?
 }
@@ -661,9 +1025,9 @@ pub async fn fetch_latest_matching(
     sender_pattern: Option<String>,
     subject_pattern: Option<String>,
 ) -> Result<Option<ParsedEmail>> {
-    let (host, port, user, password, label) = resolve_inbox_creds(inbox_id).await?;
+    let (host, port, user, auth, label) = resolve_inbox_creds(inbox_id).await?;
     let res = tokio::task::spawn_blocking(move || {
-        fetch_latest_matching_blocking(host, port, user, password, sender_pattern, subject_pattern)
+        fetch_latest_matching_blocking(host, port, user, auth, sender_pattern, subject_pattern)
     })
     .await
     .context("imap fetch task")??;
@@ -679,7 +1043,7 @@ fn fetch_latest_matching_blocking(
     imap_host: String,
     imap_port: u16,
     user: String,
-    password: String,
+    auth: ImapAuth,
     sender_pattern: Option<String>,
     subject_pattern: Option<String>,
 ) -> Result<Option<ParsedEmail>> {
@@ -692,12 +1056,7 @@ fn fetch_latest_matching_blocking(
         _ => None,
     };
 
-    let tls = native_tls::TlsConnector::builder().build().context("TLS build")?;
-    let client = imap::connect((imap_host.as_str(), imap_port), &imap_host, &tls)
-        .context("IMAP connect")?;
-    let mut session = client
-        .login(&user, &password)
-        .map_err(|(e, _)| anyhow!("IMAP login: {}", e))?;
+    let mut session = imap_session(&imap_host, imap_port, &user, &auth)?;
     let mailbox = session.select(SCAN_FOLDER).context("select inbox")?;
 
     // Look at the newest ~50 messages by sequence number.
@@ -746,7 +1105,18 @@ fn fetch_latest_matching_blocking(
     Ok(None)
 }
 
+/// Serialises `scan()`. The read-fetch-write of a UID cursor is not atomic - it
+/// yields at the `spawn_blocking` await - so two concurrent scans interleave and
+/// import the same messages twice. Every watcher plus the periodic safety sweep can
+/// all call `scan()` at once, so this lock is what makes the cursor authoritative.
+static SCAN_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn scan_lock() -> &'static tokio::sync::Mutex<()> {
+    SCAN_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub async fn scan() -> Result<Vec<ParsedEmail>> {
+    let _serialised = scan_lock().lock().await;
     // On a fresh admin's device the org config syncs down but the keyring is
     // empty. If a password-auth org secret (send/monitor account, or any org
     // monitor inbox) is missing locally, pull it once from the server org store
@@ -761,51 +1131,122 @@ pub async fn scan() -> Result<Vec<ParsedEmail>> {
             && !s.imap_host.is_empty()
             && cred_opt("imap_pass").filter(|p| !p.is_empty()).is_none()
     });
+    // Google-linked mailboxes have no password by design. Counting them as "missing"
+    // pulls the org secret bundle down again and restores the very app password that
+    // signing in with Google just deleted, silently putting the mailbox back on
+    // password auth.
     let org_inbox_pw_missing = load_org_inboxes()
         .iter()
+        .filter(|ib| ib.auth_method == AuthMethod::Password)
         .any(|ib| cred_opt(&format!("imap_pass_{}", ib.id)).filter(|p| !p.is_empty()).is_none());
     if legacy_pw_missing || org_inbox_pw_missing {
         let _ = crate::netsync::materialize_email_secrets_from_server().await;
     }
 
-    // Inbound mailboxes to monitor. If none are configured, fall back to the
-    // legacy single account (in EmailSettings) so existing setups keep working.
-    let mut inboxes = load_inboxes();
-    let legacy = load_settings().ok();
-    if inboxes.is_empty() {
-        if let Some(ref s) = legacy {
-            if !s.imap_host.is_empty() {
-                inboxes.push(EmailInbox {
-                    id: "legacy".into(), label: s.user.clone(),
-                    host: s.imap_host.clone(), port: s.imap_port, user: s.user.clone(),
-                    scope: "org".into(), demo: false,
-                });
-            }
-        }
-    }
+    // Inbound mailboxes to monitor: every added inbox, PLUS the legacy account in
+    // EmailSettings whenever it has an IMAP host.
+    //
+    // This used to add the legacy account only `if inboxes.is_empty()`, while
+    // `watchable_inboxes()` added it unconditionally. The result was a mailbox whose
+    // IDLE watcher connected and woke on new mail, but whose messages were never
+    // fetched: configured, apparently healthy, and silently unread the moment any
+    // other inbox existed. The two lists must agree.
+    let mut inboxes = distinct_watchable();
 
     let mut all = Vec::new();
     for ib in inboxes {
-        // The legacy inbox uses the account's configured auth (password or OAuth)
-        // and keeps the original UID cursor key; added inboxes are password-only.
-        let password = if ib.id == "legacy" {
-            match legacy.as_ref().map(|s| &s.auth_method) {
-                Some(AuthMethod::Oauth2) => match oauth2_access_token().await { Ok(t) => t, Err(_) => continue },
-                _ => match cred("imap_pass") { Ok(p) => p, Err(_) => continue },
+        // Each mailbox authenticates on its own terms: the legacy account from
+        // EmailSettings, an added inbox from its own auth_method (app password, or
+        // a refresh token its own owner granted).
+        // A credential that cannot be resolved is now the MOST likely failure, not a
+        // rare one: an org inbox linked to Google carries `auth_method = oauth2` to
+        // every device through the shared settings blob, but the refresh token stays
+        // in the linking device's keyring. Every other device lands here. Skipping is
+        // correct; skipping SILENTLY is how a mailbox stays unread without anyone
+        // noticing, so say so.
+        let auth = if ib.id == "legacy" {
+            match load_settings() {
+                Ok(s) => match legacy_auth(&s).await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!("legacy inbox ({}) has no usable credential: {}", ib.user, e);
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("legacy inbox not configured: {}", e);
+                    continue;
+                }
             }
         } else {
-            match cred(&format!("imap_pass_{}", ib.id)) { Ok(p) => p, Err(_) => continue }
+            match inbox_auth(&ib).await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!("inbox {} ({}) has no usable credential: {}", ib.id, ib.user, e);
+                    continue;
+                }
+            }
         };
         let uid_key = if ib.id == "legacy" { "last_seen_uid".to_string() } else { format!("last_seen_uid_{}", ib.id) };
-        let last_uid = uid_for(&uid_key);
-        let (host, port, user, label) = (ib.host.clone(), ib.port, ib.user.clone(), ib.label.clone());
-        let res = tokio::task::spawn_blocking(move || scan_blocking(host, port, user, password, last_uid)).await;
-        if let Ok(Ok((mut emails, max_uid))) = res {
-            for e in &mut emails { e.source = label.clone(); }
-            if max_uid > last_uid { set_uid_for(&uid_key, max_uid); }
-            all.append(&mut emails);
+        let mut last_uid = uid_for(&uid_key);
+
+        // THE BACKFILL GUARD, enforced here rather than trusted from the add path.
+        //
+        // An unseeded mailbox makes `scan_blocking` search `UID 1:*` and fetch its
+        // entire contents. Seeding when a mailbox is ADDED is not enough: the seed can
+        // fail (offline, or a mailbox added with no credential yet so it can be linked
+        // to Google next), and a best-effort guard that fails open re-arms exactly the
+        // hazard it exists to prevent. So the last word belongs to the reader - an
+        // unseeded mailbox is seeded here, and simply not read this pass if it cannot
+        // be.
+        //
+        // This applies to the LEGACY account too. It was briefly exempted on the
+        // reasoning that a first-run account importing into an empty client list is
+        // harmless - which is wrong: `settings` and `clients` sync between devices but
+        // `device_state` does not, so a reinstall or a second admin's machine has the
+        // full client list AND a zero cursor.
+        //
+        // `read_from_now = false` records an explicit marker, so a deliberate history
+        // import still works.
+        if !seeded(&ib.id) && !backfill_allowed(&ib.id) {
+            match seed_uid_cursor(&ib.id).await {
+                Ok(max) => {
+                    tracing::info!("inbox {} seeded at uid {}; reading from here on", ib.id, max);
+                    last_uid = max;
+                }
+                Err(e) => {
+                    tracing::warn!("inbox {} not seeded yet ({}); skipping until it is", ib.id, e);
+                    continue;
+                }
+            }
         }
-        // A single bad inbox shouldn't abort the others — errors are skipped above.
+        let (host, port, user, label) = (ib.host.clone(), ib.port, ib.user.clone(), ib.label.clone());
+        let allow_backfill = backfill_allowed(&ib.id);
+        let res = tokio::task::spawn_blocking(move || {
+            scan_blocking(host, port, user, auth, last_uid, allow_backfill)
+        })
+        .await;
+        match res {
+            Ok(Ok((mut emails, max_uid))) => {
+                for e in &mut emails { e.source = label.clone(); }
+                if max_uid > last_uid { set_uid_for(&uid_key, max_uid); }
+                // Consume the one-shot history-import consent. Leaving it set turned a
+                // single deliberate import into a permanent exemption from the clamp,
+                // so a later stranded cursor on the same mailbox would refetch
+                // everything unbounded.
+                if allow_backfill {
+                    set_uid_for(&format!("inbox_backfill_ok_{}", ib.id), 0);
+                }
+                all.append(&mut emails);
+            }
+            // A single bad inbox must not abort the others - but it must not vanish
+            // either. A silently-swallowed scan error is indistinguishable from an
+            // empty mailbox, which is exactly how a configured account stayed unread
+            // for seven weeks without anyone noticing. The cursor is left untouched,
+            // so the same range is retried next pass.
+            Ok(Err(e)) => tracing::warn!("inbox {} ({}) scan failed: {}", ib.id, ib.user, e),
+            Err(join) => tracing::warn!("inbox {} ({}) scan task failed: {}", ib.id, ib.user, join),
+        }
     }
     Ok(all)
 }
@@ -890,16 +1331,13 @@ fn still_pending_lead(client_id: &str) -> bool {
 /// Resolve the connection details + password for one inbox id, synchronously where
 /// possible. The legacy account may use OAuth (needs an async token refresh), so
 /// this is async. Returns None when the inbox has no usable credential.
-async fn inbox_conn(ib: &EmailInbox) -> Option<(String, u16, String, String)> {
-    let password = if ib.id == "legacy" {
-        match load_settings().ok().map(|s| s.auth_method) {
-            Some(AuthMethod::Oauth2) => oauth2_access_token().await.ok()?,
-            _ => cred("imap_pass").ok()?,
-        }
+async fn inbox_conn(ib: &EmailInbox) -> Option<(String, u16, String, ImapAuth)> {
+    let auth = if ib.id == "legacy" {
+        legacy_auth(&load_settings().ok()?).await.ok()?
     } else {
-        cred(&format!("imap_pass_{}", ib.id)).ok()?
+        inbox_auth(ib).await.ok()?
     };
-    Some((ib.host.clone(), ib.port, ib.user.clone(), password))
+    Some((ib.host.clone(), ib.port, ib.user.clone(), auth))
 }
 
 /// Enumerate the mailboxes to watch: every added inbox, plus the legacy account
@@ -918,10 +1356,24 @@ fn watchable_inboxes() -> Vec<EmailInbox> {
                 user: s.user,
                 scope: "org".into(),
                 demo: false,
+                auth_method: s.auth_method,
             });
         }
     }
     inboxes
+}
+
+/// `watchable_inboxes()` deduped by (host, user).
+///
+/// The same mailbox can be reachable both as the legacy account and as an added
+/// inbox row. Scanning it twice double-logs every message; watching it twice keeps
+/// a second IDLE connection open whose row's cursor never advances. Added rows win
+/// - they carry their own credential and their own cursor.
+pub fn distinct_watchable() -> Vec<EmailInbox> {
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut out = watchable_inboxes();
+    out.retain(|ib| seen.insert((ib.host.to_lowercase(), ib.user.to_lowercase())));
+    out
 }
 
 /// One resilient IDLE loop for a single inbox. Holds a connection open (via IDLE),
@@ -934,7 +1386,7 @@ fn spawn_inbox_watcher(app: tauri::AppHandle, inbox_id: String) {
         let mut backoff_secs: u64 = 0;
         loop {
             // Stop watching if this inbox no longer exists (removed in settings).
-            let ib = match watchable_inboxes().into_iter().find(|i| i.id == inbox_id) {
+            let ib = match distinct_watchable().into_iter().find(|i| i.id == inbox_id) {
                 Some(ib) => ib,
                 None => {
                     tracing::info!("inbox watcher {} exiting (inbox removed)", inbox_id);
@@ -1009,7 +1461,7 @@ pub fn spawn_realtime_watchers(app: tauri::AppHandle) {
         safety.tick().await; // consume immediate tick
         loop {
             if any_inbox_configured() {
-                for ib in watchable_inboxes() {
+                for ib in distinct_watchable() {
                     if watched.insert(ib.id.clone()) {
                         tracing::info!("starting real-time watcher for inbox {}", ib.id);
                         spawn_inbox_watcher(app.clone(), ib.id.clone());
@@ -1229,7 +1681,20 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
 
             let conn = pool().get()?;
             let interaction_id = uuid::Uuid::new_v4().to_string();
-            let now = Utc::now().to_rfc3339();
+            // The message's OWN date, not the moment we happened to read it. A mailbox
+            // read late (a laptop closed for a week, a mailbox linked long after it
+            // started receiving) must produce history that is true, not a block of
+            // activity dated today. `last_contact_at` counts email_in/email_out, so
+            // using `now` here silently rewrote the real last-contact date on every
+            // client an imported message matched, on every synced device.
+            let now = email
+                .date
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+                .map(|d| d.with_timezone(&Utc).to_rfc3339())
+                .unwrap_or_else(|| Utc::now().to_rfc3339());
 
             let mut cols = serde_json::Map::new();
             cols.insert("client_id".into(), serde_json::Value::String(cid.clone()));
@@ -1254,6 +1719,11 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
 
             let body = email.body_text.clone();
             tokio::spawn(async move {
+                // Cap concurrency: this runs a local LLM generation, and a batch
+                // import would otherwise start one per message simultaneously.
+                static AI_SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+                let sem = AI_SLOTS.get_or_init(|| tokio::sync::Semaphore::new(2));
+                let _permit = match sem.acquire().await { Ok(p) => p, Err(_) => return };
                 let _ = crate::ai::extract_structured(&body).await;
             });
         }

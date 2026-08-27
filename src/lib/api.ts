@@ -1197,6 +1197,8 @@ export interface EmailInbox {
   user: string;
   /** "org" (shared, inherited by all admins) or "me" (personal, this device only). */
   scope?: "org" | "me";
+  /** "oauth2" once this mailbox's owner has linked it by signing in with Google. */
+  auth_method?: "password" | "oauth2";
 }
 
 export interface EmailSettings {
@@ -2568,9 +2570,16 @@ export const api = {
     invoke<void>("send_email", { to, subject, body, attachmentPath }),
   scanInbox: () => invoke<ParsedEmail[]>("scan_inbox"),
   getEmailInboxes: () => invoke<EmailInbox[]>("get_email_inboxes"),
-  saveEmailInbox: (p: { id?: string; label: string; host: string; port: number; user: string; password?: string; scope?: "org" | "me" }) =>
+  /** `readFromNow` (default true) starts a NEW mailbox at its current head instead
+   *  of importing its entire history as activity dated today. */
+  saveEmailInbox: (p: { id?: string; label: string; host: string; port: number; user: string; password?: string; scope?: "org" | "me"; readFromNow?: boolean }) =>
     invoke<string>("save_email_inbox", p),
   deleteEmailInbox: (id: string) => invoke<void>("delete_email_inbox", { id }),
+  /** Launch Google consent for ONE mailbox. Its owner signs in as themselves; no
+   *  password is ever created. Reuses the primary account's Google client. */
+  oauthStartConsentForInbox: (inboxId: string, clientId = "", clientSecret = "") =>
+    invoke<void>("oauth_start_consent_for_inbox", { inboxId, clientId, clientSecret }),
+  inboxGoogleConnected: (inboxId: string) => invoke<boolean>("inbox_google_connected", { inboxId }),
   // Org-shared vs personal send config (this device's choice).
   getEmailUseOrgDefault: () => invoke<boolean>("get_email_use_org_default"),
   setEmailUseOrgDefault: (on: boolean) => invoke<void>("set_email_use_org_default", { on }),

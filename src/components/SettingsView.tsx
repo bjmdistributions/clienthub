@@ -861,10 +861,35 @@ function providerFromHost(host: string): string {
 // One monitored inbox row — status + Test + remove.
 function InboxRow({ ib }: { ib: EmailInbox }) {
   const [st, setSt] = useState<TestState>({ status: "idle" });
+  const [linking, setLinking] = useState(false);
+  // The row's auth_method travels between devices with the shared inbox list, but
+  // the Google grant does NOT - it lives in this device's keyring. So the badge asks
+  // the backend whether THIS machine can actually open the mailbox, instead of
+  // trusting a synced flag and claiming "signed in" on a device that has no token.
+  const [google, setGoogle] = useState(false);
+  const refreshLink = () => { api.inboxGoogleConnected(ib.id).then(setGoogle).catch(() => setGoogle(false)); };
+  useEffect(refreshLink, [ib.id, ib.auth_method]);
+  // Only Google mailboxes can use this. Offering it for Outlook or a generic IMAP
+  // host would run a consent flow that cannot produce a working credential.
+  const isGoogleHost = /gmail|googlemail|google/i.test(ib.host);
+  const claimsGoogle = ib.auth_method === "oauth2";
   const test = async () => {
     setSt({ status: "testing" });
     try { const r = await api.testInboxConnection(ib.id); setSt({ status: r.ok ? "ok" : "fail", message: r.message }); }
     catch (e: any) { setSt({ status: "fail", message: String(e) }); }
+  };
+  // The mailbox's own owner signs in here — on this machine, as themselves. Their
+  // refresh token is stored against this inbox; no password is created or shared.
+  const connect = async () => {
+    setLinking(true);
+    setSt({ status: "idle" });
+    try {
+      await api.oauthStartConsentForInbox(ib.id);
+      window.dispatchEvent(new CustomEvent("email-inboxes-changed"));
+      refreshLink();
+      await test();
+    } catch (e: any) { setSt({ status: "fail", message: String(e) }); }
+    finally { setLinking(false); refreshLink(); }
   };
   const remove = async () => { if (!confirm("Remove this inbox?")) return; await api.deleteEmailInbox(ib.id).catch(() => {}); window.dispatchEvent(new CustomEvent("email-inboxes-changed")); };
   return (
@@ -879,10 +904,20 @@ function InboxRow({ ib }: { ib: EmailInbox }) {
                 {ib.scope === "me" ? "Personal" : "Shared"}
               </span>
             </div>
-            <div className="text-[11px] text-muted truncate">{ib.user}</div>
+            <div className="text-[11px] text-muted truncate">
+              {ib.user}
+              {google && <span className="text-accent"> · Signed in with Google</span>}
+              {!google && claimsGoogle && <span className="text-warning-ink"> · Needs Google sign-in on this device</span>}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          {isGoogleHost && (
+            <button onClick={connect} disabled={linking}
+              className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors">
+              {linking ? "Waiting for Google…" : google ? "Reconnect Google" : "Sign in with Google"}
+            </button>
+          )}
           <button onClick={test} disabled={st.status === "testing"}
             className="border border-line text-ink-2 hover:bg-surface-2 px-3 h-8 rounded-lg text-[12px] font-medium disabled:opacity-50 transition-colors">Test</button>
           <button onClick={remove} className="text-faint hover:text-danger-ink p-1.5 rounded-lg hover:bg-danger-bg transition-colors"><Trash2 size={13} /></button>
@@ -1142,8 +1177,8 @@ function InboxCard() {
   const [adding, setAdding] = useState(false);
   const [provider, setProvider] = useState("gmail");
   const [admin, setAdmin] = useState(false);
-  const [form, setForm] = useState<{ label: string; host: string; port: number; user: string; password: string; scope: "org" | "me" }>(
-    { label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: "org" }
+  const [form, setForm] = useState<{ label: string; host: string; port: number; user: string; password: string; scope: "org" | "me"; readFromNow: boolean }>(
+    { label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: "org", readFromNow: true }
   );
   const load = () => api.getEmailInboxes().then(setInboxes).catch(() => {});
   useEffect(() => {
@@ -1163,9 +1198,9 @@ function InboxCard() {
     if (id !== "other") { const p = EMAIL_PROVIDERS[id]; setForm((f) => ({ ...f, host: p.imap_host, port: p.imap_port })); }
   };
   const add = async () => {
-    if (!form.host || !form.user || !form.password) return;
-    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope }).catch(() => {});
-    setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: admin ? "org" : "me" });
+    if (!form.host || !form.user) return;
+    await api.saveEmailInbox({ label: form.label || form.user, host: form.host, port: Number(form.port) || 993, user: form.user, password: form.password, scope: form.scope, readFromNow: form.readFromNow }).catch(() => {});
+    setForm({ label: "", host: "imap.gmail.com", port: 993, user: "", password: "", scope: admin ? "org" : "me", readFromNow: true });
     setProvider("gmail"); setAdding(false); load();
   };
 
@@ -1194,7 +1229,17 @@ function InboxCard() {
             <input className={inpSm} placeholder="Label (e.g. Support)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
             <input className={inpSm} placeholder="Email address" value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} />
           </div>
-          <input className={inpSm} type="password" placeholder="App password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <input className={inpSm} type="password" placeholder="App password (or leave blank and sign in with Google after adding)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          {/* Default ON. Off means importing the mailbox's whole history, and every
+              imported message is dated today — which overwrites the real "last
+              contact" on every client it matches, on desktop and phone. */}
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input type="checkbox" checked={form.readFromNow} onChange={(e) => setForm({ ...form, readFromNow: e.target.checked })} className="accent-accent mt-0.5" />
+            <span className="text-[12px] text-ink-2">
+              Read mail from now on
+              <span className="block text-[11px] text-muted">Leave this on. Turning it off imports the whole mailbox and dates every old message as contact today.</span>
+            </span>
+          </label>
           <Advanced label="Advanced (mail server)">
             <div className="grid grid-cols-2 gap-3">
               <input className={inpSm} placeholder="IMAP host" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} />
@@ -1202,7 +1247,7 @@ function InboxCard() {
             </div>
           </Advanced>
           <div className="flex gap-2">
-            <button onClick={add} disabled={!form.host || !form.user || !form.password} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Add inbox</button>
+            <button onClick={add} disabled={!form.host || !form.user} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40">Add inbox</button>
             <button onClick={() => setAdding(false)} className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px]">Cancel</button>
           </div>
         </div>
@@ -1399,11 +1444,10 @@ function EmailTab() {
 // Colours are tokens, never literals, because two themes invert them. The knob was
 // hardcoded `bg-white`: fine on orange, invisible on mono-dark's near-white accent, and
 // invisible again OFF, where a white knob sits on a near-white track (`surface-3` is
-// rgb(240,239,236) against a white card — a 1.15:1 track you cannot see). So the knob
+// rgb(240,239,236) against a white card — a 1.05:1 track you cannot see). So the knob
 // takes `on-accent`, the token that exists to stay legible on the accent fill, and a
 // muted fill when off; the ring gives the pill an edge in every theme so an OFF switch
-// still reads as a control rather than a smudge. Measured 2.15-17.72:1 across the five
-// theme combos, against 1.15-1.22:1 for the white knob it replaces.
+// still reads as a control rather than a smudge.
 function ClauseSwitch({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
   return (
     <button type="button" onClick={onClick} role="switch" aria-checked={on} aria-label={label}

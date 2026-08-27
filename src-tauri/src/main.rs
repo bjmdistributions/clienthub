@@ -804,6 +804,8 @@ fn main() {
             set_email_use_org_default,
             transfer_org_inbox,
             oauth_start_consent,
+            oauth_start_consent_for_inbox,
+            inbox_google_connected,
             google_contacts_oauth_start,
             google_contacts_list,
             google_contacts_import,
