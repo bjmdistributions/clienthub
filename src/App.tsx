@@ -36,6 +36,8 @@ import {
   CopyPlus,
   FileCheck2,
   Receipt,
+  Boxes,
+  Newspaper,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -127,16 +129,41 @@ type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "supplier
  *  once Windows chrome is subtracted, and a fresh install must not launch collapsed. */
 const NAV_COLLAPSE_AT = 1240;
 
+/** Shared class for the account flyout's rows. */
+const RAIL_MENU_ROW =
+  "w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] tracking-tight " +
+  "text-[#8A8A9A] hover:text-white hover:bg-white/[0.06] transition-colors";
+
 export default function App() {
   const [tab, setTabState] = useState<Tab>(() =>
     (localStorage.getItem("clienthub_last_tab") as Tab) || "dashboard"
   );
   const [pageKey, setPageKey] = useState(0);
+  // Collapsed rail: which group (or the account menu) is showing its flyout, and the
+  // viewport y it hangs off. Click to open rather than hover - a hover menu on a 56px
+  // rail is hard to hit on a trackpad, and Jack asked for click.
+  const [flyout, setFlyout] = useState<{ id: string; top: number } | null>(null);
   const setTab = (t: Tab) => {
     setTabState(t);
     setPageKey(k => k + 1);
+    setFlyout(null);
     localStorage.setItem("clienthub_last_tab", t);
   };
+  /** Anchor a flyout beside the button that opened it. */
+  const openFlyout = (id: string, e: React.MouseEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setFlyout((prev) => (prev?.id === id ? null : { id, top: Math.max(8, r.top) }));
+  };
+  // A flyout opened from the footer would hang off the bottom of the window. Clamp it
+  // against its real height before paint - guessing from a row count was wrong by 20px
+  // on the account menu, whose header row is taller than the rest.
+  const flyRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = flyRef.current;
+    if (!flyout || !el) return;
+    const max = window.innerHeight - el.offsetHeight - 8;
+    if (flyout.top > max) setFlyout({ ...flyout, top: Math.max(8, max) });
+  }, [flyout]);
   // Which expandable nav groups the user has manually opened (the active group is
   // always shown regardless). Persisted so the tree restores on relaunch.
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
@@ -182,6 +209,7 @@ export default function App() {
   // Canvases and charts that size themselves off a measured width (GlobeView, the
   // split panes) only listen for window resize, which a width transition never fires.
   useEffect(() => {
+    setFlyout(null);
     const t = setTimeout(() => window.dispatchEvent(new Event("resize")), 160);
     return () => clearTimeout(t);
   }, [navCollapsed]);
@@ -400,7 +428,9 @@ export default function App() {
 
   useLayoutEffect(() => {
     const measure = () => {
-      const btn = buttonRefs.current[tab];
+      // The collapsed rail renders group parents only, so an active child has no
+      // button of its own - point the bar at its parent instead of leaving it stuck.
+      const btn = buttonRefs.current[tab] ?? (parentOfActive ? buttonRefs.current[parentOfActive] : null);
       const nav = navRef.current;
       if (!btn || !nav) return;
       const navRect = nav.getBoundingClientRect();
@@ -419,6 +449,9 @@ export default function App() {
     if (nav && ro) ro.observe(nav);
     window.addEventListener("resize", measure);
     return () => { window.removeEventListener("resize", measure); ro?.disconnect(); };
+    // parentOfActive is derived from tab alone, so [tab] already re-runs this; it is
+    // declared further down the body and cannot go in the array without a TDZ throw.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   useEffect(() => {
@@ -445,7 +478,7 @@ export default function App() {
         if (mod) return;
         setQuickLogOpen((v) => !v);
       }
-      if (e.key === "Escape") { setQuickLogOpen(false); setPaletteOpen(false); setShortcutsOpen(false); }
+      if (e.key === "Escape") { setQuickLogOpen(false); setPaletteOpen(false); setShortcutsOpen(false); setFlyout(null); }
       if (e.key === "k" && mod) { e.preventDefault(); setPaletteOpen(v => !v); return; }
       if (e.key === "b" && mod) { e.preventDefault(); toggleNav(); return; }
       if (e.key === "," && mod && tag !== "input" && tag !== "textarea" && tag !== "select") { e.preventDefault(); setTab("settings"); return; }
@@ -500,7 +533,7 @@ export default function App() {
     ] },
     { id: "suppliers", label: "Suppliers", icon: Package },
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
-      { id: "lotengine", label: "Lot engine", icon: Layers },
+      { id: "lotengine", label: "Lot engine", icon: Boxes },
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
     { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
@@ -516,7 +549,7 @@ export default function App() {
     ] },
     { id: "financials", label: "Financials", icon: Landmark },
     { id: "email", label: "Newsletter", icon: Mail },
-    { id: "brief", label: "Brief", icon: FileText },
+    { id: "brief", label: "Brief", icon: Newspaper },
     { id: "analytics", label: "Analytics", icon: BarChart3, children: [
       { id: "automation", label: "Automation", icon: Bot },
       { id: "globe",      label: "Globe",      icon: Globe },
@@ -570,7 +603,7 @@ export default function App() {
         title={navCollapsed ? item.label : undefined}
         className={`relative w-full flex items-center gap-2.5 ${
           navCollapsed ? "justify-center px-0" : isChild ? "pl-8 pr-2" : "px-2.5"
-        } h-9 rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
+        } ${navCollapsed ? "h-8" : "h-9"} rounded-lg text-[13px] tracking-tight transition-all duration-150 ${
           active ? "text-white font-medium" : "text-[#6B6B7A] hover:text-white/80"
         }`}
         style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
@@ -592,6 +625,61 @@ export default function App() {
                 {apCount > 9 ? "9+" : apCount}
               </span>
         )}
+      </button>
+    );
+  };
+
+  // The only badged child is Approvals (under Clients). Surface it on the parent so
+  // a collapsed rail never hides the count inside a shut flyout.
+  const groupAlert = (n: NavNode) =>
+    !!n.children?.some((c) => c.id === "approvals") && apCount > 0 && visible("approvals");
+
+  // Collapsed rail, group row. Opens the flyout instead of navigating - the parent is
+  // itself a screen, so it is the flyout's first entry rather than a lost click.
+  const railGroupButton = (node: NavNode, kids: NavKid[]) => {
+    const Icon = node.icon;
+    const active = tab === node.id || kids.some((k) => k.id === tab);
+    const open = flyout?.id === node.id;
+    return (
+      <button
+        key={node.id}
+        ref={(el) => { buttonRefs.current[node.id] = el; }}
+        onClick={(e) => openFlyout(node.id, e)}
+        title={node.label}
+        aria-label={node.label}
+        aria-expanded={open}
+        className={`relative w-full flex items-center justify-center h-8 rounded-lg transition-all duration-150 ${
+          active ? "text-white" : "text-[#6B6B7A] hover:text-white/80"
+        }`}
+        style={active || open ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
+      >
+        <Icon size={15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
+        <ChevronRight size={9} className="absolute right-0.5 bottom-1" style={{ color: "#5A5A6A" }} />
+        {groupAlert(node) && <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />}
+      </button>
+    );
+  };
+
+  // One labelled row inside a flyout.
+  const flyoutRow = (item: NavKid, badge?: number) => {
+    const Icon = item.icon;
+    const active = tab === item.id;
+    return (
+      <button
+        key={item.id}
+        onClick={() => setTab(item.id)}
+        className={`w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] tracking-tight transition-colors ${
+          active ? "text-white font-medium" : "text-[#8A8A9A] hover:text-white hover:bg-white/[0.06]"
+        }`}
+        style={active ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
+      >
+        <Icon size={14} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
+        <span className="truncate">{item.label}</span>
+        {badge ? (
+          <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+            {badge > 9 ? "9+" : badge}
+          </span>
+        ) : null}
       </button>
     );
   };
@@ -719,30 +807,61 @@ export default function App() {
         background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
-        {/* Brand */}
-        <div className={`h-[54px] ${navCollapsed ? "justify-center px-0" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-          <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
-          {!navCollapsed && (
+        {/* Brand. The collapse control is pinned here in both states: it used to be
+            the last row of the scrolling nav, which on a short window put the only way
+            back out several hundred pixels below the fold. */}
+        <div className={`h-[54px] ${navCollapsed ? "px-0" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
+          {navCollapsed ? (
+            <button
+              onClick={toggleNav}
+              title="Expand sidebar (Cmd/Ctrl + B)"
+              aria-label="Expand sidebar"
+              className="w-full h-full flex items-center justify-center gap-1 transition-colors"
+              style={{ color: "#7A7A90" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.color = "var(--accent-400)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+            >
+              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-5 w-5 flex-shrink-0" />
+              <PanelLeftOpen size={13} strokeWidth={1.8} />
+            </button>
+          ) : (
             <>
+              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
               <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
               {shellButtons}
+              <button
+                onClick={toggleNav}
+                title="Collapse sidebar (Cmd/Ctrl + B)"
+                aria-label="Collapse sidebar"
+                className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+                style={{ color: "#7A7A90" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "var(--accent-400)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+              >
+                <PanelLeftClose size={13} strokeWidth={2} />
+              </button>
             </>
           )}
-
         </div>
 
         {/* Nav */}
-        <nav ref={navRef} className="flex-1 px-2.5 py-3 space-y-0.5 overflow-y-auto relative">
+        <nav ref={navRef} className={`flex-1 px-2.5 ${navCollapsed ? "py-2" : "py-3"} space-y-0.5 overflow-y-auto relative`}>
           {/* Sliding indicator */}
           <div
             className="nav-indicator"
             style={{ top: indicatorStyle.top, opacity: indicatorStyle.opacity }}
           />
 
-          {navCollapsed ? NAV.flatMap((node) => [
-            ...(visible(node.id) ? [node as NavKid] : []),
-            ...(node.children || []).filter((c) => visible(c.id)),
-          ]).map((item) => navButton(item, false)) : NAV.map((node) => {
+          {navCollapsed ? NAV.map((node) => {
+            const kids = (node.children || []).filter((c) => visible(c.id));
+            // Parent gated out: promote its independently-visible children, as expanded does.
+            if (!visible(node.id)) {
+              return kids.length
+                ? <div key={node.id} className="space-y-0.5">{kids.map((c) => navButton(c, false))}</div>
+                : null;
+            }
+            return kids.length === 0 ? navButton(node, false) : railGroupButton(node, kids);
+          }) : NAV.map((node) => {
             const kids = (node.children || []).filter((c) => visible(c.id));
             // Parent gated out: don't strand independently-visible children (e.g.
             // null-perm Automation/Globe under Analytics) — promote them to top level.
@@ -772,100 +891,195 @@ export default function App() {
             );
           })}
 
-          {/* Utility zone — configuration & housekeeping, set apart from the workflow mains */}
-          <div className="mt-2 pt-2 space-y-0.5" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-            {UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
-            <button
-              onClick={toggleNav}
-              title={`${navCollapsed ? "Expand" : "Collapse"} sidebar (Cmd/Ctrl + B)`}
-              aria-label={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className={`relative w-full flex items-center gap-2.5 ${navCollapsed ? "justify-center px-0" : "px-2.5"} h-9 rounded-lg text-[13px] tracking-tight text-[#6B6B7A] hover:text-white/80 transition-all duration-150`}
-            >
-              {navCollapsed ? <PanelLeftOpen size={15} strokeWidth={1.6} /> : <PanelLeftClose size={15} strokeWidth={1.6} />}
-              {!navCollapsed && "Collapse sidebar"}
-            </button>
-          </div>
         </nav>
 
-        {/* Status footer */}
-        <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 space-y-1 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
-          {navCollapsed && (
-            <div className="flex flex-col items-center gap-1 pb-1">{shellButtons}</div>
-          )}
-          <div className={`flex items-center ${navCollapsed ? "justify-center" : "justify-between"} px-1.5 py-0.5`}
-               title={navCollapsed ? `Ollama ${aiOnline ? "online" : "offline"}` : undefined}>
-            <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
-              {aiOnline ? (
-                <span className="pulse-ring flex-shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-success relative z-10 flex-shrink-0 block" />
-                </span>
-              ) : (
-                <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0" />
-              )}
-              {!navCollapsed && "Ollama"}
-            </span>
-            {!navCollapsed && (
-              <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
-                {aiOnline ? "online" : "offline"}
-              </span>
-            )}
-          </div>
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            title={navCollapsed ? `Sync · ${lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}` : undefined}
-            className={`w-full flex items-center ${navCollapsed ? "justify-center" : "justify-between"} px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50`}
-            style={{ color: "#4A4A5A" }}
-            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "")}
-          >
-            <span className="flex items-center gap-1.5">
-              <RefreshCw size={11} className={syncing ? "animate-spin" : ""} />
-              {!navCollapsed && "Sync"}
-            </span>
-            {!navCollapsed && (
-              <span className="tabular-nums">
-                {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
-              </span>
-            )}
-          </button>
-
-          {/* Signed-in user + sign out */}
-          <div className={`flex ${navCollapsed ? "flex-col" : ""} items-center gap-2 px-1.5 pt-2 mt-1`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
-            {me?.avatar
-              ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover flex-shrink-0" />
-              : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
-                  style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
-                  {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
-                </div>}
-            {!navCollapsed && (
-              <div className="min-w-0 flex-1">
-                <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
-                <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
-              </div>
-            )}
-            <button
-              onClick={() => setFbOpen(true)}
-              title="Send feedback"
-              className="p-1.5 rounded-md transition-colors flex-shrink-0"
-              style={{ color: "#7A7A90" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
-            >
-              <MessageSquarePlus size={13} />
-            </button>
-            <button
-              onClick={signOut}
-              title="Sign out"
-              className="p-1.5 rounded-md transition-colors flex-shrink-0"
-              style={{ color: "#7A7A90" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
-            >
-              <LogOut size={13} />
-            </button>
-          </div>
+        {/* Utility zone — configuration & housekeeping, set apart from the workflow
+            mains. Pinned outside the scroller: these are the ones you reach for when
+            you are lost, and they were the first to fall below the fold. */}
+        <div className="px-2.5 py-2 space-y-0.5 flex-shrink-0" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+          {UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
         </div>
+
+        {/* Status footer. Collapsed this is a compact strip: the old rail stacked bell,
+            dark mode, split view, feedback and sign out into a ~230px column that ate
+            the nav's scroll room. At 56px those live in the account menu instead. */}
+        <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+          {navCollapsed ? (
+            <div className="flex flex-col items-center gap-1.5">
+              <span className="py-0.5" title={`Ollama ${aiOnline ? "online" : "offline"}`}>
+                {aiOnline ? (
+                  <span className="pulse-ring flex-shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-success relative z-10 flex-shrink-0 block" />
+                  </span>
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0 block" />
+                )}
+              </span>
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                title={`Sync · ${lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}`}
+                className="w-7 h-7 rounded-md flex items-center justify-center transition-colors disabled:opacity-50"
+                style={{ color: "#7A7A90" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+                onMouseLeave={e => (e.currentTarget.style.background = "")}
+              >
+                <RefreshCw size={12} className={syncing ? "animate-spin" : ""} />
+              </button>
+              <button
+                onClick={(e) => openFlyout("__account", e)}
+                title={me?.display_name || "Account"}
+                aria-label="Account menu"
+                aria-expanded={flyout?.id === "__account"}
+                className="relative w-7 h-7 rounded-md flex items-center justify-center transition-colors"
+              >
+                {me?.avatar
+                  ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover" />
+                  : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white"
+                      style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+                      {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
+                    </div>}
+                {me?.is_admin && apCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" style={{ border: "1px solid #101011" }} />
+                )}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between px-1.5 py-0.5">
+                <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
+                  {aiOnline ? (
+                    <span className="pulse-ring flex-shrink-0">
+                      <span className="w-1.5 h-1.5 rounded-full bg-success relative z-10 flex-shrink-0 block" />
+                    </span>
+                  ) : (
+                    <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0" />
+                  )}
+                  Ollama
+                </span>
+                <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
+                  {aiOnline ? "online" : "offline"}
+                </span>
+              </div>
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="w-full flex items-center justify-between px-1.5 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-50"
+                style={{ color: "#4A4A5A" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
+                onMouseLeave={e => (e.currentTarget.style.background = "")}
+              >
+                <span className="flex items-center gap-1.5">
+                  <RefreshCw size={11} className={syncing ? "animate-spin" : ""} />
+                  Sync
+                </span>
+                <span className="tabular-nums">
+                  {lastSync ? new Date(lastSync).toLocaleTimeString() : "—"}
+                </span>
+              </button>
+
+              {/* Signed-in user + sign out */}
+              <div className="flex items-center gap-2 px-1.5 pt-2 mt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+                {me?.avatar
+                  ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover flex-shrink-0" />
+                  : <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+                      style={{ background: "linear-gradient(135deg, var(--accent-500), var(--accent-700))" }}>
+                      {(me?.display_name || "?").trim().charAt(0).toUpperCase()}
+                    </div>}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
+                  <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
+                </div>
+                <button
+                  onClick={() => setFbOpen(true)}
+                  title="Send feedback"
+                  className="p-1.5 rounded-md transition-colors flex-shrink-0"
+                  style={{ color: "#7A7A90" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+                >
+                  <MessageSquarePlus size={13} />
+                </button>
+                <button
+                  onClick={signOut}
+                  title="Sign out"
+                  className="p-1.5 rounded-md transition-colors flex-shrink-0"
+                  style={{ color: "#7A7A90" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+                >
+                  <LogOut size={13} />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Rail flyouts. Fixed rather than absolute so the scrolling nav cannot clip
+            them, over a backdrop that closes on any outside click. */}
+        {navCollapsed && flyout && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setFlyout(null)} />
+            <div
+              ref={flyRef}
+              className="fixed z-50 w-[186px] p-1 rounded-xl"
+              style={{
+                left: 62, top: flyout.top,
+                background: "#17171A",
+                border: "1px solid rgba(255,255,255,0.09)",
+                boxShadow: "0 14px 36px rgba(0,0,0,0.55)",
+              }}
+            >
+              {flyout.id === "__account" ? (
+                <>
+                  <div className="px-2.5 pt-1.5 pb-2 mb-1" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                    <div className="text-[12px] font-medium truncate" style={{ color: "#C7C7D1" }}>{me?.display_name}</div>
+                    <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
+                  </div>
+                  {me?.is_admin && (
+                    <button onClick={() => setTab("approvals")} className={RAIL_MENU_ROW}>
+                      <Bell size={14} strokeWidth={1.7} />
+                      <span>Notifications</span>
+                      {apCount > 0 && (
+                        <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+                          {apCount > 9 ? "9+" : apCount}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  <button onClick={() => { setDark(d => !d); setFlyout(null); }} className={RAIL_MENU_ROW}>
+                    {dark ? <Sun size={14} strokeWidth={1.7} /> : <Moon size={14} strokeWidth={1.7} />}
+                    <span>{dark ? "Light mode" : "Dark mode"}</span>
+                  </button>
+                  <button onClick={() => { toggleSplit(); setFlyout(null); }} className={RAIL_MENU_ROW}>
+                    <Columns2 size={14} strokeWidth={1.7} />
+                    <span>{splitTab ? "Close split view" : "Split view"}</span>
+                  </button>
+                  <button onClick={() => { setFbOpen(true); setFlyout(null); }} className={RAIL_MENU_ROW}>
+                    <MessageSquarePlus size={14} strokeWidth={1.7} />
+                    <span>Send feedback</span>
+                  </button>
+                  <button onClick={() => { setFlyout(null); signOut(); }} className={RAIL_MENU_ROW}>
+                    <LogOut size={14} strokeWidth={1.7} />
+                    <span>Sign out</span>
+                  </button>
+                </>
+              ) : (() => {
+                const node = NAV.find((n) => n.id === flyout.id);
+                if (!node) return null;
+                const kids = (node.children || []).filter((c) => visible(c.id));
+                return (
+                  <>
+                    {flyoutRow(node as NavKid)}
+                    <div className="my-1 mx-2" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }} />
+                    {kids.map((c) => flyoutRow(c, c.id === "approvals" ? apCount : undefined))}
+                  </>
+                );
+              })()}
+            </div>
+          </>
+        )}
+
       </aside>
 
       {fbOpen && <FeedbackModal me={me} onClose={() => setFbOpen(false)} />}
