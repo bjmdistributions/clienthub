@@ -242,6 +242,28 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
     }
   };
 
+  // The payment belongs to somebody who was never entered. Which side of the book
+  // they go on is not a guess: money out went to a supplier, money in came from a
+  // client. Creating the record and tagging it are one step, because leaving to
+  // create it and coming back is the dead end this exists to close.
+  const createAndRetag = async (row: Row, name: string) => {
+    setBusyTxn(row.txn_id);
+    try {
+      const type: PersonRef["type"] = row.direction === "in" ? "client" : "supplier";
+      const id = type === "client"
+        ? (await api.createClient({ name })).id
+        : await api.createSupplier({ name });
+      await api.tagBankTxnCounterparty(row.txn_id, type, id);
+      toast(`Created ${name} and filed it under them`);
+      setPickerFor(null);
+      onChanged?.();
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally {
+      setBusyTxn(null);
+    }
+  };
+
   // A patch write - `set_bank_txn_review` sends only the column named, so
   // confirming a method here cannot re-stamp category or the reviewed flag.
   const confirmMethod = async (row: Row, value: string) => {
@@ -462,6 +484,8 @@ export default function PersonPayments({ person, payments, onUntag, people, onCh
           busy={busyTxn === pickerFor.txn_id}
           onClose={() => setPickerFor(null)}
           onPick={(to) => retag(pickerFor, to)}
+          onCreate={(name) => createAndRetag(pickerFor, name)}
+          createLabel={pickerFor.direction === "in" ? "Add a new client" : "Add a new supplier"}
         />
       )}
     </div>

@@ -64,6 +64,20 @@ export interface PartyLink {
   linked_name: string;
   /** Which table `linked_id` lives in. */
   linked_type: "client" | "supplier";
+  /** The link names a row THIS DEVICE HAS NOT PULLED YET. Migration 80 is explicit
+   *  that an id we do not hold means "not linked here yet", never an error, so the
+   *  backend reports it as a flag rather than failing. On this shape `linked_id`
+   *  and `linked_name` are empty — there is nothing here to name — so a caller must
+   *  read it as "linked, but not on this device" and never print the blank name. */
+  link_pending?: boolean;
+}
+
+/** The `linked_party_payments` envelope. Only the identity half is read here: both
+ *  payment lists are fetched per side through `counterpartyPayments`, which is what
+ *  keeps the two sides separate and stops anything netting them. */
+interface LinkedPartyEnvelope {
+  linked: { ctype: "client" | "supplier"; id: string; name: string } | null;
+  link_pending: boolean;
 }
 
 export interface ClientInput {
@@ -2545,19 +2559,42 @@ export const api = {
 
   // ── The dual-role party link (R-175 / R-153) ──────────────────────────────
   // `linked_party_id` shipped on both `clients` and `suppliers` in v0.16.1 with
-  // no readers and no writers. These two commands are the readers and the writer.
+  // no readers and no writers. These are the readers and the writer.
   // A LINK, not a merge: the two records stay separate everywhere, and what we
   // pay them (cost) is never netted against what they pay us (revenue).
   //
-  // Callers MUST tolerate `get_party_link` rejecting — a build that predates the
-  // Rust half has no such command, and the surface is expected to hide itself
-  // rather than offer a control that cannot work.
-  getPartyLink: (ptype: "client" | "supplier", id: string) =>
-    invoke<PartyLink | null>("get_party_link", { ptype, id }),
+  // The command names here are NOT `get_party_link`/`set_party_link`. Those were
+  // never registered and every call rejected, unseen, through eleven published
+  // tags. The Rust half is `link_party`, `unlink_party` and `linked_party_payments`
+  // (main.rs, defined in commands.rs), whose first argument is `ctype`, not `ptype`.
+  //
+  // Callers MUST still tolerate a rejection — a build that predates the Rust half
+  // has none of these — and the surface is expected to hide itself rather than
+  // offer a control that cannot work.
+  //
+  // The getter is built from `linked_party_payments`, which is the only reader:
+  // it takes the identity half of the envelope and drops both payment lists, which
+  // the profile fetches per side so that nothing can arrive pre-combined.
+  getPartyLink: async (ctype: "client" | "supplier", id: string): Promise<PartyLink | null> => {
+    const r = await invoke<LinkedPartyEnvelope>("linked_party_payments", { ctype, id });
+    if (r.linked) {
+      return { linked_id: r.linked.id, linked_name: r.linked.name, linked_type: r.linked.ctype };
+    }
+    // Linked to a row this device has not pulled yet. Not an error and not "no
+    // link" — the pointer is real, so the caller is told, and there is no name to
+    // show because there is no row here to read one from.
+    if (r.link_pending) {
+      return { linked_id: "", linked_name: "", linked_type: ctype === "client" ? "supplier" : "client", link_pending: true };
+    }
+    return null;
+  },
   /** `linkedId` null clears the link. Writes BOTH sides — a one-sided pointer is
-   *  a link only one profile can see. */
-  setPartyLink: (ptype: "client" | "supplier", id: string, linkedId: string | null) =>
-    invoke<void>("set_party_link", { ptype, id, linkedId }),
+   *  a link only one profile can see. Two commands, because `link_party` has no
+   *  null path: clearing is `unlink_party`, which takes no counterpart at all. */
+  setPartyLink: (ctype: "client" | "supplier", id: string, linkedId: string | null) =>
+    linkedId === null
+      ? invoke<void>("unlink_party", { ctype, id })
+      : invoke<void>("link_party", { ctype, id, otherId: linkedId }),
 
   buyerTiers: () => invoke<BuyerTier[]>("buyer_tiers"),
   getBuyerTier: (clientId: string) => invoke<BuyerTier>("get_buyer_tier", { clientId }),

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, Package, Pencil, Plus, Save, Search, Trash2, Phone, Mail, MapPin, X, ChevronRight, ArrowUp, ArrowDown } from "lucide-react";
-import { api, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
+import { api, Client, DealFlow, Invoice, PartyLink, Supplier, SupplierInput, SupplierPriceEntry, CounterpartyPaymentRow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import SupplierDealsModal from "./SupplierDealsModal";
 import PersonPayments from "./PersonPayments";
-import { PersonRef } from "./PersonPicker";
+import PersonPickerModal, { PersonRef } from "./PersonPicker";
+import { PartyLinkPanel, atMs, dedupeByInvoice } from "./ClientDetailView";
+import { toast } from "./Toast";
 
 const emptyInput: SupplierInput = {
   name: "",
@@ -91,6 +93,25 @@ export default function SuppliersView() {
   const [saving,        setSaving]        = useState(false);
   const [open,          setOpen]          = useState(false);
 
+  // ── The party link (R-175) ───────────────────────────────────────────────
+  // The buyer side of this panel already ships on the client profile; this is
+  // the same component with the supplier config, so a supplier who also buys
+  // from us can be linked to their client twin. LINKED, never merged: the two
+  // sides render apart, nothing appears twice, and the two are NEVER summed
+  // into one profit figure — the single combined number is a position. Buyer
+  // tiers stay on the client record; the link is identity, never accounting.
+  //
+  // Capability-detected exactly like the client side: `get_party_link` is not
+  // in every build, and a control that cannot work is worse than no control.
+  const [linkSupported, setLinkSupported] = useState(false);
+  const [link,          setLink]          = useState<PartyLink | null>(null);
+  const [linkedClient,  setLinkedClient]  = useState<Client | null>(null);
+  const [linkedInvoices,setLinkedInvoices]= useState<Invoice[]>([]);
+  const [linkedFlows,   setLinkedFlows]   = useState<DealFlow[]>([]);
+  const [linkedPayments,setLinkedPayments]= useState<CounterpartyPaymentRow[]>([]);
+  const [linkPicker,    setLinkPicker]    = useState(false);
+  const [linkBusy,      setLinkBusy]      = useState(false);
+
   const load = async () => setSuppliers(await api.listSuppliers());
   useEffect(() => { load().catch(console.error); }, []);
   useEffect(() => {
@@ -129,6 +150,93 @@ export default function SuppliersView() {
     api.getDealsForSupplier(s.id).then(setSupplierDeals).catch(() => setSupplierDeals([]));
     // Bank payments this supplier touches: tagged rows + supplier_payment legs.
     api.counterpartyPayments("supplier", s.id, s.name).then(setPayments).catch(() => setPayments([]));
+    setLinkPicker(false);
+    setLink(null);
+    setLinkedClient(null);
+    setLinkedInvoices([]);
+    setLinkedFlows([]);
+    setLinkedPayments([]);
+    loadLink(s);
+  };
+
+  // The link, and when there is one the client side's own records. Every fetch
+  // is separate on purpose: what they paid us comes from their invoices, what we
+  // paid them from this supplier's totals, and the two are never added together.
+  const loadLink = async (s: Supplier) => {
+    try {
+      const l = await api.getPartyLink("supplier", s.id);
+      setLinkSupported(true);
+      setLink(l);
+      if (l) {
+        api.getClient(l.linked_id).then(setLinkedClient).catch(() => setLinkedClient(null));
+        api.listInvoicesForClient(l.linked_id).then(setLinkedInvoices).catch(() => setLinkedInvoices([]));
+        api.listDealFlows()
+          .then((all) => setLinkedFlows(dedupeByInvoice(all.filter((f) => f.client_id === l.linked_id))))
+          .catch(() => setLinkedFlows([]));
+        api.counterpartyPayments("client", l.linked_id, l.linked_name)
+          .then(setLinkedPayments).catch(() => setLinkedPayments([]));
+      } else {
+        setLinkedClient(null);
+        setLinkedInvoices([]);
+        setLinkedFlows([]);
+        setLinkedPayments([]);
+      }
+    } catch (e) {
+      // The command is not in this build yet — offer nothing rather than a dead
+      // control. Named, never silent: a bare catch on the client side of this
+      // panel hid a wrong command name through eleven published tags.
+      console.warn("[party link] linked_party_payments rejected — the panel stays hidden:", e);
+      setLinkSupported(false);
+    }
+  };
+
+  const setLinkedParty = async (p: PersonRef) => {
+    if (!selected) return;
+    setLinkBusy(true);
+    try {
+      await api.setPartyLink("supplier", selected.id, p.id);
+      setLinkPicker(false);
+      await loadLink(selected);
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally { setLinkBusy(false); }
+  };
+
+  const clearLinkedParty = async () => {
+    if (!selected) return;
+    setLinkBusy(true);
+    try {
+      await api.setPartyLink("supplier", selected.id, null);
+      await loadLink(selected);
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally { setLinkBusy(false); }
+  };
+
+  // Create the missing client record and link it in one step — the company we
+  // buy from that has never been entered as a buyer was otherwise a dead end.
+  const createAndLink = async (name: string) => {
+    if (!selected) return;
+    setLinkBusy(true);
+    try {
+      const c = await api.createClient({ name });
+      await api.setPartyLink("supplier", selected.id, c.id);
+      setLinkPicker(false);
+      toast(`Created ${name} and linked them`);
+      setPeople((ps) => [...ps, { type: "client", id: c.id, name }]);
+      await loadLink(selected);
+    } catch (e: any) {
+      toast(String(e), "error");
+    } finally { setLinkBusy(false); }
+  };
+
+  // Remove a wrong client tag on the linked side. The payment itself stays booked.
+  const untagLinkedPayment = async (txnId: string) => {
+    if (!link) return;
+    try {
+      await api.untagBankTxnCounterparty(txnId);
+      setLinkedPayments(await api.counterpartyPayments("client", link.linked_id, link.linked_name));
+    } catch {}
   };
 
   // Remove a wrong supplier tag — the payment itself stays booked. Re-fetch so a
@@ -203,6 +311,36 @@ export default function SuppliersView() {
     const rev    = live.reduce((n, s) => n + s.total_revenue, 0);
     return { spent, profit, rev, count: live.length, used: live.filter((s) => s.deal_count > 0).length };
   }, [suppliers]);
+
+  // The linked client's side of the panel. Their revenue and our cost are computed
+  // from different records and are never netted; the panel prints one combined
+  // number and calls it position, which is not profit and which no deal reads.
+  // Voided invoices are out: a voided sent invoice is not outstanding and a voided
+  // paid one is not revenue.
+  const linkedLive = linkedInvoices.filter((i) => !i.voided);
+  const linkedOpen = linkedLive
+    .filter((i) => i.status === "sent" || i.status === "overdue")
+    .reduce((n, i) => n + i.total, 0);
+  // total_revenue is the authoritative refund-netted figure from the backend.
+  const linkedRevenue = linkedClient?.total_revenue
+    ?? linkedLive.filter((i) => i.status === "paid").reduce((n, i) => n + i.total, 0);
+  // Deals of the linked client that THIS supplier supplied — the both-ends case
+  // the link exists for. Kept legs are excluded, as they are everywhere else.
+  const theirDeals = selected
+    ? linkedFlows
+        .map((flow) => {
+          const legs = (flow.supplier_payments || []).filter((sp) => sp.supplier_id === selected.id && !sp.kept);
+          const amount = legs.reduce((n, sp) => n + (sp.amount || 0), 0);
+          const paidLegs = legs.filter((sp) => sp.paid).reduce((n, sp) => n + (sp.amount || 0), 0);
+          return { flow, amount, paid: paidLegs, n: legs.length };
+        })
+        .filter((d) => d.n > 0)
+        .sort((a, b) => atMs(b.flow.created_at) - atMs(a.flow.created_at))
+    : [];
+  // Nothing may appear twice: a transaction already listed on the supplier side is
+  // not repeated under the client side.
+  const supplierTxnIds = new Set(payments.map((p) => p.txn_id));
+  const linkedPaymentsShown = linkedPayments.filter((p) => !supplierTxnIds.has(p.txn_id));
 
   const anyFilter = filter !== "active" || !!query || spendRange > 0 || profitRange > 0 || activity > 0;
   const clearFilters = () => {
@@ -457,6 +595,27 @@ export default function SuppliersView() {
                   onUntagPayment={untagPayment}
                   people={people}
                   onPaymentsChanged={reloadPayments}
+                  partyLink={linkSupported ? (
+                    <PartyLinkPanel
+                      role="supplier"
+                      selfName={selected.name}
+                      link={link}
+                      linked={linkedClient}
+                      linkedPayments={linkedPaymentsShown}
+                      theirDeals={theirDeals}
+                      theirSide={{
+                        revenue: linkedRevenue,
+                        open: linkedOpen,
+                        invoices: linkedLive.filter((i) => ["sent", "overdue", "paid"].includes(i.status)).length,
+                      }}
+                      ourSide={{ cost: selected.total_paid, deals: theirDeals.length, last: selected.last_deal_date || null }}
+                      position={linkedRevenue - selected.total_paid}
+                      onOpenPicker={() => setLinkPicker(true)}
+                      onUnlink={clearLinkedParty}
+                      onUntagLinked={untagLinkedPayment}
+                      busy={linkBusy}
+                    />
+                  ) : null}
                 />
               ) : (
                 <Form input={input} setInput={setInput} />
@@ -500,6 +659,22 @@ export default function SuppliersView() {
         </div>
       )}
 
+      {linkPicker && selected && (
+        <PersonPickerModal
+          title={`Which client is ${selected.name}?`}
+          subtitle="Links the two records. Nothing is merged, no money moves, and what they pay us stays revenue."
+          only="client"
+          people={people}
+          candidates={[]}
+          current={link ? { type: "client", id: link.linked_id, name: link.linked_name } : null}
+          busy={linkBusy}
+          onClose={() => setLinkPicker(false)}
+          onPick={setLinkedParty}
+          onCreate={createAndLink}
+          createLabel="Add a new client"
+        />
+      )}
+
       {dealsModalOpen && selected && (
         <SupplierDealsModal
           supplier={selected}
@@ -531,9 +706,13 @@ function Th({ label, k, sortKey, asc, onSort, align = "right" }: {
   );
 }
 
-function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment, people, onPaymentsChanged }: {
+function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment, people, onPaymentsChanged, partyLink }: {
   s: Supplier; history: SupplierPriceEntry[]; payments: CounterpartyPaymentRow[]; dealCount: number; onOpenDeals: () => void; onUntagPayment: (txnId: string) => void;
   people: PersonRef[]; onPaymentsChanged: () => void;
+  /** The dual-role party link, rendered beside this supplier's own payments so the
+   *  two sides sit together and stay visibly apart. Null when the build has no
+   *  `get_party_link`. */
+  partyLink?: ReactNode;
 }) {
   const m = marginOf(s);
   return (
@@ -581,6 +760,8 @@ function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment,
         people={people}
         onChanged={onPaymentsChanged}
       />
+
+      {partyLink}
 
       {/* Contact */}
       {(s.phone || s.email || s.address) && (

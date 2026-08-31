@@ -162,14 +162,17 @@ const openStatement = (clientId: string) => {
 };
 
 const openInvoices = () => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
-const openSuppliers = () => window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "suppliers" }));
+/** Open the list the OTHER side of a party link lives in. Role-aware because the
+ *  same panel now renders on a supplier profile, where the counterpart is a client. */
+const openPartyList = (role: PartyRole) =>
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: role === "supplier" ? "suppliers" : "clients" }));
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** Sort key for a stream row. A bare YYYY-MM-DD through `new Date()` is parsed
  *  as UTC midnight and reads a day early in Central (R-159), so date-only values
  *  go through parseLocalDay and timestamps keep their time. */
-const atMs = (raw: string): number => {
+export const atMs = (raw: string): number => {
   const s = (raw || "").trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return parseLocalDay(s).getTime();
   const v = new Date(s).getTime();
@@ -207,7 +210,7 @@ const daysFromToday = (day: string): number =>
 /** One deal flow per invoice, keeping the LOWEST id — the same survivor rule the
  *  backend uses (`MIN(d2.id)`). Duplicate rows for one invoice are a known live
  *  condition and would double every total taken over them. */
-const dedupeByInvoice = (flows: DealFlow[]): DealFlow[] => {
+export const dedupeByInvoice = (flows: DealFlow[]): DealFlow[] => {
   const best = new Map<string, DealFlow>();
   for (const f of flows) {
     const cur = best.get(f.invoice_id);
@@ -502,8 +505,9 @@ export function PartyLinkPanel({
   role: PartyRole;
   selfName: string;
   link: PartyLink | null;
-  /** The linked supplier record, when it has loaded. */
-  linked: Supplier | null;
+  /** The record on the other side of the link, when it has loaded — a supplier on a
+   *  client profile, a client on a supplier profile. */
+  linked: Supplier | Client | null;
   linkedPayments: CounterpartyPaymentRow[];
   /** Deals where the linked party supplied the goods. */
   theirDeals: { flow: DealFlow; amount: number; paid: number }[];
@@ -540,6 +544,56 @@ export function PartyLinkPanel({
     );
   }
 
+  /* The linked record's own detail — its deals and its tagged payments. It belongs under
+   * whichever heading describes the LINKED record, and that flips with the role: on a
+   * client profile the linked party is a supplier, so the detail is money we paid out and
+   * sits in the cost block; on a supplier profile the linked party is a client, so the
+   * same detail is money that came in and belongs in the revenue block. Rendered
+   * unconditionally in the cost block it printed a client's incoming payments directly
+   * under "Money to them. This is cost." */
+  const linkedDetailIsCost = role === "client";
+  const linkedDetail = (
+    <>
+      {theirDeals.length > 0 && (
+        <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden max-h-[280px] overflow-y-auto">
+          {theirDeals.map(({ flow, amount, paid }) => (
+            <div key={flow.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              <div className="min-w-0">
+                <div className="text-[12.5px] text-ink truncate">
+                  {flow.invoice_number ? `#${flow.invoice_number}` : "Deal"}
+                  <span className="text-muted"> · {STAGE_LABEL[flow.stage] || flow.stage}</span>
+                </div>
+                <div className="text-[11px] text-muted">
+                  {flow.client_name || "—"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className="text-[12.5px] font-semibold text-ink tabular-nums">{fmtAmount(amount)}</span>
+                {flow.invoice_number && (
+                  <button onClick={() => openDeal(flow.invoice_number as string)} title="Open this deal"
+                    aria-label="Open this deal"
+                    className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
+                    <ArrowRight size={11} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {linkedPayments.length > 0 && (
+        <div className="mt-4">
+          <PersonPayments
+            person={{ type: copy.other, id: link.linked_id, name: link.linked_name }}
+            payments={linkedPayments}
+            onUntag={onUntagLinked}
+          />
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -555,7 +609,7 @@ export function PartyLinkPanel({
           {/* Honest label: this opens the supplier LIST. Landing on the supplier's
               own profile needs a handoff SuppliersView reads, and that file
               belongs to another session — see the report. */}
-          <button onClick={openSuppliers} title={`Opens the ${copy.other} list`}
+          <button onClick={() => openPartyList(copy.other)} title={`Opens the ${copy.other} list`}
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg border border-line text-ink-2 text-[12px] font-medium hover:bg-surface-2 hover:border-line-3 transition-colors">
             {copy.other === "supplier" ? "Suppliers" : "Clients"} <ArrowRight size={12} />
           </button>
@@ -581,6 +635,7 @@ export function PartyLinkPanel({
           <StatTile label="Still open" value={fmtAmount(theirSide.open)} tone={theirSide.open > 0 ? "warning" : "muted"} />
           <StatTile label="Invoices" value={String(theirSide.invoices)} tone="ink" />
         </div>
+        {!linkedDetailIsCost && linkedDetail}
       </div>
 
       {/* Our side — cost. Never added to the block above. */}
@@ -595,43 +650,7 @@ export function PartyLinkPanel({
           <StatTile label="Last supplied" value={ourSide.last ? whenLabel(ourSide.last) : "—"} tone="muted" />
         </div>
 
-        {theirDeals.length > 0 && (
-          <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden max-h-[280px] overflow-y-auto">
-            {theirDeals.map(({ flow, amount, paid }) => (
-              <div key={flow.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-[12.5px] text-ink truncate">
-                    {flow.invoice_number ? `#${flow.invoice_number}` : "Deal"}
-                    <span className="text-muted"> · {STAGE_LABEL[flow.stage] || flow.stage}</span>
-                  </div>
-                  <div className="text-[11px] text-muted">
-                    {flow.client_name || "—"}{paid < amount - 0.01 ? ` · ${fmtAmount(amount - paid)} still to pay them` : " · paid"}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className="text-[12.5px] font-semibold text-ink tabular-nums">{fmtAmount(amount)}</span>
-                  {flow.invoice_number && (
-                    <button onClick={() => openDeal(flow.invoice_number as string)} title="Open this deal"
-                      aria-label="Open this deal"
-                      className="w-5 h-5 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
-                      <ArrowRight size={11} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {linkedPayments.length > 0 && (
-          <div className="mt-4">
-            <PersonPayments
-              person={{ type: "supplier", id: link.linked_id, name: link.linked_name }}
-              payments={linkedPayments}
-              onUntag={onUntagLinked}
-            />
-          </div>
-        )}
+        {linkedDetailIsCost && linkedDetail}
       </div>
 
       {/* The one combined number, and what it is not. */}
@@ -733,8 +752,12 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         setLinkedSupplier(null);
         setLinkedPayments([]);
       }
-    } catch {
+    } catch (e) {
       // The command is not in this build yet — offer nothing rather than a dead control.
+      // The degrade stays graceful, but the rejection is NAMED: a bare `catch {}` here
+      // hid a wrong command name through eleven published tags, because a panel that
+      // never appears looks exactly like a panel nobody linked anything on.
+      console.warn("[party link] linked_party_payments rejected — the panel stays hidden:", e);
       setLinkSupported(false);
     }
   };
@@ -849,8 +872,10 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   // Profit = completed deals' net profit less every refund on those deals, in
   // full and uncapped. `net_profit` alone is deliberately PRE-refund, so reading
   // it raw overstates a refunded client — and capping the subtraction at the
-  // deal's profit (which `buyer_tiers.total_profit` still does) is the rule Jack
-  // revoked on 2026-08-19. Six deals legitimately report a loss.
+  // deal's profit is the rule Jack revoked on 2026-08-19. `buyer_tiers.total_profit`
+  // used to cap and no longer does, on either surface, so this figure and the client
+  // list now agree; do not reintroduce a cap in either place. Six deals legitimately
+  // report a loss.
   const completed = flows.filter((f) => f.stage === "complete");
   const dealProfit = (f: DealFlow) => (f.net_profit || 0) - (refundByDeal[f.id] || 0);
   const clientProfit = completed.reduce((s, f) => s + dealProfit(f), 0);

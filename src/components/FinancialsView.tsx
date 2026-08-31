@@ -2253,6 +2253,27 @@ export default function FinancialsView() {
     finally { setPersonBusy(null); }
   };
 
+  // The money is with somebody who was never entered. Which side of the book they
+  // go on is not a guess: money out went to a supplier, money in came from a
+  // client. Still identity only — the new record is tagged, never allocated, so
+  // no deal, Free Cash or reconciliation figure moves.
+  const createAndTagPerson = async (t: BankTxn, name: string) => {
+    setPersonBusy(t.id);
+    try {
+      const type: PersonRef["type"] = t.direction === "in" ? "client" : "supplier";
+      const id = type === "client"
+        ? (await api.createClient({ name })).id
+        : await api.createSupplier({ name });
+      await api.tagBankTxnCounterparty(t.id, type, id);
+      setTxns((prev) => prev.map((x) => (x.id === t.id ? { ...x, counterparty_type: type, counterparty_id: id } : x)));
+      setPeople((ps) => [...ps, { type, id, name }]);
+      setPersonPickerFor(null);
+      setLinkOfferFor((cur) => (cur === t.id ? null : cur));
+      toast(`Created ${name} and linked it`);
+    } catch (e: any) { toast(errText(e), "error"); }
+    finally { setPersonBusy(null); }
+  };
+
   const untagPerson = async (t: BankTxn) => {
     setPersonBusy(t.id);
     try {
@@ -4298,6 +4319,8 @@ export default function FinancialsView() {
             busy={personBusy === t.id}
             onClose={() => setPersonPickerFor(null)}
             onPick={(p) => tagPerson(t, p)}
+            onCreate={(name) => createAndTagPerson(t, name)}
+            createLabel={t.direction === "in" ? "Add a new client" : "Add a new supplier"}
           />
         );
       })()}
