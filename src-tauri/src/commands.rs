@@ -2129,6 +2129,11 @@ pub struct Interaction {
     pub subject: Option<String>,
     pub body: Option<String>,
     pub created_at: String,
+    /// Who logged it. `add_interaction` has always written this column; the timeline
+    /// could not show it because this read path never selected it. Defaulted so a row
+    /// stored before the column existed still parses.
+    #[serde(default)]
+    pub user_name: Option<String>,
 }
 
 #[tauri::command]
@@ -2136,7 +2141,7 @@ pub async fn list_interactions(client_id: String) -> Result<Vec<Interaction>, St
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,client_id,kind,subject,body,created_at
+            "SELECT id,client_id,kind,subject,body,created_at,user_name
              FROM interactions WHERE client_id=?1 ORDER BY created_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -2145,6 +2150,7 @@ pub async fn list_interactions(client_id: String) -> Result<Vec<Interaction>, St
             Ok(Interaction {
                 id: r.get(0)?, client_id: r.get(1)?, kind: r.get(2)?,
                 subject: r.get(3)?, body: r.get(4)?, created_at: r.get(5)?,
+                user_name: r.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -7555,7 +7561,7 @@ pub async fn get_storefront_config() -> Result<StorefrontConfig, String> {
         contact_wa: sf_get(&conn, "storefront_contact_wa").unwrap_or_default(),
         contact_email: sf_get(&conn, "storefront_contact_email").unwrap_or_default(),
         accent: sf_get(&conn, "storefront_accent").unwrap_or_else(|| "#FF6520".into()),
-        bg: sf_get(&conn, "storefront_bg").unwrap_or_else(|| "charcoal".into()),
+        bg: sf_get(&conn, "storefront_bg").unwrap_or_else(|| "paper".into()),
     })
 }
 
@@ -7571,7 +7577,7 @@ pub async fn save_storefront_config(enabled: bool, show_prices: bool, show_logo:
     write_setting("storefront_contact_wa", contact_wa.trim())?;
     write_setting("storefront_contact_email", contact_email.trim())?;
     write_setting("storefront_accent", accent.as_deref().unwrap_or("#FF6520").trim())?;
-    write_setting("storefront_bg", bg.as_deref().unwrap_or("charcoal").trim())?;
+    write_setting("storefront_bg", bg.as_deref().unwrap_or("paper").trim())?;
     let has_token = { let conn = pool().get().map_err(|e| e.to_string())?; sf_get(&conn, "storefront_token").is_some() };
     if enabled && !has_token {
         let token: String = Uuid::new_v4().to_string().replace('-', "").chars().take(16).collect();
@@ -10722,35 +10728,25 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
 
     // Total profit per client, over the same completed deal flows the margin above uses.
     //
-    // Two guards, both load-bearing:
-    //  * Deduped to ONE row per invoice — the known duplicate deal_flow rows (one invoice
-    //    → two 'complete' rows) leave an AVG unchanged but would double a SUM. Same
-    //    distinct-by-invoice rule as `completed_deals_by_client`.
-    //  * A refund is netted against ITS OWN deal flow and capped at that deal's profit,
-    //    never subtracted from the client total. Refunds return *revenue*, not profit:
-    //    on this data the naive client-level subtraction showed −$85,720 for a buyer
-    //    whose refunded deals never reached 'complete' and so never earned a cent.
-    //    Fully refunded deal → contributes 0. A genuinely loss-making deal stays negative.
+    // Both guards come from the shared builders, so this list cannot grow a third profit
+    // rule of its own:
+    //  * `DF_SURVIVOR_SQL` — ONE row per invoice. The known duplicate deal_flow rows (one
+    //    invoice → two 'complete' rows) leave an AVG unchanged but would double a SUM.
+    //  * `DF_EFF_PROFIT_SQL` — each refund counted once and subtracted IN FULL. Jack's
+    //    rule, 2026-08-19: a refund is money that left, so a deal CAN go negative. The cap
+    //    that used to live here is why the client list disagreed with the client detail;
+    //    do not reintroduce it.
     let profit_map: std::collections::HashMap<String, f64> = {
         let mut stmt = conn.prepare(
-            "SELECT i.client_id, COALESCE(SUM(
-                      df.net_profit - MIN(
-                        COALESCE((SELECT SUM(x.amt) FROM (
-                            SELECT r.amount AS amt, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
-                            UNION ALL
-                            SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
-                              AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)
-                          ) x WHERE x.dfid = df.id),0),
-                        MAX(df.net_profit, 0))
-                    ),0)
+            &format!(
+            "SELECT i.client_id, COALESCE(SUM({np}),0)
              FROM deal_flows df
              JOIN invoices i ON i.id = df.invoice_id
              WHERE df.stage = 'complete' AND COALESCE(df.archived,0)=0
                AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
-               AND df.id = (SELECT MIN(d2.id) FROM deal_flows d2
-                            WHERE d2.invoice_id = df.invoice_id
-                              AND d2.stage = 'complete' AND COALESCE(d2.archived,0)=0)
-             GROUP BY i.client_id"
+               AND {one}
+             GROUP BY i.client_id",
+            np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL)
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,f64>(1)?)))
             .map_err(|e| e.to_string())?;
