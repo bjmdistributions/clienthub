@@ -5,13 +5,16 @@ import {
   LotAutoResult,
   LotBuild,
   LotBuildDetail,
+  LotColumnMap,
   LotFacets,
   LotGroupTotal,
+  LotLocationMode,
   LotManifestOpts,
   LotProduct,
   LotRankResult,
   LotRankedSlot,
   LotSheet,
+  LotSheetColumns,
   LotSheetReport,
   LotTotals,
   LotUpcConflict,
@@ -34,6 +37,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCopy,
+  Columns3,
   Download,
   Layers,
   Plus,
@@ -89,7 +93,7 @@ const emptyAllow = (): LotAllow => ({
   brand_lock: [],
 });
 
-type Tab = "sheets" | "build" | "auto" | "retail" | "quality" | "barcodes" | "lots";
+type Tab = "sheets" | "build" | "auto" | "columns" | "retail" | "quality" | "barcodes" | "lots";
 
 export default function LotEngineView() {
   const [sheets, setSheets] = useState<LotSheet[]>([]);
@@ -152,12 +156,14 @@ export default function LotEngineView() {
           ]
             .filter(([, col]) => !col)
             .map(([label]) => label);
-          setTab("quality");
+          // Columns, not Quality. Quality says WHAT was dropped; this is the screen that can
+          // do something about it, and a failed import has exactly one useful next action.
+          setTab("columns");
           toast(
             `Nothing could be read from that sheet — ${n(r.quality.rows_in)} rows in, none usable.` +
               (missing.length
-                ? ` No column looked like ${missing.join(", ")}. Check the Quality tab for what was dropped.`
-                : " The Quality tab says what was dropped and why."),
+                ? ` No column looked like ${missing.join(", ")}. Say which columns those are below.`
+                : " Check the columns below — one of them is being read as the wrong thing."),
             "error",
           );
           return;
@@ -283,6 +289,7 @@ export default function LotEngineView() {
                 ["sheets", "Sheets"],
                 ["build", "Build a lot"],
                 ["auto", "Auto lots"],
+                ["columns", "Columns"],
                 ["retail", "Retail"],
                 ["quality", "Quality"],
                 ["barcodes", "Barcodes"],
@@ -320,10 +327,21 @@ export default function LotEngineView() {
               }}
               onChanged={() => loadSheets(sheetId ?? undefined)}
               onImport={pick}
+              onColumns={(id) => {
+                setSheetId(id);
+                setTab("columns");
+              }}
             />
           )}
           {tab === "auto" && facets && (
             <AutoLotsTab key={sheet.id} sheet={sheet} facets={facets} onChanged={refreshFacets} />
+          )}
+          {tab === "columns" && (
+            <ColumnsTab
+              key={sheet.id}
+              sheet={sheet}
+              onRemapped={() => loadSheets(sheet.id).then(refreshFacets)}
+            />
           )}
           {tab === "retail" && <RetailTab key={sheet.id} sheetId={sheet.id} onChanged={refreshFacets} />}
           {tab === "quality" && <QualityTab sheetId={sheet.id} />}
@@ -1355,6 +1373,204 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
  * It is applied where the stacks are loaded, so the pool totals, the ranking, every lot and
  * all three exports move together rather than just this screen.
  */
+// =========================================================================================
+// Columns — correcting what the reader decided
+// =========================================================================================
+
+/** The six roles, in the order the reader claims them, with the words a person uses. */
+const ROLES: [keyof LotColumnMap, string, string][] = [
+  ["upc", "Barcode", "Rows without one are dropped as not-stock, so this is the column that decides what counts."],
+  ["location", "Location", "The shelf a person walks to. A lot is whole locations, never picked items."],
+  ["box", "Box", "Optional. Part of the key, so two boxes on one shelf stay two lines."],
+  ["units", "Quantity", "How many. A wrong column here reads every row as zero and drops the sheet."],
+  ["title", "Description", "What the buyer reads. Nothing ever rewrites it."],
+  ["msrp", "Retail", "What it lists at. Correct individual prices on the Retail tab instead."],
+];
+
+const MODES: [LotLocationMode, string, string][] = [
+  ["auto", "Use the location column", "and fall back to one atom per style if there is none"],
+  ["style", "One per product name", "the colourways of a cap move together — how a closeout offer is bought"],
+  ["row", "One per row", "full cherry-pick, one line at a time"],
+];
+
+/**
+ * What the reader decided about each of the six columns, and a way to say otherwise.
+ *
+ * Detection reads header text and is right most of the time. When it is wrong it does not
+ * error — it produces a clean import of the WRONG thing, caught only when a total looks
+ * wrong weeks later. A 1,183-row offer sheet cleaned to zero stacks because its quantity
+ * column was headed `order`. Adding aliases to the Rust fixes one sheet per release; this
+ * fixes the next one in five seconds.
+ *
+ * Applying re-cleans the sheet from the workbook kept at import, so everything downstream
+ * moves with it. It is refused once the sheet has saved lots or worked slots — a remap
+ * changes what the locations ARE, and those name theirs by code.
+ */
+function ColumnsTab({ sheet, onRemapped }: { sheet: LotSheet; onRemapped: () => void }) {
+  const [data, setData] = useState<LotSheetColumns | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<LotColumnMap>({});
+  const [mode, setMode] = useState<LotLocationMode>("auto");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    setError(null);
+    api
+      .lotSheetColumns(sheet.id)
+      .then((d) => {
+        setData(d);
+        setDraft(d.preview.columns);
+        setMode(d.location_mode);
+      })
+      .catch((e) => setError(String(e)));
+  }, [sheet.id]);
+
+  useEffect(load, [load]);
+
+  const apply = async () => {
+    setBusy(true);
+    try {
+      const r = await api.remapLotSheet(sheet.id, draft, mode);
+      toast(
+        `Read again: ${n(r.quality.stacks)} stacks across ${n(r.quality.locations)} locations, ` +
+          `${n(r.quality.units)} units. Every figure on this sheet moved with it.`,
+      );
+      onRemapped();
+      load();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(false);
+  };
+
+  if (error) return <p className="text-[12.5px] text-muted max-w-[620px]">{error}</p>;
+  if (!data) return <div className="h-48 rounded-xl bg-surface-2 animate-pulse max-w-[900px]" />;
+
+  const p = data.preview;
+  const changed = ROLES.some(([k]) => (draft[k] ?? null) !== (p.columns[k] ?? null)) || mode !== data.location_mode;
+  // -1 is an answer — "this sheet has no such column" — not a blank.
+  const pick = (k: keyof LotColumnMap) => (draft[k] ?? -1);
+
+  return (
+    <div className="max-w-[900px]">
+      <p className="text-[12.5px] text-muted mb-3 max-w-[640px] leading-relaxed">
+        These are the six columns the reader picked out of{" "}
+        <span className="text-ink-2">{p.sheet ? `${p.sheet} in ` : ""}{sheet.source_filename ?? "the sheet"}</span>
+        {p.header_row > 0 ? `, with the header on row ${p.header_row}` : ", which had no header row"}. It
+        guesses from the header text and it is usually right — but a wrong guess does not fail, it
+        imports the wrong thing. Correct any of them here and the sheet is read again.
+      </p>
+
+      {data.locked && (
+        <div className="rounded-xl border border-warning bg-warning-bg text-warning-ink px-3.5 py-2.5 mb-3 flex gap-2.5 items-start">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <p className="text-[12px] leading-relaxed">{data.locked_reason}</p>
+        </div>
+      )}
+
+      <div className="space-y-1.5 mb-4">
+        {ROLES.map(([key, label, why]) => (
+          <div key={key} className="rounded-lg border border-line bg-surface px-3 py-2 flex items-center gap-3">
+            <span className="min-w-0 flex-1">
+              <span className="block text-[12.5px] text-ink">{label}</span>
+              <span className="block text-[11px] text-muted">{why}</span>
+            </span>
+            <select
+              value={pick(key)}
+              disabled={data.locked}
+              onChange={(e) => setDraft((d) => ({ ...d, [key]: Number(e.target.value) }))}
+              className="bg-surface border border-line-2 rounded-lg px-2 h-8 text-[12px] text-ink focus:outline-none focus:border-accent transition-colors max-w-[240px] disabled:opacity-50"
+            >
+              <option value={-1}>Not in this sheet</option>
+              {p.headers.map((h, i) => (
+                <option key={i} value={i}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+
+      {/* Only meaningful without a location column, but shown always: it is the setting that
+          decides what a lot IS on a catalogue, and hiding it is how it became a default
+          nobody saw. */}
+      <div className="rounded-lg border border-line bg-surface px-3 py-2.5 mb-4">
+        <p className="text-[12.5px] text-ink">When the sheet has no location column</p>
+        <p className="text-[11px] text-muted mb-2">
+          A product catalogue describes no shelves, so there is no walk to protect and the thing a
+          lot is built out of has to come from somewhere else.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {MODES.map(([id, label, sub]) => (
+            <button
+              key={id}
+              disabled={data.locked}
+              onClick={() => setMode(id)}
+              className={`text-left px-2.5 py-1.5 rounded-lg border text-[11.5px] transition-colors disabled:opacity-50 ${
+                mode === id ? "border-accent text-ink bg-accent/5" : "border-line-3 text-ink-2 hover:border-accent"
+              }`}
+            >
+              <span className="block">{label}</span>
+              <span className="block text-[10.5px] text-muted">{sub}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mb-5">
+        <button
+          onClick={apply}
+          disabled={busy || data.locked || !changed}
+          className="flex items-center gap-1.5 text-[12px] bg-accent text-on-accent px-3.5 h-9 rounded-lg transition-opacity disabled:opacity-40"
+        >
+          <Check size={13} /> {busy ? "Reading it again…" : "Read the sheet again"}
+        </button>
+        {changed && !data.locked && (
+          <ActBtn onClick={() => { setDraft(p.columns); setMode(data.location_mode); }} icon={<RotateCcw size={12} />}>
+            Put it back
+          </ActBtn>
+        )}
+        {!changed && !data.locked && (
+          <span className="text-[11.5px] text-muted">Change a column to read the sheet again.</span>
+        )}
+      </div>
+
+      {/* The first rows, raw. A column is recognised by what is in it far faster than by its
+          header — which is the whole reason the header guess goes wrong. */}
+      <p className="text-[12px] text-ink-2 mb-1.5">The first {p.rows.length} rows, as they are in the file</p>
+      <div className="overflow-x-auto rounded-xl border border-line">
+        <table className="text-[11.5px] min-w-full">
+          <thead>
+            <tr className="bg-surface-2">
+              {p.headers.map((h, i) => {
+                const role = ROLES.find(([k]) => pick(k) === i);
+                return (
+                  <th key={i} className="text-left font-medium text-ink px-2.5 py-1.5 whitespace-nowrap border-b border-line">
+                    {h}
+                    {role && <span className="block text-[10px] text-accent font-normal">{role[1]}</span>}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {p.rows.map((r, ri) => (
+              <tr key={ri} className="border-b border-line last:border-0">
+                {p.headers.map((_, ci) => (
+                  <td key={ci} className="px-2.5 py-1 text-muted whitespace-nowrap max-w-[220px] truncate">
+                    {r[ci]}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function RetailTab({ sheetId, onChanged }: { sheetId: string; onChanged: () => void }) {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<LotProduct[] | null>(null);
@@ -2190,12 +2406,14 @@ function SheetsTab({
   onOpen,
   onChanged,
   onImport,
+  onColumns,
 }: {
   sheets: LotSheet[];
   activeId: string;
   onOpen: (id: string) => void;
   onChanged: () => void;
   onImport: () => void;
+  onColumns: (id: string) => void;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -2334,6 +2552,13 @@ function SheetsTab({
           <ActBtn onClick={() => resend(s)} busy={busy === s.id} icon={<Upload size={12} />}>
             Send to the server
           </ActBtn>
+          {/* Re-openable on purpose: a mis-read column is usually noticed days later, when a
+              total looks wrong — not in the minute after the import. */}
+          {s.has_source && (
+            <ActBtn onClick={() => onColumns(s.id)} icon={<Columns3 size={12} />}>
+              Columns
+            </ActBtn>
+          )}
           <div className="flex-1" />
           <ActBtn onClick={() => setArchivedFlag(s, !isArchived)} busy={busy === s.id}>
             {isArchived ? "Put back" : "Put away"}

@@ -3249,6 +3249,19 @@ export const api = {
   /** Rename a saved lot. The export filename is built from the name, so this renames the
    *  lot's downloads too — which is the point. */
   /** Distinct products on a sheet, biggest first — the ones worth correcting carry the units. */
+  /** What the reader decided about each of the six columns, plus the first rows of the
+   *  sheet — the payload behind the mapping screen. Needs the workbook, so it only answers
+   *  on the device the sheet was imported on. */
+  lotSheetColumns: (sheetId: string) => invoke<LotSheetColumns>("lot_sheet_columns", { sheetId }),
+  /** Re-clean a sheet with a corrected mapping. Everything downstream follows, because
+   *  `stacks_of` is the one place stacks load. Refused once the sheet has saved lots or
+   *  worked slots: a remap changes what the locations ARE and those name theirs by code. */
+  remapLotSheet: (sheetId: string, columns: LotColumnMap, locationMode?: LotLocationMode) =>
+    invoke<LotImportResult>("remap_lot_sheet", {
+      sheetId,
+      columns,
+      locationMode: locationMode ?? null,
+    }),
   lotSheetProducts: (sheetId: string, query?: string, limit?: number) =>
     invoke<LotProduct[]>("lot_sheet_products", { sheetId, query: query ?? null, limit: limit ?? null }),
   /** Correct one product's retail, or pass null to go back to the sheet's own price. Applied
@@ -3320,6 +3333,10 @@ export interface LotSheet {
   removed_slots: number;
   /** False when this sheet was imported elsewhere and its stacks have not arrived yet. */
   has_stacks: boolean;
+  /** False when the workbook itself is not on this device, so its columns cannot be re-read.
+   *  Only the cleaned stock travels between devices — a sheet imported on the phone is
+   *  remapped on the phone. */
+  has_source: boolean;
 }
 
 export interface LotDropReason {
@@ -3370,6 +3387,45 @@ export interface LotDetection {
   msrp_col: string | null;
   flag_cols: string[];
   note: string | null;
+}
+
+/** Which column each of the six roles reads. `-1` means "this sheet has no such column",
+ *  which is a different answer from leaving the role out (keep whatever was detected). */
+export interface LotColumnMap {
+  upc?: number | null;
+  location?: number | null;
+  box?: number | null;
+  units?: number | null;
+  title?: number | null;
+  msrp?: number | null;
+}
+
+/** How a location is invented when the sheet has no location column. `auto` uses the column
+ *  when there is one and falls back to `style`; `style` makes one atom per product name;
+ *  `row` makes one per row, which is full cherry-pick. */
+export type LotLocationMode = "auto" | "style" | "row";
+
+/** The top of the sheet as it was actually read, so a column can be recognised by what is
+ *  in it rather than by what its header claims. */
+export interface LotSheetPreview {
+  format: string;
+  sheet: string | null;
+  /** 1-based; 0 when the file had no header row. */
+  header_row: number;
+  /** One per column, in order. `Column D` when the column has no header text. */
+  headers: string[];
+  rows: string[][];
+  /** What each role reads right now, after any correction. */
+  columns: LotColumnMap;
+}
+
+export interface LotSheetColumns {
+  preview: LotSheetPreview;
+  saved: LotColumnMap;
+  location_mode: LotLocationMode;
+  /** True when re-cleaning would strand saved lots or slots already worked. */
+  locked: boolean;
+  locked_reason: string;
 }
 
 export interface LotImportResult {

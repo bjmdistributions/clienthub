@@ -276,7 +276,7 @@ pub fn module_tree_hash() -> u64 {
 /// the same sheet, and the disagreement is invisible until a buyer counts the units.
 #[test]
 fn module_tree_hash_is_pinned() {
-    const PINNED_TREE_HASH: u64 = 0x4a797e4690891c3c;
+    const PINNED_TREE_HASH: u64 = 0x89e81dc742560c14;
     let actual = module_tree_hash();
     assert_eq!(
         actual, PINNED_TREE_HASH,

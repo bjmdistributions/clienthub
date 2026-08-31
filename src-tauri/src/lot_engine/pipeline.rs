@@ -23,7 +23,9 @@ use super::model::{
     CleanResult, DropReason, LocationRepair, QualityReport, Stack, TitleRisk, UpcConflict,
     UpcConflictName, KEY_SEP,
 };
-use super::read::{clean_upc, detect_columns, describe, parse_number, read_sheet, Columns, Sheet};
+use super::read::{
+    clean_upc, detect_columns, describe, parse_number, read_sheet, ColumnMap, Columns, Sheet,
+};
 use super::slot::{self, Rung};
 
 /// A barcode is only "ambiguous" when the runner-up product is real: 89% of conflicted
@@ -268,6 +270,10 @@ impl Default for LocationMode {
 pub struct CleanOpts {
     #[serde(default)]
     pub location_mode: LocationMode,
+    /// Columns a person picked by hand, overriding what detection guessed. Empty by
+    /// default, which is detection unaided - exactly as before this existed.
+    #[serde(default)]
+    pub columns: ColumnMap,
 }
 
 pub fn clean_path(path: &str) -> Result<CleanResult> {
@@ -287,7 +293,14 @@ pub fn clean_sheet(sheet: &Sheet) -> Result<CleanResult> {
 
 /// Clean an already-read sheet with explicit options.
 pub fn clean_sheet_with(sheet: &Sheet, opts: &CleanOpts) -> Result<CleanResult> {
-    let cols = detect_columns(&sheet.rows);
+    let mut cols = detect_columns(&sheet.rows);
+    // The guess is only a guess, and a wrong one does not error - it cleans the wrong thing
+    // and is caught weeks later when a total looks wrong. An override is laid over it HERE,
+    // before any stage reads a column, so the location mode below sees the corrected answer:
+    // saying the location column is "not present" is how a product catalogue asks for
+    // synthetic locations.
+    let width = sheet.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    opts.columns.apply(&mut cols, width)?;
     // A synthetic location is one this sheet did not contain. It is NOT put through the
     // repair ladder — there is no ZZ-RRR-SS to recover, and running slot::normalize over a
     // product name would mark every row unparsed and drop the sheet.
@@ -715,6 +728,7 @@ pub fn preview_columns(sheet: &Sheet) -> Columns {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::read::NOT_PRESENT;
 
     fn sheet(rows: Vec<Vec<&str>>) -> Sheet {
         Sheet {
@@ -991,10 +1005,91 @@ mod tests {
         assert!(locs.contains(cap) && locs.contains(beanie));
 
         // Per-row mode gives one atom per row that survived — full cherry-pick.
-        let per_row = clean_sheet_with(&sheet, &CleanOpts { location_mode: LocationMode::Row })
+        let per_row = clean_sheet_with(&sheet, &CleanOpts { location_mode: LocationMode::Row, ..Default::default() })
             .expect("clean per row");
         assert_eq!(per_row.quality.units, 2004);
         assert_eq!(per_row.quality.locations, 5, "one atom per row with a quantity");
+    }
+
+    /// The Carhartt sheet's other half. Detection reads `order` as the quantity now, but a
+    /// sheet whose count column is headed something nobody has ever put in the alias list
+    /// still has to be importable - by hand, without a release. Here the quantity is headed
+    /// "Take", which is in no list and is not a number-shaped name.
+    #[test]
+    fn a_column_nobody_could_guess_is_correctable_by_hand() {
+        let rows = vec![
+            vec!["Style - Product Name", "UPC", "MSRP", "Take"],
+            vec!["100289 - Odessa Cap, Black", "196969506827", "24.99", "48"],
+            vec!["100289 - Odessa Cap, Navy", "196969506828", "24.99", "12"],
+        ];
+        let sheet = sheet(rows);
+
+        // Unaided, nothing reads as a quantity and every row is dropped for having none.
+        let blind = clean_sheet(&sheet).unwrap();
+        assert_eq!(blind.quality.stacks, 0);
+
+        // Told which column counts, the same file cleans.
+        let fixed = clean_sheet_with(
+            &sheet,
+            &CleanOpts {
+                columns: ColumnMap { units: Some(3), ..Default::default() },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fixed.quality.units, 60);
+        assert_eq!(fixed.quality.stacks, 2);
+        // No location column, so the atom is the style - and the two colourways stay two
+        // products, because rule two does not bend for a hand-picked column either.
+        assert_eq!(fixed.quality.locations, 2);
+        assert_eq!(fixed.detection.units_col.as_deref(), Some("Take"));
+        // Nothing vanished on the way.
+        assert_eq!(fixed.quality.reconciliation_gap(), 0);
+    }
+
+    /// A mapping that points past the end of the sheet is refused. Ignored, every row would
+    /// read as empty and the file would clean away to nothing with no reason given.
+    #[test]
+    fn a_mapping_off_the_end_of_the_sheet_is_an_error() {
+        let s = sheet(vec![
+            vec!["UPC", "Location", "Description", "Qty", "MSRP"],
+            vec!["196969506827", "43-127-04A", "Nike Air Max", "46", "190.00"],
+        ]);
+        let e = clean_sheet_with(
+            &s,
+            &CleanOpts {
+                columns: ColumnMap { units: Some(12), ..Default::default() },
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("quantity"), "{e}");
+    }
+
+    /// Saying the location column is "not present" synthesises locations, exactly as a
+    /// sheet that never had one does - so a warehouse export with a junk location column
+    /// can be imported as a catalogue.
+    #[test]
+    fn location_not_present_synthesises_the_atom() {
+        let s = sheet(vec![
+            vec!["UPC", "Location", "Description", "Qty", "MSRP"],
+            vec!["196969506827", "PENDING", "Nike Air Max", "46", "190.00"],
+            vec!["196969506828", "PENDING", "Nike Air Max 2", "10", "190.00"],
+        ]);
+        // Unaided, "PENDING" does not match ZZ-RRR-SS and both rows are excluded.
+        assert_eq!(clean_sheet(&s).unwrap().quality.stacks, 0);
+        let r = clean_sheet_with(
+            &s,
+            &CleanOpts {
+                columns: ColumnMap { location: Some(NOT_PRESENT), ..Default::default() },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.quality.stacks, 2);
+        assert_eq!(r.quality.locations, 2);
+        assert_eq!(r.quality.reconciliation_gap(), 0);
     }
 
     #[test]

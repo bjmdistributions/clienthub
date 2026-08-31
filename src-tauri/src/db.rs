@@ -1867,4 +1867,27 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE lot_sheet ADD COLUMN price_overrides_json TEXT;
         "#,
     ),
+    (
+        85,
+        // The column mapping a person corrected by hand (R-216).
+        //
+        // `detect_columns` guesses which six columns of an uploaded sheet mean what, from
+        // header text alone, and until now the guess was final: a wrong one produced a
+        // clean import of the WRONG thing, caught only when a total looked wrong weeks
+        // later. A 1,183-row Carhartt offer cleaned to zero stacks because its quantity
+        // column was headed `order`.
+        //
+        // A named column on `lot_sheet` rather than a blob inside an existing one, because
+        // lot_sheet already replicates (ALLOWED_TABLES, PUSHABLE, SNAPSHOT_TABLES) and an
+        // unnamed field is dropped as schema drift on the way to the server.
+        //
+        // `location_mode` rides along because it is the same decision: a sheet with no
+        // location column has its atom SYNTHESISED, by style or per row, and that choice
+        // changes what a lot IS. It belongs beside the mapping rather than in a default
+        // nobody sees.
+        r#"
+        ALTER TABLE lot_sheet ADD COLUMN column_map_json TEXT;
+        ALTER TABLE lot_sheet ADD COLUMN location_mode TEXT;
+        "#,
+    ),
 ];

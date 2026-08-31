@@ -33,12 +33,20 @@ use crate::lot_engine::export::{self, ManifestOpts};
 use crate::lot_engine::model::{CleanResult, Stack};
 use crate::lot_engine::price::{lot_totals, LotTotals, Pricing};
 use crate::lot_engine::rank::{auto_lots, rank, Allow, AutoPlan, AutoResult, RankOpts, RankResult, Want};
+use crate::lot_engine::read::{self, ColumnMap, SheetPreview};
 use crate::lot_engine::{pipeline, report};
 
 const STACKS_FILE: &str = "stacks.jsonl";
 const REPORT_FILE: &str = "quality-report.txt";
 const AUDIT_FILE: &str = "location-audit-map.csv";
 const CONFLICTS_FILE: &str = "barcode-conflicts.csv";
+/// The workbook exactly as it was imported, kept so the mapping can be corrected later.
+///
+/// Without it, "read column D as the quantity instead" would mean asking the person to find
+/// the original file again — and a sheet imported from a download folder that has since been
+/// emptied could never be corrected at all. The extension rides in the name because the
+/// reader picks its parser from it.
+const SOURCE_STEM: &str = "source";
 
 // ---------------------------------------------------------------------------------------
 // Paths and the stack cache
@@ -254,6 +262,50 @@ pub async fn lot_sheet_products(
     Ok(out)
 }
 
+/// Copy the imported workbook into the sheet's own directory.
+///
+/// A copy, not a remembered path: a remembered path breaks the moment the file is moved or
+/// the download folder is emptied, and the mapping screen would then have nothing to re-read.
+fn keep_source(sheet_id: &str, path: &str) -> Result<(), String> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric()) && !e.is_empty())
+        .unwrap_or_else(|| "xlsx".into());
+    let dest = sheet_dir(sheet_id)?.join(format!("{SOURCE_STEM}.{ext}"));
+    std::fs::copy(path, &dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The kept workbook, if this device holds it. `None` on a sheet imported somewhere else:
+/// only the cleaned stacks travel between devices, never the source.
+fn source_of(sheet_id: &str) -> Option<PathBuf> {
+    let dir = crate::db::app_data_dir().join("lot-engine").join(sheet_id);
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_stem().map(|s| s == SOURCE_STEM).unwrap_or(false) && p.is_file()
+        })
+}
+
+/// The corrected column mapping stored on the sheet, if there is one.
+fn column_map(sheet_id: &str) -> ColumnMap {
+    let conn = match pool().get() {
+        Ok(c) => c,
+        Err(_) => return ColumnMap::default(),
+    };
+    conn.query_row("SELECT column_map_json FROM lot_sheet WHERE id=?1", [sheet_id], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+    .filter(|s| !s.trim().is_empty())
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .unwrap_or_default()
+}
+
 fn write_stacks(sheet_id: &str, stacks: &[Stack]) -> Result<PathBuf, String> {
     let path = sheet_dir(sheet_id)?.join(STACKS_FILE);
     let mut out = String::with_capacity(stacks.len() * 180);
@@ -340,6 +392,10 @@ pub struct LotSheet {
     /// as a summary row first; the artifact follows over its own route, and until it does
     /// the sheet can be listed but not ranked.
     pub has_stacks: bool,
+    /// True when the workbook itself is on this device, so the columns can be re-read and
+    /// the mapping corrected. Only the cleaned stacks travel between devices — a sheet
+    /// imported on the phone is remapped on the phone.
+    pub has_source: bool,
 }
 
 fn row_to_sheet(r: &rusqlite::Row) -> rusqlite::Result<LotSheet> {
@@ -362,6 +418,7 @@ fn row_to_sheet(r: &rusqlite::Row) -> rusqlite::Result<LotSheet> {
         staged_slots: r.get(14)?,
         removed_slots: r.get(15)?,
         has_stacks: has_artifact(&id),
+        has_source: source_of(&id).is_some(),
     })
 }
 
@@ -402,6 +459,7 @@ pub async fn import_lot_sheet(path: String, name: Option<String>) -> Result<Impo
         .or_else(|| source_filename.clone())
         .unwrap_or_else(|| "Warehouse sheet".to_string());
 
+    let path_for_source = path.clone();
     let cleaned: CleanResult =
         tokio::task::spawn_blocking(move || pipeline::clean_path(&path))
             .await
@@ -413,6 +471,12 @@ pub async fn import_lot_sheet(path: String, name: Option<String>) -> Result<Impo
     let dir = sheet_dir(&id)?;
 
     let artifact = write_stacks(&id, &cleaned.stacks)?;
+    // Kept before anything else can fail, so a sheet that imported is always a sheet whose
+    // mapping can be corrected. A failure here is a warning, not a refusal: the import
+    // itself succeeded and losing it over a copy would be the worse trade.
+    if let Err(e) = keep_source(&id, &path_for_source) {
+        tracing::warn!("lot sheet {id}: could not keep the source workbook ({e}) — its columns cannot be remapped on this device");
+    }
     let report_text = report::quality_report_text(&cleaned, &display_name);
     let report_path = dir.join(REPORT_FILE);
     std::fs::write(&report_path, &report_text).map_err(|e| e.to_string())?;
@@ -566,6 +630,240 @@ pub async fn lot_sheet_report(sheet_id: String) -> Result<SheetReport, String> {
         detection: parse(detection_json),
         report_text,
     })
+}
+
+// ---------------------------------------------------------------------------------------
+// Commands — the column mapping (R-216)
+//
+// `read::detect_columns` decides which six columns of a sheet mean what, from header text
+// alone, and it is right most of the time. When it is wrong it does NOT error — it produces
+// a clean import of the wrong thing, and that is only caught when a total looks wrong weeks
+// later. These two commands are the correction: show what was read, and let a person say
+// otherwise.
+//
+// Both need the workbook itself, which is why `keep_source` copies it in at import. A sheet
+// that arrived over sync is a summary plus stacks and nothing else, so it can be ranked here
+// but only remapped where it was imported.
+// ---------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetColumns {
+    pub preview: SheetPreview,
+    /// What the person has already corrected, empty when detection is unaided.
+    pub saved: ColumnMap,
+    /// How locations are being made when the sheet has no location column.
+    pub location_mode: pipeline::LocationMode,
+    /// True when a remap would strand something: saved lots, or slots already worked.
+    pub locked: bool,
+    /// Why it is locked, in the words the screen should print. Empty when it is not.
+    pub locked_reason: String,
+}
+
+/// What the engine read, and what is actually in the file, for the mapping screen.
+#[tauri::command]
+pub async fn lot_sheet_columns(sheet_id: String) -> Result<SheetColumns, String> {
+    let path = source_of(&sheet_id).ok_or_else(|| {
+        "the workbook for this sheet is not on this device — only the cleaned stock travels \
+         between devices, so its columns can be corrected where it was imported"
+            .to_string()
+    })?;
+    let saved = column_map(&sheet_id);
+    let mode = location_mode(&sheet_id);
+    let (locked, locked_reason) = remap_lock(&sheet_id)?;
+
+    let p = tokio::task::spawn_blocking(move || -> Result<SheetPreview, String> {
+        let sheet = read::read_sheet(&path.to_string_lossy()).map_err(|e| e.to_string())?;
+        let mut cols = read::detect_columns(&sheet.rows);
+        let width = sheet.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        // Show what is in force, not what detection alone would say — otherwise a correction
+        // already made reads as never having been made.
+        saved.apply(&mut cols, width).map_err(|e| e.to_string())?;
+        Ok(read::preview(&sheet, &cols))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(SheetColumns {
+        preview: p,
+        saved,
+        location_mode: mode,
+        locked,
+        locked_reason,
+    })
+}
+
+/// Re-clean this sheet with a corrected mapping.
+///
+/// The stacks are rebuilt from the kept workbook and everything downstream follows, because
+/// `stacks_of` is the one place stacks load. Retail corrections are left alone: they are
+/// keyed by exact title, and a remap that keeps the description column keeps them working.
+#[tauri::command]
+pub async fn remap_lot_sheet(
+    sheet_id: String,
+    columns: ColumnMap,
+    location_mode: Option<pipeline::LocationMode>,
+) -> Result<ImportResult, String> {
+    let (locked, why) = remap_lock(&sheet_id)?;
+    if locked {
+        return Err(why);
+    }
+    let path = source_of(&sheet_id).ok_or_else(|| {
+        "the workbook for this sheet is not on this device — its columns can be corrected \
+         where it was imported"
+            .to_string()
+    })?;
+
+    let mode = location_mode.unwrap_or_default();
+    let opts = pipeline::CleanOpts { location_mode: mode, columns };
+    let p = path.to_string_lossy().to_string();
+    let cleaned: CleanResult = tokio::task::spawn_blocking(move || pipeline::clean_path_with(&p, &opts))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+    // A mapping that empties the sheet is refused BEFORE anything on disk is replaced. The
+    // old import may be wrong, but a wrong import is still better than none — and a person
+    // who has just cleared their only copy of the stock cannot undo it.
+    if cleaned.stacks.is_empty() {
+        return Err(format!(
+            "that mapping reads nothing from the sheet — {} rows in, none usable. Nothing has \
+             been changed; try a different column for the quantity or the barcode.",
+            cleaned.quality.rows_in
+        ));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let dir = sheet_dir(&sheet_id)?;
+    let artifact = write_stacks(&sheet_id, &cleaned.stacks)?;
+    let display: String = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT name FROM lot_sheet WHERE id=?1", [&sheet_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+    };
+    let report_text = report::quality_report_text(&cleaned, &display);
+    std::fs::write(dir.join(REPORT_FILE), &report_text).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(AUDIT_FILE), report::audit_map_csv(&cleaned)).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(CONFLICTS_FILE), report::conflicts_csv(&cleaned)).map_err(|e| e.to_string())?;
+
+    let q = cleaned.quality.clone();
+    let map_json = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
+    let mode_json = serde_json::to_string(&mode)
+        .map_err(|e| e.to_string())?
+        .trim_matches('"')
+        .to_string();
+    let quality_json = serde_json::to_string(&q).map_err(|e| e.to_string())?;
+    let detection_json = serde_json::to_string(&cleaned.detection).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_sheet SET rows_in=?2, stacks=?3, products=?4, units=?5, locations=?6, \
+             msrp_total=?7, quality_json=?8, detection_json=?9, column_map_json=?10, \
+             location_mode=?11, updated_at=?12 WHERE id=?1",
+            rusqlite::params![
+                sheet_id,
+                q.rows_in as i64,
+                q.stacks as i64,
+                q.products as i64,
+                q.units,
+                q.locations as i64,
+                q.msrp_total,
+                quality_json,
+                detection_json,
+                map_json,
+                mode_json,
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    emit(
+        "lot_sheet",
+        &sheet_id,
+        cols(vec![
+            ("rows_in", serde_json::json!(q.rows_in as i64)),
+            ("stacks", serde_json::json!(q.stacks as i64)),
+            ("products", serde_json::json!(q.products as i64)),
+            ("units", serde_json::json!(q.units)),
+            ("locations", serde_json::json!(q.locations as i64)),
+            ("msrp_total", serde_json::json!(q.msrp_total)),
+            ("quality_json", serde_json::json!(quality_json)),
+            ("detection_json", serde_json::json!(detection_json)),
+            ("column_map_json", serde_json::json!(map_json)),
+            ("location_mode", serde_json::json!(mode_json)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    // The other devices are holding the stacks this just replaced.
+    crate::netsync::media_enqueue(&sheet_id, &rel(&artifact), "lotsheet");
+    // Or the OLD stacks keep being served from memory and the screen argues with the file.
+    cache()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(sheet_id.clone(), std::sync::Arc::new(cleaned.stacks));
+
+    let sheet = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            &format!("SELECT {SHEET_COLS}{SHEET_FROM} WHERE s.id = ?1"),
+            [&sheet_id],
+            row_to_sheet,
+        )
+        .map_err(|e| e.to_string())?
+    };
+    Ok(ImportResult {
+        sheet,
+        quality: q,
+        detection: cleaned.detection,
+        report_text,
+    })
+}
+
+/// How this sheet makes locations, from the row. Stored as the enum's own snake_case name.
+fn location_mode(sheet_id: &str) -> pipeline::LocationMode {
+    let Ok(conn) = pool().get() else { return pipeline::LocationMode::Auto };
+    conn.query_row("SELECT location_mode FROM lot_sheet WHERE id=?1", [sheet_id], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+    .filter(|s| !s.trim().is_empty())
+    .and_then(|s| serde_json::from_str(&format!("\"{s}\"")).ok())
+    .unwrap_or(pipeline::LocationMode::Auto)
+}
+
+/// Whether re-cleaning this sheet would strand work already done against it.
+///
+/// A remap changes what the locations ARE. Every saved lot names its slots by code, and
+/// `lot_slot_state` keys on `(sheet_id, location_code)` — so re-cleaning under a lot leaves
+/// codes pointing at nothing, and a `removed` row (which means the stock physically shipped)
+/// could end up guarding a slot that no longer exists. Nothing here can be undone by the
+/// person who did it, so the answer is to refuse and say why: import the sheet again with
+/// the mapping you want, which is additive and costs nothing.
+fn remap_lock(sheet_id: &str) -> Result<(bool, String), String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let lots: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM lot_build WHERE sheet_id=?1 AND archived=0",
+            [sheet_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let slots: i64 = conn
+        .query_row("SELECT COUNT(*) FROM lot_slot_state WHERE sheet_id=?1", [sheet_id], |r| r.get(0))
+        .unwrap_or(0);
+    if lots == 0 && slots == 0 {
+        return Ok((false, String::new()));
+    }
+    Ok((
+        true,
+        format!(
+            "this sheet already has {lots} saved lots and {slots} locations you have worked. \
+             Re-reading its columns changes what the locations ARE, and those lots name theirs \
+             by code — so the correction has to go on a fresh import instead. Import the same \
+             workbook again and map it there; nothing here is lost."
+        ),
+    ))
 }
 
 #[tauri::command]
@@ -1768,6 +2066,7 @@ fn row_columns(
 #[cfg(test)]
 mod tests {
     use crate::lot_engine::pipeline;
+    use crate::lot_engine::read::{self, ColumnMap, NOT_PRESENT};
     use rust_xlsxwriter::Workbook;
 
     /// Reads a REAL `.xlsx` — written here, then parsed by the engine's own reader.
@@ -1850,5 +2149,68 @@ mod tests {
         assert_eq!(nike.brand.as_deref(), Some("Nike"));
         assert_eq!(nike.units, 60, "two spellings of one shelf, one product, 40 + 20");
         assert_eq!(nike.size_us, Some(6.5));
+    }
+
+    /// The remap path, over a real file on disk — which is exactly what `remap_lot_sheet`
+    /// does with the workbook it kept at import.
+    ///
+    /// The fixture is Jack's Carhartt shape: a product catalogue with no location column and
+    /// a quantity column headed something no alias list will ever contain. Unaided it cleans
+    /// to nothing; told which column counts, it cleans.
+    #[test]
+    fn a_corrected_mapping_rescues_a_sheet_that_cleaned_to_nothing() {
+        let mut wb = Workbook::new();
+        let ws = wb.add_worksheet();
+        ws.set_name("Offer").unwrap();
+        for (i, h) in ["Style - Product Name", "UPC", "MSRP", "Take"].iter().enumerate() {
+            ws.write_string(0, i as u16, *h).unwrap();
+        }
+        let rows: [(&str, &str, f64, f64); 3] = [
+            ("100289 - Odessa Leatherette Cap, Black", "196969506827", 24.99, 48.0),
+            ("100289 - Odessa Leatherette Cap, Navy", "196969506828", 24.99, 12.0),
+            ("100290 - Rugged Flex Beanie, Grey", "196969506829", 19.99, 30.0),
+        ];
+        for (r, (title, upc, msrp, take)) in rows.iter().enumerate() {
+            let row = 1 + r as u32;
+            ws.write_string(row, 0, *title).unwrap();
+            ws.write_string(row, 1, *upc).unwrap();
+            ws.write_number(row, 2, *msrp).unwrap();
+            ws.write_number(row, 3, *take).unwrap();
+        }
+        let path = std::env::temp_dir().join("ecliptr-lot-engine-remap-test.xlsx");
+        wb.save(&path).unwrap();
+        let p = path.to_string_lossy().to_string();
+
+        // Unaided: "Take" is in no alias list, so nothing counts and every row is dropped.
+        let blind = pipeline::clean_path(&p).unwrap();
+        assert_eq!(blind.quality.stacks, 0, "this is the failure the screen exists for");
+
+        // The mapping screen's own payload names every column, including the one with the
+        // quantity in it, so a person can see what to pick.
+        let sheet = read::read_sheet(&p).unwrap();
+        let preview = read::preview(&sheet, &read::detect_columns(&sheet.rows));
+        assert_eq!(preview.headers, vec!["Style - Product Name", "UPC", "MSRP", "Take"]);
+        assert_eq!(preview.columns.units, Some(NOT_PRESENT), "nothing read as a quantity");
+        assert_eq!(preview.rows.len(), 3);
+
+        // Corrected, and re-read from the same file.
+        let fixed = pipeline::clean_path_with(
+            &p,
+            &pipeline::CleanOpts {
+                columns: ColumnMap { units: Some(3), ..Default::default() },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(fixed.quality.units, 90);
+        assert_eq!(fixed.quality.stacks, 3);
+        // No location column, so the atom is the style — three products, three atoms, and
+        // the two colourways stay two products because rule two does not bend for a
+        // hand-picked column either.
+        assert_eq!(fixed.quality.locations, 3);
+        assert_eq!(fixed.detection.units_col.as_deref(), Some("Take"));
+        assert_eq!(fixed.quality.reconciliation_gap(), 0);
     }
 }

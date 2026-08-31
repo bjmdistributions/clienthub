@@ -949,6 +949,8 @@ fn main() {
             lot_store::get_lot_manifest_opts,
             lot_store::set_lot_manifest_opts,
             lot_store::lot_sheet_products,
+            lot_store::lot_sheet_columns,
+            lot_store::remap_lot_sheet,
             lot_store::resync_lot_engine,
             // Forecast
             get_profit_forecast,

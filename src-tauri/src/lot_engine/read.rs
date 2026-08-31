@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 
 use super::model::SheetDetection;
 
@@ -46,6 +47,188 @@ pub struct Columns {
     pub flags: Vec<usize>,
     /// 0-based index of the header row, or `None` when the file had no header.
     pub header_row: Option<usize>,
+}
+
+/// The answer "this sheet does not have that column", as opposed to "no opinion".
+///
+/// The two are genuinely different. A role missing from a `ColumnMap` keeps whatever
+/// detection guessed; a role set to this says the sheet has no such column, which is how a
+/// product catalogue tells the engine it holds no locations.
+pub const NOT_PRESENT: i32 = -1;
+
+/// Which column a person says each role is, overriding the guess.
+///
+/// `detect_columns` reads header text and is right most of the time. When it is wrong it
+/// does not error - it produces a clean import of the wrong thing, and that is only caught
+/// when a total looks wrong downstream. A 1,183-row Carhartt offer cleaned to zero stacks
+/// because its quantity column was headed `order`. Adding aliases fixes one sheet at a
+/// time; this fixes the next one without a release.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnMap {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upc: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#box: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msrp: Option<i32>,
+}
+
+/// One role's override, checked against the sheet. `Ok(None)` means "no opinion".
+fn resolve(role: &str, v: Option<i32>, width: usize) -> Result<Option<Option<usize>>> {
+    let Some(i) = v else { return Ok(None) };
+    if i == NOT_PRESENT {
+        return Ok(Some(None));
+    }
+    // Out of range is refused rather than ignored: `Vec::get` past the end yields nothing,
+    // so a mapping pointing at a column this sheet does not have would read every row as
+    // empty and clean the whole file away without ever saying why.
+    if i < 0 || i as usize >= width {
+        return Err(anyhow!(
+            "the {role} column was set to column {}, and this sheet only has {width}",
+            i + 1
+        ));
+    }
+    Ok(Some(Some(i as usize)))
+}
+
+impl ColumnMap {
+    pub fn is_empty(&self) -> bool {
+        self.upc.is_none()
+            && self.location.is_none()
+            && self.r#box.is_none()
+            && self.units.is_none()
+            && self.title.is_none()
+            && self.msrp.is_none()
+    }
+
+    /// What the engine is reading right now, in the shape the screen posts back. Every role
+    /// is filled in - a role with no column is `NOT_PRESENT`, not absent, because the screen
+    /// has to show "not present" as an answer rather than as a blank.
+    pub fn from_columns(c: &Columns) -> ColumnMap {
+        let f = |v: Option<usize>| Some(v.map(|i| i as i32).unwrap_or(NOT_PRESENT));
+        ColumnMap {
+            upc: f(c.upc),
+            location: f(c.location),
+            r#box: f(c.r#box),
+            units: f(c.units),
+            title: f(c.title),
+            msrp: f(c.msrp),
+        }
+    }
+
+    /// Lay this map over a detected `Columns`. `width` is the widest row in the sheet.
+    pub fn apply(&self, cols: &mut Columns, width: usize) -> Result<()> {
+        let upc = resolve("barcode", self.upc, width)?;
+        let location = resolve("location", self.location, width)?;
+        let boxc = resolve("box", self.r#box, width)?;
+        let units = resolve("quantity", self.units, width)?;
+        let title = resolve("description", self.title, width)?;
+        let msrp = resolve("retail", self.msrp, width)?;
+
+        let mut claimed: Vec<usize> = Vec::new();
+        for o in [&upc, &location, &boxc, &units, &title, &msrp] {
+            if let Some(Some(i)) = o {
+                claimed.push(*i);
+            }
+        }
+
+        // A column claimed by hand is claimed. Any role that was only GUESSED onto the same
+        // column gives it up - otherwise one column is read as two roles at once and both
+        // carry the same cell, which is the silent wrongness this whole override exists to
+        // end. Two HAND-picked roles on one column are left alone: that is a deliberate
+        // answer, and "the description is also the location" is what a catalogue means.
+        let settle = |slot: &mut Option<usize>, over: &Option<Option<usize>>| match over {
+            Some(v) => *slot = *v,
+            None => {
+                if slot.is_some_and(|i| claimed.contains(&i)) {
+                    *slot = None;
+                }
+            }
+        };
+        settle(&mut cols.upc, &upc);
+        settle(&mut cols.location, &location);
+        settle(&mut cols.r#box, &boxc);
+        settle(&mut cols.units, &units);
+        settle(&mut cols.title, &title);
+        settle(&mut cols.msrp, &msrp);
+        // A column somebody named as a role is not an approval flag as well. Left in, its
+        // "no" values would drop every row the person just pointed the engine at.
+        cols.flags.retain(|i| !claimed.contains(i));
+        Ok(())
+    }
+}
+
+/// How many body rows the mapping screen shows. Enough to recognise a column by what is in
+/// it, few enough that the payload is not the sheet.
+pub const PREVIEW_ROWS: usize = 5;
+
+/// The top of a sheet exactly as it was read, for the screen that corrects the mapping.
+///
+/// Raw cells, nothing normalised: a person matching a column to a role has to see what is
+/// actually in it, not what the engine made of it.
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetPreview {
+    pub format: String,
+    pub sheet: Option<String>,
+    /// 1-based row the header was found on, 0 when the file had none.
+    pub header_row: usize,
+    /// One entry per column, in order: its header text, or `Column D` when it has none.
+    pub headers: Vec<String>,
+    /// The first `PREVIEW_ROWS` rows under the header.
+    pub rows: Vec<Vec<String>>,
+    /// Which column each role reads right now, after any override.
+    pub columns: ColumnMap,
+}
+
+/// Excel's own name for a column, so a role pointed at a column with no header still has
+/// something to print. A blank header described as "not found", which is the exact
+/// confusion a mapping screen exists to remove.
+pub fn column_label(i: usize) -> String {
+    let mut n = i + 1;
+    let mut out = String::new();
+    while n > 0 {
+        let r = (n - 1) % 26;
+        out.insert(0, (b'A' + r as u8) as char);
+        n = (n - 1) / 26;
+    }
+    out
+}
+
+/// Build the mapping screen's payload from a sheet and the columns in force for it.
+pub fn preview(sheet: &Sheet, cols: &Columns) -> SheetPreview {
+    let width = sheet.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let header = cols.header_row.and_then(|i| sheet.rows.get(i));
+    let headers = (0..width)
+        .map(|i| {
+            header
+                .and_then(|h| h.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("Column {}", column_label(i)))
+        })
+        .collect();
+    let body_start = cols.header_row.map(|i| i + 1).unwrap_or(0);
+    let rows = sheet
+        .rows
+        .iter()
+        .skip(body_start)
+        .take(PREVIEW_ROWS)
+        .map(|r| (0..width).map(|i| r.get(i).cloned().unwrap_or_default()).collect())
+        .collect();
+    SheetPreview {
+        format: sheet.format.clone(),
+        sheet: sheet.sheet_name.clone(),
+        header_row: cols.header_row.map(|i| i + 1).unwrap_or(0),
+        headers,
+        rows,
+        columns: ColumnMap::from_columns(cols),
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -322,10 +505,18 @@ pub fn detect_columns(rows: &[Vec<String>]) -> Columns {
 /// mis-detected column is visible rather than wrong in silence.
 pub fn describe(sheet: &Sheet, cols: &Columns) -> SheetDetection {
     let header = cols.header_row.and_then(|i| sheet.rows.get(i));
+    // A column with no header text still gets a name. It used to describe as "not found",
+    // which reads as "this role is missing" - wrong for a shape-detected barcode column,
+    // and wrong for any column somebody mapped a role onto by hand.
     let name = |c: Option<usize>| -> Option<String> {
         let i = c?;
-        let h = header?;
-        h.get(i).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        Some(
+            header
+                .and_then(|h| h.get(i))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("Column {}", column_label(i))),
+        )
     };
     SheetDetection {
         format: sheet.format.clone(),
@@ -632,6 +823,142 @@ mod tests {
         }
         let c = detect_columns(&rows);
         assert_eq!(c.flags, vec![5]);
+    }
+
+    /// The whole point of the override: a column detection never considered, picked by hand.
+    #[test]
+    fn a_hand_picked_column_beats_the_guess() {
+        let rows = grid(&[
+            &["UPC", "Location", "Description", "Qty", "Retail", "Take"],
+            &["196969506827", "43-127-04A", "Nike Air Max", "46", "190.00", "12"],
+        ]);
+        let mut c = detect_columns(&rows);
+        assert_eq!(c.units, Some(3), "Qty is what detection reads");
+        ColumnMap { units: Some(5), ..Default::default() }
+            .apply(&mut c, 6)
+            .unwrap();
+        assert_eq!(c.units, Some(5));
+        // Nothing else moved: an override is about one role, not a re-detection.
+        assert_eq!(c.msrp, Some(4));
+        assert_eq!(c.title, Some(2));
+    }
+
+    /// A role a person moved onto a column takes it off whatever merely guessed it.
+    #[test]
+    fn a_guess_yields_the_column_a_person_claimed() {
+        let rows = grid(&[
+            &["UPC", "Location", "Description", "Units", "Unit Price"],
+            &["196969506827", "43-127-04A", "Nike Air Max", "46", "190.00"],
+        ]);
+        let mut c = detect_columns(&rows);
+        assert_eq!(c.title, Some(2));
+        // "the description is column 3" - so Units, which only guessed column 3, lets go.
+        ColumnMap { title: Some(3), ..Default::default() }
+            .apply(&mut c, 5)
+            .unwrap();
+        assert_eq!(c.title, Some(3));
+        assert_eq!(c.units, None, "a guess must not keep a column somebody else claimed");
+    }
+
+    /// "This sheet has no location column" is an answer, not a blank.
+    #[test]
+    fn not_present_clears_a_detected_column() {
+        let rows = grid(&[
+            &["UPC", "Location", "Description", "Qty", "Retail"],
+            &["196969506827", "43-127-04A", "Nike Air Max", "46", "190.00"],
+        ]);
+        let mut c = detect_columns(&rows);
+        assert_eq!(c.location, Some(1));
+        ColumnMap { location: Some(NOT_PRESENT), ..Default::default() }
+            .apply(&mut c, 5)
+            .unwrap();
+        assert_eq!(c.location, None);
+        // Nothing else moved.
+        assert_eq!(c.units, Some(3));
+    }
+
+    /// Past the end is refused, not ignored. `Vec::get` would read every row as empty and
+    /// the sheet would clean away to nothing with no reason given.
+    #[test]
+    fn a_column_this_sheet_does_not_have_is_refused() {
+        let rows = grid(&[&["UPC", "Qty"], &["196969506827", "4"]]);
+        let mut c = detect_columns(&rows);
+        let e = ColumnMap { msrp: Some(9), ..Default::default() }
+            .apply(&mut c, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("retail"), "{e}");
+        assert!(e.contains("only has 2"), "{e}");
+    }
+
+    /// A column somebody named as a role stops being read as an approval flag, or its
+    /// "no" values would drop every row they just pointed the engine at.
+    #[test]
+    fn claiming_a_flag_column_stops_it_dropping_rows() {
+        let mut rows = vec![vec![
+            "UPC".into(), "Location".into(), "Description".into(), "Qty".into(),
+            "Retail".into(), "Approved".into(),
+        ]];
+        for i in 0..8 {
+            rows.push(vec![
+                format!("19696950682{i}"),
+                "43-127-04A".into(),
+                "Nike Air Max".into(),
+                "4".into(),
+                "190.00".into(),
+                if i % 2 == 0 { "yes".into() } else { "no".into() },
+            ]);
+        }
+        let mut c = detect_columns(&rows);
+        assert_eq!(c.flags, vec![5]);
+        ColumnMap { r#box: Some(5), ..Default::default() }.apply(&mut c, 6).unwrap();
+        assert_eq!(c.r#box, Some(5));
+        assert!(c.flags.is_empty());
+    }
+
+    #[test]
+    fn from_columns_names_a_missing_role_rather_than_omitting_it() {
+        let rows = grid(&[&["UPC", "Qty", "MSRP"], &["196969506827", "4", "190.00"]]);
+        let m = ColumnMap::from_columns(&detect_columns(&rows));
+        assert_eq!(m.upc, Some(0));
+        assert_eq!(m.units, Some(1));
+        assert_eq!(m.msrp, Some(2));
+        assert_eq!(m.location, Some(NOT_PRESENT));
+        assert_eq!(m.title, Some(NOT_PRESENT));
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn a_column_with_no_header_is_still_named() {
+        assert_eq!(column_label(0), "A");
+        assert_eq!(column_label(25), "Z");
+        assert_eq!(column_label(26), "AA");
+        let rows = grid(&[
+            &["UPC", "", "Description", "Qty"],
+            &["196969506827", "43-127-04A", "Nike Air Max", "46"],
+        ]);
+        let mut c = detect_columns(&rows);
+        ColumnMap { location: Some(1), ..Default::default() }.apply(&mut c, 4).unwrap();
+        let sheet = Sheet { rows, format: "csv".into(), sheet_name: None, note: None };
+        assert_eq!(describe(&sheet, &c).location_col.as_deref(), Some("Column B"));
+    }
+
+    #[test]
+    fn the_preview_shows_the_sheet_as_it_is() {
+        let rows = grid(&[
+            &["ACME", "", "", ""],
+            &["UPC", "Location", "Description", "Qty"],
+            &["196969506827", "43-127-04A", "Nike Air Max", "46"],
+            &["196969506828", "43-127-04A", "Nike Air Max 2", "12"],
+        ]);
+        let sheet = Sheet { rows, format: "csv".into(), sheet_name: None, note: None };
+        let c = detect_columns(&sheet.rows);
+        let p = preview(&sheet, &c);
+        assert_eq!(p.header_row, 2, "1-based");
+        assert_eq!(p.headers, vec!["UPC", "Location", "Description", "Qty"]);
+        assert_eq!(p.rows.len(), 2);
+        assert_eq!(p.rows[0][3], "46");
+        assert_eq!(p.columns.units, Some(3));
     }
 
     #[test]
