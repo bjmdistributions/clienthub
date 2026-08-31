@@ -11463,9 +11463,10 @@ fn merge_client_into(conn: &rusqlite::Connection, loser: &str, keeper: &str, now
         conn.execute(&format!("UPDATE {t} SET client_id=?1 WHERE client_id=?2"), rusqlite::params![keeper, loser])
             .map_err(|e| e.to_string())?;
         // Broadcast the reassignment ONLY for tables peers actually apply. Emitting for
-        // a non-synced table (e.g. newsletter_sends, which the server relays but the
-        // desktop apply-side rejects) produces an event that stalls every peer's pull
-        // loop. The local UPDATE above already keeps THIS device consistent.
+        // a non-synced table (e.g. newsletter_sends, which is in neither PUSHABLE nor the
+        // server's ALLOWED_TABLES — it replicates nowhere and is per-device) produces an
+        // event that stalls every peer's pull loop. The local UPDATE above already keeps
+        // THIS device consistent.
         if sync::is_synced_table(t) {
             for rid in &ids {
                 let mut cols = serde_json::Map::new();
