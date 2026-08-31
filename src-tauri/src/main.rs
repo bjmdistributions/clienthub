@@ -941,6 +941,7 @@ fn main() {
             lot_store::lot_build_location_codes,
             lot_store::lot_sheet_conflicts,
             lot_store::export_lot_conflicts,
+            lot_store::plan_lot_builds,
             lot_store::resync_lot_engine,
             // Forecast
             get_profit_forecast,

@@ -3202,13 +3202,31 @@ export const api = {
   // The deliberate half: staging is automatic, taking stock off the master list is a button.
   removeLotFromMasterList: (buildId: string, removed: boolean) =>
     invoke<number>("remove_lot_from_master_list", { buildId, removed }),
-  exportLotBuild: (buildId: string, kind: "manifest" | "brands" | "pull", includeSlots?: boolean, destDir?: string) =>
+  /** `destPath` is a complete path from a save dialog and beats `destDir`; `format` is
+   *  "csv" or "xlsx", both rendered from the same table by the shared engine. */
+  exportLotBuild: (
+    buildId: string,
+    kind: "manifest" | "brands" | "pull",
+    opts?: { includeSlots?: boolean; destDir?: string; format?: "csv" | "xlsx"; destPath?: string },
+  ) =>
     invoke<LotExportResult>("export_lot_build", {
       buildId,
       kind,
-      includeSlots: includeSlots ?? false,
-      destDir: destDir ?? null,
+      includeSlots: opts?.includeSlots ?? false,
+      destDir: opts?.destDir ?? null,
+      format: opts?.format ?? "csv",
+      destPath: opts?.destPath ?? null,
     }),
+  /** Cut the qualifying pool into ~target-unit lots. A preview — nothing is written. */
+  planLotBuilds: (
+    sheetId: string,
+    want: LotWant,
+    allow: LotAllow,
+    opts: LotRankOpts,
+    plan: LotAutoPlan,
+    exclude?: string[],
+  ) =>
+    invoke<LotAutoResult>("plan_lot_builds", { sheetId, want, allow, opts, plan, exclude: exclude ?? null }),
   lotBuildLocationCodes: (buildId: string) =>
     invoke<string>("lot_build_location_codes", { buildId }),
   // Re-emit every lot engine row so it replicates again. The escape hatch for a desktop
@@ -3417,6 +3435,40 @@ export interface LotRankResult {
   /** Slots holding what you want, just not enough of it. */
   rejected_by_pct: number;
   sort_note: string;
+}
+
+/** What to aim for when cutting the pool into lots. */
+export interface LotAutoPlan {
+  /** Roughly how many units per lot. A location is never split, so a lot lands a little
+   *  over rather than exactly on it. */
+  target_units: number;
+  /** How many lots to cut. Zero means as many as the pool allows. */
+  max_lots: number;
+  /** Don't emit a final lot smaller than this. Zero means half the target. */
+  min_lot_units: number;
+}
+
+/** One lot the planner would cut. Nothing is saved until a person says so. */
+export interface LotPlannedLot {
+  index: number;
+  locations: string[];
+  units: number;
+  want_units: number;
+  pct: number;
+  msrp: number;
+  styles: number;
+  brands: LotSlice[];
+  unverified_units: number;
+}
+
+export interface LotAutoResult {
+  lots: LotPlannedLot[];
+  total_units: number;
+  total_want_units: number;
+  total_msrp: number;
+  leftover_slots: number;
+  leftover_units: number;
+  note: string;
 }
 
 export interface LotSlotState {

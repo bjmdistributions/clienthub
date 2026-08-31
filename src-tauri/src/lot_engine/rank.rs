@@ -470,6 +470,185 @@ fn sort_note(slots: &[RankedSlot], sort: Sort) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Planning several lots at once
+// ---------------------------------------------------------------------------------------
+
+/// What to aim for when cutting the pool into lots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoPlan {
+    /// Roughly how many units per lot. "Roughly" is the honest word: the atom is a whole
+    /// location, so a lot closes on the first slot that reaches the target and is normally
+    /// a little over. It is never split.
+    #[serde(default)]
+    pub target_units: i64,
+    /// How many lots to cut. Zero means as many as the pool allows.
+    #[serde(default)]
+    pub max_lots: usize,
+    /// Do not emit a final lot smaller than this. Zero means half the target — a tail of
+    /// 40 units is not a lot, it is the leftover, and calling it a lot hides that.
+    #[serde(default)]
+    pub min_lot_units: i64,
+}
+
+impl Default for AutoPlan {
+    fn default() -> Self {
+        AutoPlan { target_units: 1000, max_lots: 0, min_lot_units: 0 }
+    }
+}
+
+/// One lot the planner would cut. Nothing is saved until a person says so.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedLot {
+    /// 1-based, in the order they were cut — lot 1 holds the best slots.
+    pub index: usize,
+    pub locations: Vec<String>,
+    pub units: i64,
+    /// Units matching WANT. `want_units / units` is the lot's own concentration.
+    pub want_units: i64,
+    pub pct: f64,
+    pub msrp: f64,
+    pub styles: usize,
+    pub brands: Vec<Slice>,
+    pub unverified_units: i64,
+}
+
+/// The plan, plus what it could not place.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoResult {
+    pub lots: Vec<PlannedLot>,
+    pub total_units: i64,
+    pub total_want_units: i64,
+    pub total_msrp: f64,
+    /// Qualifying slots the plan did not take, and their units.
+    pub leftover_slots: usize,
+    pub leftover_units: i64,
+    /// Plain words for what the plan did and what it left. Ship it next to the result.
+    pub note: String,
+}
+
+/// Cut the qualifying pool into as many ~`target_units` lots as it allows.
+///
+/// This is the same ranking as [`rank`], read greedily: walk the ranked slots in order and
+/// close a lot as soon as it reaches the target. Because the ranking is concentration-first
+/// by default, **lot 1 gets the purest slots**, lot 2 the next best, and so on — which is
+/// the order you want to sell them in.
+///
+/// No slot is ever in two lots: each is consumed as it is placed. Nothing here writes
+/// anything — the caller shows the plan and a person decides.
+///
+/// A slot is never split, so a lot lands a little over the target rather than exactly on it.
+/// Saying "roughly 1,000" and delivering 1,014 is honest; splitting a location to hit 1,000
+/// exactly would break the one rule the whole engine is built on.
+pub fn auto_lots(
+    stacks: &[Stack],
+    want: &Want,
+    allow: &Allow,
+    opts: &RankOpts,
+    unavailable: &HashSet<String>,
+    plan: &AutoPlan,
+) -> AutoResult {
+    // limit 0 — the planner needs every qualifying slot, not the rendered page.
+    let all = rank(stacks, want, allow, &RankOpts { limit: 0, ..opts.clone() }, unavailable);
+
+    let target = plan.target_units.max(1);
+    let floor = if plan.min_lot_units > 0 { plan.min_lot_units } else { target / 2 };
+
+    let mut lots: Vec<PlannedLot> = Vec::new();
+    let mut cur: Vec<&RankedSlot> = Vec::new();
+    let mut cur_units = 0i64;
+    let mut used = 0usize;
+
+    for s in &all.slots {
+        if plan.max_lots > 0 && lots.len() >= plan.max_lots {
+            break;
+        }
+        cur.push(s);
+        cur_units += s.total;
+        used += 1;
+        if cur_units >= target {
+            lots.push(close_lot(lots.len() + 1, &cur));
+            cur.clear();
+            cur_units = 0;
+        }
+    }
+    // The tail. Only a lot if it is big enough to be worth calling one; otherwise it is
+    // handed back as leftover, which is why `used` rewinds past it.
+    if !cur.is_empty() {
+        if cur_units >= floor && (plan.max_lots == 0 || lots.len() < plan.max_lots) {
+            lots.push(close_lot(lots.len() + 1, &cur));
+        } else {
+            used -= cur.len();
+        }
+    }
+
+    // Slots are consumed in ranked order, so everything past `used` is exactly what was
+    // not placed — including a rejected tail, because `used` rewound over it above.
+    let leftover_slots = all.slots.len() - used;
+    let leftover_units: i64 = all.slots.iter().skip(used).map(|s| s.total).sum();
+
+    let total_units: i64 = lots.iter().map(|l| l.units).sum();
+    let total_want_units: i64 = lots.iter().map(|l| l.want_units).sum();
+    let total_msrp: f64 = lots.iter().map(|l| l.msrp).sum();
+
+    let note = if lots.is_empty() {
+        "Nothing qualifies for these filters, so there is nothing to cut into lots.".to_string()
+    } else {
+        format!(
+            "{} lots averaging {} units. A location is never split, so each lot lands a little \
+             over the target rather than exactly on it. {} qualifying slots ({} units) are left \
+             over — too few for another lot of this size.",
+            lots.len(),
+            total_units / lots.len() as i64,
+            leftover_slots,
+            leftover_units,
+        )
+    };
+
+    AutoResult {
+        lots,
+        total_units,
+        total_want_units,
+        total_msrp,
+        leftover_slots,
+        leftover_units,
+        note,
+    }
+}
+
+fn close_lot(index: usize, slots: &[&RankedSlot]) -> PlannedLot {
+    let mut brands: Vec<Slice> = Vec::new();
+    let mut units = 0i64;
+    let mut want_units = 0i64;
+    let mut msrp = 0.0f64;
+    let mut styles = 0usize;
+    let mut unverified = 0i64;
+    for s in slots {
+        units += s.total;
+        want_units += s.want;
+        msrp += s.msrp;
+        styles += s.styles;
+        unverified += s.unverified_units;
+        for b in &s.brands {
+            bump(&mut brands, &b.name, b.units);
+        }
+    }
+    PlannedLot {
+        index,
+        locations: slots.iter().map(|s| s.location.clone()).collect(),
+        units,
+        want_units,
+        pct: if units > 0 { want_units as f64 / units as f64 } else { 0.0 },
+        msrp,
+        // Summed per slot, so this over-counts a style that sits in two slots. Named
+        // "styles" rather than "products" for that reason; the saved lot's own totals come
+        // from `lot_totals`, which counts distinct titles properly.
+        styles,
+        brands: top_slices(brands),
+        unverified_units: unverified,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +789,73 @@ mod tests {
         );
         assert_eq!(no_want.matched_slots, 3);
         assert_eq!(no_want.rejected_by_pct, 0);
+    }
+
+    /// The planner cuts the pool into ~target lots, best slots first, and never puts one
+    /// location in two lots.
+    #[test]
+    fn auto_lots_cuts_the_pool_without_overlapping() {
+        // 30 locations, 100 units each — 3,000 units in the pool.
+        let stacks = sorted(
+            (1..=30)
+                .map(|i| stack(&format!("01-{i:03}-01"), "Nike", "Footwear", 100))
+                .collect(),
+        );
+        let want = Want { brands: vec!["Nike".into()], ..Default::default() };
+
+        let r = auto_lots(
+            &stacks,
+            &want,
+            &Allow::default(),
+            &RankOpts::default(),
+            &none(),
+            &AutoPlan { target_units: 1000, ..Default::default() },
+        );
+        assert_eq!(r.lots.len(), 3);
+        assert_eq!(r.total_units, 3000);
+        assert_eq!(r.leftover_slots, 0);
+        assert_eq!(r.leftover_units, 0);
+        for l in &r.lots {
+            assert_eq!(l.units, 1000);
+            assert_eq!(l.locations.len(), 10);
+        }
+        // No location is in two lots — the invariant the whole engine rests on.
+        let mut seen: HashSet<&str> = HashSet::new();
+        for l in &r.lots {
+            for loc in &l.locations {
+                assert!(seen.insert(loc.as_str()), "{loc} was placed in two lots");
+            }
+        }
+        assert_eq!(seen.len(), 30);
+
+        // Asking for fewer lots leaves the rest in the pool rather than cramming them in.
+        let two = auto_lots(
+            &stacks,
+            &want,
+            &Allow::default(),
+            &RankOpts::default(),
+            &none(),
+            &AutoPlan { target_units: 1000, max_lots: 2, ..Default::default() },
+        );
+        assert_eq!(two.lots.len(), 2);
+        assert_eq!(two.total_units, 2000);
+        assert_eq!(two.leftover_slots, 10);
+        assert_eq!(two.leftover_units, 1000);
+
+        // A tail below the floor is leftover, not a lot pretending to be one. Stated
+        // explicitly rather than leaning on the default floor: at target 2000 the default
+        // floor is exactly 1000 and the 1,000-unit tail would qualify.
+        let tail = auto_lots(
+            &stacks,
+            &want,
+            &Allow::default(),
+            &RankOpts::default(),
+            &none(),
+            &AutoPlan { target_units: 2000, min_lot_units: 1500, max_lots: 0 },
+        );
+        assert_eq!(tail.lots.len(), 1, "2,000 fits once and the 1,000 tail is under the floor");
+        assert_eq!(tail.leftover_slots, 10);
+        assert_eq!(tail.leftover_units, 1000);
     }
 
     /// Slack is the honest expression of "I'd take a little apparel to get more volume".

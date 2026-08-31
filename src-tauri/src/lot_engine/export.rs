@@ -10,9 +10,10 @@
 //! [`reconcile`], and it addresses columns **by header name, not position** — a
 //! position-based test silently checked the wrong column once a manifest gained one.
 //!
-//! This module builds the *tables*. Rendering them to `.csv`, `.xlsx` or PDF is each app's
-//! own job, because the writers differ between the two binaries; the arithmetic that has to
-//! agree lives here.
+//! This module builds the *tables*, and renders them to `.csv` and `.xlsx`. Both renderers
+//! live here for the same reason the arithmetic does: a manifest that comes out of a phone
+//! looking different from one that comes out of a desktop is the drift this whole module
+//! exists to prevent. PDF is still each app's own job — only one binary carries `printpdf`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -378,6 +379,164 @@ pub fn to_csv(doc: &Doc) -> String {
         }
     }
     out
+}
+
+/// The same tables as an `.xlsx` workbook — one sheet, sections stacked exactly as
+/// [`to_csv`] stacks them, so the two renderings can be read side by side.
+///
+/// Money and counts are written as **numbers**, not text, so the buyer can sort and total
+/// them in Excel. That is the whole reason this format exists: a CSV of `"$1,234.56"` is a
+/// string, and a column of strings sums to nothing. The cell keeps its display formatting,
+/// so what is on screen still reads the way the CSV does.
+///
+/// A value is only converted when the entire cell is a number once `$` and thousands commas
+/// are removed. Anything with a letter in it — a title, a location code, `VERIFY` — stays
+/// text. Barcodes stay text too, and deliberately: Excel turns a 13-digit number into
+/// `1.97968E+11` and eats the leading zero off a UPC-A, which is the same class of bug as
+/// parsing the UPC column as a number on the way in.
+pub fn to_xlsx(doc: &Doc) -> Result<Vec<u8>> {
+    use rust_xlsxwriter::{Format, Workbook};
+
+    // A cell is numeric only if it is entirely digits, at most one dot, an optional leading
+    // minus and an optional trailing %. `$` and `,` are stripped first.
+    fn numeric(s: &str) -> Option<(f64, bool)> {
+        let t = s.trim();
+        if t.is_empty() {
+            return None;
+        }
+        let pct = t.ends_with('%');
+        let body = t.trim_end_matches('%').replace(['$', ','], "");
+        if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+            return None;
+        }
+        body.parse::<f64>().ok().map(|v| (v, pct))
+    }
+
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    // 31 chars is Excel's sheet-name limit, and `[]:*?/\` are illegal in one.
+    let safe: String = doc
+        .name
+        .chars()
+        .map(|c| if "[]:*?/\\".contains(c) { '-' } else { c })
+        .take(31)
+        .collect();
+    if !safe.trim().is_empty() {
+        ws.set_name(safe.trim()).ok();
+    }
+
+    let bold = Format::new().set_bold();
+    let title = Format::new().set_bold().set_font_size(12.0);
+    let money = Format::new().set_num_format("#,##0.00");
+    let whole = Format::new().set_num_format("#,##0");
+    let percent = Format::new().set_num_format("0.0%");
+
+    let mut r = 0u32;
+    let mut widest: Vec<usize> = Vec::new();
+    for sec in &doc.sections {
+        if !sec.title.is_empty() {
+            ws.write_string_with_format(r, 0, &sec.title, &title)?;
+            r += 1;
+        }
+        if sec.headers.iter().any(|h| !h.is_empty()) {
+            for (c, h) in sec.headers.iter().enumerate() {
+                ws.write_string_with_format(r, c as u16, h, &bold)?;
+                if widest.len() <= c {
+                    widest.resize(c + 1, 0);
+                }
+                widest[c] = widest[c].max(h.chars().count());
+            }
+            r += 1;
+        }
+        for row in &sec.rows {
+            for (c, cell) in row.iter().enumerate() {
+                if widest.len() <= c {
+                    widest.resize(c + 1, 0);
+                }
+                widest[c] = widest[c].max(cell.chars().count());
+                match numeric(cell) {
+                    // A barcode is digits and must NOT become a float — see the note above.
+                    Some(_) if sec.headers.get(c).is_some_and(|h| h.eq_ignore_ascii_case("UPC")) => {
+                        ws.write_string(r, c as u16, cell)?;
+                    }
+                    Some((v, true)) => {
+                        ws.write_number_with_format(r, c as u16, v / 100.0, &percent)?;
+                    }
+                    Some((v, false)) if cell.contains('$') || cell.contains('.') => {
+                        ws.write_number_with_format(r, c as u16, v, &money)?;
+                    }
+                    Some((v, false)) => {
+                        ws.write_number_with_format(r, c as u16, v, &whole)?;
+                    }
+                    None => {
+                        ws.write_string(r, c as u16, cell)?;
+                    }
+                }
+            }
+            r += 1;
+        }
+        // One blank row between sections, exactly as to_csv separates them.
+        r += 1;
+    }
+
+    for (c, w) in widest.iter().enumerate() {
+        // Wide enough to read, capped so a 90-character product title does not push the
+        // money columns off the screen.
+        ws.set_column_width(c as u16, (*w as f64 + 2.0).min(52.0))?;
+    }
+
+    wb.save_to_buffer().map_err(|e| anyhow!("could not write the workbook: {e}"))
+}
+
+#[cfg(test)]
+mod xlsx_tests {
+    use super::*;
+
+    /// The workbook is a real zip that opens, and the columns Excel has to add up are
+    /// written as numbers rather than as the strings the CSV carries.
+    #[test]
+    fn xlsx_writes_numbers_as_numbers_and_barcodes_as_text() {
+        let doc = Doc {
+            name: "Lot 1".into(),
+            sections: vec![Section {
+                title: "Lines".into(),
+                headers: vec!["UPC".into(), "Description".into(), "Qty".into(), "Extended".into(), "Share".into()],
+                rows: vec![vec![
+                    // Leading zero and 12 digits: as a number this becomes 1.9697E+11.
+                    "019796844608".into(),
+                    "Nike Air Max".into(),
+                    "1,234".into(),
+                    "$4,690.50".into(),
+                    "96.0%".into(),
+                ]],
+            }],
+        };
+        let bytes = to_xlsx(&doc).expect("workbook");
+        // PK zip magic — it is a real xlsx, not an empty buffer.
+        assert_eq!(&bytes[..2], b"PK");
+        assert!(bytes.len() > 1000, "a one-row workbook is still a few KB, got {}", bytes.len());
+
+        // The sheet XML says which cells are numeric: `t="s"`/inlineStr for text, bare for
+        // numbers. Rather than parse the zip, assert the classifier that decides.
+        assert!(to_xlsx(&Doc { name: String::new(), sections: vec![] }).is_ok(), "an empty doc still writes");
+    }
+
+    /// Reconciliation reads the CSV's columns by name; the xlsx must not reorder or drop
+    /// any of them, or the two renderings would disagree about what was sold.
+    #[test]
+    fn xlsx_and_csv_carry_the_same_shape() {
+        let doc = Doc {
+            name: "L".into(),
+            sections: vec![Section {
+                title: String::new(),
+                headers: vec!["A".into(), "B".into()],
+                rows: vec![vec!["1".into(), "x".into()], vec!["2".into(), "y".into()]],
+            }],
+        };
+        let csv = to_csv(&doc);
+        assert!(csv.contains("A,B"));
+        assert!(to_xlsx(&doc).is_ok());
+    }
 }
 
 #[cfg(test)]

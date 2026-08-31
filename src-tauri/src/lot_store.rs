@@ -32,7 +32,7 @@ use crate::db::pool;
 use crate::lot_engine::export::{self, ManifestOpts};
 use crate::lot_engine::model::{CleanResult, Stack};
 use crate::lot_engine::price::{lot_totals, LotTotals, Pricing};
-use crate::lot_engine::rank::{rank, Allow, RankOpts, RankResult, Want};
+use crate::lot_engine::rank::{auto_lots, rank, Allow, AutoPlan, AutoResult, RankOpts, RankResult, Want};
 use crate::lot_engine::{pipeline, report};
 
 const STACKS_FILE: &str = "stacks.jsonl";
@@ -610,6 +610,29 @@ pub async fn rank_lot_slots(
     Ok(rank(&stacks, &want, &allow, &opts, &gone))
 }
 
+/// Cut the qualifying pool into as many ~`target_units` lots as it allows.
+///
+/// A **preview only** — nothing is written. The caller shows the plan and a person decides;
+/// saving is the ordinary `save_lot_build` path, once per lot, so a planned lot goes through
+/// exactly the same staging and the same checks as one built by hand.
+#[tauri::command]
+pub async fn plan_lot_builds(
+    sheet_id: String,
+    want: Want,
+    allow: Allow,
+    opts: RankOpts,
+    plan: AutoPlan,
+    exclude: Option<Vec<String>>,
+) -> Result<AutoResult, String> {
+    ensure_artifact(&sheet_id).await?;
+    let stacks = stacks_of(&sheet_id)?;
+    let mut gone = unavailable(&sheet_id)?;
+    if let Some(x) = exclude {
+        gone.extend(x);
+    }
+    Ok(auto_lots(&stacks, &want, &allow, &opts, &gone, &plan))
+}
+
 /// Totals for a lot being built, before it is saved.
 ///
 /// Exists so the running figures on screen come from the same `lot_totals` the manifest and
@@ -1093,12 +1116,21 @@ pub struct ExportResult {
 /// `kind` is `manifest`, `brands` or `pull`. All three are generated every time so the
 /// reconciliation assertion can run — an export that does not agree with its siblings is
 /// reported rather than quietly handed to a buyer.
+///
+/// `format` is `csv` (default) or `xlsx`. Both render the same `Doc`, so the two files carry
+/// the same columns and the same totals — see `lot_engine::export`.
+///
+/// `dest_path` is a complete destination path from the caller's own save dialog, and beats
+/// `dest_dir` when both are given: the point of asking a person where to put the file is to
+/// put it there, not next to it.
 #[tauri::command]
 pub async fn export_lot_build(
     build_id: String,
     kind: String,
     include_slots: Option<bool>,
     dest_dir: Option<String>,
+    format: Option<String>,
+    dest_path: Option<String>,
 ) -> Result<ExportResult, String> {
     let detail = lot_build_detail(build_id.clone()).await?;
     let lot = build_stacks(&detail.build)?;
@@ -1126,13 +1158,27 @@ pub async fn export_lot_build(
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect();
-    let dir = match dest_dir {
-        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
-        _ => sheet_dir(&detail.build.sheet_id)?.join("lots"),
+    let xlsx = matches!(format.as_deref(), Some("xlsx"));
+    let ext = if xlsx { "xlsx" } else { "csv" };
+    let path = match dest_path {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => {
+            let dir = match dest_dir {
+                Some(d) if !d.trim().is_empty() => PathBuf::from(d),
+                _ => sheet_dir(&detail.build.sheet_id)?.join("lots"),
+            };
+            dir.join(format!("{safe}-{kind}.{ext}"))
+        }
     };
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{safe}-{kind}.csv"));
-    std::fs::write(&path, export::to_csv(doc)).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if xlsx {
+        let bytes = export::to_xlsx(doc).map_err(|e| e.to_string())?;
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::write(&path, export::to_csv(doc)).map_err(|e| e.to_string())?;
+    }
 
     Ok(ExportResult {
         path: path.to_string_lossy().to_string(),

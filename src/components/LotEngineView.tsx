@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   LotAllow,
+  LotAutoResult,
   LotBuild,
   LotBuildDetail,
   LotFacets,
@@ -15,7 +16,7 @@ import {
   LotWant,
 } from "../lib/api";
 import { fmtAmount, parseAmount } from "../lib/format";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
@@ -81,7 +82,7 @@ const emptyAllow = (): LotAllow => ({
   brand_lock: [],
 });
 
-type Tab = "build" | "quality" | "barcodes" | "lots";
+type Tab = "sheets" | "build" | "auto" | "quality" | "barcodes" | "lots";
 
 export default function LotEngineView() {
   const [sheets, setSheets] = useState<LotSheet[]>([]);
@@ -249,7 +250,9 @@ export default function LotEngineView() {
           <div className="flex items-center gap-1 border-b border-line mt-4 mb-4">
             {(
               [
+                ["sheets", "Sheets"],
                 ["build", "Build a lot"],
+                ["auto", "Auto lots"],
                 ["quality", "Quality"],
                 ["barcodes", "Barcodes"],
                 ["lots", "Saved lots"],
@@ -276,6 +279,21 @@ export default function LotEngineView() {
             // resolved silently rather than erroring. The phone resets on the same event.
             <Builder key={sheet.id} sheet={sheet} facets={facets} onChanged={refreshFacets} />
           )}
+          {tab === "sheets" && (
+            <SheetsTab
+              sheets={sheets}
+              activeId={sheet.id}
+              onOpen={(id) => {
+                setSheetId(id);
+                setTab("build");
+              }}
+              onChanged={() => loadSheets(sheetId ?? undefined)}
+              onImport={pick}
+            />
+          )}
+          {tab === "auto" && facets && (
+            <AutoLotsTab key={sheet.id} sheet={sheet} facets={facets} onChanged={refreshFacets} />
+          )}
           {tab === "quality" && <QualityTab sheetId={sheet.id} />}
           {tab === "barcodes" && <BarcodesTab sheetId={sheet.id} />}
           {tab === "lots" && <SavedLotsTab sheetId={sheet.id} onChanged={refreshFacets} />}
@@ -288,12 +306,13 @@ export default function LotEngineView() {
 /** What is left in the pool right now. Counts available stock only, so it drops as slots are
  *  staged into a lot and removed from the master list. */
 function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null }) {
+  const claimed = sheet.staged_slots + sheet.removed_slots;
   const cells = [
-    { label: "Available units", value: facets ? n(facets.pool_units) : "—" },
-    { label: "Retail", value: facets ? fmtAmount(facets.pool_msrp) : "—" },
-    { label: "Slots", value: facets ? n(facets.pool_slots) : "—" },
-    { label: "In a lot", value: n(sheet.staged_slots) },
-    { label: "Off the list", value: n(sheet.removed_slots) },
+    { label: "Still on the master list", value: facets ? n(facets.pool_units) : "—", accent: true },
+    { label: "Its retail", value: facets ? fmtAmount(facets.pool_msrp) : "—" },
+    { label: "Slots left to sell", value: facets ? n(facets.pool_slots) : "—" },
+    { label: "Claimed by a lot", value: n(sheet.staged_slots) },
+    { label: "Shipped — gone for good", value: n(sheet.removed_slots) },
   ];
   return (
     <>
@@ -305,12 +324,26 @@ function PoolBar({ sheet, facets }: { sheet: LotSheet; facets: LotFacets | null 
       )}
     <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2.5">
       {cells.map((c) => (
-        <div key={c.label} className="bg-surface-2 rounded-lg px-3.5 py-2.5 min-w-0">
+        <div
+          key={c.label}
+          className={`rounded-lg px-3.5 py-2.5 min-w-0 ${
+            c.accent ? "bg-accent/10 ring-1 ring-accent/30" : "bg-surface-2"
+          }`}
+        >
           <p className="text-[11.5px] font-medium text-muted truncate">{c.label}</p>
           <p className="text-[17px] font-bold text-ink tabular-nums mt-0.5 truncate">{c.value}</p>
         </div>
       ))}
     </div>
+    {claimed > 0 && (
+      <p className="text-[11.5px] text-muted mt-2 leading-snug">
+        <span className="tabular-nums font-medium text-ink-2">{n(claimed)}</span> of this sheet's{" "}
+        <span className="tabular-nums">{n(sheet.locations)}</span> locations are off the master
+        list — {n(sheet.staged_slots)} claimed by a saved lot and {n(sheet.removed_slots)} shipped.
+        They cannot appear in a search or in another lot, so no two lots can ever contain the same
+        shoes.
+      </p>
+    )}
     </>
   );
 }
@@ -595,6 +628,45 @@ function Chip({
   );
 }
 
+/** One side of an either/or. A radio in everything but the input type — the two options are
+ *  mutually exclusive and both are always on screen, because the choice between them is the
+ *  thing people get wrong. */
+function ModeRow({
+  on,
+  onClick,
+  title,
+  hint,
+}: {
+  on: boolean;
+  onClick: () => void;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={on}
+      className={`w-full text-left rounded-md border px-2 py-1.5 transition-colors ${
+        on ? "border-accent bg-accent/10" : "border-line-2 bg-surface hover:border-line-3"
+      }`}
+    >
+      <span className="flex items-start gap-1.5">
+        <span
+          className={`mt-[3px] w-2.5 h-2.5 rounded-full shrink-0 ${
+            on ? "bg-accent ring-2 ring-accent/30" : "ring-1 ring-line-3"
+          }`}
+        />
+        <span className="min-w-0">
+          <span className={`block text-[11.5px] leading-snug ${on ? "text-ink font-medium" : "text-ink-2"}`}>
+            {title}
+          </span>
+          <span className="block text-[10.5px] text-muted leading-snug mt-0.5">{hint}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
 function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
@@ -767,23 +839,29 @@ function Filters(p: {
             Only slots where every line was described in the source sheet
           </span>
         </label>
+        {/* The one distinction people get wrong, so it is a visible either/or rather than a
+            checkbox: ranking by brand still takes the WHOLE location, and only this says
+            otherwise. */}
         {p.want.brands.length > 0 && (
-          <label className="flex items-start gap-2 mt-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={p.allow.brand_lock.length > 0}
-              onChange={(e) =>
-                p.setAllow({ ...p.allow, brand_lock: e.target.checked ? [...p.want.brands] : [] })
-              }
-              className="mt-0.5 accent-accent"
-            />
-            <span className="text-[11.5px] text-ink-2 leading-snug">
-              Nothing but {p.want.brands.join(", ")} in the slot
-              <span className="block text-muted text-[10.5px]">
-                Strict. It discards a slot that is 95% what you want plus 5% of something else.
-              </span>
-            </span>
-          </label>
+          <div className="mt-2.5 rounded-lg border border-line-2 bg-surface p-2">
+            <p className="text-[11px] font-medium text-ink-2 mb-1.5">
+              And what comes with {p.want.brands.join(", ")}?
+            </p>
+            <div className="space-y-1">
+              <ModeRow
+                on={p.allow.brand_lock.length === 0}
+                onClick={() => p.setAllow({ ...p.allow, brand_lock: [] })}
+                title="Everything else in the location comes too"
+                hint="The normal way. You are buying shelves, not shoes — the other brands ride along, and each card shows exactly what they are."
+              />
+              <ModeRow
+                on={p.allow.brand_lock.length > 0}
+                onClick={() => p.setAllow({ ...p.allow, brand_lock: [...p.want.brands] })}
+                title="Only locations holding nothing else"
+                hint="Cherry-picked. Discards a slot that is 95% what you want plus 5% of something else, so it finds far fewer."
+              />
+            </div>
+          </div>
         )}
       </Section>
 
@@ -1169,12 +1247,20 @@ function LotPanel(p: {
         </div>
       )}
 
+      {/* Said before the click, not in a toast after it. Saving is what makes a lot
+          un-overlappable, and that only works if it is obvious that the stock leaves. */}
+      <p className="text-[11px] text-ink-2 bg-surface-3 rounded-md px-2 py-1.5 mt-3 leading-snug">
+        Saving takes these <span className="tabular-nums font-medium">{n(p.picked.length)}</span>{" "}
+        locations{t ? ` (${n(t.units)} units)` : ""} off the master list. They stop appearing in
+        every search from then on, so nothing you build later can contain the same shoes.
+      </p>
+
       <button
         onClick={p.onSave}
         disabled={p.saving}
-        className="w-full mt-3 h-9 rounded-lg bg-accent text-on-accent text-[12.5px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+        className="w-full mt-2 h-9 rounded-lg bg-accent text-on-accent text-[12.5px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
       >
-        {p.saving ? "Saving…" : "Save lot"}
+        {p.saving ? "Saving…" : `Save lot — ${n(p.picked.length)} locations leave the list`}
       </button>
     </div>
   );
@@ -1374,6 +1460,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<LotBuild | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [format, setFormat] = useState<"csv" | "xlsx">("xlsx");
   // Cached per lot: the breakdown reads every stack in the lot, so re-opening a row it has
   // already read should cost nothing. Cleared whenever the list itself is reloaded.
   const [detail, setDetail] = useState<Record<string, LotBuildDetail>>({});
@@ -1386,14 +1473,27 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
 
   useEffect(load, [load]);
 
+  // Straight to a save dialog, so the file lands where it is wanted rather than in a
+  // folder beside the sheet that the toast then has to name.
   const exportOne = async (b: LotBuild, kind: "manifest" | "brands" | "pull") => {
+    const label = kind === "pull" ? "Pull sheet" : kind === "brands" ? "Brand counts" : "Manifest";
+    const safe = b.name.replace(/[^A-Za-z0-9._-]+/g, "-");
+    const dest = await saveDialog({
+      defaultPath: `${safe}-${kind}.${format}`,
+      filters: [
+        format === "xlsx"
+          ? { name: "Excel workbook", extensions: ["xlsx"] }
+          : { name: "CSV", extensions: ["csv"] },
+      ],
+    });
+    if (!dest) return; // cancelled — not an error, and not a silent write somewhere else
     setBusy(b.id);
     try {
-      const r = await api.exportLotBuild(b.id, kind);
+      const r = await api.exportLotBuild(b.id, kind, { format, destPath: dest });
       toast(
         r.reconciled
-          ? `${kind === "pull" ? "Pull sheet" : kind === "brands" ? "Brand counts" : "Manifest"} written — ${n(r.rows)} rows, and the three exports agree.`
-          : `Written, but the manifest, brand counts and pull sheet DISAGREE on the unit total. Don't send it.`,
+          ? `${label} saved — ${n(r.rows)} rows, and the three exports agree on the unit total.`
+          : `Saved, but the manifest, brand counts and pull sheet DISAGREE on the unit total. Don't send it.`,
         r.reconciled ? undefined : "error",
       );
     } catch (e: any) {
@@ -1439,6 +1539,33 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
 
   return (
     <div className="max-w-[900px] space-y-2">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-[12.5px] text-muted">
+          {n(rows.length)} {rows.length === 1 ? "lot" : "lots"} built from this sheet. Each one's
+          locations are already off the master list.
+        </p>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-muted">Download as</span>
+          <div className="flex gap-1 bg-surface-2 rounded-lg p-1 border border-line-2">
+            {(
+              [
+                ["xlsx", "Excel"],
+                ["csv", "CSV"],
+              ] as ["csv" | "xlsx", string][]
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setFormat(id)}
+                className={`text-[11.5px] px-2.5 h-6 rounded-md transition-colors ${
+                  format === id ? "bg-accent text-on-accent" : "text-ink-2 hover:text-accent"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       {rows.map((b) => (
         <div key={b.id} className="rounded-xl border border-line bg-surface px-3.5 py-3">
           <div className="flex items-start justify-between gap-3">
@@ -1723,6 +1850,416 @@ function RiskCell({ units, label, warn }: { units: number; label: string; warn?:
       <p className={`text-[10.5px] leading-snug mt-0.5 ${warn && live ? "text-warning-ink" : "text-muted"}`}>
         {label}
       </p>
+    </div>
+  );
+}
+
+// =========================================================================================
+// Sheets — the master menu
+// =========================================================================================
+
+/**
+ * Every warehouse sheet this device holds, so several can be worked on over days rather
+ * than one at a time. `renameLotSheet`, `archiveLotSheet` and the `includeArchived` flag
+ * all existed from the start and nothing called them: a mis-named sheet was permanent and
+ * a finished one could never be put away.
+ */
+function SheetsTab({
+  sheets,
+  activeId,
+  onOpen,
+  onChanged,
+  onImport,
+}: {
+  sheets: LotSheet[];
+  activeId: string;
+  onOpen: (id: string) => void;
+  onChanged: () => void;
+  onImport: () => void;
+}) {
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archived, setArchived] = useState<LotSheet[] | null>(null);
+
+  useEffect(() => {
+    if (!showArchived) return;
+    api
+      .listLotSheets(true)
+      .then((all) => setArchived(all.filter((s) => s.archived)))
+      .catch((e) => toast(String(e), "error"));
+  }, [showArchived, sheets]);
+
+  const rename = async (s: LotSheet) => {
+    const name = draft.trim();
+    setRenaming(null);
+    if (!name || name === s.name) return;
+    try {
+      await api.renameLotSheet(s.id, name);
+      onChanged();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+  };
+
+  const setArchivedFlag = async (s: LotSheet, v: boolean) => {
+    setBusy(s.id);
+    try {
+      await api.archiveLotSheet(s.id, v);
+      toast(v ? `${s.name} put away. Nothing in it is deleted.` : `${s.name} is back.`);
+      setArchived(null);
+      onChanged();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  const card = (s: LotSheet, isArchived: boolean) => {
+    const claimed = s.staged_slots + s.removed_slots;
+    const left = Math.max(0, s.locations - claimed);
+    const pctWorked = s.locations > 0 ? claimed / s.locations : 0;
+    return (
+      <div
+        key={s.id}
+        className={`rounded-xl border bg-surface px-3.5 py-3 ${
+          s.id === activeId && !isArchived ? "border-accent" : "border-line"
+        }`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {renaming === s.id ? (
+              <input
+                autoFocus
+                className={`${inp} max-w-[320px]`}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => rename(s)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") rename(s);
+                  if (e.key === "Escape") setRenaming(null);
+                }}
+              />
+            ) : (
+              <p className="text-[13.5px] font-semibold text-ink truncate">
+                {s.name}
+                {s.id === activeId && !isArchived && (
+                  <span className="ml-2 text-[10.5px] font-normal text-accent">open now</span>
+                )}
+              </p>
+            )}
+            <p className="text-[11.5px] text-muted mt-0.5 tabular-nums">
+              {n(s.locations)} locations · {n(s.units)} units · {n(s.products)} products ·{" "}
+              {fmtAmount(s.msrp_total)} retail
+              {s.source_filename ? ` · ${s.source_filename}` : ""}
+            </p>
+          </div>
+          {!s.has_stacks && (
+            <span className="text-[10.5px] px-1.5 h-5 rounded-md flex items-center shrink-0 bg-info-bg text-info-ink">
+              still arriving
+            </span>
+          )}
+        </div>
+
+        {/* How far through the sheet you are — the thing you need when picking up a sheet
+            you last touched three days ago. */}
+        <div className="mt-2.5">
+          <div className="flex items-center justify-between text-[11px] text-muted mb-1">
+            <span>
+              <span className="tabular-nums font-medium text-ink-2">{n(left)}</span> locations still
+              on the master list
+            </span>
+            <span className="tabular-nums">
+              {n(s.staged_slots)} in lots · {n(s.removed_slots)} shipped
+            </span>
+          </div>
+          <span className="block h-[5px] rounded-full bg-surface-3 ring-1 ring-line overflow-hidden">
+            <span className="block h-full bg-accent" style={{ width: `${Math.round(pctWorked * 100)}%` }} />
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+          {!isArchived && (
+            <ActBtn onClick={() => onOpen(s.id)} icon={<ArrowRight size={12} />}>
+              {s.id === activeId ? "Go to it" : "Open this sheet"}
+            </ActBtn>
+          )}
+          <ActBtn
+            onClick={() => {
+              setDraft(s.name);
+              setRenaming(s.id);
+            }}
+          >
+            Rename
+          </ActBtn>
+          <div className="flex-1" />
+          <ActBtn onClick={() => setArchivedFlag(s, !isArchived)} busy={busy === s.id}>
+            {isArchived ? "Put back" : "Put away"}
+          </ActBtn>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="max-w-[900px]">
+      <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+        <p className="text-[12.5px] text-muted max-w-[560px] leading-relaxed">
+          Every sheet you have imported. Each keeps its own master list, so you can work a load
+          today, put it away, and pick it up where you left it. Nothing is ever deleted.
+        </p>
+        <ActBtn onClick={onImport} icon={<Upload size={12} />}>
+          Import a sheet
+        </ActBtn>
+      </div>
+
+      <div className="space-y-2">{sheets.map((s) => card(s, false))}</div>
+
+      <button
+        onClick={() => setShowArchived((v) => !v)}
+        className="text-[11.5px] text-ink-2 hover:text-accent transition-colors mt-3"
+      >
+        {showArchived ? "Hide" : "Show"} sheets you have put away
+      </button>
+      {showArchived && (
+        <div className="space-y-2 mt-2">
+          {!archived && <div className="h-16 rounded-xl bg-surface-2 animate-pulse" />}
+          {archived && archived.length === 0 && (
+            <p className="text-[12px] text-muted">Nothing has been put away yet.</p>
+          )}
+          {(archived ?? []).map((s) => card(s, true))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =========================================================================================
+// Auto lots — cut the pool into several at once
+// =========================================================================================
+
+/**
+ * *"Nike and adidas, footwear, about a thousand units a lot, as many as you can."*
+ *
+ * The plan comes from `plan_lot_builds`, which is the same ranking the Build tab uses read
+ * greedily — so lot 1 gets the purest slots and no location can land in two lots. Nothing is
+ * written until Save: each planned lot then goes through the ordinary save, so it is staged
+ * and checked exactly like one built by hand.
+ */
+function AutoLotsTab({
+  sheet,
+  facets,
+  onChanged,
+}: {
+  sheet: LotSheet;
+  facets: LotFacets;
+  onChanged: () => void;
+}) {
+  const [want, setWant] = useState<LotWant>(emptyWant);
+  const [allow, setAllow] = useState<LotAllow>(emptyAllow);
+  const [target, setTarget] = useState(1000);
+  const [maxLots, setMaxLots] = useState(0);
+  const [minPct, setMinPct] = useState(0);
+  const [pricePct, setPricePct] = useState(26);
+  const [result, setResult] = useState<LotAutoResult | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const seq = useRef(0);
+
+  const toggle = (list: string[], v: string) =>
+    list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+
+  useEffect(() => {
+    const mine = ++seq.current;
+    setPlanning(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.planLotBuilds(
+          sheet.id,
+          want,
+          allow,
+          { slack: 0, sort: "concentration", min_units: 0, min_pct: minPct / 100, limit: 0 },
+          { target_units: Math.max(1, target), max_lots: Math.max(0, maxLots), min_lot_units: 0 },
+        );
+        if (seq.current === mine) setResult(r);
+      } catch (e: any) {
+        if (seq.current === mine) toast(String(e), "error");
+      } finally {
+        if (seq.current === mine) setPlanning(false);
+      }
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [sheet.id, want, allow, target, maxLots, minPct]);
+
+  const saveAll = async () => {
+    if (!result?.lots.length) return;
+    setSaving(true);
+    const stamp = new Date().toISOString().slice(0, 10);
+    let made = 0;
+    try {
+      // One at a time, through the ordinary save. Sequential on purpose: each save stages
+      // its own slots, and the next lot must see that before it writes.
+      for (const l of result.lots) {
+        await api.saveLotBuild({
+          sheetId: sheet.id,
+          name: `${stamp} lot ${l.index}`,
+          slots: l.locations,
+          pricePct: pricePct / 100,
+          priceOverrides: undefined,
+        });
+        made += 1;
+      }
+      toast(`${n(made)} lots saved. Their locations are off the master list.`);
+      setResult(null);
+      onChanged();
+    } catch (e: any) {
+      toast(
+        made > 0
+          ? `Saved ${n(made)} of ${n(result.lots.length)}, then stopped: ${String(e)}`
+          : String(e),
+        "error",
+      );
+      onChanged();
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="max-w-[980px]">
+      <p className="text-[12.5px] text-muted mb-3 max-w-[620px] leading-relaxed">
+        Pick what you want and how big a lot should be, and this cuts the master list into as
+        many as it can — best slots first. Nothing is saved until you say so.
+      </p>
+
+      <div className="rounded-xl border border-line bg-surface-2 p-3.5 mb-4">
+        <p className="text-[12px] font-semibold text-ink mb-2">Brands you want</p>
+        <div className="flex flex-wrap gap-1.5">
+          {facets.brands.slice(0, 18).map((b) => (
+            <Chip
+              key={b.name}
+              label={b.name}
+              count={b.units}
+              on={want.brands.includes(b.name)}
+              onClick={() => setWant({ ...want, brands: toggle(want.brands, b.name) })}
+            />
+          ))}
+        </div>
+
+        <p className="text-[12px] font-semibold text-ink mt-3 mb-2">Categories a location may hold</p>
+        <div className="flex flex-wrap gap-1.5">
+          {facets.categories.map((c) => (
+            <Chip
+              key={c.name}
+              label={c.name}
+              count={c.units}
+              on={allow.categories.includes(c.name)}
+              onClick={() => setAllow({ ...allow, categories: toggle(allow.categories, c.name) })}
+            />
+          ))}
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3">
+          <label className="text-[11px] text-muted">
+            Units per lot, roughly
+            <NumberInput integer className={inp} value={target} onValue={(v) => setTarget(v)} />
+          </label>
+          <label className="text-[11px] text-muted">
+            How many lots (0 = as many as fit)
+            <NumberInput integer className={inp} value={maxLots} onValue={(v) => setMaxLots(v)} />
+          </label>
+          <label className="text-[11px] text-muted">
+            Least of a lot that is your brands
+            <div className="flex items-center gap-2 mt-0.5">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={minPct}
+                onChange={(e) => setMinPct(parseInt(e.target.value, 10))}
+                className="flex-1 accent-accent"
+              />
+              <span className="text-[12px] text-ink tabular-nums w-9 text-right">
+                {minPct > 0 ? `${minPct}%` : "off"}
+              </span>
+            </div>
+          </label>
+          <label className="text-[11px] text-muted">
+            Percent of retail
+            <NumberInput className={inp} value={pricePct} onValue={(v) => setPricePct(v)} />
+          </label>
+        </div>
+        <p className="text-[10.5px] text-muted mt-2 leading-snug">
+          A location is never split, so each lot lands a little over the target rather than
+          exactly on it. Everything else in a location still comes with it.
+        </p>
+      </div>
+
+      {!result && planning && <div className="h-24 rounded-xl bg-surface-2 animate-pulse" />}
+
+      {result && (
+        <div className={`transition-opacity ${planning ? "opacity-60" : ""}`}>
+          <div className="flex items-start justify-between gap-3 mb-2.5 flex-wrap">
+            <div className="min-w-0">
+              <p className="text-[12.5px] text-ink-2">
+                <span className="font-semibold text-ink tabular-nums">{n(result.lots.length)}</span>{" "}
+                lots · <span className="tabular-nums">{n(result.total_units)}</span> units ·{" "}
+                <span className="tabular-nums">{fmtAmount(result.total_msrp)}</span> retail ·{" "}
+                <span className="tabular-nums font-medium text-accent">
+                  {n(result.total_want_units)}
+                </span>{" "}
+                you want
+              </p>
+              <p className="text-[11px] text-muted mt-1 max-w-[620px] leading-snug">{result.note}</p>
+            </div>
+            {result.lots.length > 0 && (
+              <button
+                onClick={saveAll}
+                disabled={saving}
+                className="shrink-0 h-9 px-3 rounded-lg bg-accent text-on-accent text-[12.5px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+              >
+                {saving
+                  ? "Saving…"
+                  : `Save all ${n(result.lots.length)} — ${n(result.lots.reduce((a, l) => a + l.locations.length, 0))} locations leave the list`}
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {result.lots.map((l) => (
+              <div key={l.index} className="rounded-xl border border-line bg-surface px-3.5 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-[13.5px] font-semibold text-ink">Lot {l.index}</p>
+                  <p className="text-[12px] text-accent font-medium tabular-nums shrink-0">
+                    {Math.round(l.pct * 100)}% what you want
+                  </p>
+                </div>
+                <p className="text-[11.5px] text-muted mt-0.5 tabular-nums">
+                  {n(l.units)} units · {n(l.locations.length)} locations · {fmtAmount(l.msrp)} retail ·{" "}
+                  <span className="text-ink-2 font-medium">{n(l.want_units)} you want</span>
+                </p>
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5">
+                  {l.brands.slice(0, 6).map((b) => (
+                    <span key={b.name} className="text-[11px] text-muted tabular-nums">
+                      {b.name} <span className="text-ink-2">{n(b.units)}</span>
+                    </span>
+                  ))}
+                  {l.brands.length > 6 && (
+                    <span className="text-[11px] text-muted">and {l.brands.length - 6} more</span>
+                  )}
+                </div>
+                {l.unverified_units > 0 && (
+                  <p className="text-[11px] text-warning-ink mt-1.5 flex items-center gap-1">
+                    <AlertTriangle size={11} /> {n(l.unverified_units)} units need their description
+                    checked
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
