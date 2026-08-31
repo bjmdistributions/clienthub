@@ -1903,6 +1903,19 @@ function SheetsTab({
     }
   };
 
+  const resend = async (s: LotSheet) => {
+    setBusy(s.id);
+    try {
+      const rows = await api.resyncLotSheet(s.id);
+      toast(
+        `${s.name}: ${n(rows)} rows queued for the server, and its stock with them. It appears on your phone once the sync finishes.`,
+      );
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
   const setArchivedFlag = async (s: LotSheet, v: boolean) => {
     setBusy(s.id);
     try {
@@ -1992,6 +2005,14 @@ function SheetsTab({
             }}
           >
             Rename
+          </ActBtn>
+          {/* The button for an escape hatch that existed with no way to press it. A push
+              for a table the server did not yet accept was rejected, and a rejection is
+              treated as an acknowledgement — so the event was dropped rather than retried
+              and NOTHING re-sends it on its own. Without this, a sheet in that state is
+              correct here, invisible on the phone, and stuck that way forever. */}
+          <ActBtn onClick={() => resend(s)} busy={busy === s.id} icon={<Upload size={12} />}>
+            Send to the server
           </ActBtn>
           <div className="flex-1" />
           <ActBtn onClick={() => setArchivedFlag(s, !isArchived)} busy={busy === s.id}>

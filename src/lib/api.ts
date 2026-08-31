@@ -3233,6 +3233,11 @@ export const api = {
   // that pushed sheets to a server which did not yet accept the tables — those events are
   // rejected, and a rejection is treated as an acknowledgement, so nothing is left to retry.
   resyncLotEngine: () => invoke<number>("resync_lot_engine"),
+  /** The same, for one sheet: its row, its slot states, its lots and its stacks artifact.
+   *  The narrow escape hatch, and the one with a button — the failure it repairs (a push
+   *  rejected before the server knew the table, then dropped instead of retried) happens
+   *  per sheet, and nothing re-sends it on its own. */
+  resyncLotSheet: (sheetId: string) => invoke<number>("resync_lot_sheet", { sheetId }),
   lotSheetConflicts: (sheetId: string, query?: string, limit?: number) =>
     invoke<LotUpcConflict[]>("lot_sheet_conflicts", {
       sheetId,

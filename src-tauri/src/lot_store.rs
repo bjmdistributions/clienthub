@@ -1327,6 +1327,67 @@ pub async fn resync_lot_engine() -> Result<usize, String> {
     Ok(n)
 }
 
+/// Re-emit ONE sheet — its row, every slot state and lot that belong to it, and its
+/// stacks artifact — so it replicates again.
+///
+/// The narrow version of `resync_lot_engine`, and the one with a button, because the failure
+/// it repairs is per sheet. A push for a table the server does not yet accept is **rejected,
+/// and the rejection is treated as an acknowledgement**, so the event is dropped rather than
+/// retried ([[revisit/00-BACKLOG]] #21b). Once that has happened to a sheet, nothing will
+/// ever send it again on its own: the row sits here, correct and invisible, and the phone
+/// shows an empty lot engine. That is exactly what happened to `Shoe list .xlsx` before the
+/// server learned the three tables.
+///
+/// Idempotent. The far side applies per column and last-writer-wins, so re-sending a row
+/// that already arrived changes nothing.
+#[tauri::command]
+pub async fn resync_lot_sheet(sheet_id: String) -> Result<usize, String> {
+    #[allow(clippy::type_complexity)]
+    let (slots, builds): (Vec<String>, Vec<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let ids = |sql: &str| -> Result<Vec<String>, String> {
+            let mut st = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = st
+                .query_map([&sheet_id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        };
+        (
+            ids("SELECT id FROM lot_slot_state WHERE sheet_id = ?1")?,
+            ids("SELECT id FROM lot_build WHERE sheet_id = ?1")?,
+        )
+    };
+
+    let mut n = 0usize;
+    // The sheet row FIRST. A lot or a slot state that lands before its sheet is an orphan
+    // on the far side — which is the state this device's two saved lots were already in.
+    for (table, ids) in [
+        ("lot_sheet", &vec![sheet_id.clone()]),
+        ("lot_slot_state", &slots),
+        ("lot_build", &builds),
+    ] {
+        for id in ids {
+            let cols = match row_columns(table, id) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("lot sheet resync: skipping {table}/{id}: {e}");
+                    continue;
+                }
+            };
+            emit(table, id, cols);
+            n += 1;
+        }
+    }
+    // The rows are only half of it: a sheet without its stacks is a summary nobody can rank
+    // against, and the phone says so rather than showing numbers it does not have.
+    if has_artifact(&sheet_id) {
+        let rel_path = format!("lot-engine/{sheet_id}/{STACKS_FILE}");
+        crate::netsync::media_enqueue(&sheet_id, &rel_path, "lotsheet");
+    }
+    tracing::info!("lot sheet resync: re-emitted {n} rows for {sheet_id}");
+    Ok(n)
+}
+
 /// Read one row back as a column map, so a re-emit carries everything the row has.
 fn row_columns(
     table: &str,
