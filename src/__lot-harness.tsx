@@ -112,6 +112,31 @@ const planLot = (index: number, target: number) => {
       return null;
     case "resync_lot_sheet":
       return 1140;
+    case "lot_sheet_columns":
+      // The Carhartt shape that started this: a quantity column headed `order`, and no
+      // location column at all. Detection gets units wrong and location not at all.
+      return {
+        preview: {
+          format: "xlsx",
+          sheet: "Offer",
+          header_row: 3,
+          headers: ["Style", "Description", "UPC", "Color", "Size", "order", "MSRP", "Approved"],
+          rows: [
+            ["104727", "Carhartt Force Relaxed Fit Tee", "196968105426", "Black", "M", "48", "24.99", "Y"],
+            ["104727", "Carhartt Force Relaxed Fit Tee", "196968105433", "Black", "L", "36", "24.99", "Y"],
+            ["105432", "Carhartt Rugged Flex Canvas Pant", "196968210991", "Khaki", "34x32", "12", "59.99", ""],
+            ["102537", "Carhartt Loose Fit Hoodie", "196968004118", "Carbon", "XL", "0", "69.99", "Y"],
+            ["105432", "Carhartt Rugged Flex Canvas Pant", "196968211004", "Khaki", "36x32", "6", "59.99", "Y"],
+          ],
+          columns: { upc: 2, title: 1, msrp: 6, units: 7 },
+        },
+        saved: {},
+        location_mode: "Auto",
+        locked: false,
+        locked_reason: "",
+      };
+    case "remap_lot_sheet":
+      return { sheet_id: "s1", stacks: 1183, units: 24_918, dropped: 0, warnings: [] };
     case "lot_sheet_facets":
       return {
         brands: BRANDS.map(facet), categories: CATS.map(facet), segments: SEGS.map(facet),

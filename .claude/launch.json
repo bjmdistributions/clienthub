@@ -1,29 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    {
-      "name": "www",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8098", "--directory", "C:/Users/Jack/Desktop/clienthub-api/www"],
-      "port": 8098
-    },
-    {
-      "name": "desktop",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173
-    },
-    {
-      "name": "atlas",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/atlas", "run", "dev"],
-      "port": 4318
-    },
-    {
-      "name": "bjm-web",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/Websites/bjmdistributions", "run", "dev", "--", "-p", "3100"],
-      "port": 3100
-    }
+    { "name": "lot-harness-branch", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5241", "--strictPort"], "port": 5241 }
   ]
 }
