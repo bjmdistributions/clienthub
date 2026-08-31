@@ -266,7 +266,11 @@ export default function LotEngineView() {
           </div>
 
           {tab === "build" && facets && (
-            <Builder sheet={sheet} facets={facets} onChanged={refreshFacets} />
+            // Keyed on the sheet so switching sheets starts a fresh build. Without it the
+            // picked locations survived the change and were saved — and STAGED — against
+            // the new sheet; codes repeat across exports of the same warehouse, so they
+            // resolved silently rather than erroring. The phone resets on the same event.
+            <Builder key={sheet.id} sheet={sheet} facets={facets} onChanged={refreshFacets} />
           )}
           {tab === "quality" && <QualityTab sheetId={sheet.id} />}
           {tab === "barcodes" && <BarcodesTab sheetId={sheet.id} />}
