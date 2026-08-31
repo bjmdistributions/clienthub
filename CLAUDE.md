@@ -86,4 +86,4 @@ It holds: how each subsystem actually works and why, a screen-by-screen record o
 
 **Capture requests.** When Jack describes a feature, add it to `Ecliptr/requests/00-REQUESTS.md` in the same message you acknowledge it — before code, before approval, even if you build it immediately. Nothing he asks for may live only in a chat transcript.
 
-**Work cheaply.** Read `00-START-HERE.md` then `00-INDEX.md`, open only the 1–2 notes it routes you to, and grep before reading code — `commands.rs` (~15.7k lines) and `www/app.js` (~7k) must never be read whole. `CONVENTIONS.md` has the full session protocol.
+**Work cheaply.** Read `00-START-HERE.md` then `00-INDEX.md`, open only the 1–2 notes it routes you to, and grep before reading code — `commands.rs` (~19.9k lines) and `www/app.js` (~11.2k) must never be read whole. `CONVENTIONS.md` has the full session protocol.
