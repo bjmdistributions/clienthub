@@ -105,12 +105,153 @@ fn stacks_of(sheet_id: &str) -> Result<std::sync::Arc<Vec<Stack>>, String> {
             .map_err(|e| format!("line {} of {STACKS_FILE} is unreadable: {e}", i + 1))?;
         out.push(s);
     }
+    apply_retail_overrides(sheet_id, &mut out);
     let arc = std::sync::Arc::new(out);
     cache()
         .lock()
         .map_err(|e| e.to_string())?
         .insert(sheet_id.to_string(), arc.clone());
     Ok(arc)
+}
+
+/// Corrected retail prices, applied at the ONE place stacks are loaded.
+///
+/// Everything downstream — the facets, the ranking, the lot totals, all three exports — reads
+/// its prices from here, so correcting one product corrects every figure that mentions it
+/// rather than only the screen it was typed on. Keyed by exact title, matching how stage 5
+/// already groups prices.
+fn apply_retail_overrides(sheet_id: &str, stacks: &mut [Stack]) {
+    let Some(map) = retail_overrides(sheet_id) else { return };
+    if map.is_empty() {
+        return;
+    }
+    for s in stacks.iter_mut() {
+        if let Some(v) = map.get(s.title.trim()) {
+            s.msrp = *v;
+        }
+    }
+}
+
+fn retail_overrides(sheet_id: &str) -> Option<std::collections::BTreeMap<String, f64>> {
+    let conn = pool().get().ok()?;
+    let raw: Option<String> = conn
+        .query_row("SELECT price_overrides_json FROM lot_sheet WHERE id=?1", [sheet_id], |r| r.get(0))
+        .ok()?;
+    let raw = raw?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str(&raw).ok()
+}
+
+/// Correct one product's retail on this sheet, or clear the correction with `None`.
+///
+/// The stack cache is dropped afterwards, or the old price would keep being served from
+/// memory until the app restarted and the screen would argue with the database.
+#[tauri::command]
+pub async fn set_lot_retail(sheet_id: String, title: String, msrp: Option<f64>) -> Result<(), String> {
+    let key = title.trim().to_string();
+    if key.is_empty() {
+        return Err("that product has no description to key a price to".into());
+    }
+    let mut map = retail_overrides(&sheet_id).unwrap_or_default();
+    match msrp {
+        Some(v) if v.is_finite() && v >= 0.0 => {
+            map.insert(key, (v * 100.0).round() / 100.0);
+        }
+        Some(_) => return Err("a retail price has to be a number, and not negative".into()),
+        None => {
+            map.remove(&key);
+        }
+    }
+    // A guard, not a limit anyone should hit: this rides in one JSON column on the sheet
+    // row, and a five-figure map would make every sync event carry it.
+    if map.len() > 5000 {
+        return Err("too many corrected prices on one sheet — fix the source workbook instead".into());
+    }
+    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_sheet SET price_overrides_json=?2, updated_at=?3 WHERE id=?1",
+            rusqlite::params![sheet_id, json, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    cache().lock().map_err(|e| e.to_string())?.remove(&sheet_id);
+
+    let mut cols = serde_json::Map::new();
+    cols.insert("price_overrides_json".into(), serde_json::Value::String(json));
+    cols.insert("updated_at".into(), serde_json::Value::String(now));
+    emit("lot_sheet", &sheet_id, cols);
+    Ok(())
+}
+
+/// One row per distinct product on the sheet, for the screen that corrects prices.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LotProduct {
+    pub title: String,
+    pub upc: String,
+    pub brand: Option<String>,
+    pub category: Option<String>,
+    pub units: i64,
+    /// The price in force — the corrected one when there is a correction.
+    pub msrp: f64,
+    /// True when this price came from a correction rather than from the sheet.
+    pub overridden: bool,
+    pub locations: usize,
+}
+
+#[tauri::command]
+pub async fn lot_sheet_products(
+    sheet_id: String,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<LotProduct>, String> {
+    ensure_artifact(&sheet_id).await?;
+    let stacks = stacks_of(&sheet_id)?;
+    let overrides = retail_overrides(&sheet_id).unwrap_or_default();
+    let q = query.unwrap_or_default().trim().to_ascii_lowercase();
+
+    let mut by_title: std::collections::BTreeMap<&str, LotProduct> = Default::default();
+    let mut where_seen: std::collections::BTreeMap<&str, HashSet<&str>> = Default::default();
+    for s in stacks.iter() {
+        let t = s.title.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if !q.is_empty()
+            && !t.to_ascii_lowercase().contains(&q)
+            && !s.upc.to_ascii_lowercase().contains(&q)
+            && !s.brand.as_deref().map(|b| b.to_ascii_lowercase().contains(&q)).unwrap_or(false)
+        {
+            continue;
+        }
+        where_seen.entry(t).or_default().insert(s.location.as_str());
+        let e = by_title.entry(t).or_insert_with(|| LotProduct {
+            title: t.to_string(),
+            upc: s.upc.clone(),
+            brand: s.brand.clone(),
+            category: s.category.clone(),
+            units: 0,
+            msrp: s.msrp,
+            overridden: overrides.contains_key(t),
+            locations: 0,
+        });
+        e.units += s.units;
+    }
+    let mut out: Vec<LotProduct> = by_title
+        .into_iter()
+        .map(|(t, mut p)| {
+            p.locations = where_seen.get(t).map(|s| s.len()).unwrap_or(0);
+            p
+        })
+        .collect();
+    // Biggest first: the products worth correcting are the ones carrying the units.
+    out.sort_by(|a, b| b.units.cmp(&a.units).then(a.title.cmp(&b.title)));
+    out.truncate(limit.unwrap_or(300));
+    Ok(out)
 }
 
 fn write_stacks(sheet_id: &str, stacks: &[Stack]) -> Result<PathBuf, String> {

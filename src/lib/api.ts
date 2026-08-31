@@ -3248,6 +3248,13 @@ export const api = {
   resyncLotEngine: () => invoke<number>("resync_lot_engine"),
   /** Rename a saved lot. The export filename is built from the name, so this renames the
    *  lot's downloads too — which is the point. */
+  /** Distinct products on a sheet, biggest first — the ones worth correcting carry the units. */
+  lotSheetProducts: (sheetId: string, query?: string, limit?: number) =>
+    invoke<LotProduct[]>("lot_sheet_products", { sheetId, query: query ?? null, limit: limit ?? null }),
+  /** Correct one product's retail, or pass null to go back to the sheet's own price. Applied
+   *  wherever stacks are loaded, so every figure that mentions the product moves with it. */
+  setLotRetail: (sheetId: string, title: string, msrp: number | null) =>
+    invoke<void>("set_lot_retail", { sheetId, title, msrp }),
   renameLotBuild: (buildId: string, name: string) =>
     invoke<void>("rename_lot_build", { buildId, name }),
   /** The same, for one sheet: its row, its slot states, its lots and its stacks artifact.
@@ -3491,6 +3498,19 @@ export interface LotAutoResult {
   leftover_slots: number;
   leftover_units: number;
   note: string;
+}
+
+/** One distinct product on a sheet, for the screen that corrects retail prices. */
+export interface LotProduct {
+  title: string;
+  upc: string;
+  brand: string | null;
+  category: string | null;
+  units: number;
+  /** The price in force — the corrected one where there is a correction. */
+  msrp: number;
+  overridden: boolean;
+  locations: number;
 }
 
 export interface LotSlotState {

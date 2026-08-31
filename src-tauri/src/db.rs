@@ -1848,4 +1848,23 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE lot_build ADD COLUMN cost_pct_json TEXT;
         "#,
     ),
+    (
+        84,
+        // Corrected retail prices (R-213). MSRP is read from the supplier's sheet and was
+        // not editable anywhere -- a sheet with a wrong or missing price produced a lot
+        // valued wrong, with no way to fix it short of editing the workbook and re-importing.
+        //
+        // A JSON object of {exact title -> retail}, on the sheet rather than in its own
+        // table, for two reasons: it already replicates (lot_sheet is in ALLOWED_TABLES,
+        // PUSHABLE and SNAPSHOT_TABLES), and per-column last-writer-wins is the same
+        // granularity a separate table would give for a field only one person edits.
+        //
+        // Keyed by EXACT TITLE, which is how stage 5 already groups prices ("group by exact
+        // title and take the modal price"). Keying by barcode would be wrong for the same
+        // reason rule two exists: one barcode can carry several products, and correcting a
+        // price by barcode would move a price onto a product nobody meant to touch.
+        r#"
+        ALTER TABLE lot_sheet ADD COLUMN price_overrides_json TEXT;
+        "#,
+    ),
 ];

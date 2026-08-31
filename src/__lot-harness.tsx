@@ -167,6 +167,17 @@ const planLot = (index: number, target: number) => {
           { title: "New Balance 550 - Men's (Navy/Electric Sky) Size 12", brand: "New Balance", units: 1, share: 0.003, locations: 1, msrp: 109.99 },
         ],
       }];
+    case "lot_sheet_products": {
+      const q = String(a?.query || "").toLowerCase();
+      const all = [
+        { title: "Nike Air Max 90 Men's, White/Black, Size 10.5", upc: "196969506827", brand: "Nike", category: "Footwear", units: 1840, msrp: 129.99, overridden: false, locations: 41 },
+        { title: "100289 - Odessa Leatherette Cap", upc: "195836916257", brand: "Carhartt", category: "Headwear", units: 2004, msrp: 16.99, overridden: true, locations: 1 },
+        { title: "New Balance 9060 Big Kid Shoes, Great Plains/Twilight Haze, Size 6.5", upc: "197968446084", brand: "New Balance", category: "Footwear", units: 380, msrp: 0, overridden: false, locations: 12 },
+      ];
+      return all.filter((p) => !q || p.title.toLowerCase().includes(q) || p.upc.includes(q) || (p.brand || "").toLowerCase().includes(q));
+    }
+    case "set_lot_retail":
+      return null;
     case "lot_sheet_report":
       return {
         sheet: null,

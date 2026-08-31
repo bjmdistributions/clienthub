@@ -7,6 +7,7 @@ import {
   LotBuildDetail,
   LotFacets,
   LotGroupTotal,
+  LotProduct,
   LotRankResult,
   LotRankedSlot,
   LotSheet,
@@ -82,7 +83,7 @@ const emptyAllow = (): LotAllow => ({
   brand_lock: [],
 });
 
-type Tab = "sheets" | "build" | "auto" | "quality" | "barcodes" | "lots";
+type Tab = "sheets" | "build" | "auto" | "retail" | "quality" | "barcodes" | "lots";
 
 export default function LotEngineView() {
   const [sheets, setSheets] = useState<LotSheet[]>([]);
@@ -276,6 +277,7 @@ export default function LotEngineView() {
                 ["sheets", "Sheets"],
                 ["build", "Build a lot"],
                 ["auto", "Auto lots"],
+                ["retail", "Retail"],
                 ["quality", "Quality"],
                 ["barcodes", "Barcodes"],
                 ["lots", "Saved lots"],
@@ -317,6 +319,7 @@ export default function LotEngineView() {
           {tab === "auto" && facets && (
             <AutoLotsTab key={sheet.id} sheet={sheet} facets={facets} onChanged={refreshFacets} />
           )}
+          {tab === "retail" && <RetailTab key={sheet.id} sheetId={sheet.id} onChanged={refreshFacets} />}
           {tab === "quality" && <QualityTab sheetId={sheet.id} />}
           {tab === "barcodes" && <BarcodesTab sheetId={sheet.id} />}
           {tab === "lots" && <SavedLotsTab sheetId={sheet.id} onChanged={refreshFacets} />}
@@ -1140,16 +1143,45 @@ function LotPanel(p: {
   saving: boolean;
 }) {
   const [showSlots, setShowSlots] = useState(false);
-  const [showPricing, setShowPricing] = useState(false);
   const t = p.totals;
+
+  // The two percentages you sell and buy at. Always on screen, never behind a toggle, and
+  // shown BEFORE anything is picked — they were double-hidden before: the whole panel was
+  // gated on having picked a location, and the percentages were then collapsed behind a
+  // "Pricing" link, so on a fresh screen there was nowhere at all to set them.
+  const pricing = (
+    <div className="rounded-lg bg-surface p-2.5 border border-line-2">
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-[11px] text-muted">
+          You sell at, % of retail
+          <NumberInput className={inp} value={p.pricePct} onValue={(n) => p.setPricePct(n)} />
+        </label>
+        <label className="text-[11px] text-muted">
+          It costs you, % of retail
+          <NumberInput
+            className={inp}
+            placeholder="not recorded"
+            value={p.costPct || ""}
+            onValue={(v) => p.setCostPct(v)}
+          />
+        </label>
+      </div>
+      <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
+        Both apply per line, so a $75 shoe at 26% is $19.50. Leave the cost empty and no margin
+        is shown — an unrecorded cost is not a free one.
+      </p>
+    </div>
+  );
 
   if (!p.picked.length) {
     return (
-      <div className="rounded-xl border border-dashed border-line-3 bg-surface px-4 py-6 text-center">
-        <p className="text-[12.5px] font-medium text-ink">No lot yet</p>
-        <p className="text-[11.5px] text-muted mt-1 leading-snug">
-          Add a location and it leaves the pool straight away, so nothing can end up in two lots.
+      <div className="rounded-xl border border-line bg-surface-2 p-3.5">
+        <p className="text-[12.5px] font-semibold text-ink">The lot</p>
+        <p className="text-[11.5px] text-muted mt-1 mb-2.5 leading-snug">
+          Nothing picked yet. Add a location and it leaves the master list straight away, so
+          nothing can end up in two lots. Set your percentages now or later — they apply either way.
         </p>
+        {pricing}
       </div>
     );
   }
@@ -1183,39 +1215,9 @@ function LotPanel(p: {
         </p>
       )}
 
-      <button
-        onClick={() => setShowPricing((v) => !v)}
-        className="text-[11.5px] text-ink-2 hover:text-accent transition-colors mt-2.5"
-      >
-        {showPricing ? "Hide pricing" : "Pricing"}
-      </button>
-      {showPricing && (
+      <div className="mt-2.5">
+        {pricing}
         <div className="mt-2 rounded-lg bg-surface p-2.5 border border-line-2">
-          <label className="text-[11px] text-muted block">
-            Percent of retail
-            <div className="flex items-center gap-2 mt-0.5">
-              <NumberInput
-                className={inp}
-                value={p.pricePct}
-                onValue={(n) => p.setPricePct(n)}
-              />
-            </div>
-          </label>
-          <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
-            Every line is priced at this share of its own retail, so a $75 shoe at 26% is $19.50.
-          </p>
-
-          {/* What it costs you, the same way. Blank means not recorded — the panel then
-              shows no margin at all rather than a 100% one, which would be a lie. */}
-          <label className="text-[11px] text-muted block mt-2.5">
-            What it costs you, as a percent of retail
-            <NumberInput
-              className={inp}
-              placeholder="not recorded"
-              value={p.costPct || ""}
-              onValue={(v) => p.setCostPct(v)}
-            />
-          </label>
           {t && t.cost_known && (
             <div className="mt-2 grid grid-cols-3 gap-1.5">
               <Stat label="Costs you" value={fmtAmount(t.cost)} />
@@ -1254,7 +1256,7 @@ function LotPanel(p: {
             </div>
           )}
         </div>
-      )}
+      </div>
 
       {t && t.by_brand.length > 0 && (
         <div className="mt-3">
@@ -1328,6 +1330,129 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
       <p className={`text-[14px] font-semibold tabular-nums truncate ${accent ? "text-accent" : "text-ink"}`}>
         {value}
       </p>
+    </div>
+  );
+}
+
+// =========================================================================================
+// Retail — correcting the price the sheet came with
+// =========================================================================================
+
+/**
+ * MSRP is read from the supplier's workbook, and until now nothing could change it: a wrong
+ * or missing retail valued the lot wrong and the only fix was editing the workbook and
+ * re-importing.
+ *
+ * A correction is keyed by the product's **exact description**, which is how stage 5 already
+ * groups prices — and deliberately not by barcode, because one barcode can carry several
+ * products and correcting by barcode would move a price onto one nobody meant to touch.
+ * It is applied where the stacks are loaded, so the pool totals, the ranking, every lot and
+ * all three exports move together rather than just this screen.
+ */
+function RetailTab({ sheetId, onChanged }: { sheetId: string; onChanged: () => void }) {
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState<LotProduct[] | null>(null);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const seq = useRef(0);
+
+  const load = useCallback(
+    (query: string) => {
+      const mine = ++seq.current;
+      api
+        .lotSheetProducts(sheetId, query)
+        .then((v) => {
+          if (seq.current === mine) setRows(v);
+        })
+        .catch((e) => toast(String(e), "error"));
+    },
+    [sheetId],
+  );
+
+  useEffect(() => {
+    const t = setTimeout(() => load(q), DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [q, load]);
+
+  const save = async (p: LotProduct, raw: string) => {
+    const trimmed = raw.trim();
+    const v = trimmed === "" ? null : parseAmount(trimmed);
+    if (trimmed !== "" && !(v! >= 0)) {
+      toast("A retail price has to be a number, and not negative.", "error");
+      return;
+    }
+    setBusy(p.title);
+    try {
+      await api.setLotRetail(sheetId, p.title, v);
+      setDraft((d) => {
+        const next = { ...d };
+        delete next[p.title];
+        return next;
+      });
+      load(q);
+      // The pool's retail total moves with it, so the header has to be re-read.
+      onChanged();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  return (
+    <div className="max-w-[900px]">
+      <p className="text-[12.5px] text-muted mb-3 max-w-[620px] leading-relaxed">
+        Retail comes from the sheet you imported. Correct it here when it is wrong or missing,
+        and every figure that mentions the product moves with it — the pool, the ranking, your
+        saved lots and all three exports. Clear the box to go back to the sheet's own price.
+      </p>
+      <input
+        className={`${inp} max-w-[320px] mb-3`}
+        placeholder="Search a description, barcode or brand"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+
+      {!rows && <div className="h-32 rounded-xl bg-surface-2 animate-pulse" />}
+      {rows && rows.length === 0 && (
+        <p className="text-[12.5px] text-muted">Nothing on this sheet matches that.</p>
+      )}
+
+      <div className="space-y-1">
+        {(rows ?? []).map((p) => (
+          <div
+            key={p.title}
+            className={`rounded-lg border px-3 py-2 flex items-center gap-3 ${
+              p.overridden ? "border-accent bg-accent/5" : "border-line bg-surface"
+            }`}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block text-[12px] text-ink truncate">{p.title}</span>
+              <span className="block text-[11px] text-muted tabular-nums">
+                {p.brand ? `${p.brand} · ` : ""}
+                {n(p.units)} units · {n(p.locations)} slots · {p.upc}
+                {p.overridden && <span className="text-accent"> · corrected</span>}
+              </span>
+            </span>
+            <NumberInput
+              className="w-24 bg-surface border border-line-2 rounded-md px-2 h-8 text-[12px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors"
+              placeholder={p.msrp.toFixed(2)}
+              value={draft[p.title] ?? ""}
+              onValue={(_, rawText) => setDraft((d) => ({ ...d, [p.title]: rawText }))}
+            />
+            <ActBtn
+              onClick={() => save(p, draft[p.title] ?? "")}
+              busy={busy === p.title}
+            >
+              {draft[p.title]?.trim() ? "Set" : p.overridden ? "Clear" : "Set"}
+            </ActBtn>
+          </div>
+        ))}
+      </div>
+      {rows && rows.length >= 300 && (
+        <p className="text-[11.5px] text-muted mt-3">
+          Showing the 300 biggest by units. Search to reach the rest.
+        </p>
+      )}
     </div>
   );
 }
