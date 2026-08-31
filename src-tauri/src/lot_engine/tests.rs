@@ -137,6 +137,7 @@ fn ranking_and_the_three_exports_agree_end_to_end() {
             slack: 0.0,
             sort: Sort::Concentration,
             min_units: 0,
+            min_pct: 0.0,
             limit: 100,
         },
         &HashSet::new(),
@@ -274,7 +275,7 @@ pub fn module_tree_hash() -> u64 {
 /// the same sheet, and the disagreement is invisible until a buyer counts the units.
 #[test]
 fn module_tree_hash_is_pinned() {
-    const PINNED_TREE_HASH: u64 = 0x6ae6ad82bdf10cb7;
+    const PINNED_TREE_HASH: u64 = 0x9bc7a8e0b274ca10;
     let actual = module_tree_hash();
     assert_eq!(
         actual, PINNED_TREE_HASH,

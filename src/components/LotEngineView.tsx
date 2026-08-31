@@ -3,7 +3,9 @@ import {
   api,
   LotAllow,
   LotBuild,
+  LotBuildDetail,
   LotFacets,
+  LotGroupTotal,
   LotRankResult,
   LotRankedSlot,
   LotSheet,
@@ -21,6 +23,8 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronRight,
   ClipboardCopy,
   Download,
   Layers,
@@ -329,6 +333,7 @@ function Builder({
   const [slack, setSlack] = useState(0);
   const [sort, setSort] = useState<"concentration" | "volume">("concentration");
   const [minUnits, setMinUnits] = useState(0);
+  const [minPct, setMinPct] = useState(0);
   const [result, setResult] = useState<LotRankResult | null>(null);
   const [ranking, setRanking] = useState(false);
 
@@ -353,7 +358,13 @@ function Builder({
           sheet.id,
           want,
           allow,
-          { slack: slack / 100, sort, min_units: minUnits, limit: CARD_LIMIT },
+          {
+            slack: slack / 100,
+            sort,
+            min_units: minUnits,
+            min_pct: minPct / 100,
+            limit: CARD_LIMIT,
+          },
           picked,
         );
         if (seq.current === mine) setResult(r);
@@ -364,7 +375,7 @@ function Builder({
       }
     }, DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [sheet.id, want, allow, slack, sort, minUnits, picked]);
+  }, [sheet.id, want, allow, slack, sort, minUnits, minPct, picked]);
 
   // The lot's own figures come from the engine, not from adding up card totals here — with
   // per-category percentages, a UI that did its own arithmetic would drift from the manifest.
@@ -398,6 +409,7 @@ function Builder({
     setAllow(emptyAllow());
     setSlack(0);
     setMinUnits(0);
+    setMinPct(0);
   };
 
   const activeFilters =
@@ -407,7 +419,8 @@ function Builder({
     allow.brand_lock.length +
     (allow.described_only ? 1 : 0) +
     (want.size_min != null || want.size_max != null ? 1 : 0) +
-    (want.msrp_min != null || want.msrp_max != null ? 1 : 0);
+    (want.msrp_min != null || want.msrp_max != null ? 1 : 0) +
+    (minPct > 0 ? 1 : 0);
 
   const save = async () => {
     if (!picked.length) return;
@@ -460,7 +473,10 @@ function Builder({
             <Search size={13} /> Filters{activeFilters > 0 ? ` (${activeFilters})` : ""}
           </button>
         </div>
-        <div className="hidden xl:block sticky top-2">
+        {/* Its own scroller. Sticky alone leaves the bottom of a rail taller than the
+            viewport permanently below the fold — the only way to reach the sort controls
+            was to scroll the whole page to the end of the results. */}
+        <div className="hidden xl:block sticky top-2 max-h-[calc(100vh-1.5rem)] overflow-y-auto overscroll-contain pr-1">
           <Filters
             facets={facets}
             want={want}
@@ -473,6 +489,8 @@ function Builder({
             setSort={setSort}
             minUnits={minUnits}
             setMinUnits={setMinUnits}
+            minPct={minPct}
+            setMinPct={setMinPct}
             onReset={reset}
           />
         </div>
@@ -493,7 +511,9 @@ function Builder({
           />
         </div>
 
-        <div className="hidden 2xl:block sticky top-2">{lotPanel}</div>
+        <div className="hidden 2xl:block sticky top-2 max-h-[calc(100vh-1.5rem)] overflow-y-auto overscroll-contain pr-1">
+          {lotPanel}
+        </div>
       </div>
 
       {/* Below 2xl the lot lives in a bar pinned to the bottom, so the running total is
@@ -526,6 +546,8 @@ function Builder({
               setSort={setSort}
               minUnits={minUnits}
               setMinUnits={setMinUnits}
+              minPct={minPct}
+              setMinPct={setMinPct}
               onReset={reset}
             />
           </div>
@@ -595,8 +617,17 @@ function Filters(p: {
   setSort: (v: "concentration" | "volume") => void;
   minUnits: number;
   setMinUnits: (v: number) => void;
+  minPct: number;
+  setMinPct: (v: number) => void;
   onReset: () => void;
 }) {
+  const wantIsSet =
+    p.want.brands.length > 0 ||
+    p.want.size_min != null ||
+    p.want.size_max != null ||
+    p.want.msrp_min != null ||
+    p.want.msrp_max != null;
+
   const toggle = (list: string[], v: string) =>
     list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 
@@ -665,6 +696,36 @@ function Filters(p: {
             />
           </label>
         </div>
+      </Section>
+
+      {/* The floor on WANT. It gets its own section rather than living inside "What you
+          want", because WANT itself still ranks without excluding — and because the whole
+          point is that it is NOT the brand lock two sections down. */}
+      <Section
+        title="How concentrated a slot must be"
+        hint="A floor under the percentage on each card. Slots below it are hidden — but everything else in the ones above still comes with them. This is not 'nothing but'."
+      >
+        <div className="flex items-center gap-2.5">
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={p.minPct}
+            onChange={(e) => p.setMinPct(parseInt(e.target.value, 10))}
+            className="flex-1 accent-accent"
+            aria-label="Least of a slot that must be what you want"
+          />
+          <span className="text-[12px] text-ink tabular-nums w-10 text-right">
+            {p.minPct > 0 ? `${p.minPct}%` : "off"}
+          </span>
+        </div>
+        {p.minPct > 0 && !wantIsSet && (
+          <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
+            Nothing is wanted yet, so every slot counts as 100% and the floor changes nothing. Pick a
+            brand, or a size or retail range, above.
+          </p>
+        )}
       </Section>
 
       <Section
@@ -809,11 +870,13 @@ function Results({
       <div className="rounded-xl border border-dashed border-line-3 bg-surface px-6 py-10 text-center">
         <p className="text-[14px] font-semibold text-ink">No slot qualifies</p>
         <p className="text-[12.5px] text-muted mt-1.5 max-w-[440px] mx-auto leading-relaxed">
-          {result.rejected_by_allow > 0
-            ? `${n(result.rejected_by_allow)} slots hold what you want but also hold something the filters don't allow. Raise the tolerance to take them anyway.`
-            : result.rejected_by_want > 0
-              ? `${n(result.rejected_by_want)} slots qualify but hold none of what you asked for.`
-              : "Nothing is left in the pool for these filters."}
+          {result.rejected_by_pct > 0
+            ? `${n(result.rejected_by_pct)} slots hold what you want, but none of them reach the concentration floor. Lower it to see them.`
+            : result.rejected_by_allow > 0
+              ? `${n(result.rejected_by_allow)} slots hold what you want but also hold something the filters don't allow. Raise the tolerance to take them anyway.`
+              : result.rejected_by_want > 0
+                ? `${n(result.rejected_by_want)} slots qualify but hold none of what you asked for.`
+                : "Nothing is left in the pool for these filters."}
         </p>
       </div>
     );
@@ -834,6 +897,12 @@ function Results({
               Taking all of them brings about{" "}
               <span className="tabular-nums">{result.tagalong_ratio.toFixed(1)}</span> units of something else
               for every unit you wanted.
+            </p>
+          )}
+          {result.rejected_by_pct > 0 && (
+            <p className="text-[11.5px] text-muted mt-1">
+              <span className="tabular-nums">{n(result.rejected_by_pct)}</span> more hold what you want but
+              sit below the concentration floor.
             </p>
           )}
         </div>
@@ -1192,7 +1261,21 @@ function BarcodesTab({ sheetId }: { sheetId: string }) {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<LotUpcConflict[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const seq = useRef(0);
+
+  // The screen shows the list; this is the copy that leaves the app. The genuinely split
+  // barcodes cannot be resolved by software — they can only be handed back to the floor.
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const r = await api.exportLotConflicts(sheetId);
+      toast(`${n(r.rows)} rows written to ${r.path}`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setExporting(false);
+  };
 
   useEffect(() => {
     const mine = ++seq.current;
@@ -1211,14 +1294,20 @@ function BarcodesTab({ sheetId }: { sheetId: string }) {
     <div className="max-w-[880px]">
       <p className="text-[12.5px] text-muted mb-3 max-w-[620px] leading-relaxed">
         Nothing here merges a description, so a barcode can carry more than one product. This is where you
-        see what any barcode actually means.
+        see what any barcode actually means — and the export is the list the warehouse needs in order to
+        fix the habit at source.
       </p>
-      <input
-        className={`${inp} max-w-[320px] mb-3`}
-        placeholder="Search a barcode, brand or name"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          className={`${inp} max-w-[320px]`}
+          placeholder="Search a barcode, brand or name"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <ActBtn onClick={exportCsv} busy={exporting} icon={<Download size={12} />}>
+          {exporting ? "Writing…" : "Export CSV"}
+        </ActBtn>
+      </div>
 
       {!rows && <div className="h-32 rounded-xl bg-surface-2 animate-pulse" />}
       {rows && rows.length === 0 && (
@@ -1284,8 +1373,14 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   const [rows, setRows] = useState<LotBuild[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<LotBuild | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  // Cached per lot: the breakdown reads every stack in the lot, so re-opening a row it has
+  // already read should cost nothing. Cleared whenever the list itself is reloaded.
+  const [detail, setDetail] = useState<Record<string, LotBuildDetail>>({});
+  const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
 
   const load = useCallback(() => {
+    setDetail({});
     api.listLotBuilds(sheetId).then(setRows).catch((e) => toast(String(e), "error"));
   }, [sheetId]);
 
@@ -1305,6 +1400,24 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
       toast(String(e), "error");
     }
     setBusy(null);
+  };
+
+  const expand = async (b: LotBuild) => {
+    if (open === b.id) {
+      setOpen(null);
+      return;
+    }
+    setOpen(b.id);
+    if (detail[b.id]) return;
+    setLoadingDetail(b.id);
+    try {
+      const d = await api.lotBuildDetail(b.id);
+      setDetail((x) => ({ ...x, [b.id]: d }));
+    } catch (e: any) {
+      toast(String(e), "error");
+      setOpen(null);
+    }
+    setLoadingDetail(null);
   };
 
   const copyCodes = async (b: LotBuild) => {
@@ -1329,15 +1442,29 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
       {rows.map((b) => (
         <div key={b.id} className="rounded-xl border border-line bg-surface px-3.5 py-3">
           <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[13.5px] font-semibold text-ink truncate">{b.name}</p>
-              <p className="text-[11.5px] text-muted mt-0.5 tabular-nums">
-                {n(b.locations)} slots · {n(b.units)} units · {n(b.styles)} styles ·{" "}
-                {fmtAmount(b.msrp_total)} retail ·{" "}
-                <span className="text-accent font-medium">{fmtAmount(b.ask_total)}</span> at{" "}
-                {(b.price_pct * 100).toFixed(1)}%
-              </p>
-            </div>
+            {/* The whole heading opens the breakdown — a saved lot's first question is
+                always "how much of each brand", and until now that answer was only in an
+                exported CSV. */}
+            <button
+              onClick={() => expand(b)}
+              className="flex items-start gap-2 min-w-0 text-left group"
+              aria-expanded={open === b.id}
+            >
+              <span className="text-muted group-hover:text-accent transition-colors mt-0.5 shrink-0">
+                {open === b.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[13.5px] font-semibold text-ink truncate group-hover:text-accent transition-colors">
+                  {b.name}
+                </span>
+                <span className="block text-[11.5px] text-muted mt-0.5 tabular-nums">
+                  {n(b.locations)} slots · {n(b.units)} units · {n(b.styles)} styles ·{" "}
+                  {fmtAmount(b.msrp_total)} retail ·{" "}
+                  <span className="text-accent font-medium">{fmtAmount(b.ask_total)}</span> at{" "}
+                  {(b.price_pct * 100).toFixed(1)}%
+                </span>
+              </span>
+            </button>
             <span
               className={`text-[10.5px] px-1.5 h-5 rounded-md flex items-center shrink-0 ${
                 b.status === "sent" ? "bg-success-bg text-success-ink" : "bg-surface-3 text-muted"
@@ -1346,6 +1473,13 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
               {b.status === "sent" ? "off the list" : "in a lot"}
             </span>
           </div>
+
+          {open === b.id &&
+            (detail[b.id] ? (
+              <LotBreakdown detail={detail[b.id]} />
+            ) : loadingDetail === b.id ? (
+              <div className="h-28 rounded-lg bg-surface-2 animate-pulse mt-2.5" />
+            ) : null)}
 
           <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
             <ActBtn onClick={() => exportOne(b, "manifest")} busy={busy === b.id} icon={<Download size={12} />}>
@@ -1435,6 +1569,160 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A saved lot, opened up.
+ *
+ * Every figure comes from `lotBuildDetail`, which prices the lot through the same engine the
+ * manifest does — so what is on screen is what the buyer's paperwork will say. Nothing here
+ * is added up in TypeScript.
+ *
+ * The brand table is the spec's **Brand counts** artifact rendered in place: brand, units,
+ * share of the lot, styles, how many slots hold it, retail and the price per unit. It is the
+ * first question anyone asks about a lot, and until now the only way to answer it was to
+ * export a CSV and open it somewhere else.
+ */
+function LotBreakdown({ detail }: { detail: LotBuildDetail }) {
+  const t = detail.totals;
+  const risk = t.title_risk_units;
+  const codes = detail.location_codes.split("\n").filter(Boolean);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(detail.location_codes);
+      toast(`${n(codes.length)} location codes copied.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-line space-y-3.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <Stat label="Slots" value={n(t.locations)} />
+        <Stat label="Units" value={n(t.units)} />
+        <Stat label="Styles" value={n(t.styles)} />
+        <Stat label="Retail" value={fmtAmount(t.msrp)} />
+        <Stat label="Price" value={fmtAmount(t.ask)} accent />
+        <Stat label="A unit" value={fmtAmount(t.per_unit)} />
+      </div>
+      <p className="text-[11px] text-muted -mt-1.5 tabular-nums">
+        {(t.effective_pct * 100).toFixed(1)}% of retail across the whole lot · {n(t.stacks)} lines on the
+        manifest
+      </p>
+
+      <GroupTable title="Brand counts" nameHeader="Brand" rows={t.by_brand} />
+      <GroupTable title="Categories" nameHeader="Category" rows={t.by_category} />
+
+      <div>
+        <p className="text-[11.5px] font-medium text-ink-2 mb-1.5">Where the descriptions came from</p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          <RiskCell units={risk[0]} label="typed into the source sheet" />
+          <RiskCell units={risk[1]} label="named from a clean barcode" />
+          <RiskCell units={risk[2]} label="to verify — a barcode used for several products" warn />
+          <RiskCell units={risk[3]} label="no description in the source sheet" warn />
+        </div>
+        <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
+          Only the last two can mis-describe the lot, and each carries that note on its own manifest line.
+        </p>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between gap-2 mb-1.5">
+          <p className="text-[11.5px] font-medium text-ink-2">
+            Locations, in walk order
+            <span className="text-muted font-normal"> · {n(codes.length)}</span>
+          </p>
+          <button
+            onClick={copy}
+            className="flex items-center gap-1 text-[11px] text-muted hover:text-accent transition-colors"
+          >
+            <ClipboardCopy size={11} /> Copy codes
+          </button>
+        </div>
+        <div className="max-h-[128px] overflow-y-auto rounded-lg bg-surface-2 border border-line-2 px-2.5 py-2">
+          <p className="text-[11px] text-ink-2 tabular-nums leading-relaxed break-all">{codes.join(" · ")}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Brand counts and category totals share a shape, so they share a table. */
+function GroupTable({
+  title,
+  nameHeader,
+  rows,
+}: {
+  title: string;
+  nameHeader: string;
+  rows: LotGroupTotal[];
+}) {
+  if (!rows.length) return null;
+  const top = rows[0].units || 1;
+  return (
+    <div>
+      <p className="text-[11.5px] font-medium text-ink-2 mb-1">{title}</p>
+      <div className="overflow-x-auto">
+        <div className="min-w-[520px]">
+          <div className="grid grid-cols-[minmax(0,1fr)_54px_46px_46px_42px_74px_58px] gap-x-2 text-[10.5px] text-muted pb-1 border-b border-line">
+            <span>{nameHeader}</span>
+            <span className="text-right">Units</span>
+            <span className="text-right">Share</span>
+            <span className="text-right">Styles</span>
+            <span className="text-right">Slots</span>
+            <span className="text-right">Retail</span>
+            <span className="text-right">A unit</span>
+          </div>
+          {rows.map((r) => (
+            <div
+              key={r.name}
+              className="grid grid-cols-[minmax(0,1fr)_54px_46px_46px_42px_74px_58px] gap-x-2 items-center text-[11px] py-1 border-b border-line/60 last:border-0"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-ink-2">{r.name}</span>
+                <span className="block h-[3px] rounded-full bg-surface-3 ring-1 ring-line overflow-hidden mt-0.5">
+                  <span
+                    className="block h-full bg-accent"
+                    style={{ width: `${Math.max(2, (r.units / top) * 100)}%` }}
+                  />
+                </span>
+              </span>
+              <span className="text-right tabular-nums text-ink">{n(r.units)}</span>
+              <span className="text-right tabular-nums text-muted">{(r.share * 100).toFixed(1)}%</span>
+              <span className="text-right tabular-nums text-muted">{n(r.styles)}</span>
+              <span className="text-right tabular-nums text-muted">{n(r.locations)}</span>
+              <span className="text-right tabular-nums text-muted">{fmtAmount(r.msrp)}</span>
+              <span className="text-right tabular-nums text-accent">{fmtAmount(r.per_unit)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RiskCell({ units, label, warn }: { units: number; label: string; warn?: boolean }) {
+  const live = units > 0;
+  return (
+    <div
+      className={`rounded-lg px-2.5 py-2 border min-w-0 ${
+        warn && live ? "bg-warning-bg border-warning" : "bg-surface border-line-2"
+      }`}
+    >
+      <p
+        className={`text-[14px] font-semibold tabular-nums ${
+          warn && live ? "text-warning-ink" : "text-ink"
+        }`}
+      >
+        {n(units)}
+      </p>
+      <p className={`text-[10.5px] leading-snug mt-0.5 ${warn && live ? "text-warning-ink" : "text-muted"}`}>
+        {label}
+      </p>
     </div>
   );
 }

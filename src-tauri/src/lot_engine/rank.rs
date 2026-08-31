@@ -161,6 +161,18 @@ pub struct RankOpts {
     /// Sorting by concentration puts 8-unit slots on top. This is the answer to that.
     #[serde(default)]
     pub min_units: i64,
+    /// The concentration floor, 0.0-1.0: the share of a slot that must be what you WANT.
+    ///
+    /// *"Mostly Nike, but I'll take what comes with it"* is a different request from
+    /// *"nothing but Nike"*, and only this expresses it. `brand_lock` + `slack` looks like
+    /// the same dial and is not: `slack` is measured against the whole of ALLOW, so a
+    /// category filter and a brand lock share one allowance, and it says nothing about
+    /// size or MSRP. This is measured on `pct` — the number printed on the card.
+    ///
+    /// Zero means no floor, which is the ranking exactly as it was. It only applies when
+    /// WANT is set; with nothing wanted there is no concentration to have.
+    #[serde(default)]
+    pub min_pct: f64,
     /// How many slots to return. The ranking always runs over every slot; only the
     /// rendering is capped.
     #[serde(default)]
@@ -173,6 +185,7 @@ impl Default for RankOpts {
             slack: 0.0,
             sort: Sort::Concentration,
             min_units: 0,
+            min_pct: 0.0,
             limit: 200,
         }
     }
@@ -234,6 +247,8 @@ pub struct RankResult {
     pub rejected_by_want: usize,
     /// Slots skipped by `min_units`.
     pub rejected_by_size: usize,
+    /// Slots skipped by `min_pct` — they hold what you want, just not enough of it.
+    pub rejected_by_pct: usize,
     /// Plain words for what the current sort is costing. Ship it next to the toggle.
     pub sort_note: String,
 }
@@ -270,12 +285,14 @@ pub fn rank(
     let want_set = want.is_set();
     let allow_set = allow.is_set();
     let slack = opts.slack.clamp(0.0, 1.0);
+    let min_pct = opts.min_pct.clamp(0.0, 1.0);
 
     let mut slots: Vec<RankedSlot> = Vec::new();
     let mut pool_slots = 0usize;
     let mut rejected_by_allow = 0usize;
     let mut rejected_by_want = 0usize;
     let mut rejected_by_size = 0usize;
+    let mut rejected_by_pct = 0usize;
 
     let mut i = 0usize;
     while i < stacks.len() {
@@ -342,6 +359,11 @@ pub fn rank(
             rejected_by_want += 1;
             continue;
         }
+        let pct = wanted as f64 / total as f64;
+        if want_set && min_pct > 0.0 && pct < min_pct {
+            rejected_by_pct += 1;
+            continue;
+        }
         if opts.min_units > 0 && total < opts.min_units {
             rejected_by_size += 1;
             continue;
@@ -353,7 +375,7 @@ pub fn rank(
             allowed,
             want: wanted,
             breaks,
-            pct: wanted as f64 / total as f64,
+            pct,
             msrp,
             styles: titles.len(),
             brands: top_slices(brands),
@@ -410,6 +432,7 @@ pub fn rank(
         rejected_by_allow,
         rejected_by_want,
         rejected_by_size,
+        rejected_by_pct,
         sort_note,
     }
 }
@@ -527,6 +550,66 @@ mod tests {
         assert_eq!(two.slots[0].location, "01-001-01");
         assert_eq!(two.slots[1].location, "02-001-01");
         assert!((two.slots[1].pct - 0.95).abs() < 1e-9);
+    }
+
+    /// *"Mostly Nike, but not only Nike."* The floor keeps the 95/5 slot that `brand_lock`
+    /// throws away, and drops the one that is only 60% of what was asked for.
+    #[test]
+    fn a_concentration_floor_is_not_a_brand_lock() {
+        let stacks = sorted(vec![
+            stack("01-001-01", "Nike", "Footwear", 50),
+            stack("02-001-01", "Nike", "Footwear", 95),
+            stack("02-001-01", "adidas", "Footwear", 5),
+            stack("03-001-01", "Nike", "Footwear", 60),
+            stack("03-001-01", "adidas", "Footwear", 40),
+        ]);
+        let want = Want {
+            brands: vec!["Nike".into()],
+            ..Default::default()
+        };
+
+        let floor = rank(
+            &stacks,
+            &want,
+            &Allow::default(),
+            &RankOpts {
+                min_pct: 0.9,
+                ..Default::default()
+            },
+            &none(),
+        );
+        assert_eq!(floor.matched_slots, 2);
+        assert_eq!(floor.rejected_by_pct, 1);
+        // The 95/5 slot survives — the 5% of adidas comes with it, which is the point.
+        assert_eq!(floor.slots[1].location, "02-001-01");
+        assert_eq!(floor.slots[1].comes_with[0].name, "adidas");
+
+        // A lock over the same brand would have thrown that slot away instead.
+        let lock = rank(
+            &stacks,
+            &want,
+            &Allow {
+                brand_lock: vec!["Nike".into()],
+                ..Default::default()
+            },
+            &RankOpts::default(),
+            &none(),
+        );
+        assert_eq!(lock.matched_slots, 1);
+
+        // A floor with nothing wanted is not a filter at all — there is no concentration.
+        let no_want = rank(
+            &stacks,
+            &Want::default(),
+            &Allow::default(),
+            &RankOpts {
+                min_pct: 0.9,
+                ..Default::default()
+            },
+            &none(),
+        );
+        assert_eq!(no_want.matched_slots, 3);
+        assert_eq!(no_want.rejected_by_pct, 0);
     }
 
     /// Slack is the honest expression of "I'd take a little apparel to get more volume".

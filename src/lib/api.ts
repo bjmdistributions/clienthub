@@ -3221,6 +3221,10 @@ export const api = {
       query: query ?? null,
       limit: limit ?? null,
     }),
+  /** The barcode-conflict list as a CSV. It is what the warehouse needs to fix the habit at
+   *  source, which is why it leaves the app rather than only living on screen. */
+  exportLotConflicts: (sheetId: string, destDir?: string) =>
+    invoke<LotExportResult>("export_lot_conflicts", { sheetId, destDir: destDir ?? null }),
 };
 
 // ===== Lot engine types =====
@@ -3371,6 +3375,9 @@ export interface LotRankOpts {
   slack: number;
   sort: "concentration" | "volume";
   min_units: number;
+  /** Concentration floor, 0–1: the share of a slot that must be what you WANT. Not a brand
+   *  lock — the rest of the slot still comes with it. Zero means no floor. */
+  min_pct: number;
   limit: number;
 }
 
@@ -3407,6 +3414,8 @@ export interface LotRankResult {
   rejected_by_allow: number;
   rejected_by_want: number;
   rejected_by_size: number;
+  /** Slots holding what you want, just not enough of it. */
+  rejected_by_pct: number;
   sort_note: string;
 }
 

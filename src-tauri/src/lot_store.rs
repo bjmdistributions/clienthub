@@ -1182,6 +1182,43 @@ pub async fn lot_sheet_conflicts(
     Ok(out)
 }
 
+/// Write the barcode-conflict list to disk as CSV.
+///
+/// The screen shows the list; this is the copy that leaves the app. The 38 genuinely split
+/// barcodes on the reference export cannot be resolved by software — they can only be
+/// handed back to the warehouse as a list, which is the thing that actually fixes them.
+///
+/// Rebuilt from the stacks rather than read from the file written at import, so a sheet
+/// that arrived over sync exports the same list as the one it was imported on.
+///
+/// `reconciled` on the result has no meaning here — there are no sibling artifacts for this
+/// file to agree with — and nothing reads it for this kind.
+#[tauri::command]
+pub async fn export_lot_conflicts(
+    sheet_id: String,
+    dest_dir: Option<String>,
+) -> Result<ExportResult, String> {
+    ensure_artifact(&sheet_id).await?;
+    let stacks = stacks_of(&sheet_id)?;
+    let conflicts = crate::lot_engine::pipeline::conflicts_of(&stacks);
+    let rows: usize = conflicts.iter().map(|c| c.names.len()).sum();
+
+    let dir = match dest_dir {
+        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
+        _ => sheet_dir(&sheet_id)?,
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(CONFLICTS_FILE);
+    std::fs::write(&path, crate::lot_engine::report::conflicts_csv_of(&conflicts))
+        .map_err(|e| e.to_string())?;
+
+    Ok(ExportResult {
+        path: path.to_string_lossy().to_string(),
+        rows,
+        reconciled: true,
+    })
+}
+
 /// Re-emit every lot engine row this device holds, so they replicate again.
 ///
 /// The escape hatch for one specific ordering failure. A push for a table the server does

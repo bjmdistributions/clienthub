@@ -8,7 +8,7 @@
 //! source.
 
 use super::export::{to_csv, Doc, Section};
-use super::model::CleanResult;
+use super::model::{CleanResult, UpcConflict};
 
 fn n(v: i64) -> String {
     let s = v.abs().to_string();
@@ -207,8 +207,15 @@ pub fn audit_map_csv(r: &CleanResult) -> String {
 
 /// Every barcode carrying more than one product name, one row per name.
 pub fn conflicts_csv(r: &CleanResult) -> String {
+    conflicts_csv_of(&r.conflicts)
+}
+
+/// The same list built from conflicts on their own, so a sheet that arrived over sync —
+/// stacks but no `CleanResult` — can still hand the warehouse the file that fixes the habit
+/// at source. One implementation, because two would drift.
+pub fn conflicts_csv_of(conflicts: &[UpcConflict]) -> String {
     let mut rows = Vec::new();
-    for c in &r.conflicts {
+    for c in conflicts {
         for nm in &c.names {
             rows.push(vec![
                 c.upc.clone(),
