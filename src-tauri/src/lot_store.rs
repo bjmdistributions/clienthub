@@ -1560,6 +1560,71 @@ pub async fn rename_lot_build(build_id: String, name: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Re-price a saved lot: one percentage for every line in it, and optionally what it cost.
+///
+/// The percentage is set when a lot is built and was fixed after that, so a lot could not be
+/// re-quoted without rebuilding it — and re-quoting is the normal thing to do, because the
+/// number you send a buyer is the last thing you decide.
+///
+/// It re-reads the lot's stacks and recomputes through `lot_totals`, so `ask_total` and the
+/// per-brand and per-category blocks move with it. It does NOT touch the slots, the staging
+/// or the unit counts: nothing about what is in the lot changes, only what it is priced at.
+#[tauri::command]
+pub async fn reprice_lot_build(
+    build_id: String,
+    price_pct: f64,
+    cost_pct: Option<f64>,
+) -> Result<LotBuild, String> {
+    if !price_pct.is_finite() || price_pct < 0.0 {
+        return Err("a percentage of retail has to be a number, and not negative".into());
+    }
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    ensure_artifact(&build.sheet_id).await?;
+    let lot = build_stacks(&build)?;
+
+    // The per-category overrides are dropped on purpose: this sets ONE percentage across the
+    // whole lot, which is the thing being asked for. A lot that wants different percentages
+    // per category is edited on the Build tab, where that control lives.
+    let pricing = pricing_with_cost(price_pct, None, cost_pct.unwrap_or(0.0), None);
+    let t = lot_totals(&lot, &pricing);
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET price_pct=?2, price_pct_json=NULL, cost_pct=?3, \
+             cost_pct_json=NULL, ask_total=?4, brands_json=?5, categories_json=?6, \
+             updated_at=?7 WHERE id=?1",
+            rusqlite::params![
+                build_id,
+                pricing.pct,
+                pricing.cost_pct,
+                t.ask,
+                serde_json::to_string(&t.by_brand).ok(),
+                serde_json::to_string(&t.by_category).ok(),
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let mut cols = serde_json::Map::new();
+    cols.insert("price_pct".into(), serde_json::json!(pricing.pct));
+    cols.insert("price_pct_json".into(), serde_json::Value::Null);
+    cols.insert("cost_pct".into(), serde_json::json!(pricing.cost_pct));
+    cols.insert("cost_pct_json".into(), serde_json::Value::Null);
+    cols.insert("ask_total".into(), serde_json::json!(t.ask));
+    cols.insert("updated_at".into(), serde_json::Value::String(now));
+    emit("lot_build", &build_id, cols);
+
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+        .map_err(|e| e.to_string())
+}
+
 /// Re-emit ONE sheet — its row, every slot state and lot that belong to it, and its
 /// stacks artifact — so it replicates again.
 ///

@@ -3255,6 +3255,11 @@ export const api = {
    *  wherever stacks are loaded, so every figure that mentions the product moves with it. */
   setLotRetail: (sheetId: string, title: string, msrp: number | null) =>
     invoke<void>("set_lot_retail", { sheetId, title, msrp }),
+  /** One percentage across every line in a saved lot, and optionally what it cost. Drops any
+   *  per-category overrides — this is the whole-lot number you quote a buyer. Recomputes the
+   *  ask and the per-brand/per-category blocks, and touches nothing about what is IN the lot. */
+  repriceLotBuild: (buildId: string, pricePct: number, costPct?: number) =>
+    invoke<LotBuild>("reprice_lot_build", { buildId, pricePct, costPct: costPct ?? 0 }),
   renameLotBuild: (buildId: string, name: string) =>
     invoke<void>("rename_lot_build", { buildId, name }),
   /** The same, for one sheet: its row, its slot states, its lots and its stacks artifact.

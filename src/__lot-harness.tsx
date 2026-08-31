@@ -178,6 +178,8 @@ const planLot = (index: number, target: number) => {
     }
     case "set_lot_retail":
       return null;
+    case "reprice_lot_build":
+      return { ...BUILD, price_pct: a?.pricePct ?? 0.26, cost_pct: a?.costPct ?? 0 };
     case "lot_sheet_report":
       return {
         sheet: null,

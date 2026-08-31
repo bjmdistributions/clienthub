@@ -18,6 +18,11 @@ import {
 } from "../lib/api";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+// The NATIVE clipboard, not navigator.clipboard. The web API throws NotAllowedError inside
+// this webview — it needs a secure context and a focused document, and a click that has
+// already been through an await (the codes are fetched first) no longer counts as the user
+// gesture it demands. WhatsAppSharePanel has used this plugin for the same reason.
+import { writeText as clipboardWrite } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
@@ -1643,6 +1648,8 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   const [format, setFormat] = useState<"csv" | "xlsx">("xlsx");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [pctDraft, setPctDraft] = useState<Record<string, string>>({});
+  const [costDraft, setCostDraft] = useState<Record<string, string>>({});
   // Cached per lot: the breakdown reads every stack in the lot, so re-opening a row it has
   // already read should cost nothing. Cleared whenever the list itself is reloaded.
   const [detail, setDetail] = useState<Record<string, LotBuildDetail>>({});
@@ -1720,6 +1727,30 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
     }
   };
 
+  // One percentage for every line in the lot, set where you download it. The percentage is
+  // fixed when a lot is built, and re-quoting is the normal last thing you do — so it has to
+  // be changeable here rather than only by rebuilding the lot.
+  const reprice = async (b: LotBuild) => {
+    const p = parseAmount((pctDraft[b.id] ?? "").trim());
+    if (!(p >= 0)) {
+      toast("A percentage of retail has to be a number, and not negative.", "error");
+      return;
+    }
+    const cRaw = (costDraft[b.id] ?? "").trim();
+    const c = cRaw === "" ? 0 : parseAmount(cRaw);
+    setBusy(b.id);
+    try {
+      await api.repriceLotBuild(b.id, p / 100, c / 100);
+      toast(`${b.name} is now priced at ${p}% of retail.`);
+      setPctDraft((d) => ({ ...d, [b.id]: "" }));
+      setCostDraft((d) => ({ ...d, [b.id]: "" }));
+      load();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
   const expand = async (b: LotBuild) => {
     if (open === b.id) {
       setOpen(null);
@@ -1740,7 +1771,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
 
   const copyCodes = async (b: LotBuild) => {
     try {
-      await navigator.clipboard.writeText(await api.lotBuildLocationCodes(b.id));
+      await clipboardWrite(await api.lotBuildLocationCodes(b.id));
       toast(`${n(b.locations)} location codes copied.`);
     } catch (e: any) {
       toast(String(e), "error");
@@ -1846,6 +1877,36 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
             ) : loadingDetail === b.id ? (
               <div className="h-28 rounded-lg bg-surface-2 animate-pulse mt-2.5" />
             ) : null)}
+
+          {/* Priced here, before it is downloaded — one number across every line. Per
+              category is a Build-tab job; this is the figure you quote a buyer. */}
+          <div className="flex flex-wrap items-end gap-2 mt-2.5 rounded-lg bg-surface-2 border border-line-2 px-2.5 py-2">
+            <label className="text-[10.5px] text-muted">
+              Sell at, % of retail
+              <NumberInput
+                className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
+                placeholder={(b.price_pct * 100).toFixed(1)}
+                value={pctDraft[b.id] ?? ""}
+                onValue={(_, raw) => setPctDraft((d) => ({ ...d, [b.id]: raw }))}
+              />
+            </label>
+            <label className="text-[10.5px] text-muted">
+              Cost, %
+              <NumberInput
+                className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
+                placeholder={b.cost_pct > 0 ? (b.cost_pct * 100).toFixed(1) : "none"}
+                value={costDraft[b.id] ?? ""}
+                onValue={(_, raw) => setCostDraft((d) => ({ ...d, [b.id]: raw }))}
+              />
+            </label>
+            <ActBtn onClick={() => reprice(b)} busy={busy === b.id}>
+              Apply to all {n(b.units)} units
+            </ActBtn>
+            <span className="text-[10.5px] text-muted leading-snug max-w-[290px]">
+              One percentage across every line, replacing any per-category rates — re-priced
+              before you download it.
+            </span>
+          </div>
 
           <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
             <ActBtn onClick={() => exportOne(b, "manifest")} busy={busy === b.id} icon={<Download size={12} />}>
@@ -1966,7 +2027,7 @@ function LotBreakdown({ detail }: { detail: LotBuildDetail }) {
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(detail.location_codes);
+      await clipboardWrite(detail.location_codes);
       toast(`${n(codes.length)} location codes copied.`);
     } catch (e: any) {
       toast(String(e), "error");

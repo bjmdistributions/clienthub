@@ -945,6 +945,7 @@ fn main() {
             lot_store::resync_lot_sheet,
             lot_store::rename_lot_build,
             lot_store::set_lot_retail,
+            lot_store::reprice_lot_build,
             lot_store::lot_sheet_products,
             lot_store::resync_lot_engine,
             // Forecast
