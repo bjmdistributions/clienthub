@@ -1831,4 +1831,21 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_lot_build_sheet ON lot_build(sheet_id, archived);
         "#,
     ),
+    (
+        83,
+        // What a lot COST (R-212). `price_pct` has always been what the customer pays; there
+        // was no record of what the stock cost, so no margin existed anywhere in the product.
+        //
+        // Same shape as the ask side deliberately -- a share of MSRP applied per line, with
+        // per-category overrides -- so one arithmetic serves both and `lot_totals` can carry
+        // cost, cost per unit, profit and margin without a second convention.
+        //
+        // DEFAULT 0 means "not recorded", NOT "free". `LotTotals::cost_known` is what tells
+        // the two apart, and every surface must read it before printing a margin: a lot with
+        // no cost set showing 100% margin is a lie, not a sensible default.
+        r#"
+        ALTER TABLE lot_build ADD COLUMN cost_pct REAL NOT NULL DEFAULT 0;
+        ALTER TABLE lot_build ADD COLUMN cost_pct_json TEXT;
+        "#,
+    ),
 ];

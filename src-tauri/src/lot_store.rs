@@ -644,6 +644,8 @@ pub async fn preview_lot_totals(
     slots: Vec<String>,
     price_pct: f64,
     price_overrides: Option<String>,
+    cost_pct: Option<f64>,
+    cost_overrides: Option<String>,
 ) -> Result<LotTotals, String> {
     ensure_artifact(&sheet_id).await?;
     let stacks = stacks_of(&sheet_id)?;
@@ -653,7 +655,15 @@ pub async fn preview_lot_totals(
         .filter(|s| want.contains(s.location.as_str()))
         .cloned()
         .collect();
-    Ok(lot_totals(&lot, &pricing_from(price_pct, price_overrides.as_deref())))
+    Ok(lot_totals(
+        &lot,
+        &pricing_with_cost(
+            price_pct,
+            price_overrides.as_deref(),
+            cost_pct.unwrap_or(0.0),
+            cost_overrides.as_deref(),
+        ),
+    ))
 }
 
 /// Everything in one slot — what you are actually taking.
@@ -769,6 +779,12 @@ pub struct LotBuild {
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// What the lot COST, as a share of MSRP applied per line — the same shape as
+    /// `price_pct`, which is what the customer pays. Zero means **not recorded**, not free;
+    /// `LotTotals::cost_known` is what tells those apart, and every surface must read it
+    /// before printing a margin.
+    pub cost_pct: f64,
+    pub cost_pct_json: Option<String>,
 }
 
 fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
@@ -794,20 +810,40 @@ fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
         created_at: r.get(14)?,
         updated_at: r.get(15)?,
         sheet_name: r.get(16)?,
+        // Appended to BUILD_SELECT rather than inserted, so every index above is unmoved.
+        cost_pct: r.get(17).unwrap_or(0.0),
+        cost_pct_json: r.get(18).unwrap_or(None),
     })
 }
 
 const BUILD_SELECT: &str = "SELECT b.id, b.sheet_id, b.name, b.status, b.price_pct, \
     b.price_pct_json, b.locations, b.units, b.styles, b.msrp_total, b.ask_total, b.notes, \
-    b.slots_json, b.archived, b.created_at, b.updated_at, s.name \
+    b.slots_json, b.archived, b.created_at, b.updated_at, s.name, b.cost_pct, b.cost_pct_json \
     FROM lot_build b LEFT JOIN lot_sheet s ON s.id = b.sheet_id";
 
 fn pricing_from(pct: f64, overrides: Option<&str>) -> Pricing {
+    pricing_with_cost(pct, overrides, 0.0, None)
+}
+
+/// The ask side and the cost side, read the same way. A blank or unparseable override map
+/// leaves the flat percentage standing rather than failing the whole lot.
+fn pricing_with_cost(
+    pct: f64,
+    overrides: Option<&str>,
+    cost_pct: f64,
+    cost_overrides: Option<&str>,
+) -> Pricing {
+    let map = |j: Option<&str>| -> Option<std::collections::BTreeMap<String, f64>> {
+        j.filter(|s| !s.trim().is_empty())
+            .and_then(|s| serde_json::from_str(s).ok())
+    };
     let mut p = Pricing::flat(pct);
-    if let Some(j) = overrides.filter(|s| !s.trim().is_empty()) {
-        if let Ok(m) = serde_json::from_str::<std::collections::BTreeMap<String, f64>>(j) {
-            p.overrides = m;
-        }
+    if let Some(m) = map(overrides) {
+        p.overrides = m;
+    }
+    p.cost_pct = cost_pct;
+    if let Some(m) = map(cost_overrides) {
+        p.cost_overrides = m;
     }
     p
 }
@@ -826,6 +862,8 @@ pub async fn save_lot_build(
     slots: Vec<String>,
     price_pct: f64,
     price_overrides: Option<String>,
+    cost_pct: Option<f64>,
+    cost_overrides: Option<String>,
     notes: Option<String>,
 ) -> Result<LotBuild, String> {
     ensure_artifact(&sheet_id).await?;
@@ -840,7 +878,12 @@ pub async fn save_lot_build(
         return Err("that lot has no stock in it — add some locations first".into());
     }
 
-    let pricing = pricing_from(price_pct, price_overrides.as_deref());
+    let pricing = pricing_with_cost(
+        price_pct,
+        price_overrides.as_deref(),
+        cost_pct.unwrap_or(0.0),
+        cost_overrides.as_deref(),
+    );
     let t: LotTotals = lot_totals(&lot, &pricing);
 
     let id = build_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -854,14 +897,16 @@ pub async fn save_lot_build(
         conn.execute(
             "INSERT INTO lot_build (id, sheet_id, name, status, price_pct, price_pct_json, \
              locations, units, styles, msrp_total, ask_total, brands_json, categories_json, \
-             title_risk_json, slots_json, notes, archived, created_at, updated_at) \
-             VALUES (?1,?2,?3,'saved',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?16) \
+             title_risk_json, slots_json, notes, archived, created_at, updated_at, \
+             cost_pct, cost_pct_json) \
+             VALUES (?1,?2,?3,'saved',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?16,?17,?18) \
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, price_pct=excluded.price_pct, \
              price_pct_json=excluded.price_pct_json, locations=excluded.locations, \
              units=excluded.units, styles=excluded.styles, msrp_total=excluded.msrp_total, \
              ask_total=excluded.ask_total, brands_json=excluded.brands_json, \
              categories_json=excluded.categories_json, title_risk_json=excluded.title_risk_json, \
-             slots_json=excluded.slots_json, notes=excluded.notes, updated_at=excluded.updated_at",
+             slots_json=excluded.slots_json, notes=excluded.notes, updated_at=excluded.updated_at, \
+             cost_pct=excluded.cost_pct, cost_pct_json=excluded.cost_pct_json",
             rusqlite::params![
                 id,
                 sheet_id,
@@ -879,6 +924,8 @@ pub async fn save_lot_build(
                 serde_json::to_string(&ordered).ok(),
                 notes,
                 now,
+                pricing.cost_pct,
+                serde_json::to_string(&pricing.cost_overrides).ok(),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -938,7 +985,12 @@ pub async fn lot_build_detail(build_id: String) -> Result<LotBuildDetail, String
     };
     ensure_artifact(&build.sheet_id).await?;
     let lot = build_stacks(&build)?;
-    let pricing = pricing_from(build.price_pct, build.price_pct_json.as_deref());
+    let pricing = pricing_with_cost(
+        build.price_pct,
+        build.price_pct_json.as_deref(),
+        build.cost_pct,
+        build.cost_pct_json.as_deref(),
+    );
     Ok(LotBuildDetail {
         totals: lot_totals(&lot, &pricing),
         location_codes: export::location_codes(&lot),
@@ -1134,7 +1186,12 @@ pub async fn export_lot_build(
 ) -> Result<ExportResult, String> {
     let detail = lot_build_detail(build_id.clone()).await?;
     let lot = build_stacks(&detail.build)?;
-    let pricing = pricing_from(detail.build.price_pct, detail.build.price_pct_json.as_deref());
+    let pricing = pricing_with_cost(
+        detail.build.price_pct,
+        detail.build.price_pct_json.as_deref(),
+        detail.build.cost_pct,
+        detail.build.cost_pct_json.as_deref(),
+    );
 
     let opts = ManifestOpts {
         lot_name: detail.build.name.clone(),
@@ -1325,6 +1382,41 @@ pub async fn resync_lot_engine() -> Result<usize, String> {
     }
     tracing::info!("lot engine resync: re-emitted {n} rows and re-queued {} artifacts", sheets.len());
     Ok(n)
+}
+
+/// Rename a saved lot.
+///
+/// The name is what every export is filed under — `export_lot_build` builds the filename
+/// from it — so renaming the lot renames its downloads, which is the point: the lot on
+/// screen, the manifest in the buyer's inbox and the file on disk all say the same thing.
+/// The sheet gained a rename in R-210; the lot did not, and its name was set once at save
+/// and permanent after.
+#[tauri::command]
+pub async fn rename_lot_build(build_id: String, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 200 {
+        return Err("a lot needs a name, and under 200 characters".into());
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE lot_build SET name=?2, updated_at=?3 WHERE id=?1",
+                rusqlite::params![build_id, name, now],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("that lot no longer exists".into());
+        }
+    }
+    // Partial on purpose: the sync layer applies per column, so sending only what moved
+    // cannot stamp a stale unit total over a fresher one from another device.
+    let mut cols = serde_json::Map::new();
+    cols.insert("name".into(), serde_json::Value::String(name));
+    cols.insert("updated_at".into(), serde_json::Value::String(now));
+    emit("lot_build", &build_id, cols);
+    Ok(())
 }
 
 /// Re-emit ONE sheet — its row, every slot state and lot that belong to it, and its

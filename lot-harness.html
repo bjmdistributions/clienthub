@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lot engine harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so Vite never bundles it into a release —
+      `npm run build` has exactly one input and this is not it.
+
+      Why it exists: LotEngineView calls Tauri commands, so in a plain browser it throws
+      before it mounts and cannot be looked at. This page fakes the host, and
+      src/__lot-harness.tsx answers every invoke from a fixture. Run `npm run dev` and open
+      /lot-harness.html.
+
+      This pair was written and deleted twice (R-209, R-210) because it was treated as
+      scratch, which meant every change to the busiest screen in the app started with
+      rebuilding it or with not looking. It is committed now — that is revisit/00-BACKLOG #35.
+
+      The metadata block below is the part that is easy to miss: getCurrentWebview() reads
+      __TAURI_INTERNALS__.metadata.currentWebview, and without it the drag-drop hook throws
+      and the component never renders at all.
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__lot-harness.tsx"></script>
+  </body>
+</html>

@@ -132,6 +132,29 @@ export default function LotEngineView() {
         await loadSheets(r.sheet.id);
         setTab("quality");
         const gap = r.quality.units_in - r.quality.units - r.quality.units_dropped;
+        // A sheet that cleans to ZERO stacks is a failed import, not a quiet one. It used to
+        // create a sheet row that looked real and an empty screen, leaving "1,183 rows
+        // dropped" in a tab nobody had been sent to. Name the columns that were not found —
+        // that is always why.
+        if (r.quality.stacks === 0) {
+          const missing = [
+            ["a quantity", r.detection.units_col],
+            ["a barcode", r.detection.upc_col],
+            ["a description", r.detection.title_col],
+            ["a retail price", r.detection.msrp_col],
+          ]
+            .filter(([, col]) => !col)
+            .map(([label]) => label);
+          setTab("quality");
+          toast(
+            `Nothing could be read from that sheet — ${n(r.quality.rows_in)} rows in, none usable.` +
+              (missing.length
+                ? ` No column looked like ${missing.join(", ")}. Check the Quality tab for what was dropped.`
+                : " The Quality tab says what was dropped and why."),
+            "error",
+          );
+          return;
+        }
         toast(
           gap === 0
             ? `${n(r.quality.stacks)} stacks across ${n(r.quality.locations)} locations. Everything reconciles.`
@@ -373,6 +396,7 @@ function Builder({
   const [picked, setPicked] = useState<string[]>([]);
   const [lotName, setLotName] = useState("");
   const [pricePct, setPricePct] = useState(26);
+  const [costPct, setCostPct] = useState(0);
   const [overrides, setOverrides] = useState<Record<string, number>>({});
   const [totals, setTotals] = useState<LotTotals | null>(null);
   const [saving, setSaving] = useState(false);
@@ -425,6 +449,7 @@ function Builder({
           picked,
           pricePct / 100,
           JSON.stringify(mapPct(overrides)),
+          costPct / 100,
         );
         if (live) setTotals(v);
       } catch (e: any) {
@@ -435,7 +460,7 @@ function Builder({
       live = false;
       clearTimeout(t);
     };
-  }, [sheet.id, picked, pricePct, overrides]);
+  }, [sheet.id, picked, pricePct, costPct, overrides]);
 
   const reset = () => {
     setWant(emptyWant());
@@ -466,6 +491,7 @@ function Builder({
         slots: picked,
         pricePct: pricePct / 100,
         priceOverrides: JSON.stringify(mapPct(overrides)),
+        costPct: costPct / 100,
       });
       toast(`${b.name} saved. Its ${n(b.locations)} slots are out of the pool.`);
       setPicked([]);
@@ -485,6 +511,8 @@ function Builder({
       setLotName={setLotName}
       pricePct={pricePct}
       setPricePct={setPricePct}
+      costPct={costPct}
+      setCostPct={setCostPct}
       overrides={overrides}
       setOverrides={setOverrides}
       onRemove={(loc) => setPicked((p) => p.filter((x) => x !== loc))}
@@ -1102,6 +1130,8 @@ function LotPanel(p: {
   setLotName: (v: string) => void;
   pricePct: number;
   setPricePct: (v: number) => void;
+  costPct: number;
+  setCostPct: (v: number) => void;
   overrides: Record<string, number>;
   setOverrides: (v: Record<string, number>) => void;
   onRemove: (loc: string) => void;
@@ -1174,6 +1204,31 @@ function LotPanel(p: {
           <p className="text-[10.5px] text-muted mt-1.5 leading-snug">
             Every line is priced at this share of its own retail, so a $75 shoe at 26% is $19.50.
           </p>
+
+          {/* What it costs you, the same way. Blank means not recorded — the panel then
+              shows no margin at all rather than a 100% one, which would be a lie. */}
+          <label className="text-[11px] text-muted block mt-2.5">
+            What it costs you, as a percent of retail
+            <NumberInput
+              className={inp}
+              placeholder="not recorded"
+              value={p.costPct || ""}
+              onValue={(v) => p.setCostPct(v)}
+            />
+          </label>
+          {t && t.cost_known && (
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              <Stat label="Costs you" value={fmtAmount(t.cost)} />
+              <Stat label="You keep" value={fmtAmount(t.profit)} accent />
+              <Stat label="Margin" value={`${(t.margin * 100).toFixed(1)}%`} />
+            </div>
+          )}
+          {t && t.cost_known && (
+            <p className="text-[10.5px] text-muted mt-1.5 leading-snug tabular-nums">
+              {fmtAmount(t.cost_per_unit)} a unit in, {fmtAmount(t.per_unit)} out. Margin is over
+              what you charge, not over what you paid.
+            </p>
+          )}
           {t && t.by_category.length > 0 && (
             <div className="mt-2.5 space-y-1.5">
               <p className="text-[11px] font-medium text-ink-2">Per category</p>
@@ -1461,6 +1516,8 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   const [confirmRemove, setConfirmRemove] = useState<LotBuild | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [format, setFormat] = useState<"csv" | "xlsx">("xlsx");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
   // Cached per lot: the breakdown reads every stack in the lot, so re-opening a row it has
   // already read should cost nothing. Cleared whenever the list itself is reloaded.
   const [detail, setDetail] = useState<Record<string, LotBuildDetail>>({});
@@ -1478,8 +1535,9 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   const exportOne = async (b: LotBuild, kind: "manifest" | "brands" | "pull") => {
     const label = kind === "pull" ? "Pull sheet" : kind === "brands" ? "Brand counts" : "Manifest";
     const safe = b.name.replace(/[^A-Za-z0-9._-]+/g, "-");
+    const suggested = `${safe}-${kind}`;
     const dest = await saveDialog({
-      defaultPath: `${safe}-${kind}.${format}`,
+      defaultPath: `${suggested}.${format}`,
       filters: [
         format === "xlsx"
           ? { name: "Excel workbook", extensions: ["xlsx"] }
@@ -1488,6 +1546,28 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
     });
     if (!dest) return; // cancelled — not an error, and not a silent write somewhere else
     setBusy(b.id);
+
+    // Name it in the save dialog and the LOT takes that name — one name in the app, on the
+    // file and in the buyer's inbox. Only when it was actually changed: leaving the
+    // suggestion alone must not rename "Mixed athletic 4,118" to
+    // "Mixed-athletic-4118-manifest". A trailing "-manifest"/"-brands"/"-pull" is stripped
+    // so downloading all three does not leave the lot named after whichever went last.
+    const typed = dest
+      .split(/[\\/]/)
+      .pop()!
+      .replace(/\.(csv|xlsx)$/i, "")
+      .replace(/-(manifest|brands|pull)$/i, "")
+      .trim();
+    if (typed && typed !== suggested.replace(/-(manifest|brands|pull)$/i, "") && typed !== b.name) {
+      try {
+        await api.renameLotBuild(b.id, typed);
+        toast(`Lot renamed to "${typed}" — every export from it is filed under that now.`);
+        load();
+      } catch (e: any) {
+        // A failed rename must not stop the download he actually asked for.
+        toast(`Saved, but the lot could not be renamed: ${String(e)}`, "error");
+      }
+    }
     try {
       const r = await api.exportLotBuild(b.id, kind, { format, destPath: dest });
       toast(
@@ -1500,6 +1580,19 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
       toast(String(e), "error");
     }
     setBusy(null);
+  };
+
+  // The export filename is built from the name, so renaming the lot renames its downloads.
+  const rename = async (b: LotBuild) => {
+    const name = draft.trim();
+    setRenaming(null);
+    if (!name || name === b.name) return;
+    try {
+      await api.renameLotBuild(b.id, name);
+      load();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
   };
 
   const expand = async (b: LotBuild) => {
@@ -1572,6 +1665,19 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
             {/* The whole heading opens the breakdown — a saved lot's first question is
                 always "how much of each brand", and until now that answer was only in an
                 exported CSV. */}
+            {renaming === b.id ? (
+              <input
+                autoFocus
+                className={`${inp} max-w-[340px]`}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => rename(b)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") rename(b);
+                  if (e.key === "Escape") setRenaming(null);
+                }}
+              />
+            ) : (
             <button
               onClick={() => expand(b)}
               className="flex items-start gap-2 min-w-0 text-left group"
@@ -1584,14 +1690,22 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
                 <span className="block text-[13.5px] font-semibold text-ink truncate group-hover:text-accent transition-colors">
                   {b.name}
                 </span>
+
                 <span className="block text-[11.5px] text-muted mt-0.5 tabular-nums">
                   {n(b.locations)} slots · {n(b.units)} units · {n(b.styles)} styles ·{" "}
                   {fmtAmount(b.msrp_total)} retail ·{" "}
                   <span className="text-accent font-medium">{fmtAmount(b.ask_total)}</span> at{" "}
                   {(b.price_pct * 100).toFixed(1)}%
+                  {b.cost_pct > 0 && (
+                    <>
+                      {" · cost "}
+                      <span className="tabular-nums">{(b.cost_pct * 100).toFixed(1)}%</span>
+                    </>
+                  )}
                 </span>
               </span>
             </button>
+            )}
             <span
               className={`text-[10.5px] px-1.5 h-5 rounded-md flex items-center shrink-0 ${
                 b.status === "sent" ? "bg-success-bg text-success-ink" : "bg-surface-3 text-muted"
@@ -1620,6 +1734,14 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
             </ActBtn>
             <ActBtn onClick={() => copyCodes(b)} icon={<ClipboardCopy size={12} />}>
               Copy codes
+            </ActBtn>
+            <ActBtn
+              onClick={() => {
+                setDraft(b.name);
+                setRenaming(b.id);
+              }}
+            >
+              Rename
             </ActBtn>
             <div className="flex-1" />
             <ActBtn
@@ -1736,6 +1858,16 @@ function LotBreakdown({ detail }: { detail: LotBuildDetail }) {
         <Stat label="Price" value={fmtAmount(t.ask)} accent />
         <Stat label="A unit" value={fmtAmount(t.per_unit)} />
       </div>
+      {/* Only when a cost was actually recorded. A lot with none showing 100% margin would
+          be a lie, so it shows nothing at all instead. */}
+      {t.cost_known && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <Stat label="Cost" value={fmtAmount(t.cost)} />
+          <Stat label="Cost a unit" value={fmtAmount(t.cost_per_unit)} />
+          <Stat label="You keep" value={fmtAmount(t.profit)} accent />
+          <Stat label="Margin" value={`${(t.margin * 100).toFixed(1)}%`} />
+        </div>
+      )}
       <p className="text-[11px] text-muted -mt-1.5 tabular-nums">
         {(t.effective_pct * 100).toFixed(1)}% of retail across the whole lot · {n(t.stacks)} lines on the
         manifest
@@ -2083,6 +2215,7 @@ function AutoLotsTab({
   const [maxLots, setMaxLots] = useState(0);
   const [minPct, setMinPct] = useState(0);
   const [pricePct, setPricePct] = useState(26);
+  const [costPct, setCostPct] = useState(0);
   const [result, setResult] = useState<LotAutoResult | null>(null);
   const [planning, setPlanning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2128,6 +2261,7 @@ function AutoLotsTab({
           slots: l.locations,
           pricePct: pricePct / 100,
           priceOverrides: undefined,
+          costPct: costPct / 100,
         });
         made += 1;
       }
@@ -2209,6 +2343,15 @@ function AutoLotsTab({
           <label className="text-[11px] text-muted">
             Percent of retail
             <NumberInput className={inp} value={pricePct} onValue={(v) => setPricePct(v)} />
+          </label>
+          <label className="text-[11px] text-muted">
+            What it costs you, percent
+            <NumberInput
+              className={inp}
+              placeholder="not recorded"
+              value={costPct || ""}
+              onValue={(v) => setCostPct(v)}
+            />
           </label>
         </div>
         <p className="text-[10.5px] text-muted mt-2 leading-snug">

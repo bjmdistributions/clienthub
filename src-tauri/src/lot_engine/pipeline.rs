@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use super::classify::{classify, Classified};
 use super::model::{
@@ -239,15 +240,62 @@ pub fn conflicts_of(stacks: &[Stack]) -> Vec<UpcConflict> {
 }
 
 /// Clean a sheet from disk.
+/// How to get a location when the sheet has no location column.
+///
+/// Rule one — a location is all or nothing — exists because a location is what a person
+/// walks to. A **product catalogue** describes no locations, so there is no walk to protect
+/// and the atom has to come from somewhere else. Dropping every row instead (which is what
+/// happened before this existed) turns a 1,183-row offer sheet into an empty screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationMode {
+    /// Use the location column. If the sheet has none, fall back to `Style`.
+    Auto,
+    /// One atom per distinct product name. The six colourways of a cap move together, and
+    /// "comes with" becomes the other colours — which is how a closeout offer is bought.
+    Style,
+    /// One atom per row. Full cherry-pick, one SKU at a time.
+    Row,
+}
+
+impl Default for LocationMode {
+    fn default() -> Self {
+        LocationMode::Auto
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CleanOpts {
+    #[serde(default)]
+    pub location_mode: LocationMode,
+}
+
 pub fn clean_path(path: &str) -> Result<CleanResult> {
+    clean_path_with(path, &CleanOpts::default())
+}
+
+pub fn clean_path_with(path: &str, opts: &CleanOpts) -> Result<CleanResult> {
     let sheet = read_sheet(path)?;
-    clean_sheet(&sheet)
+    clean_sheet_with(&sheet, opts)
 }
 
 /// Clean an already-read sheet. This is the single entry point both binaries call, and the
 /// function the cross-repo parity test compares field by field.
 pub fn clean_sheet(sheet: &Sheet) -> Result<CleanResult> {
+    clean_sheet_with(sheet, &CleanOpts::default())
+}
+
+/// Clean an already-read sheet with explicit options.
+pub fn clean_sheet_with(sheet: &Sheet, opts: &CleanOpts) -> Result<CleanResult> {
     let cols = detect_columns(&sheet.rows);
+    // A synthetic location is one this sheet did not contain. It is NOT put through the
+    // repair ladder — there is no ZZ-RRR-SS to recover, and running slot::normalize over a
+    // product name would mark every row unparsed and drop the sheet.
+    let synthetic = match opts.location_mode {
+        LocationMode::Auto => cols.location.is_none(),
+        LocationMode::Style | LocationMode::Row => true,
+    };
+    let synth_by_row = opts.location_mode == LocationMode::Row;
     let detection = describe(sheet, &cols);
     let body_start = cols.header_row.map(|i| i + 1).unwrap_or(0);
     let body: &[Vec<String>] = &sheet.rows[body_start.min(sheet.rows.len())..];
@@ -272,12 +320,22 @@ pub fn clean_sheet(sheet: &Sheet) -> Result<CleanResult> {
     let mut rows: Vec<Row> = Vec::with_capacity(body.len());
     let mut dropped_with_title = 0usize;
 
-    for r in body {
+    for (row_index, r) in body.iter().enumerate() {
         let units = parse_number(&cell(r, cols.units)).unwrap_or(0.0);
         let units = if units.is_finite() && units > 0.0 { units.round() as i64 } else { 0 };
         let title = cell(r, cols.title);
         let upc = clean_upc(&cell(r, cols.upc));
-        let location_raw = cell(r, cols.location);
+        let location_raw = if !synthetic {
+            cell(r, cols.location)
+        } else if synth_by_row {
+            format!("#{}", row_index + 1)
+        } else if !title.is_empty() {
+            title.clone()
+        } else if !upc.is_empty() {
+            upc.clone()
+        } else {
+            String::new()
+        };
         let label = if !title.is_empty() {
             title.clone()
         } else if !location_raw.is_empty() {
@@ -365,6 +423,11 @@ pub fn clean_sheet(sheet: &Sheet) -> Result<CleanResult> {
         let e = repair_index
             .entry(row.location_raw.clone())
             .or_insert_with(|| {
+                if synthetic {
+                    let raw = row.location_raw.trim();
+                    let c = if raw.is_empty() { None } else { Some(raw.to_string()) };
+                    return (c, slot::Rung::Exact, 0, 0);
+                }
                 let (c, rung) = slot::normalize(&row.location_raw);
                 (c, rung, 0, 0)
             });
@@ -874,6 +937,66 @@ mod tests {
     }
 
     /// An unreadable location is excluded rather than guessed, and its stock is reported.
+    /// A product catalogue with no location column and its quantity headed `order`.
+    ///
+    /// Jack's `carhartt offer (1) (1).xlsx`, reduced to its real headers and six real rows.
+    /// It used to clean to **nothing**: `order` was in no quantity alias so every row read
+    /// as zero units and was dropped, and with no location column every row would then have
+    /// been dropped again as unparsed. Both are the same failure — a sheet the reader had
+    /// not met — and both produced an empty screen rather than a complaint.
+    #[test]
+    fn a_catalogue_with_no_locations_and_an_order_column_still_cleans() {
+        let head = vec![
+            "Inventory Segment", "Style - Product Name", "order", "MSRP", "Department",
+            "Category", "Sub Category", "Material", "Material Variant", "Color Code Id",
+            "Color", "UPC", "Size Group", "Dimension", "Product Size",
+        ];
+        let row = |style: &str, order: &str, msrp: &str, color: &str, upc: &str| {
+            vec![
+                "WHS".into(), style.into(), order.into(), msrp.into(), "Men's".into(),
+                "Accessories".into(), "Headwear".into(), "100289-GD7".into(),
+                "100289-GD7OS".into(), "GD7".into(), color.into(), upc.into(), "Z2".into(),
+                String::new(), "OS".into(),
+            ]
+        };
+        let cap = "100289 - Odessa Leatherette Cap";
+        let beanie = "101070 - Lthrtte Watch Cap Beanie";
+        let sheet = Sheet {
+            rows: vec![
+                head.iter().map(|s| s.to_string()).collect(),
+                row(cap, "1", "$16.99", "Aventurine", "195836916257"),
+                row(cap, "3", "$16.99", "Sea Pine", "195836726399"),
+                // Blank quantity — a real row in his file, and it must not take the sheet down.
+                row(cap, "", "$16.99", "Marine Blue", "195836232562"),
+                row(cap, "1", "$16.99", "Electric Coral", "195836232715"),
+                row(cap, "1,998", "$16.99", "Terracotta", "195836510110"),
+                row(beanie, "1", "$24.99", "Sunburst", "195836077798"),
+            ],
+            format: "xlsx".into(),
+            sheet_name: Some("Sheet1".into()),
+            note: None,
+        };
+
+        let cols = detect_columns(&sheet.rows);
+        assert!(cols.units.is_some(), "`order` must be read as the quantity");
+        assert!(cols.location.is_none(), "this sheet genuinely has no location column");
+
+        let r = clean_sheet(&sheet).expect("clean");
+        // 1 + 3 + 1 + 1,998 + 1. The blank-quantity row contributes nothing and is reported.
+        assert_eq!(r.quality.units, 2004, "every quantity was read");
+        assert!(r.quality.stacks > 0, "the sheet must not clean to nothing");
+        // Auto mode with no location column groups by style: two products, two atoms.
+        assert_eq!(r.quality.locations, 2, "one atom per style");
+        let locs: HashSet<&str> = r.stacks.iter().map(|s| s.location.as_str()).collect();
+        assert!(locs.contains(cap) && locs.contains(beanie));
+
+        // Per-row mode gives one atom per row that survived — full cherry-pick.
+        let per_row = clean_sheet_with(&sheet, &CleanOpts { location_mode: LocationMode::Row })
+            .expect("clean per row");
+        assert_eq!(per_row.quality.units, 2004);
+        assert_eq!(per_row.quality.locations, 5, "one atom per row with a quantity");
+    }
+
     #[test]
     fn an_unparsed_location_is_excluded_and_reported() {
         let s = sheet(vec![

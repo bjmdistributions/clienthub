@@ -943,6 +943,7 @@ fn main() {
             lot_store::export_lot_conflicts,
             lot_store::plan_lot_builds,
             lot_store::resync_lot_sheet,
+            lot_store::rename_lot_build,
             lot_store::resync_lot_engine,
             // Forecast
             get_profit_forecast,

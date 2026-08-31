@@ -125,9 +125,17 @@ const LOCATION_NAMES: &[&str] = &[
     "bin no", "location code", "position",
 ];
 const BOX_NAMES: &[&str] = &["box", "box no", "box number", "carton", "carton no", "case", "case no", "pallet id"];
+/// Order matters: the exact pass runs over ALL of these before the substring pass, so a
+/// header that IS one of these wins over a header that merely contains an earlier one.
+///
+/// `order` is here because offer sheets head their quantity column with it, and it is late
+/// in the list because as a substring it also matches "Order Date" and "Backorder". The
+/// substring pass alone cannot tell those apart, which is why `find_units_col` re-reads the
+/// column it picked and checks the data actually counts.
 const UNITS_NAMES: &[&str] = &[
     "remaining", "qty", "quantity", "units", "unit", "on hand", "onhand", "count", "available",
-    "qty remaining", "qty on hand", "total qty", "pcs", "pieces",
+    "qty remaining", "qty on hand", "total qty", "pcs", "pieces", "eaches", "each",
+    "order", "order qty", "qty ordered", "ordered", "cases", "stock", "in stock", "inventory",
 ];
 const TITLE_NAMES: &[&str] = &[
     "title", "description", "item description", "product description", "product", "product name",
@@ -155,6 +163,43 @@ fn find_col(headers: &[String], candidates: &[&str], claimed: &[Option<usize>]) 
                 return Some(i);
             }
         }
+    }
+    None
+}
+
+/// Pick the quantity column, then **prove it counts** against the rows underneath it.
+///
+/// `find_col` matches on the header alone, and a quantity alias is the one group where that
+/// is not enough: `order` has to be in the list because offer sheets use it, and as a
+/// substring it equally matches "Order Date" and "Backorder Ref". A date column chosen as the
+/// quantity makes every row read as zero units and the whole sheet is dropped for having no
+/// quantity — which is exactly how a 1,183-row Carhartt offer cleaned to nothing.
+///
+/// So: take the best header match, read up to 200 body cells, and keep it only if most of
+/// the non-empty ones parse as a non-negative number. Otherwise mark it claimed and try the
+/// next candidate. A column of dates, colours or style codes fails on the first test.
+fn find_units_col(headers: &[String], body: &[Vec<String>], claimed: &[Option<usize>]) -> Option<usize> {
+    let mut rejected: Vec<Option<usize>> = claimed.to_vec();
+    for _ in 0..4 {
+        let pick = find_col(headers, UNITS_NAMES, &rejected)?;
+        let mut seen = 0usize;
+        let mut numeric = 0usize;
+        for r in body.iter().take(200) {
+            let Some(cell) = r.get(pick) else { continue };
+            let t = cell.trim();
+            if t.is_empty() {
+                continue;
+            }
+            seen += 1;
+            if parse_number(t).is_some_and(|v| v.is_finite() && v >= 0.0) {
+                numeric += 1;
+            }
+        }
+        // No data to judge by: keep the header match rather than invent a reason to refuse.
+        if seen == 0 || numeric * 4 >= seen * 3 {
+            return Some(pick);
+        }
+        rejected.push(Some(pick));
     }
     None
 }
@@ -236,7 +281,7 @@ pub fn detect_columns(rows: &[Vec<String>]) -> Columns {
         cols.location = find_col(&headers, LOCATION_NAMES, &[cols.upc]);
         cols.r#box = find_col(&headers, BOX_NAMES, &[cols.upc, cols.location]);
         cols.title = find_col(&headers, TITLE_NAMES, &[cols.upc, cols.location, cols.r#box]);
-        cols.units = find_col(&headers, UNITS_NAMES, &[cols.upc, cols.location, cols.r#box, cols.title]);
+        cols.units = find_units_col(&headers, body, &[cols.upc, cols.location, cols.r#box, cols.title]);
         cols.msrp = find_col(
             &headers,
             MSRP_NAMES,

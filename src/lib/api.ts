@@ -3152,12 +3152,21 @@ export const api = {
     invoke<LotRankResult>("rank_lot_slots", { sheetId, want, allow, opts, exclude: exclude ?? null }),
   // Running totals for a lot being built. Goes to Rust rather than adding prices up here, so
   // the figures on screen are the ones the manifest will carry.
-  previewLotTotals: (sheetId: string, slots: string[], pricePct: number, priceOverrides?: string) =>
+  previewLotTotals: (
+    sheetId: string,
+    slots: string[],
+    pricePct: number,
+    priceOverrides?: string,
+    costPct?: number,
+    costOverrides?: string,
+  ) =>
     invoke<LotTotals>("preview_lot_totals", {
       sheetId,
       slots,
       pricePct,
       priceOverrides: priceOverrides ?? null,
+      costPct: costPct ?? 0,
+      costOverrides: costOverrides ?? null,
     }),
   lotSlotContents: (sheetId: string, location: string) =>
     invoke<LotStack[]>("lot_slot_contents", { sheetId, location }),
@@ -3183,6 +3192,8 @@ export const api = {
     slots: string[];
     pricePct: number;
     priceOverrides?: string;
+    costPct?: number;
+    costOverrides?: string;
     notes?: string;
   }) =>
     invoke<LotBuild>("save_lot_build", {
@@ -3192,6 +3203,8 @@ export const api = {
       slots: p.slots,
       pricePct: p.pricePct,
       priceOverrides: p.priceOverrides ?? null,
+      costPct: p.costPct ?? 0,
+      costOverrides: p.costOverrides ?? null,
       notes: p.notes ?? null,
     }),
   lotBuildDetail: (buildId: string) => invoke<LotBuildDetail>("lot_build_detail", { buildId }),
@@ -3233,6 +3246,10 @@ export const api = {
   // that pushed sheets to a server which did not yet accept the tables — those events are
   // rejected, and a rejection is treated as an acknowledgement, so nothing is left to retry.
   resyncLotEngine: () => invoke<number>("resync_lot_engine"),
+  /** Rename a saved lot. The export filename is built from the name, so this renames the
+   *  lot's downloads too — which is the point. */
+  renameLotBuild: (buildId: string, name: string) =>
+    invoke<void>("rename_lot_build", { buildId, name }),
   /** The same, for one sheet: its row, its slot states, its lots and its stacks artifact.
    *  The narrow escape hatch, and the one with a button — the failure it repairs (a push
    *  rejected before the server knew the table, then dropped instead of retried) happens
@@ -3493,6 +3510,10 @@ export interface LotGroupTotal {
   /** Ask divided by units — $75 of retail at 26% reads as 19.50 here. */
   per_unit: number;
   share: number;
+  /** What this slice costs and leaves. Both zero unless a cost was recorded — read
+   *  `LotTotals.cost_known` before showing either as a fact. */
+  cost: number;
+  profit: number;
 }
 
 export interface LotTotals {
@@ -3504,6 +3525,16 @@ export interface LotTotals {
   ask: number;
   effective_pct: number;
   per_unit: number;
+  /** What the lot costs you and what it leaves. All zero when no cost has been recorded. */
+  cost: number;
+  cost_per_unit: number;
+  profit: number;
+  /** Profit over the ask, 0–1. */
+  margin: number;
+  /** False when no cost was set, so "no profit" can be told from "not known". Every
+   *  surface must check this before printing a margin — a lot with no cost showing 100%
+   *  margin is a lie, not a default. */
+  cost_known: boolean;
   by_brand: LotGroupTotal[];
   by_category: LotGroupTotal[];
   title_risk_units: [number, number, number, number];
@@ -3517,6 +3548,9 @@ export interface LotBuild {
   status: string;
   price_pct: number;
   price_pct_json: string | null;
+  /** What the lot COST, a share of MSRP per line. Zero means not recorded, not free. */
+  cost_pct: number;
+  cost_pct_json: string | null;
   locations: number;
   units: number;
   styles: number;
