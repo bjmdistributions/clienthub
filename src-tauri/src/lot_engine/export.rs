@@ -91,6 +91,46 @@ pub struct ManifestOpts {
     /// they hand over a map of the warehouse. On when the buyer collects.
     #[serde(default)]
     pub include_slots: bool,
+
+    // ---------------------------------------------------------------------------------
+    // What the buyer is shown. Every one of these is a person's decision about their own
+    // document, so none of them is enforced here — but two are worth understanding before
+    // they are switched.
+    // ---------------------------------------------------------------------------------
+    /// The `Description check` column and the `Lines to check` total that points at it.
+    ///
+    /// **Off by default, which is a deliberate reversal of the original design.** The spec
+    /// put the description grade on the manifest so a buyer could not be handed a line whose
+    /// description was guessed. Jack's objection is the other half of the same truth: a
+    /// column reading VERIFY next to stock he is confident in reads as a defect, and a
+    /// manifest that looks unsure does not get bought. The grading still happens, still shows
+    /// on screen, and still gates the warning before a save — it just stops being printed for
+    /// the buyer unless it is asked for.
+    #[serde(default)]
+    pub show_check: bool,
+    #[serde(default = "yes")]
+    pub show_upc: bool,
+    #[serde(default = "yes")]
+    pub show_brand: bool,
+    #[serde(default = "yes")]
+    pub show_category: bool,
+    #[serde(default = "yes")]
+    pub show_segment: bool,
+    #[serde(default = "yes")]
+    pub show_size: bool,
+    /// The per-line retail column. Off hides what the lot is discounted FROM.
+    #[serde(default = "yes")]
+    pub show_msrp: bool,
+    /// The header block: units, styles, locations, retail, price, percent of retail.
+    #[serde(default = "yes")]
+    pub show_summary: bool,
+    /// The per-category price-per-unit table.
+    #[serde(default = "yes")]
+    pub show_by_category: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for ManifestOpts {
@@ -98,6 +138,15 @@ impl Default for ManifestOpts {
         ManifestOpts {
             lot_name: "Lot".into(),
             include_slots: false,
+            show_check: false,
+            show_upc: true,
+            show_brand: true,
+            show_category: true,
+            show_segment: true,
+            show_size: true,
+            show_msrp: true,
+            show_summary: true,
+            show_by_category: true,
         }
     }
 }
@@ -122,12 +171,12 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
         ],
     };
     let unverified = t.unverified_units();
-    if unverified > 0 {
+    // Only alongside the column it points at. On its own it names a problem the reader
+    // cannot then look up, which is worse than not mentioning it.
+    if opts.show_check && unverified > 0 {
         summary.rows.push(vec![
             "Lines to check".into(),
-            format!(
-                "{unverified} units — see the Description check column",
-            ),
+            format!("{unverified} units — see the Description check column"),
         ]);
     }
 
@@ -158,19 +207,36 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
             .collect(),
     };
 
-    let show_check = stacks.iter().any(|s| s.title_risk >= TitleRisk::GuessedFromBarcode);
-    let mut headers: Vec<String> = vec![
-        "UPC".into(),
-        "Description".into(),
-        "Brand".into(),
-        "Category".into(),
-        "Segment".into(),
-        "Size".into(),
-        "Qty".into(),
-        "MSRP".into(),
-        "Unit price".into(),
-        "Total".into(),
-    ];
+    // Asked for AND there is something to say. A column of blanks is noise.
+    let show_check =
+        opts.show_check && stacks.iter().any(|s| s.title_risk >= TitleRisk::GuessedFromBarcode);
+
+    // Description, Qty, Unit price and Total are NOT optional. A manifest without them is
+    // not a manifest, and `reconcile` sums `Qty` BY HEADER NAME across all three artifacts —
+    // let that column be switched off and the check that proves they agree stops working.
+    let mut headers: Vec<String> = Vec::with_capacity(12);
+    if opts.show_upc {
+        headers.push("UPC".into());
+    }
+    headers.push("Description".into());
+    if opts.show_brand {
+        headers.push("Brand".into());
+    }
+    if opts.show_category {
+        headers.push("Category".into());
+    }
+    if opts.show_segment {
+        headers.push("Segment".into());
+    }
+    if opts.show_size {
+        headers.push("Size".into());
+    }
+    headers.push("Qty".into());
+    if opts.show_msrp {
+        headers.push("MSRP".into());
+    }
+    headers.push("Unit price".into());
+    headers.push("Total".into());
     if opts.include_slots {
         headers.push("Slot".into());
     }
@@ -181,18 +247,32 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
     let rows = stacks
         .iter()
         .map(|s| {
-            let mut r = vec![
-                s.upc.clone(),
-                s.title.clone(),
-                s.brand.clone().unwrap_or_default(),
-                s.category.clone().unwrap_or_default(),
-                s.segment.clone().unwrap_or_default(),
-                s.size_us.map(|v| format!("{v}")).unwrap_or_default(),
-                s.units.to_string(),
-                money(s.msrp),
-                money(p.unit_price(s)),
-                money(p.extended(s)),
-            ];
+            // Built in the same order as `headers` above. Kept as a sequence of pushes
+            // rather than a filtered vec so the two cannot drift apart silently — a row
+            // shorter than its header is how a manifest ends up with prices under Size.
+            let mut r: Vec<String> = Vec::with_capacity(headers.len());
+            if opts.show_upc {
+                r.push(s.upc.clone());
+            }
+            r.push(s.title.clone());
+            if opts.show_brand {
+                r.push(s.brand.clone().unwrap_or_default());
+            }
+            if opts.show_category {
+                r.push(s.category.clone().unwrap_or_default());
+            }
+            if opts.show_segment {
+                r.push(s.segment.clone().unwrap_or_default());
+            }
+            if opts.show_size {
+                r.push(s.size_us.map(|v| format!("{v}")).unwrap_or_default());
+            }
+            r.push(s.units.to_string());
+            if opts.show_msrp {
+                r.push(money(s.msrp));
+            }
+            r.push(money(p.unit_price(s)));
+            r.push(money(p.extended(s)));
             if opts.include_slots {
                 r.push(s.location.clone());
             }
@@ -203,13 +283,20 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
         })
         .collect();
 
+    let mut sections: Vec<Section> = Vec::with_capacity(3);
+    if opts.show_summary {
+        sections.push(summary);
+    }
+    if opts.show_by_category {
+        sections.push(by_cat);
+    }
+    // The line items are always LAST, because `Doc::lines()` is `sections.last()` and
+    // `reconcile` reads its Qty column. Dropping the two above cannot disturb that.
+    sections.push(Section { title: "Lines".into(), headers, rows });
+
     Doc {
         name: format!("{} — manifest", opts.lot_name),
-        sections: vec![summary, by_cat, Section {
-            title: "Lines".into(),
-            headers,
-            rows,
-        }],
+        sections,
     }
 }
 
@@ -489,6 +576,98 @@ pub fn to_xlsx(doc: &Doc) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+mod manifest_shape_tests {
+    use super::*;
+
+    fn stack(risk: TitleRisk) -> Stack {
+        Stack {
+            location: "01-001-01".into(),
+            r#box: String::new(),
+            upc: "196969506827".into(),
+            title: "Nike Air Max 90".into(),
+            units: 10,
+            msrp: 100.0,
+            brand: Some("Nike".into()),
+            category: Some("Footwear".into()),
+            segment: Some("Men".into()),
+            size_us: Some(10.5),
+            title_risk: risk,
+            upc_ambiguous: false,
+        }
+    }
+
+    fn lines(d: &Doc) -> &Section {
+        d.sections.last().unwrap()
+    }
+
+    /// The description grade is OFF the buyer's document by default, and the summary line
+    /// that points at it goes with it — a "Lines to check" row naming a column that is not
+    /// there is worse than saying nothing.
+    #[test]
+    fn the_description_check_is_off_unless_asked_for() {
+        let lot = vec![stack(TitleRisk::GuessedFromBarcode)];
+        let p = Pricing::flat(0.26);
+
+        let off = manifest(&lot, &p, &ManifestOpts::default());
+        assert!(lines(&off).col("Description check").is_none(), "not on the buyer's copy");
+        assert!(
+            !off.sections[0].rows.iter().any(|r| r[0] == "Lines to check"),
+            "and neither is the row that points at it"
+        );
+
+        let on = manifest(&lot, &p, &ManifestOpts { show_check: true, ..Default::default() });
+        assert!(lines(&on).col("Description check").is_some());
+        assert!(on.sections[0].rows.iter().any(|r| r[0] == "Lines to check"));
+    }
+
+    /// Switching columns off must keep every row the same width as its header — a row that
+    /// drifts from its header is how a manifest ends up with prices printed under Size.
+    #[test]
+    fn hidden_columns_leave_the_rows_aligned() {
+        let lot = vec![stack(TitleRisk::Typed)];
+        let d = manifest(
+            &lot,
+            &Pricing::flat(0.26),
+            &ManifestOpts {
+                show_upc: false,
+                show_brand: false,
+                show_segment: false,
+                show_size: false,
+                show_msrp: false,
+                ..Default::default()
+            },
+        );
+        let sec = lines(&d);
+        assert_eq!(sec.headers, vec!["Description", "Category", "Qty", "Unit price", "Total"]);
+        for r in &sec.rows {
+            assert_eq!(r.len(), sec.headers.len(), "row width must equal header width");
+        }
+        assert!(sec.col("UPC").is_none() && sec.col("MSRP").is_none());
+    }
+
+    /// Whatever is switched off, the three artifacts must still agree on units — `reconcile`
+    /// reads `Qty` by NAME out of the LAST section, so hiding the summary blocks must not
+    /// move the line items or drop the column it counts.
+    #[test]
+    fn the_reconciliation_survives_every_switch() {
+        let lot = vec![stack(TitleRisk::Typed), stack(TitleRisk::Unknown)];
+        let p = Pricing::flat(0.26);
+        let opts = ManifestOpts {
+            show_summary: false,
+            show_by_category: false,
+            show_upc: false,
+            show_msrp: false,
+            ..Default::default()
+        };
+        let m = manifest(&lot, &p, &opts);
+        assert_eq!(m.sections.len(), 1, "only the lines are left");
+        let b = brand_counts(&lot, &p, "L");
+        let pull = pull_sheet(&lot, &p, "L");
+        reconcile(&m, &b, &pull, 20).expect("the three still agree on 20 units");
+    }
+}
+
+#[cfg(test)]
 mod xlsx_tests {
     use super::*;
 
@@ -603,6 +782,7 @@ mod tests {
             &ManifestOpts {
                 lot_name: "Lot 1".into(),
                 include_slots: true,
+                ..Default::default()
             },
         );
         assert_ne!(
@@ -637,20 +817,30 @@ mod tests {
     /// The description-check column appears only when there is something to check.
     #[test]
     fn the_check_column_appears_only_when_it_has_something_to_say() {
+        // Two conditions now, not one: it has to be ASKED FOR (R-215 — it is off the
+        // buyer's copy by default) and there has to be something to report. This test used
+        // to assert the default carried it, which is the behaviour Jack asked to reverse.
         let p = Pricing::flat(0.26);
-        let clean = manifest(&fixture(), &p, &ManifestOpts::default());
-        assert!(clean.lines().unwrap().col("Description check").is_none());
+        let asked = ManifestOpts { show_check: true, ..Default::default() };
+
+        let clean = manifest(&fixture(), &p, &asked);
+        assert!(
+            clean.lines().unwrap().col("Description check").is_none(),
+            "asked for, but nothing to say — a column of blanks is noise"
+        );
 
         let mut risky = fixture();
         risky[1].title_risk = TitleRisk::Unknown;
-        let flagged = manifest(&risky, &p, &ManifestOpts::default());
+        let flagged = manifest(&risky, &p, &asked);
         let c = flagged.lines().unwrap().col("Description check").unwrap();
         assert!(flagged.lines().unwrap().rows.iter().any(|r| r[c].contains("NO DESCRIPTION")));
         // ...and the lot summary says how many units carry a caveat.
-        assert!(flagged.sections[0]
-            .rows
-            .iter()
-            .any(|r| r[0] == "Lines to check"));
+        assert!(flagged.sections[0].rows.iter().any(|r| r[0] == "Lines to check"));
+
+        // The same risky lot, left at the defaults, says none of it.
+        let quiet = manifest(&risky, &p, &ManifestOpts::default());
+        assert!(quiet.lines().unwrap().col("Description check").is_none());
+        assert!(!quiet.sections[0].rows.iter().any(|r| r[0] == "Lines to check"));
     }
 
     #[test]

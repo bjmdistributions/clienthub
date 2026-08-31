@@ -7,6 +7,7 @@ import {
   LotBuildDetail,
   LotFacets,
   LotGroupTotal,
+  LotManifestOpts,
   LotProduct,
   LotRankResult,
   LotRankedSlot,
@@ -1788,6 +1789,7 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
 
   return (
     <div className="max-w-[900px] space-y-2">
+      <ManifestSettings />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[12.5px] text-muted">
           {n(rows.length)} {rows.length === 1 ? "lot" : "lots"} built from this sheet. Each one's
@@ -2606,6 +2608,96 @@ function AutoLotsTab({
                   </p>
                 )}
               </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What every manifest shows. A HARD setting, not a per-export choice: the point is that a
+ * column Jack does not want a buyer to see cannot come back by accident on the one export
+ * he forgets to check.
+ *
+ * Description, Qty, Unit price and Total are deliberately absent from this list. They are not
+ * optional — a manifest without them is not a manifest, and `reconcile` counts the Qty column
+ * BY NAME across all three artifacts, so switching it off would break the check that proves
+ * they agree.
+ */
+function ManifestSettings() {
+  const [opts, setOpts] = useState<LotManifestOpts | null>(null);
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getLotManifestOpts().then(setOpts).catch((e) => toast(String(e), "error"));
+  }, []);
+
+  const set = async (k: keyof LotManifestOpts, v: boolean) => {
+    if (!opts) return;
+    const next = { ...opts, [k]: v };
+    setOpts(next);
+    setSaving(true);
+    try {
+      await api.setLotManifestOpts(next);
+    } catch (e: any) {
+      toast(String(e), "error");
+      setOpts(opts); // put the switch back rather than lie about what is saved
+    }
+    setSaving(false);
+  };
+
+  if (!opts) return null;
+
+  const rows: [keyof LotManifestOpts, string, string][] = [
+    ["show_check", "Description check", "Prints VERIFY or NO DESCRIPTION beside lines whose description was guessed, and a \"Lines to check\" total. Off by default — the grading still happens and still warns you on screen."],
+    ["show_upc", "UPC", "The barcode for each line."],
+    ["show_brand", "Brand", ""],
+    ["show_category", "Category", ""],
+    ["show_segment", "Segment", "Men, Women, Kids."],
+    ["show_size", "Size", ""],
+    ["show_msrp", "MSRP", "Retail per line — what the price is discounted from."],
+    ["include_slots", "Slot codes", "Warehouse locations. Off by default: they belong on the pull sheet and hand over a map of the building."],
+    ["show_summary", "Lot summary block", "Units, styles, retail, price, percent of retail."],
+    ["show_by_category", "Per-category table", "Units and price per unit for each category."],
+  ];
+
+  return (
+    <div className="rounded-xl border border-line bg-surface-2 mb-3">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3.5 py-2.5 text-left"
+      >
+        <span className="text-muted">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+        <span className="text-[12.5px] font-semibold text-ink">What the manifest shows</span>
+        <span className="text-[11px] text-muted">
+          {rows.filter(([k]) => opts[k]).length} of {rows.length} columns on
+          {saving ? " · saving…" : ""}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3.5 pb-3 border-t border-line pt-2.5">
+          <p className="text-[11px] text-muted mb-2 leading-snug max-w-[560px]">
+            Applies to every manifest from now on, on this device and any other signed in here.
+            Description, quantity, unit price and total are always on — without them it is not a
+            manifest, and the check that proves your three exports agree counts the quantity column.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-x-4">
+            {rows.map(([k, label, hint]) => (
+              <label key={k} className="flex items-start gap-2 py-1.5 cursor-pointer border-b border-line/60 last:border-0">
+                <input
+                  type="checkbox"
+                  checked={Boolean(opts[k])}
+                  onChange={(e) => set(k, e.target.checked)}
+                  className="mt-0.5 accent-accent"
+                />
+                <span className="min-w-0">
+                  <span className="block text-[11.5px] text-ink-2 leading-snug">{label}</span>
+                  {hint && <span className="block text-[10.5px] text-muted leading-snug mt-0.5">{hint}</span>}
+                </span>
+              </label>
             ))}
           </div>
         </div>

@@ -177,7 +177,14 @@ const planLot = (index: number, target: number) => {
       return all.filter((p) => !q || p.title.toLowerCase().includes(q) || p.upc.includes(q) || (p.brand || "").toLowerCase().includes(q));
     }
     case "set_lot_retail":
+    case "set_lot_manifest_opts":
       return null;
+    case "get_lot_manifest_opts":
+      return {
+        lot_name: "Lot", include_slots: false, show_check: false, show_upc: true,
+        show_brand: true, show_category: true, show_segment: true, show_size: true,
+        show_msrp: true, show_summary: true, show_by_category: true,
+      };
     case "reprice_lot_build":
       return { ...BUILD, price_pct: a?.pricePct ?? 0.26, cost_pct: a?.costPct ?? 0 };
     case "lot_sheet_report":

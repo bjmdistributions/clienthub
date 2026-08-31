@@ -1336,7 +1336,8 @@ pub async fn export_lot_build(
 
     let opts = ManifestOpts {
         lot_name: detail.build.name.clone(),
-        include_slots: include_slots.unwrap_or(false),
+        include_slots: include_slots.unwrap_or(saved_manifest_opts().include_slots),
+        ..saved_manifest_opts()
     };
     let m = export::manifest(&lot, &pricing, &opts);
     let b = export::brand_counts(&lot, &pricing, &detail.build.name);
@@ -1557,6 +1558,48 @@ pub async fn rename_lot_build(build_id: String, name: String) -> Result<(), Stri
     cols.insert("name".into(), serde_json::Value::String(name));
     cols.insert("updated_at".into(), serde_json::Value::String(now));
     emit("lot_build", &build_id, cols);
+    Ok(())
+}
+
+/// The settings key holding what a manifest shows. Org-shared, so two admins cannot send
+/// the same buyer two differently-shaped documents — it is on the allowlist in
+/// `netsync.rs` and in the server's `SHARED_SETTINGS_WHITELIST`.
+const MANIFEST_OPTS_KEY: &str = "lot_manifest_opts";
+
+/// What a manifest shows, as configured. Falls back to the defaults on a missing or
+/// unreadable value rather than failing an export: a bad settings row must not stop a person
+/// sending a buyer their paperwork.
+fn saved_manifest_opts() -> ManifestOpts {
+    let Ok(conn) = pool().get() else { return ManifestOpts::default() };
+    conn.query_row(
+        "SELECT value FROM settings WHERE key=?1",
+        [MANIFEST_OPTS_KEY],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|s| !s.trim().is_empty())
+    .and_then(|s| serde_json::from_str::<ManifestOpts>(&s).ok())
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn get_lot_manifest_opts() -> Result<ManifestOpts, String> {
+    Ok(saved_manifest_opts())
+}
+
+/// Set what every manifest shows. A hard rule for the document, not a per-export choice —
+/// the point is that a column he does not want a buyer to see cannot come back by accident.
+#[tauri::command]
+pub async fn set_lot_manifest_opts(opts: ManifestOpts) -> Result<(), String> {
+    let json = serde_json::to_string(&opts).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1,?2,?3) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        rusqlite::params![MANIFEST_OPTS_KEY, json, now],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

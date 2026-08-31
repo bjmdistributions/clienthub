@@ -2123,6 +2123,10 @@ const SHARED_SETTINGS_KEYS: &[&str] = &[
     // divergence this allowlist exists to prevent. Non-secret config, so it qualifies.
     "email_notice_24h_enabled", "email_notice_24h_text",
     "invoice_return_policy_enabled", "invoice_return_policy_text",
+    // What a manifest shows (R-215). Shared for the same reason the return-policy
+    // clauses are: two admins sending the same buyer differently-shaped paperwork is
+    // the divergence this allowlist exists to prevent. Non-secret layout config.
+    "lot_manifest_opts",
 ];
 
 /// Push this device's org-shared config to the server so sibling admins converge (the

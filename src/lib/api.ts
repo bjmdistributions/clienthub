@@ -3260,6 +3260,8 @@ export const api = {
    *  ask and the per-brand/per-category blocks, and touches nothing about what is IN the lot. */
   repriceLotBuild: (buildId: string, pricePct: number, costPct?: number) =>
     invoke<LotBuild>("reprice_lot_build", { buildId, pricePct, costPct: costPct ?? 0 }),
+  getLotManifestOpts: () => invoke<LotManifestOpts>("get_lot_manifest_opts"),
+  setLotManifestOpts: (opts: LotManifestOpts) => invoke<void>("set_lot_manifest_opts", { opts }),
   renameLotBuild: (buildId: string, name: string) =>
     invoke<void>("rename_lot_build", { buildId, name }),
   /** The same, for one sheet: its row, its slot states, its lots and its stacks artifact.
@@ -3516,6 +3518,23 @@ export interface LotProduct {
   msrp: number;
   overridden: boolean;
   locations: number;
+}
+
+/** What a manifest shows. A hard setting, org-shared, not a per-export choice. */
+export interface LotManifestOpts {
+  lot_name: string;
+  include_slots: boolean;
+  /** The "Description check" column and the "Lines to check" total. Off by default — it
+   *  reads as a defect to a buyer, and the grading still happens on screen regardless. */
+  show_check: boolean;
+  show_upc: boolean;
+  show_brand: boolean;
+  show_category: boolean;
+  show_segment: boolean;
+  show_size: boolean;
+  show_msrp: boolean;
+  show_summary: boolean;
+  show_by_category: boolean;
 }
 
 export interface LotSlotState {
