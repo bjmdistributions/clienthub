@@ -38,6 +38,9 @@ import {
   Receipt,
   Boxes,
   Newspaper,
+  Search,
+  MoreHorizontal,
+  Pin,
 } from "lucide-react";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
@@ -122,12 +125,40 @@ type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "supplier
 
 /** Below this window width the sidebar collapses itself.
  *
- *  1280 is the principled number - it is where the 28 `xl:` breakpoints across the
+ *  1280 is the principled number - it is where the `xl:` breakpoints across the
  *  screens fire, and they were authored as if they owned the whole window when in
- *  fact they live in a column of `viewport - 216 - 56`. A 56px rail hands back 160px
- *  of that. 1240 rather than 1280 because a 1280 window reports innerWidth ~1264
- *  once Windows chrome is subtracted, and a fresh install must not launch collapsed. */
+ *  fact they live in a column of `viewport - 216 - 56` (that 56 is the pane's own
+ *  p-7, not the rail). The 96px rail hands back 120px of that - it was 160px while
+ *  the rail was 56px wide, and R-224 spent 40px of it on labels. 1240 rather than
+ *  1280 because a 1280 window reports innerWidth ~1264 once Windows chrome is
+ *  subtracted, and a fresh install must not launch collapsed.
+ *
+ *  The threshold itself is pinned by the default window width (tauri.conf.json) and
+ *  by where `xl:` fires - the rail's own width is in neither, so widening the rail
+ *  is not a reason to move it. Auto-collapse can be switched off per device in
+ *  Settings -> Appearance; see NAV_AUTO_KEY. */
 const NAV_COLLAPSE_AT = 1240;
+
+/** Per-device: "0" disables the automatic collapse below NAV_COLLAPSE_AT entirely. */
+const NAV_AUTO_KEY = "clienthub_nav_auto";
+
+/** Collapsed rail: the pinned band, in NAV order. Editable per device; the rail
+ *  never reorders it on its own, because at this width the row's position is the
+ *  only thing about it that survives a glance. */
+const RAIL_PINS_KEY = "clienthub_rail_pins";
+const DEFAULT_PINS = ["dashboard", "clients", "suppliers", "inventory", "invoices", "financials"];
+
+/** Collapsed rail row heights, in px, kept here because the fit calculation below
+ *  has to agree with the markup exactly - a rail that miscounts either scrolls
+ *  (which R-224 forbids) or hides rows it had room for.
+ *
+ *  The separator is a fixed-height box rather than a bare rule with margins: the
+ *  nav's `space-y-0.5` writes margin-top on every sibling at a higher specificity
+ *  than an arbitrary `my-[…]`, so margins there are silently overridden and the
+ *  number here would be a guess. A height cannot be argued with. */
+const RAIL_ROW = 46;   // h-[44px] + the 2px space-y gap
+const RAIL_KID = 26;   // h-[24px] + the 2px space-y gap
+const RAIL_SEP = 13;   // h-[11px] + the 2px space-y gap
 
 /** Shared class for the account flyout's rows. */
 const RAIL_MENU_ROW =
@@ -139,9 +170,11 @@ export default function App() {
     (localStorage.getItem("clienthub_last_tab") as Tab) || "dashboard"
   );
   const [pageKey, setPageKey] = useState(0);
-  // Collapsed rail: which group (or the account menu) is showing its flyout, and the
-  // viewport y it hangs off. Click to open rather than hover - a hover menu on a 56px
-  // rail is hard to hit on a trackpad, and Jack asked for click.
+  // Collapsed rail: which menu (All screens, or the account menu) is showing its
+  // flyout, and the viewport y it hangs off. The per-group flyouts this was built for
+  // are gone in R-224 - the section you are in opens inline in the rail now - but both
+  // survivors still need anchoring and clamping. Click to open rather than hover: a
+  // hover menu on a narrow rail is hard to hit on a trackpad, and Jack asked for click.
   const [flyout, setFlyout] = useState<{ id: string; top: number } | null>(null);
   const setTab = (t: Tab) => {
     setTabState(t);
@@ -177,6 +210,25 @@ export default function App() {
     return next;
   });
 
+  // Collapsed rail: which top-level screens hold a permanent row. Stored rather than
+  // derived so a NAV reorder cannot silently change what someone pinned; an id that no
+  // longer exists simply matches nothing when the rail is built.
+  // An empty ARRAY is a real answer - "I unpinned everything" - and must not fall back
+  // to the defaults, or unpinning the last row undoes itself on the next launch. Only
+  // an absent or unparseable value means "never chosen".
+  const [railPins, setRailPins] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(RAIL_PINS_KEY) || "null");
+      if (Array.isArray(saved)) return saved.filter((id) => typeof id === "string");
+    } catch { /* fall through to the default */ }
+    return DEFAULT_PINS;
+  });
+  const toggleRailPin = (id: string) => setRailPins((prev) => {
+    const next = prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id];
+    localStorage.setItem(RAIL_PINS_KEY, JSON.stringify(next));
+    return next;
+  });
+
   // Sidebar collapse. Two inputs, one rule: the window decides by default, and a
   // manual choice overrides it until the window next crosses the threshold. That is
   // what stops the rail from springing shut again the moment you open it on a narrow
@@ -187,22 +239,43 @@ export default function App() {
     const v = localStorage.getItem("clienthub_nav_collapsed");
     return v === "1" ? true : v === "0" ? false : null;
   });
-  const navCollapsed = manualNav ?? narrow;
+  // Auto-collapse is a preference now (R-224). With it off the window never decides,
+  // so the rail only ever appears because you asked for it.
+  const [navAuto, setNavAuto] = useState(() => localStorage.getItem(NAV_AUTO_KEY) !== "0");
+  useEffect(() => {
+    const handler = (e: Event) => setNavAuto((e as CustomEvent).detail as boolean);
+    window.addEventListener("nav-auto-change", handler);
+    return () => window.removeEventListener("nav-auto-change", handler);
+  }, []);
+  const navCollapsed = manualNav ?? (navAuto && narrow);
   useEffect(() => {
     const onResize = () => {
       const n = window.innerWidth < NAV_COLLAPSE_AT;
       if (n === narrowRef.current) return;
       narrowRef.current = n;
       setNarrow(n);
-      // Crossing the threshold hands control back to the window.
+      // Crossing the threshold hands control back to the window - but only while the
+      // window is allowed to decide. With auto off, a manual choice is the only input
+      // and must survive a resize.
+      if (localStorage.getItem(NAV_AUTO_KEY) === "0") return;
       setManualNav(null);
       localStorage.removeItem("clienthub_nav_collapsed");
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+  // Invert what is on SCREEN, not what the window thinks. Those were the same
+  // expression until auto-collapse became a preference; with it off the sidebar can be
+  // open on a narrow window, and falling back to narrowRef there made the first
+  // Cmd/Ctrl+B a no-op that only wrote the value it already rendered.
+  //
+  // The preference is read from storage rather than from `navAuto` on purpose: the
+  // Cmd/Ctrl+B handler is registered once with [] deps, so it holds the toggleNav from
+  // the first render forever and a closed-over navAuto would be whatever it was at
+  // mount. The resize handler below reads the key for the same reason.
   const toggleNav = () => setManualNav((prev) => {
-    const next = !(prev ?? narrowRef.current);
+    const auto = localStorage.getItem(NAV_AUTO_KEY) !== "0";
+    const next = !(prev ?? (auto && narrowRef.current));
     localStorage.setItem("clienthub_nav_collapsed", next ? "1" : "0");
     return next;
   });
@@ -425,14 +498,43 @@ export default function App() {
   const navRef = useRef<HTMLElement>(null);
   const [indicatorStyle, setIndicatorStyle] = useState({ top: 0, opacity: 0 });
   const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  // How much room the nav actually has. The nav is flex-1 in a fixed-height column,
+  // so this changes with the window and not with the rows - which is exactly what the
+  // rail's fit calculation needs: the space available, independent of what is in it.
+  //
+  // The deps are load-bearing. This hook runs on the very first render, when the shell
+  // is still behind the auth gate below and <nav> does not exist yet; with an empty
+  // array it would take that one look, find nothing, and never measure again - leaving
+  // navH at 0 forever, which the fit calculation reads as "unlimited room" and renders
+  // a rail that silently overflows. Re-run when the gate opens.
+  const [navH, setNavH] = useState(0);
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const read = () => setNavH(nav.clientHeight);
+    read();
+    // Both listeners, and neither is redundant. The observer catches the chrome around
+    // the nav changing height (the footer, the utility band). The window listener
+    // catches the window itself - which is the signal the rest of this file already
+    // trusts for exactly this: the sliding indicator below and the collapse threshold
+    // above both hang off `resize`.
+    const ro = new ResizeObserver(read);
+    ro.observe(nav);
+    window.addEventListener("resize", read);
+    return () => { window.removeEventListener("resize", read); ro.disconnect(); };
+  }, [me, onboarded, navCollapsed]);
 
   useLayoutEffect(() => {
     const measure = () => {
-      // The collapsed rail renders group parents only, so an active child has no
-      // button of its own - point the bar at its parent instead of leaving it stuck.
+      // The rail renders a row for the active child too (R-224), so the parent
+      // fallback is no longer the common case - it now only covers a tab reached
+      // without a rail row at all: the split-view picker, the command palette, a
+      // navigate-tab event, or a stored last-tab the current role cannot see.
       const btn = buttonRefs.current[tab] ?? (parentOfActive ? buttonRefs.current[parentOfActive] : null);
       const nav = navRef.current;
-      if (!btn || !nav) return;
+      // Utility rows live outside the <nav> but still register a ref, so a naive
+      // measure puts the bar below the nav's own box - hide it instead of lying.
+      if (!btn || !nav || !nav.contains(btn)) { setIndicatorStyle((s) => ({ ...s, opacity: 0 })); return; }
       const navRect = nav.getBoundingClientRect();
       const btnRect = btn.getBoundingClientRect();
       setIndicatorStyle({
@@ -451,8 +553,12 @@ export default function App() {
     return () => { window.removeEventListener("resize", measure); ro?.disconnect(); };
     // parentOfActive is derived from tab alone, so [tab] already re-runs this; it is
     // declared further down the body and cannot go in the array without a TDZ throw.
+    // The rest are here because a rail row can appear or disappear while `tab` does
+    // not change - a count crossing zero, the fit calculation shedding a row, the
+    // rail opening or closing - and the ResizeObserver above cannot see it: the nav
+    // is flex-1, so its own box never moves when its contents do.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [tab, navCollapsed, navH, apCount, draftCount, railPins]);
 
   useEffect(() => {
     checkAi();
@@ -462,8 +568,24 @@ export default function App() {
 
   useEffect(() => {
     api.syncStatus().then((s) => setLastSync(s.last_applied)).catch(() => {});
-    api.listDrafts("pending").then((d) => setDraftCount(d.length)).catch(() => {});
   }, []);
+
+  // Pending newsletter drafts. This used to be fetched once at mount with no refresh
+  // at all, which was survivable while it only tinted a badge on a row that was always
+  // there. The collapsed rail now decides whether Newsletter gets a row from this
+  // number, so a value frozen at mount would mean a row that never appears and never
+  // leaves. Same cadence and the same sync trigger as the approvals count above -
+  // netsync-applied is a Tauri event, so it needs listen() and NOT addEventListener;
+  // a window listener for it compiles, runs, and is never called.
+  useEffect(() => {
+    if (!me) { setDraftCount(0); return; }
+    const read = () => api.listDrafts("pending").then((d) => setDraftCount(d.length)).catch(() => {});
+    read();
+    let unlisten: (() => void) | undefined;
+    listen("netsync-applied", () => read()).then((u) => { unlisten = u; }).catch(() => {});
+    const id = setInterval(read, 60000);
+    return () => { clearInterval(id); unlisten?.(); };
+  }, [me]);
 
   useEffect(() => {
     const onNavigate = (e: Event) => {
@@ -629,36 +751,174 @@ export default function App() {
     );
   };
 
-  // The only badged child is Approvals (under Clients). Surface it on the parent so
-  // a collapsed rail never hides the count inside a shut flyout.
-  const groupAlert = (n: NavNode) =>
-    !!n.children?.some((c) => c.id === "approvals") && apCount > 0 && visible("approvals");
+  // ── The collapsed rail (R-224) ────────────────────────────────────────────────
+  // It stopped being a narrower copy of the sidebar. Open, the sidebar's job is to
+  // show the whole map; closed, its job is to keep you oriented and let you move
+  // fast inside the section you are already in. So: every row carries its name, the
+  // current section opens INLINE rather than in a flyout, and nothing scrolls.
 
-  // Collapsed rail, group row. Opens the flyout instead of navigating - the parent is
-  // itself a screen, so it is the flyout's first entry rather than a lost click.
-  const railGroupButton = (node: NavNode, kids: NavKid[]) => {
-    const Icon = node.icon;
-    const active = tab === node.id || kids.some((k) => k.id === tab);
-    const open = flyout?.id === node.id;
+  /** The count a row should display, or 0. A parent surfaces its badged child's
+   *  count only while that child is not itself on screen underneath it - otherwise
+   *  the same number would appear twice, one row above the other. */
+  const railCount = (n: NavNode, expanded: boolean): number => {
+    if (n.id === "email") return visible("email") ? draftCount : 0;
+    if (n.id === "approvals") return visible("approvals") ? apCount : 0;
+    if (!expanded && n.children?.some((c) => c.id === "approvals") && visible("approvals")) return apCount;
+    return 0;
+  };
+
+  /** The count pill, top-right of a rail row. A numeral, never a dot in front of a
+   *  label. Both counts clamp at 9+ - the expanded sidebar leaves draftCount
+   *  uncapped, but a three-digit pill does not fit a 96px row. */
+  const railBadge = (id: string, n: number) =>
+    n > 0 ? (
+      <span
+        className={`absolute top-1 right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold leading-[15px] text-center ${
+          id === "email" ? "" : "bg-red-500 text-white"
+        }`}
+        style={id === "email"
+          ? { background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }
+          : undefined}
+      >
+        {n > 9 ? "9+" : n}
+      </span>
+    ) : null;
+
+  /** A top-level rail row: icon above its own name. At 96px the caption is what
+   *  makes the row readable, so it is #8A8A9A rather than the sidebar's dimmer
+   *  #6B6B7A - 9.5px text needs the contrast. */
+  const railRow = (item: NavKid, count: number) => {
+    const Icon = item.icon;
+    const active = tab === item.id;
     return (
       <button
-        key={node.id}
-        ref={(el) => { buttonRefs.current[node.id] = el; }}
-        onClick={(e) => openFlyout(node.id, e)}
-        title={node.label}
-        aria-label={node.label}
-        aria-expanded={open}
-        className={`relative w-full flex items-center justify-center h-8 rounded-lg transition-all duration-150 ${
-          active ? "text-white" : "text-[#6B6B7A] hover:text-white/80"
+        key={item.id}
+        ref={(el) => { buttonRefs.current[item.id] = el; }}
+        onClick={() => setTab(item.id)}
+        title={item.label}
+        className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
+          active ? "text-white rail-active" : "text-[#8A8A9A] hover:text-white/85 hover:bg-white/[0.06]"
         }`}
-        style={active || open ? { background: "linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%)" } : undefined}
       >
-        <Icon size={15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
-        <ChevronRight size={9} className="absolute right-0.5 bottom-1" style={{ color: "#5A5A6A" }} />
-        {groupAlert(node) && <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />}
+        <Icon size={16} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
+        <span className="max-w-full truncate text-[9.5px] font-semibold leading-none tracking-tight">{item.label}</span>
+        {railBadge(item.id, count)}
       </button>
     );
   };
+
+  /** A screen inside the open section. Text only - at 96px an icon would cost the
+   *  label the room it needs, and the spine beside it already says these belong to
+   *  the row above. */
+  const railKid = (item: NavKid, count: number) => {
+    const active = tab === item.id;
+    return (
+      <button
+        key={item.id}
+        ref={(el) => { buttonRefs.current[item.id] = el; }}
+        onClick={() => setTab(item.id)}
+        title={item.label}
+        className={`relative w-full flex items-center h-[24px] pl-[7px] pr-1.5 rounded-md text-[10px] font-medium tracking-tight transition-colors duration-150 ${
+          active ? "text-white rail-active" : "text-[#8A8A9A] hover:text-white/85 hover:bg-white/[0.06]"
+        }`}
+      >
+        <span className="truncate">{item.label}</span>
+        {count > 0 && (
+          <span className="ml-auto pl-1 text-[9px] font-bold tabular-nums" style={{ color: item.id === "email" ? "#FCD34D" : "#F87171" }}>
+            {count > 9 ? "9+" : count}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  /** A rail row that is not a destination - Search and All screens. */
+  const railAction = (key: string, label: string, Icon: any, onClick: (e: React.MouseEvent) => void, open?: boolean) => (
+    <button
+      key={key}
+      onClick={onClick}
+      title={label}
+      aria-expanded={open}
+      className={`relative w-full flex flex-col items-center justify-center gap-[3px] h-[44px] px-1 rounded-lg transition-colors duration-150 ${
+        open ? "text-white rail-active" : "text-[#8A8A9A] hover:text-white/85 hover:bg-white/[0.06]"
+      }`}
+    >
+      <Icon size={16} strokeWidth={1.6} />
+      <span className="max-w-full truncate text-[9.5px] font-semibold leading-none tracking-tight">{label}</span>
+    </button>
+  );
+
+  /** Which top-level rows the rail shows, and how tall they come out.
+   *
+   *  Three reasons earn a row: it is the section you are standing in, it is pinned, or
+   *  it is carrying work that is waiting. That is also the order they survive in when
+   *  the window is too short to hold them all - the rail may not scroll, so something
+   *  has to go, and it goes to All screens rather than below the fold. A pin outranks a
+   *  count because a pin is a choice you made and a count is the app being helpful; on
+   *  a 600px window that means the newsletter's draft count can be trimmed away while
+   *  Dashboard stays, which is the right way round.
+   *
+   *  Whatever survives is drawn in NAV order regardless, so a row arriving or leaving
+   *  never reshuffles the ones around it. */
+  const railPlan = (() => {
+    // Membership alone is not enough - parentOfActive carries no gating, so a role
+    // that cannot see Analytics would otherwise get an Analytics row from standing
+    // on Globe, and clicking it lands on a screen paneContent renders regardless.
+    const sectionId: string | null =
+      parentOfActive && visible(parentOfActive as Tab) ? parentOfActive
+      : NAV.some((n) => n.id === tab) && visible(tab) ? tab
+      : null;
+
+    type Row = { node: NavNode; kids: NavKid[]; rank: number; at: number; h: number };
+    const rows: Row[] = [];
+    NAV.forEach((node, at) => {
+      // A pin the role cannot see renders nothing. The expanded sidebar promotes such
+      // a parent's children to top level, but the rail must not: its rows are a chosen
+      // subset, and promoting into it produced the same screen twice whenever the
+      // promoted child was also the one you were standing on. Those children are still
+      // in All screens, and the orphan row below still says where you are.
+      if (!visible(node.id)) return;
+      const isSection = node.id === sectionId;
+      const pinned = railPins.includes(node.id);
+      const counted = railCount(node, isSection) > 0;
+      if (!isSection && !pinned && !counted) return;
+      const kids = isSection ? (node.children || []).filter((c) => visible(c.id)) : [];
+      rows.push({
+        node, kids, at,
+        rank: isSection ? 0 : pinned ? 1 : 2,
+        h: RAIL_ROW + (kids.length ? kids.length * RAIL_KID + 8 : 0),
+      });
+    });
+
+    // The section you are on is a child whose parent your role cannot see. Give it a
+    // row of its own rather than leaving the rail unable to say where you are.
+    const orphan: NavKid | null =
+      !sectionId && parentOfActive && !visible(parentOfActive as Tab) && visible(tab)
+        ? (NAV.find((n) => n.id === parentOfActive)?.children || []).find((c) => c.id === tab) ?? null
+        : null;
+
+    // Search + All screens + their two rules, plus the nav's own py-2.
+    const chrome = RAIL_ROW * 2 + RAIL_SEP * 2 + 16 + (orphan ? RAIL_ROW : 0);
+    // navH is 0 only before the nav has been measured at all. Show everything then;
+    // the layout effect corrects it on the next frame.
+    let budget = navH > 0 ? navH - chrome : Number.POSITIVE_INFINITY;
+
+    const keep = new Set<string>();
+    let full = false;
+    for (const r of [...rows].sort((a, b) => a.rank - b.rank || a.at - b.at)) {
+      // The section always gets its row - a rail that cannot say where you are is the
+      // fault this whole redesign exists to fix, so it is never the thing that goes.
+      if (r.rank === 0) { budget -= r.h; keep.add(r.node.id); continue; }
+      // Once one row does not fit, everything below it in priority goes too. Skipping
+      // only the ones that happen to be too tall would let a lower-priority row jump
+      // over a higher one as the window resizes, which is the reshuffling this design
+      // forbids.
+      if (full || budget - r.h < 0) { full = true; continue; }
+      budget -= r.h;
+      keep.add(r.node.id);
+    }
+    return { rows: rows.filter((r) => keep.has(r.node.id)), orphan, sectionId };
+  })();
 
   // One labelled row inside a flyout.
   const flyoutRow = (item: NavKid, badge?: number) => {
@@ -676,7 +936,17 @@ export default function App() {
         <Icon size={14} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
         <span className="truncate">{item.label}</span>
         {badge ? (
-          <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold leading-4 text-center">
+          // Newsletter drafts are amber everywhere else in the shell and approvals are
+          // red; this row had only ever carried approvals, so a bare red pill was right
+          // until All screens started passing draftCount through it.
+          <span
+            className={`ml-auto min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold leading-4 text-center ${
+              item.id === "email" ? "" : "bg-red-500 text-white"
+            }`}
+            style={item.id === "email"
+              ? { background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }
+              : undefined}
+          >
             {badge > 9 ? "9+" : badge}
           </span>
         ) : null}
@@ -741,8 +1011,8 @@ export default function App() {
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
 
   // Bell, dark mode and split view. They sit in the brand row when the sidebar is
-  // open and stack in the footer when it is collapsed - split view has no other
-  // entry point, so hiding them at 56px would strand it.
+  // open and move into the account menu when it is collapsed - split view has no other
+  // entry point anywhere in the app, so dropping them from the rail would strand it.
   const shellButtons = (
     <>
         {/* Approvals notification bell (admins only) */}
@@ -803,7 +1073,7 @@ export default function App() {
   return (
     <div className="flex h-screen" style={{ background: "var(--t-bg)" }}>
       {/* Sidebar */}
-      <aside className={`${navCollapsed ? "w-[56px]" : "w-[216px]"} flex flex-col flex-shrink-0 relative transition-[width] motion-reduce:transition-none`} style={{
+      <aside className={`${navCollapsed ? "w-[96px]" : "w-[216px]"} flex flex-col flex-shrink-0 relative transition-[width] motion-reduce:transition-none`} style={{
         background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
@@ -845,23 +1115,40 @@ export default function App() {
         </div>
 
         {/* Nav */}
-        <nav ref={navRef} className={`flex-1 px-2.5 ${navCollapsed ? "py-2" : "py-3"} space-y-0.5 overflow-y-auto relative`}>
+        <nav
+          ref={navRef}
+          className={`flex-1 ${navCollapsed ? "px-1.5 py-2 overflow-hidden" : "px-2.5 py-3 overflow-y-auto"} space-y-0.5 relative`}
+        >
           {/* Sliding indicator */}
           <div
             className="nav-indicator"
             style={{ top: indicatorStyle.top, opacity: indicatorStyle.opacity }}
           />
 
-          {navCollapsed ? NAV.map((node) => {
-            const kids = (node.children || []).filter((c) => visible(c.id));
-            // Parent gated out: promote its independently-visible children, as expanded does.
-            if (!visible(node.id)) {
-              return kids.length
-                ? <div key={node.id} className="space-y-0.5">{kids.map((c) => navButton(c, false))}</div>
-                : null;
-            }
-            return kids.length === 0 ? navButton(node, false) : railGroupButton(node, kids);
-          }) : NAV.map((node) => {
+          {navCollapsed ? (
+            <>
+              {railAction("__search", "Search", Search, () => { setFlyout(null); setPaletteOpen(true); })}
+              <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }} /></div>
+
+              {/* Standing on a screen whose parent this role cannot see. */}
+              {railPlan.orphan && railRow(railPlan.orphan, railCount(railPlan.orphan, false))}
+
+              {railPlan.rows.map(({ node, kids }) => (
+                <div key={node.id} className="space-y-0.5">
+                  {railRow(node, railCount(node, node.id === railPlan.sectionId))}
+                  {kids.length > 0 && (
+                    <div className="relative pl-[9px] mt-[3px] mb-[5px] space-y-0.5">
+                      <span className="rail-spine absolute left-[3px] top-0.5 bottom-0.5 w-[1.5px] rounded-full" aria-hidden />
+                      {kids.map((c) => railKid(c, railCount(c, false)))}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <div className="h-[11px] mx-1 flex items-center" aria-hidden><div className="w-full" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }} /></div>
+              {railAction("__all", "All screens", MoreHorizontal, (e) => openFlyout("__all", e), flyout?.id === "__all")}
+            </>
+          ) : NAV.map((node) => {
             const kids = (node.children || []).filter((c) => visible(c.id));
             // Parent gated out: don't strand independently-visible children (e.g.
             // null-perm Automation/Globe under Analytics) — promote them to top level.
@@ -895,14 +1182,22 @@ export default function App() {
 
         {/* Utility zone — configuration & housekeeping, set apart from the workflow
             mains. Pinned outside the scroller: these are the ones you reach for when
-            you are lost, and they were the first to fall below the fold. */}
-        <div className="px-2.5 py-2 space-y-0.5 flex-shrink-0" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-          {UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
+            you are lost, and they were the first to fall below the fold.
+            Collapsed it is Settings alone: five stacked labelled rows would be ~230px
+            of chrome that cannot shrink, and on the 600px minimum window that is the
+            difference between the rail fitting and the rail scrolling. The other four
+            are one click away in All screens, which lists every screen this role can
+            reach. */}
+        <div className={`${navCollapsed ? "px-1.5" : "px-2.5"} py-2 space-y-0.5 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+          {navCollapsed
+            ? UTILITY.filter((u) => u.id === "settings" && visible(u.id)).map((u) => railRow(u, 0))
+            : UTILITY.filter((u) => visible(u.id)).map((u) => navButton(u, false))}
         </div>
 
-        {/* Status footer. Collapsed this is a compact strip: the old rail stacked bell,
-            dark mode, split view, feedback and sign out into a ~230px column that ate
-            the nav's scroll room. At 56px those live in the account menu instead. */}
+        {/* Status footer. Collapsed this is a compact strip: an older rail stacked bell,
+            dark mode, split view, feedback and sign out into a ~230px column that ate the
+            nav's room. They live in the account menu instead, which matters more now the
+            rail is forbidden to scroll - see railPlan's budget. */}
         <div className={`${navCollapsed ? "px-1.5" : "px-3"} py-3 flex-shrink-0`} style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
           {navCollapsed ? (
             <div className="flex flex-col items-center gap-1.5">
@@ -1015,8 +1310,12 @@ export default function App() {
           )}
         </div>
 
-        {/* Rail flyouts. Fixed rather than absolute so the scrolling nav cannot clip
-            them, over a backdrop that closes on any outside click. */}
+        {/* Rail flyouts. Two of them now: the account menu behind the footer avatar,
+            and All screens. The per-group flyouts are gone — the section you are in
+            opens inline in the rail instead, which is the whole point of R-224.
+            Fixed rather than absolute so the rail cannot clip them, over a backdrop
+            that closes on any outside click. `left` is the rail width plus a 6px gap;
+            there is no shared constant for it, so it moves when the rail moves. */}
         {navCollapsed && flyout && (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setFlyout(null)} />
@@ -1024,7 +1323,7 @@ export default function App() {
               ref={flyRef}
               className="fixed z-50 w-[186px] p-1 rounded-xl"
               style={{
-                left: 62, top: flyout.top,
+                left: 102, top: flyout.top,
                 background: "#17171A",
                 border: "1px solid rgba(255,255,255,0.09)",
                 boxShadow: "0 14px 36px rgba(0,0,0,0.55)",
@@ -1064,18 +1363,34 @@ export default function App() {
                     <span>Sign out</span>
                   </button>
                 </>
-              ) : (() => {
-                const node = NAV.find((n) => n.id === flyout.id);
-                if (!node) return null;
-                const kids = (node.children || []).filter((c) => visible(c.id));
-                return (
-                  <>
-                    {flyoutRow(node as NavKid)}
-                    <div className="my-1 mx-2" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }} />
-                    {kids.map((c) => flyoutRow(c, c.id === "approvals" ? apCount : undefined))}
-                  </>
-                );
-              })()}
+              ) : flyout.id === "__all" ? (
+                // Everything this role can reach, including the screens the rail is
+                // not currently showing. flatTabs is the only list already filtered by
+                // visible(), so it is the one that cannot leak a screen the sidebar
+                // hides. It scrolls: 29 rows do not fit any window.
+                <div className="max-h-[60vh] overflow-y-auto">
+                  {flatTabs.map((t) => (
+                    <div key={t.id} className="relative group/allrow">
+                      {flyoutRow(t, t.id === "approvals" ? apCount : t.id === "email" ? draftCount : undefined)}
+                      {NAV.some((n) => n.id === t.id) && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); toggleRailPin(t.id); }}
+                          title={railPins.includes(t.id) ? `Unpin ${t.label} from the rail` : `Pin ${t.label} to the rail`}
+                          aria-label={railPins.includes(t.id) ? `Unpin ${t.label}` : `Pin ${t.label}`}
+                          className={`absolute top-1 right-1 h-6 w-6 flex items-center justify-center rounded-md transition-colors ${
+                            railPins.includes(t.id)
+                              ? "text-[#C7C7D1] hover:bg-white/[0.1]"
+                              : "opacity-0 group-hover/allrow:opacity-100 text-[#5A5A6A] hover:text-white hover:bg-white/[0.1]"
+                          }`}
+                        >
+                          <Pin size={12} strokeWidth={1.9} style={railPins.includes(t.id) ? { fill: "currentColor" } : undefined} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </>
         )}

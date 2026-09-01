@@ -585,6 +585,23 @@ html.dark .accent-active-ic { color: var(--accent-400); }
 html.matte .accent-active    { color: var(--accent-700); }
 html.matte .accent-active-ic { color: var(--accent-600); }
 
+/* ── Collapsed rail (R-224) ───────────────────────────────────────────────────
+   The sidebar paints its own dark gradient and never follows the light/dark base,
+   so everything here has to read on a dark ground in every theme. --accent-tint is
+   the trap: it is rgba(0,0,0,.06) in light-mono, which DARKENS the active row on a
+   dark rail instead of lifting it. Layer it over an invariant white wash so the
+   active state survives, and let the accent add colour where there is one. */
+.rail-active {
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.07) 0%, transparent 100%),
+    linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%);
+}
+/* The spine that groups a section's screens under their parent row. Accent where
+   there is one; in mono --accent-400 is a mid-grey barely separable from the rail,
+   so fall back to white-alpha (same escape hatch as .accent-active above). */
+.rail-spine { background: var(--accent-400); }
+html.matte .rail-spine { background: rgba(255,255,255,0.18); }
+
 /* ════════════════════════════════════════════════════════════
    SPLIT-SCREEN PANES — container queries
    Each split pane is a query container, so views can reflow to the

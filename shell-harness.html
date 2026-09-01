@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shell harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so Vite never bundles it into a release —
+      `npm run build` has exactly one input and this is not it.
+
+      Why it exists: App.tsx gates everything behind employee_me, so on `npm run dev` the
+      whole app stops at the sign-in screen and the sidebar cannot be looked at in a
+      browser at all. That is how a "responsive sweep" once shipped broken (v0.14.95) —
+      it was read rather than rendered. This page fakes the Tauri host so the REAL App,
+      with the real rail, renders at /shell-harness.html.
+
+      Sibling of lot-harness.html; same trick, same rules. Every figure is invented, but
+      the SHAPES are honest — a fixture that lies about a field's type hides the bug it
+      was meant to catch.
+
+      ?role=admin (default) | sales | fresh   — switches the permission fixture, because
+      most of the rail's hard cases are gating cases: a role that cannot see Financials,
+      or a brand-new role that can see nothing but Dashboard.
+      ?ap=3&drafts=2                          — the two badge counts.
+
+      The metadata block below is the part that is easy to miss: getCurrentWebview() reads
+      __TAURI_INTERNALS__.metadata.currentWebview, and without it any drag-drop hook throws
+      and the component never renders at all.
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        // The shell subscribes to Tauri events (the updater, deep links). Without this
+        // every unlisten() throws on teardown and fills the console with noise that
+        // hides the errors you opened the page to find.
+        unregisterListener: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__shell-harness.tsx"></script>
+  </body>
+</html>

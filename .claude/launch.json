@@ -14,6 +14,12 @@
       "port": 5173
     },
     {
+      "name": "desktop-harness",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5199", "--strictPort"],
+      "port": 5199
+    },
+    {
       "name": "atlas",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/atlas", "run", "dev"],
