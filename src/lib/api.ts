@@ -3253,22 +3253,32 @@ export const api = {
   // The lot tree (R-218): branch > combined > base lot, one spreadsheet per level.
   createLotBranch: (sheetId: string, name: string) =>
     invoke<LotBuild>("create_lot_branch", { sheetId, name }),
+  /** Merges the picked lots into ONE new lot. The sources are untouched. */
   combineLotBuilds: (p: {
     sheetId: string;
-    branchId: string;
     name: string;
     childIds: string[];
     pricePct: number;
     costPct?: number;
+    branchId?: string | null;
   }) =>
     invoke<LotBuild>("combine_lot_builds", {
       sheetId: p.sheetId,
-      branchId: p.branchId,
       name: p.name,
       childIds: p.childIds,
       pricePct: p.pricePct,
       costPct: p.costPct ?? null,
+      branchId: p.branchId ?? null,
     }),
+  /** One percentage and one cost across every lot in a branch. Overrides each lot's own. */
+  setBranchPricing: (branchId: string, pricePct: number, costPct?: number) =>
+    invoke<number>("set_branch_pricing", { branchId, pricePct, costPct: costPct ?? null }),
+  /** A branch: one breakdown page, then one page per lot. xlsx only. */
+  exportBranchWorkbook: (branchId: string, path: string) =>
+    invoke<LotExportResult>("export_branch_workbook", { branchId, path }),
+  /** One lot: breakdown, then all its items. Two pages. */
+  exportLotWorkbook: (buildId: string, path: string) =>
+    invoke<LotExportResult>("export_lot_workbook", { buildId, path }),
   setLotParent: (buildId: string, parentId: string | null) =>
     invoke<void>("set_lot_parent", { buildId, parentId }),
   /** Cascades: everything inside it goes with it. */
@@ -3652,6 +3662,13 @@ export interface LotTotals {
   cost_known: boolean;
   by_brand: LotGroupTotal[];
   by_category: LotGroupTotal[];
+  /**
+   * Men's / Women's / GS / Kids / Unisex, and `Not stated` (R-223).
+   *
+   * `Not stated` is a row, never an omission — every breakdown table sums to the lot, so a
+   * manifest can never look complete while failing to add up.
+   */
+  by_segment: LotGroupTotal[];
   title_risk_units: [number, number, number, number];
 }
 
@@ -3682,6 +3699,14 @@ export interface LotBuild {
   kind: string;
   /** Stamped when `status` became `sold`. */
   sold_at: string | null;
+  /**
+   * The lots this one was MERGED FROM (R-224). Empty for an ordinary lot.
+   *
+   * Not `parent_id`: that is which branch a lot is *displayed in*, this is which lots a
+   * merge was *built out of*. The canvas draws a wire per entry, and the red strike
+   * travels down this list — never up it.
+   */
+  merged_from: string[];
 }
 
 /** One row of a roster - the master spreadsheet, one line per lot rather than per product. */

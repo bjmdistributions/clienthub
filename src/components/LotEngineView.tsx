@@ -27,6 +27,8 @@ import { writeText as clipboardWrite } from "@tauri-apps/plugin-clipboard-manage
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
+// R-224: the Lots tab is a wire diagram now — see the note at the top of LotCanvas.
+import LotCanvas from "./LotCanvas";
 import {
   AlertTriangle,
   ArrowRight,
@@ -328,7 +330,7 @@ export default function LotEngineView() {
           {tab === "retail" && <RetailTab key={sheet.id} sheetId={sheet.id} onChanged={refreshFacets} />}
           {tab === "quality" && <QualityTab sheetId={sheet.id} />}
           {tab === "barcodes" && <BarcodesTab sheetId={sheet.id} />}
-          {tab === "lots" && <SavedLotsTab sheetId={sheet.id} onChanged={refreshFacets} />}
+          {tab === "lots" && <LotCanvas sheetId={sheet.id} onChanged={refreshFacets} />}
         </>
       )}
     </div>

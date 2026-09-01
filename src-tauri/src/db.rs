@@ -1897,4 +1897,28 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_lot_build_parent ON lot_build(parent_id);
         "#,
     ),
+    (
+        87,
+        // PROVENANCE (R-224). A merged lot records the lots it was built from.
+        //
+        // 87 and not 85 or 86: 86 is the tree, and 85 belongs to the unmerged
+        // `lot-engine-mapping` branch, which must now renumber to 88 rather than 87.
+        //
+        // This is NOT parent_id and must never be confused with it. `parent_id` says which
+        // BRANCH a lot is displayed in; `merged_from_json` says which lots a merged lot was
+        // built out of, and those sources stay exactly where they were -- Jack: "when they are
+        // combined, it shouldnt change anything from the original spreadsheet". A merge is a
+        // sibling of its sources, not their parent.
+        //
+        // It is load-bearing twice over: the canvas draws a wire per entry, and selling a
+        // merge strikes its sources through in red by walking this list. The sold cascade
+        // therefore follows THIS, not parent_id.
+        //
+        // A JSON array of lot ids, on the row rather than in a join table, for the same reason
+        // slots_json is: it is written once when the merge is made, read whole, and never
+        // queried across rows.
+        r#"
+        ALTER TABLE lot_build ADD COLUMN merged_from_json TEXT;
+        "#,
+    ),
 ];

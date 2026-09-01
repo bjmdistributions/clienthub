@@ -81,6 +81,7 @@ import {
   CheckCheck,
   ArrowDownAZ,
   Contrast,
+  PanelLeftClose,
   Cloud,
   ChevronRight,
   Inbox,
@@ -475,6 +476,15 @@ function AppearanceTab() {
   const [dark, setDark] = useState(() => localStorage.getItem("clienthub_dark") === "1");
   const [matte, setMatte] = useState(() => localStorage.getItem("clienthub_matte") === "1");
   const [accent, setAccentState] = useState(() => localStorage.getItem("clienthub_accent") || "orange");
+  const [navAuto, setNavAutoState] = useState(() => localStorage.getItem("clienthub_nav_auto") !== "0");
+
+  // Per device, like the rest of Appearance. App owns the state; this writes the
+  // key and tells it, the same shape as the theme toggles above.
+  const setNavAuto = (on: boolean) => {
+    setNavAutoState(on);
+    localStorage.setItem("clienthub_nav_auto", on ? "1" : "0");
+    window.dispatchEvent(new CustomEvent("nav-auto-change", { detail: on }));
+  };
 
   const setAccent = (a: string) => {
     setAccentState(a);
@@ -587,6 +597,32 @@ function AppearanceTab() {
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
           <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${matte ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+        </span>
+      </button>
+
+      <div className="mt-7"><SectionLabel>Sidebar</SectionLabel></div>
+      <p className="text-[12px] text-muted mb-3 mt-0.5">
+        Cmd/Ctrl + B collapses the sidebar to the rail at any time. This decides whether a narrow window does it for you.
+      </p>
+      <button
+        onClick={() => setNavAuto(!navAuto)}
+        role="switch"
+        aria-checked={navAuto}
+        className={`w-full flex items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors ${
+          navAuto ? "accent-active accent-active-bd" : "border-line hover:border-line-3"
+        }`}
+      >
+        <span className={`flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg ${navAuto ? "bg-ink text-surface" : "bg-surface-2 text-muted"}`}>
+          <PanelLeftClose size={16} />
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className={`block text-[13px] font-semibold ${navAuto ? "text-ink" : "text-ink-2"}`}>Collapse on narrow windows</span>
+          <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
+            Below 1240px the sidebar becomes the rail on its own, and hands the width back to the screen. Turn this off to keep it exactly where you left it.
+          </span>
+        </span>
+        <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${navAuto ? "bg-accent" : "bg-surface-3"}`}>
+          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${navAuto ? "translate-x-[22px]" : "translate-x-0.5"}`} />
         </span>
       </button>
     </div>

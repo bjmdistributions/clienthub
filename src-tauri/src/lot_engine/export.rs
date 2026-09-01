@@ -190,7 +190,11 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
             vec!["Lot".into(), opts.lot_name.clone()],
             vec!["Units".into(), t.units.to_string()],
             vec!["Styles".into(), t.styles.to_string()],
-            vec!["Locations".into(), t.locations.to_string()],
+            // NO location count. Jack, 2026-09-01: "on each individual sheet, it should never
+            // include number of locations, thats always for me to decide." How many shelves a
+            // lot came off is his negotiating position, not the buyer's information. The pull
+            // sheet is a different document and is location-by-nature; this is the buyer's.
+            // `include_slots` is a separate switch and still governs the per-line Slot column.
             vec!["Retail value".into(), money(t.msrp)],
             vec!["Price".into(), money(t.ask)],
             vec!["Price per unit".into(), money(t.per_unit)],
@@ -552,53 +556,84 @@ pub fn to_csv(doc: &Doc) -> String {
 /// text. Barcodes stay text too, and deliberately: Excel turns a 13-digit number into
 /// `1.97968E+11` and eats the leading zero off a UPC-A, which is the same class of bug as
 /// parsing the UPC column as a number on the way in.
-pub fn to_xlsx(doc: &Doc) -> Result<Vec<u8>> {
-    use rust_xlsxwriter::{Format, Workbook};
+/// The cell formats a workbook uses. Built once and shared by every worksheet in it —
+/// `rust_xlsxwriter` interns them, so handing the same `&Format` to twenty sheets costs one.
+struct Fmts {
+    bold: rust_xlsxwriter::Format,
+    title: rust_xlsxwriter::Format,
+    money: rust_xlsxwriter::Format,
+    whole: rust_xlsxwriter::Format,
+    percent: rust_xlsxwriter::Format,
+}
 
-    // A cell is numeric only if it is entirely digits, at most one dot, an optional leading
-    // minus and an optional trailing %. `$` and `,` are stripped first.
-    fn numeric(s: &str) -> Option<(f64, bool)> {
-        let t = s.trim();
-        if t.is_empty() {
-            return None;
+impl Fmts {
+    fn new() -> Self {
+        use rust_xlsxwriter::Format;
+        Fmts {
+            bold: Format::new().set_bold(),
+            title: Format::new().set_bold().set_font_size(12.0),
+            money: Format::new().set_num_format("#,##0.00"),
+            whole: Format::new().set_num_format("#,##0"),
+            percent: Format::new().set_num_format("0.0%"),
         }
-        let pct = t.ends_with('%');
-        let body = t.trim_end_matches('%').replace(['$', ','], "");
-        if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
-            return None;
-        }
-        body.parse::<f64>().ok().map(|v| (v, pct))
     }
+}
 
-    let mut wb = Workbook::new();
-    let ws = wb.add_worksheet();
-    // 31 chars is Excel's sheet-name limit, and `[]:*?/\` are illegal in one.
-    let safe: String = doc
-        .name
+/// A cell is numeric only if it is entirely digits, at most one dot, an optional leading
+/// minus and an optional trailing %. `$` and `,` are stripped first.
+fn numeric(s: &str) -> Option<(f64, bool)> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let pct = t.ends_with('%');
+    let body = t.trim_end_matches('%').replace(['$', ','], "");
+    if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+        return None;
+    }
+    body.parse::<f64>().ok().map(|v| (v, pct))
+}
+
+/// An Excel-legal, UNIQUE worksheet name.
+///
+/// Excel's rules are unforgiving and all four bite on real data: at most 31 characters,
+/// none of `[]:*?/\`, never blank, and **never a duplicate** — `set_name` errors on a
+/// repeat, which would abort a 22-page download because two lots happen to share a name.
+/// A clash gets ` (2)`, ` (3)`… and the stem is trimmed to make room rather than the suffix
+/// being dropped, because the suffix is the part that makes it legal.
+fn sheet_name(raw: &str, used: &mut Vec<String>) -> String {
+    let cleaned: String = raw
         .chars()
         .map(|c| if "[]:*?/\\".contains(c) { '-' } else { c })
-        .take(31)
         .collect();
-    if !safe.trim().is_empty() {
-        ws.set_name(safe.trim()).ok();
+    let stem = cleaned.trim();
+    let stem = if stem.is_empty() { "Sheet" } else { stem };
+    let take = |s: &str, n: usize| -> String { s.chars().take(n).collect::<String>().trim().to_string() };
+
+    let mut name = take(stem, 31);
+    let mut n = 2;
+    while used.iter().any(|u| u.eq_ignore_ascii_case(&name)) {
+        let suffix = format!(" ({n})");
+        name = format!("{}{}", take(stem, 31 - suffix.chars().count()), suffix);
+        n += 1;
     }
+    used.push(name.clone());
+    name
+}
 
-    let bold = Format::new().set_bold();
-    let title = Format::new().set_bold().set_font_size(12.0);
-    let money = Format::new().set_num_format("#,##0.00");
-    let whole = Format::new().set_num_format("#,##0");
-    let percent = Format::new().set_num_format("0.0%");
-
+/// Write one `Doc` onto one worksheet: its sections stacked, a blank row between, columns
+/// sized to their content.
+fn write_doc(ws: &mut rust_xlsxwriter::Worksheet, doc: &Doc, f: &Fmts) -> Result<()> {
     let mut r = 0u32;
     let mut widest: Vec<usize> = Vec::new();
     for sec in &doc.sections {
         if !sec.title.is_empty() {
-            ws.write_string_with_format(r, 0, &sec.title, &title)?;
+            ws.write_string_with_format(r, 0, &sec.title, &f.title)?;
             r += 1;
         }
         if sec.headers.iter().any(|h| !h.is_empty()) {
             for (c, h) in sec.headers.iter().enumerate() {
-                ws.write_string_with_format(r, c as u16, h, &bold)?;
+                ws.write_string_with_format(r, c as u16, h, &f.bold)?;
                 if widest.len() <= c {
                     widest.resize(c + 1, 0);
                 }
@@ -618,13 +653,13 @@ pub fn to_xlsx(doc: &Doc) -> Result<Vec<u8>> {
                         ws.write_string(r, c as u16, cell)?;
                     }
                     Some((v, true)) => {
-                        ws.write_number_with_format(r, c as u16, v / 100.0, &percent)?;
+                        ws.write_number_with_format(r, c as u16, v / 100.0, &f.percent)?;
                     }
                     Some((v, false)) if cell.contains('$') || cell.contains('.') => {
-                        ws.write_number_with_format(r, c as u16, v, &money)?;
+                        ws.write_number_with_format(r, c as u16, v, &f.money)?;
                     }
                     Some((v, false)) => {
-                        ws.write_number_with_format(r, c as u16, v, &whole)?;
+                        ws.write_number_with_format(r, c as u16, v, &f.whole)?;
                     }
                     None => {
                         ws.write_string(r, c as u16, cell)?;
@@ -642,7 +677,40 @@ pub fn to_xlsx(doc: &Doc) -> Result<Vec<u8>> {
         // money columns off the screen.
         ws.set_column_width(c as u16, (*w as f64 + 2.0).min(52.0))?;
     }
+    Ok(())
+}
 
+/// One document, one worksheet.
+pub fn to_xlsx(doc: &Doc) -> Result<Vec<u8>> {
+    to_xlsx_book(std::slice::from_ref(doc))
+}
+
+/// **A workbook with one worksheet per document.**
+///
+/// This is what a branch downloads: page 1 the breakdown, then one page per lot — 21 lots
+/// gives 22 sheets. A merged lot gives two, because it is one lot with one item list.
+///
+/// CSV cannot express this at all; `to_csv` flattens a single `Doc`. A branch download is
+/// therefore xlsx or nothing, and the caller has to say so rather than quietly handing over
+/// page 1 alone, which would look like a complete file.
+pub fn to_xlsx_book(docs: &[Doc]) -> Result<Vec<u8>> {
+    use rust_xlsxwriter::Workbook;
+
+    let mut wb = Workbook::new();
+    let f = Fmts::new();
+    // Excel rejects a workbook with no worksheets, so an empty call still gets one rather
+    // than producing a file that will not open.
+    if docs.is_empty() {
+        wb.add_worksheet();
+    }
+    let mut used: Vec<String> = Vec::new();
+    for doc in docs {
+        let name = sheet_name(&doc.name, &mut used);
+        let ws = wb.add_worksheet();
+        ws.set_name(&name)
+            .map_err(|e| anyhow!("worksheet name {name:?} was rejected: {e}"))?;
+        write_doc(ws, doc, &f)?;
+    }
     wb.save_to_buffer().map_err(|e| anyhow!("could not write the workbook: {e}"))
 }
 
@@ -1052,6 +1120,74 @@ mod tests {
         assert_eq!(r[0][3], "$1,000.00");
         assert_eq!(r[1][2], "$1,234,567.89");
         assert_eq!(r[1][3], "-$5.50");
+    }
+
+    /// R-224. A branch downloads as one worksheet per lot, so the naming rules are not a
+    /// detail: `set_name` ERRORS on a duplicate, which would abort a 22-page download because
+    /// two lots happen to share a name.
+    #[test]
+    fn a_workbook_gives_every_document_its_own_worksheet() {
+        let d = |n: &str| Doc {
+            name: n.into(),
+            sections: vec![Section {
+                title: "Lots".into(),
+                headers: vec!["Ref #".into(), "Unit count".into()],
+                rows: vec![vec![n.into(), "1030".into()]],
+            }],
+        };
+        let bytes = to_xlsx_book(&[d("Master list"), d("B- 001"), d("B- 002")]).unwrap();
+        // An xlsx is a zip, and a zip stores its entry NAMES uncompressed in the central
+        // directory — so the worksheet parts are findable in the raw bytes. Three documents
+        // must give exactly three, which is the assertion this test exists to make.
+        assert!(bytes.starts_with(b"PK"), "not a zip");
+        let has = |needle: &str| {
+            bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+        };
+        assert!(has("xl/worksheets/sheet1.xml"), "no first worksheet");
+        assert!(has("xl/worksheets/sheet2.xml"), "the second document did not get its own page");
+        assert!(has("xl/worksheets/sheet3.xml"), "the third document did not get its own page");
+        assert!(!has("xl/worksheets/sheet4.xml"), "three documents produced a fourth page");
+        // One document still works and is the same call — and gets exactly one page.
+        let one = to_xlsx(&d("just one")).unwrap();
+        assert!(one.starts_with(b"PK"));
+        assert!(!one.windows(24).any(|w| w == b"xl/worksheets/sheet2.xml"));
+        // ...and an empty book is still a file Excel will open.
+        assert!(to_xlsx_book(&[]).unwrap().starts_with(b"PK"));
+    }
+
+    #[test]
+    fn worksheet_names_are_legal_and_unique() {
+        let mut used = Vec::new();
+        assert_eq!(sheet_name("B- 001", &mut used), "B- 001");
+        // A duplicate is suffixed rather than rejected.
+        assert_eq!(sheet_name("B- 001", &mut used), "B- 001 (2)");
+        assert_eq!(sheet_name("B- 001", &mut used), "B- 001 (3)");
+        // Illegal characters become dashes.
+        assert_eq!(sheet_name("Nike/adidas [mix]", &mut used), "Nike-adidas -mix-");
+        // Blank is never a sheet name.
+        assert_eq!(sheet_name("   ", &mut used), "Sheet");
+        // 31 characters is the hard cap, suffix included.
+        let long = "A".repeat(60);
+        let a = sheet_name(&long, &mut used);
+        let b = sheet_name(&long, &mut used);
+        assert_eq!(a.chars().count(), 31);
+        assert!(b.chars().count() <= 31, "{b} is longer than Excel allows");
+        assert!(b.ends_with(" (2)"), "the suffix is what makes it legal, so it must survive");
+        assert_ne!(a, b);
+    }
+
+    /// The buyer's copy never says how many shelves the lot came off.
+    #[test]
+    fn the_manifest_summary_does_not_count_locations() {
+        let m = manifest(&fixture(), &Pricing::flat(0.26), &ManifestOpts::default());
+        let summary = &m.sections[0];
+        assert!(
+            !summary.rows.iter().any(|r| r[0].eq_ignore_ascii_case("Locations")),
+            "the location count is Jack's to disclose, not the manifest's"
+        );
+        // The rest of the summary is untouched.
+        assert!(summary.rows.iter().any(|r| r[0] == "Units"));
+        assert!(summary.rows.iter().any(|r| r[0] == "Retail value"));
     }
 
     #[test]

@@ -29,7 +29,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::db::pool;
-use crate::lot_engine::export::{self, ManifestOpts};
+use crate::lot_engine::export::{self, Doc, ManifestOpts};
 use crate::lot_engine::model::{CleanResult, LotLine, Stack};
 use crate::lot_engine::price::{lot_totals, LotTotals, Pricing};
 use crate::lot_engine::rank::{auto_lots, rank, Allow, AutoPlan, AutoResult, RankOpts, RankResult, Want};
@@ -935,6 +935,16 @@ pub struct LotBuild {
     pub kind: String,
     /// Stamped when `status` became `sold`. `None` otherwise.
     pub sold_at: Option<String>,
+    /// The lots this one was MERGED FROM (R-224). Empty for an ordinary lot.
+    ///
+    /// **Not `parent_id`, and never confuse the two.** `parent_id` is which branch a lot is
+    /// displayed in; this is which lots a merge was built out of, and those sources stay
+    /// exactly where they were — Jack: *"when they are combined, it shouldnt change anything
+    /// from the original spreadsheet."* A merge is a SIBLING of its sources.
+    ///
+    /// Load-bearing twice: the canvas draws a wire per entry, and selling a merge strikes its
+    /// sources through in red by walking this list. The sold cascade follows THIS.
+    pub merged_from: Vec<String>,
 }
 
 fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
@@ -971,13 +981,19 @@ fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
             .unwrap_or(None)
             .unwrap_or_else(|| "lot".into()),
         sold_at: r.get(21).unwrap_or(None),
+        merged_from: r
+            .get::<_, Option<String>>(22)
+            .unwrap_or(None)
+            .filter(|v| !v.trim().is_empty())
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default(),
     })
 }
 
 const BUILD_SELECT: &str = "SELECT b.id, b.sheet_id, b.name, b.status, b.price_pct, \
     b.price_pct_json, b.locations, b.units, b.styles, b.msrp_total, b.ask_total, b.notes, \
     b.slots_json, b.archived, b.created_at, b.updated_at, s.name, b.cost_pct, b.cost_pct_json, \
-    b.parent_id, b.kind, b.sold_at \
+    b.parent_id, b.kind, b.sold_at, b.merged_from_json \
     FROM lot_build b LEFT JOIN lot_sheet s ON s.id = b.sheet_id";
 
 fn pricing_from(pct: f64, overrides: Option<&str>) -> Pricing {
@@ -1047,6 +1063,18 @@ pub async fn save_lot_build(
 
     let id = build_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
+    // What the row already is, read BEFORE the upsert. The ON CONFLICT list leaves these
+    // three alone on an update, so the emit has to carry what is really there rather than
+    // silently re-declaring an existing merge to be an ordinary lot.
+    let (kind_before, parent_before, merged_before): (Option<String>, Option<String>, Option<String>) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT kind, parent_id, merged_from_json FROM lot_build WHERE id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or((Some("lot".into()), None, None))
+    };
     let mut ordered: Vec<String> = slots.clone();
     ordered.sort();
     ordered.dedup();
@@ -1110,12 +1138,21 @@ pub async fn save_lot_build(
             ("slots_json", serde_json::json!(serde_json::to_string(&ordered).ok())),
             ("notes", serde_json::json!(notes)),
             ("archived", serde_json::json!(0)),
+            // These three were written by the tree paths and left OUT of this emit map, so a
+            // merge re-saved through here arrived on a peer with `kind` defaulting to 'lot'
+            // and its provenance gone — the wires would vanish on every other device.
+            ("kind", serde_json::json!(kind_before)),
+            ("parent_id", serde_json::json!(parent_before)),
+            ("merged_from_json", serde_json::json!(merged_before)),
             ("created_at", serde_json::json!(now)),
             ("updated_at", serde_json::json!(now)),
         ]),
     );
 
-    // Staging emits its own slot events.
+    // A merge never stages: its sources already own these rows. Staging emits its own events.
+    if !may_stage(kind_before.as_deref().unwrap_or("lot")) {
+        return lot_build_detail(id).await.map(|d| d.build);
+    }
     set_lot_slot_state(
         sheet_id.clone(),
         ordered.clone(),
@@ -1178,15 +1215,16 @@ pub async fn lot_build_detail(build_id: String) -> Result<LotBuildDetail, String
 
 fn build_stacks(build: &LotBuild) -> Result<Vec<Stack>, String> {
     let stacks = stacks_of(&build.sheet_id)?;
-    // A `lot` owns its slots. A `combined` or a `branch` owns none -- its stock is the union
-    // of the live base lots underneath it, so it has to be walked. Sold and archived
-    // descendants are excluded, which is what stops a parent overstating itself after one of
-    // its children has been sold out from under it (R-218: "just flag it, dont dissolve").
-    let want: HashSet<String> = if build.kind == "lot" {
-        build.slots.iter().cloned().collect()
-    } else {
-        live_leaf_slots(&build.id)?.into_iter().collect()
-    };
+    // EVERY lot owns its slots outright, merged ones included (R-224). A merge is a real lot
+    // with a real item list — the union of its sources, written into `slots_json` when it is
+    // made — not a view over children that has to be walked. A `branch` owns none and is not
+    // a lot you can export as one; its workbook is one page per member instead.
+    //
+    // **A merge must never call `set_lot_slot_state`.** Its sources already staged those
+    // slots, and `lot_slot_state.lot_id` is a single scalar overwritten unconditionally, so
+    // staging the union would STEAL their ownership — after which archiving a source frees
+    // nothing and archiving the merge frees all of them at once.
+    let want: HashSet<String> = build.slots.iter().cloned().collect();
     Ok(stacks
         .iter()
         .filter(|s| want.contains(s.location.as_str()))
@@ -1206,176 +1244,105 @@ fn build_stacks(build: &LotBuild) -> Result<Vec<Stack>, String> {
 // frees every child at once. Nothing below writes a slot row; that is the whole design.
 // ---------------------------------------------------------------------------------------
 
-/// Every id at or below `id`, the node itself first.
+/// **May a lot of this kind own rows in `lot_slot_state`?**
 ///
-/// One statement, so it cannot half-read. The `kind` ladder enforced by `check_parent` is
-/// what guarantees this terminates -- a cycle in `parent_id` would spin here forever, and on
-/// the server the identical query would do it while holding the process-wide connection
-/// guard.
-fn subtree(conn: &rusqlite::Connection, id: &str) -> Result<Vec<String>, String> {
+/// The single most important rule in this file, given a name so it cannot be forgotten at
+/// one of the four call sites that stage slots.
+///
+/// `lot_slot_state.lot_id` is a SINGLE SCALAR, written unconditionally by
+/// `set_lot_slot_state`, and it — not `slots_json` — is what `archive_lot_build` frees by.
+/// A merged lot's `slots_json` is the UNION of its sources' slots, which those sources
+/// already own. Staging that union under the merge would reassign every one of their rows,
+/// and from then on archiving a source frees nothing while archiving the merge frees all of
+/// them at once. Three separate paths had this wrong before it was named.
+fn may_stage(kind: &str) -> bool {
+    kind != "combined" && kind != "branch"
+}
+
+/// Which lots a merge was built from, transitively, not including the merge itself.
+///
+/// Walks `merged_from`, **not `parent_id`** — a merge's sources are its siblings, not its
+/// children. A merge of merges is legal, so this recurses, with a visited set because the
+/// only thing stopping a cycle is that ids are minted fresh and a merge can only ever name
+/// lots that already existed. Cheap insurance against an id that arrives over sync.
+fn sources_of(root: &str) -> Result<Vec<String>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut queue: Vec<String> = vec![root.to_string()];
+    seen.insert(root.to_string());
+    while let Some(id) = queue.pop() {
+        let raw: Option<String> = conn
+            .query_row("SELECT merged_from_json FROM lot_build WHERE id=?1", [&id], |r| r.get(0))
+            .unwrap_or(None);
+        let Some(raw) = raw.filter(|v| !v.trim().is_empty()) else { continue };
+        let Ok(ids) = serde_json::from_str::<Vec<String>>(&raw) else { continue };
+        for child in ids {
+            if seen.insert(child.clone()) {
+                out.push(child.clone());
+                queue.push(child);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Every live merge that already contains `lot_id`.
+///
+/// The one-live-merge rule: the same pallet cannot be sold twice, so a lot may sit inside at
+/// most one merge that has not been archived. Read with a LIKE over the JSON because the list
+/// is a blob on the row — the alternative is a join table for a field written once and read
+/// whole, which is the trade `slots_json` already makes.
+fn merges_containing(lot_id: &str) -> Result<Vec<(String, String)>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
     let mut st = conn
         .prepare(
-            "WITH RECURSIVE tree(id) AS ( \
-               SELECT ?1 \
-               UNION \
-               SELECT b.id FROM lot_build b JOIN tree t ON b.parent_id = t.id \
-             ) SELECT id FROM tree",
+            "SELECT id, name FROM lot_build \
+             WHERE archived = 0 AND merged_from_json IS NOT NULL \
+             AND merged_from_json LIKE '%' || ?1 || '%'",
         )
         .map_err(|e| e.to_string())?;
     let rows = st
-        .query_map([id], |r| r.get::<_, String>(0))
+        .query_map([lot_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
+        let (id, name) = r.map_err(|e| e.to_string())?;
+        // LIKE is a prefilter, not the answer — confirm against the parsed list.
+        if sources_of(&id)?.iter().any(|c| c == lot_id) {
+            out.push((id, name));
+        }
     }
     Ok(out)
 }
 
-/// The slots of every base lot under `id` that is still live -- not sold, not archived.
-fn live_leaf_slots(id: &str) -> Result<Vec<String>, String> {
-    let conn = pool().get().map_err(|e| e.to_string())?;
-    let ids = subtree(&conn, id)?;
-    let mut out: Vec<String> = Vec::new();
-    for child in ids.iter().filter(|c| c.as_str() != id) {
-        let row: Option<(String, String, String, i64)> = conn
-            .query_row(
-                "SELECT kind, status, COALESCE(slots_json,'[]'), archived FROM lot_build WHERE id=?1",
-                [child],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .ok();
-        let Some((kind, status, slots_json, archived)) = row else { continue };
-        if kind != "lot" || status == "sold" || archived != 0 {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Vec<String>>(&slots_json) {
-            out.extend(v);
-        }
-    }
-    out.sort();
-    out.dedup();
-    Ok(out)
-}
-
-/// Recompute a node's stored figures from the live base lots beneath it, and replicate them.
+/// The kind ladder, checked before any write.
 ///
-/// Called after every membership change and after every sale, because the roster reads these
-/// stored columns -- and there is no `reconcile` for a roster. `reconcile` is hard-typed to
-/// the three stack documents and returns Ok trivially on an empty lot, so a parent whose
-/// numbers had drifted would be caught by nothing.
-fn recompute_node(node_id: &str) -> Result<(), String> {
-    let build = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [node_id], row_to_build)
-            .map_err(|e| e.to_string())?
-    };
-    if build.kind == "lot" {
-        return Ok(());
-    }
-    let lot = build_stacks(&build)?;
-    let pricing = pricing_with_cost(
-        build.price_pct,
-        build.price_pct_json.as_deref(),
-        build.cost_pct,
-        build.cost_pct_json.as_deref(),
-    );
-    let t = lot_totals(&lot, &pricing);
-    let now = chrono::Utc::now().to_rfc3339();
-    {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE lot_build SET locations=?2, units=?3, styles=?4, msrp_total=?5, ask_total=?6, \
-             brands_json=?7, categories_json=?8, title_risk_json=?9, updated_at=?10 WHERE id=?1",
-            rusqlite::params![
-                node_id,
-                t.locations as i64,
-                t.units,
-                t.styles as i64,
-                t.msrp,
-                t.ask,
-                serde_json::to_string(&t.by_brand).ok(),
-                serde_json::to_string(&t.by_category).ok(),
-                serde_json::to_string(&t.title_risk_units).ok(),
-                now,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    emit(
-        "lot_build",
-        node_id,
-        cols(vec![
-            ("locations", serde_json::json!(t.locations as i64)),
-            ("units", serde_json::json!(t.units)),
-            ("styles", serde_json::json!(t.styles as i64)),
-            ("msrp_total", serde_json::json!(t.msrp)),
-            ("ask_total", serde_json::json!(t.ask)),
-            ("brands_json", serde_json::json!(serde_json::to_string(&t.by_brand).ok())),
-            ("categories_json", serde_json::json!(serde_json::to_string(&t.by_category).ok())),
-            ("title_risk_json", serde_json::json!(serde_json::to_string(&t.title_risk_units).ok())),
-            ("updated_at", serde_json::json!(now)),
-        ]),
-    );
-    Ok(())
-}
-
-/// Walk up and recompute every ancestor. A base lot selling changes its combined lot's
-/// figures, which changes its branch's.
-fn recompute_ancestors(mut id: Option<String>) -> Result<(), String> {
-    let mut guard = 0;
-    while let Some(cur) = id {
-        // The kind ladder makes a cycle impossible; this is the belt to its braces, because
-        // the cost of being wrong is an infinite loop inside a command.
-        guard += 1;
-        if guard > 8 {
-            break;
-        }
-        recompute_node(&cur)?;
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        id = conn
-            .query_row("SELECT parent_id FROM lot_build WHERE id=?1", [&cur], |r| {
-                r.get::<_, Option<String>>(0)
-            })
-            .unwrap_or(None);
-    }
-    Ok(())
-}
-
-/// The kind ladder, checked before any write. It is what makes a cycle structurally
-/// impossible, so it is also the cycle guard.
+/// **Flatter than R-218's, deliberately.** That version forced every lot through a combined
+/// lot on its way into a branch; Jack's model is that a branch simply CONTAINS lots, and
+/// combining is a separate, optional act that makes a new lot. So: a branch is a top level,
+/// and anything that is not a branch may sit in one or nowhere.
 fn check_parent(child_kind: &str, parent: Option<&LotBuild>) -> Result<(), String> {
     match (child_kind, parent) {
         ("branch", None) => Ok(()),
         ("branch", Some(_)) => Err("a branch is a top level and cannot go inside anything".into()),
-        ("combined", Some(p)) if p.kind == "branch" => Ok(()),
-        ("combined", _) => Err("a combined lot has to sit inside a branch".into()),
-        ("lot", None) => Ok(()),
-        ("lot", Some(p)) if p.kind == "combined" => Ok(()),
-        ("lot", Some(_)) => Err("a lot goes inside a combined lot, not directly inside a branch".into()),
-        _ => Err(format!("{child_kind} is not a kind of lot")),
+        (_, None) => Ok(()),
+        (_, Some(p)) if p.kind == "branch" => Ok(()),
+        (_, Some(_)) => Err("a lot goes inside a branch, and nothing else holds lots".into()),
     }
 }
 
-/// Write a node row that owns no slots. Branches and combined lots only.
-fn insert_node(
-    id: &str,
-    sheet_id: &str,
-    name: &str,
-    kind: &str,
-    parent_id: Option<&str>,
-    price_pct: f64,
-    cost_pct: f64,
-) -> Result<(), String> {
+/// Write a branch row. A branch owns no stock of its own — it is a container and a title.
+fn insert_branch(id: &str, sheet_id: &str, name: &str) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO lot_build (id, sheet_id, name, status, price_pct, locations, units, \
              styles, msrp_total, ask_total, slots_json, archived, created_at, updated_at, \
-             cost_pct, parent_id, kind) \
-             VALUES (?1,?2,?3,'saved',?4,0,0,0,0,0,'[]',0,?5,?5,?6,?7,?8)",
-            rusqlite::params![id, sheet_id, name, price_pct, now, cost_pct, parent_id, kind],
+             cost_pct, kind) \
+             VALUES (?1,?2,?3,'saved',0,0,0,0,0,0,'[]',0,?4,?4,0,'branch')",
+            rusqlite::params![id, sheet_id, name, now],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1386,12 +1353,9 @@ fn insert_node(
             ("sheet_id", serde_json::json!(sheet_id)),
             ("name", serde_json::json!(name)),
             ("status", serde_json::json!("saved")),
-            ("price_pct", serde_json::json!(price_pct)),
-            ("cost_pct", serde_json::json!(cost_pct)),
+            ("kind", serde_json::json!("branch")),
             ("slots_json", serde_json::json!("[]")),
             ("archived", serde_json::json!(0)),
-            ("parent_id", serde_json::json!(parent_id)),
-            ("kind", serde_json::json!(kind)),
             ("created_at", serde_json::json!(now)),
             ("updated_at", serde_json::json!(now)),
         ]),
@@ -1399,66 +1363,64 @@ fn insert_node(
     Ok(())
 }
 
-/// Make a branch -- the named section that holds combined lots and owns a spreadsheet.
+/// Make a branch — the named container whose workbook is one page per lot inside it.
 #[tauri::command]
 pub async fn create_lot_branch(sheet_id: String, name: String) -> Result<LotBuild, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("a branch needs a name -- it is the heading on its own spreadsheet".into());
+        return Err("a branch needs a name — it is the title on its own spreadsheet".into());
     }
     let id = uuid::Uuid::new_v4().to_string();
-    insert_node(&id, &sheet_id, &name, "branch", None, 0.0, 0.0)?;
+    insert_branch(&id, &sheet_id, &name)?;
     lot_build_detail(id).await.map(|d| d.build)
 }
 
-/// Combine several base lots into one, inside a branch.
+/// **Merge several lots into one new lot.**
 ///
-/// The children **stay live and sellable** and keep their own slots -- Jack chose this over
-/// a merge that consumes them. Nothing here touches `lot_slot_state`: ownership stays with
-/// the base lot that staged the slot, which is what keeps archive and remove-from-list
-/// working untouched.
+/// Jack: *"when i combine them it just makes 3 lots into one and will be completely separate
+/// from the first branch i made."* So this is not a grouping — it produces a REAL lot that
+/// owns the union of its sources' slots and has one item list, standing outside any branch
+/// until it is put in one.
+///
+/// **The sources are untouched.** They keep their slots, their branch and their own pages;
+/// combining only *"gives me more options of loads to send out to people"*. What the merge
+/// keeps is `merged_from`, which is what the canvas draws and what selling cascades along.
+///
+/// **It never stages a slot.** The sources already did. `lot_slot_state.lot_id` is a single
+/// scalar overwritten unconditionally, so staging the union here would steal their ownership.
 #[tauri::command]
 pub async fn combine_lot_builds(
     sheet_id: String,
-    branch_id: String,
     name: String,
     child_ids: Vec<String>,
     price_pct: f64,
     cost_pct: Option<f64>,
+    branch_id: Option<String>,
 ) -> Result<LotBuild, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("give the combined lot a name -- it is a row on the branch's spreadsheet".into());
+        return Err("give the combined lot a name — it is what a buyer sees".into());
     }
     if child_ids.len() < 2 {
         return Err("pick at least two lots to combine".into());
     }
-    let branch = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&branch_id], row_to_build)
-            .map_err(|_| "that branch no longer exists".to_string())?
-    };
-    if branch.kind != "branch" {
-        return Err("a combined lot has to go inside a branch".into());
-    }
-    check_parent("combined", Some(&branch))?;
 
-    // Validate every child BEFORE writing anything. There are no transactions in this file,
-    // so the only way not to half-apply is not to start.
+    // Validate everything BEFORE writing anything. There are no transactions in this file, so
+    // the only way not to half-apply is not to start.
     let kids: Vec<LotBuild> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for cid in &child_ids {
-            let b = conn
-                .query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [cid], row_to_build)
-                .map_err(|_| format!("one of the lots you picked no longer exists ({cid})"))?;
-            out.push(b);
+            out.push(
+                conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [cid], row_to_build)
+                    .map_err(|_| format!("one of the lots you picked no longer exists ({cid})"))?,
+            );
         }
         out
     };
     for k in &kids {
-        if k.kind != "lot" {
-            return Err(format!("{} is not a base lot, so it cannot go in here", k.name));
+        if k.kind == "branch" {
+            return Err(format!("{} is a branch, not a lot", k.name));
         }
         if k.sheet_id != sheet_id {
             return Err(format!("{} came from a different warehouse sheet", k.name));
@@ -1472,54 +1434,102 @@ pub async fn combine_lot_builds(
         if k.status == "sent" {
             return Err(format!("{} has already left the building", k.name));
         }
-        if let Some(p) = &k.parent_id {
-            if p != &branch_id {
-                return Err(format!(
-                    "{} is already inside another combined lot -- take it out of that one first",
-                    k.name
-                ));
-            }
+        // The same pallet cannot be sold twice.
+        if let Some((_, other)) = merges_containing(&k.id)?.into_iter().next() {
+            return Err(format!("{} is already inside {other}", k.name));
         }
     }
+
+    // The union. Deduped, because two lots CANNOT legally share a slot but a repaired sheet
+    // could still hand us one, and a doubled slot would double the units on the manifest.
+    let mut slots: Vec<String> = kids.iter().flat_map(|k| k.slots.iter().cloned()).collect();
+    slots.sort();
+    slots.dedup();
+    if slots.is_empty() {
+        return Err("those lots have no stock between them".into());
+    }
+
+    let branch = match &branch_id {
+        Some(b) => {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            Some(
+                conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [b], row_to_build)
+                    .map_err(|_| "that branch no longer exists".to_string())?,
+            )
+        }
+        None => None,
+    };
+    check_parent("combined", branch.as_ref())?;
+
+    let stacks = stacks_of(&sheet_id)?;
+    let want: HashSet<&str> = slots.iter().map(|x| x.as_str()).collect();
+    let lot: Vec<Stack> = stacks
+        .iter()
+        .filter(|st| want.contains(st.location.as_str()))
+        .cloned()
+        .collect();
+    let pricing = pricing_with_cost(price_pct, None, cost_pct.unwrap_or(0.0), None);
+    let t: LotTotals = lot_totals(&lot, &pricing);
 
     let id = uuid::Uuid::new_v4().to_string();
-    insert_node(&id, &sheet_id, &name, "combined", Some(&branch_id), price_pct, cost_pct.unwrap_or(0.0))?;
-
     let now = chrono::Utc::now().to_rfc3339();
-    for k in &kids {
-        {
-            let conn = pool().get().map_err(|e| e.to_string())?;
-            conn.execute(
-                "UPDATE lot_build SET parent_id=?2, updated_at=?3 WHERE id=?1",
-                rusqlite::params![k.id, id, now],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        emit(
-            "lot_build",
-            &k.id,
-            cols(vec![
-                ("parent_id", serde_json::json!(id)),
-                ("updated_at", serde_json::json!(now)),
-            ]),
-        );
+    let from_json = serde_json::to_string(&child_ids).map_err(|e| e.to_string())?;
+    let slots_json = serde_json::to_string(&slots).map_err(|e| e.to_string())?;
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO lot_build (id, sheet_id, name, status, price_pct, locations, units, \
+             styles, msrp_total, ask_total, brands_json, categories_json, title_risk_json, \
+             slots_json, archived, created_at, updated_at, cost_pct, kind, parent_id, \
+             merged_from_json) \
+             VALUES (?1,?2,?3,'saved',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?14,?15,'combined',?16,?17)",
+            rusqlite::params![
+                id, sheet_id, name, pricing.pct,
+                t.locations as i64, t.units, t.styles as i64, t.msrp, t.ask,
+                serde_json::to_string(&t.by_brand).ok(),
+                serde_json::to_string(&t.by_category).ok(),
+                serde_json::to_string(&t.title_risk_units).ok(),
+                slots_json, now, pricing.cost_pct, branch_id, from_json,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
     }
-
-    recompute_node(&id)?;
-    recompute_node(&branch_id)?;
+    emit(
+        "lot_build",
+        &id,
+        cols(vec![
+            ("sheet_id", serde_json::json!(sheet_id)),
+            ("name", serde_json::json!(name)),
+            ("status", serde_json::json!("saved")),
+            ("price_pct", serde_json::json!(pricing.pct)),
+            ("cost_pct", serde_json::json!(pricing.cost_pct)),
+            ("locations", serde_json::json!(t.locations as i64)),
+            ("units", serde_json::json!(t.units)),
+            ("styles", serde_json::json!(t.styles as i64)),
+            ("msrp_total", serde_json::json!(t.msrp)),
+            ("ask_total", serde_json::json!(t.ask)),
+            ("brands_json", serde_json::json!(serde_json::to_string(&t.by_brand).ok())),
+            ("categories_json", serde_json::json!(serde_json::to_string(&t.by_category).ok())),
+            ("title_risk_json", serde_json::json!(serde_json::to_string(&t.title_risk_units).ok())),
+            ("slots_json", serde_json::json!(slots_json)),
+            ("archived", serde_json::json!(0)),
+            ("kind", serde_json::json!("combined")),
+            ("parent_id", serde_json::json!(branch_id)),
+            ("merged_from_json", serde_json::json!(from_json)),
+            ("created_at", serde_json::json!(now)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
     lot_build_detail(id).await.map(|d| d.build)
 }
 
-/// Move a lot into a node, or take it back out to the top level.
+/// Put a lot in a branch, or take it out to the top level.
 #[tauri::command]
 pub async fn set_lot_parent(build_id: String, parent_id: Option<String>) -> Result<(), String> {
-    let (child, old_parent) = {
+    let child = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let b = conn
-            .query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
-            .map_err(|e| e.to_string())?;
-        let p = b.parent_id.clone();
-        (b, p)
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
     };
     let parent = match &parent_id {
         Some(pid) => {
@@ -1529,15 +1539,9 @@ pub async fn set_lot_parent(build_id: String, parent_id: Option<String>) -> Resu
             let conn = pool().get().map_err(|e| e.to_string())?;
             let p = conn
                 .query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [pid], row_to_build)
-                .map_err(|_| "that lot no longer exists".to_string())?;
+                .map_err(|_| "that branch no longer exists".to_string())?;
             if p.sheet_id != child.sheet_id {
-                return Err("those two lots came from different warehouse sheets".into());
-            }
-            // Belt and braces against a cycle: the ladder already forbids it, but a bad
-            // parent_id here would spin `subtree` forever.
-            let conn2 = pool().get().map_err(|e| e.to_string())?;
-            if subtree(&conn2, &build_id)?.iter().any(|d| d == pid) {
-                return Err("that would put a lot inside itself".into());
+                return Err("those came from different warehouse sheets".into());
             }
             Some(p)
         }
@@ -1562,10 +1566,283 @@ pub async fn set_lot_parent(build_id: String, parent_id: Option<String>) -> Resu
             ("updated_at", serde_json::json!(now)),
         ]),
     );
-    // Both sides of the move: the node it left shrinks, the node it joined grows.
-    recompute_ancestors(old_parent)?;
-    recompute_ancestors(parent_id)?;
     Ok(())
+}
+
+/// One percentage and one cost across every lot in a branch.
+///
+/// Jack: *"in the entire branch, allow me to type in percent of retail for sale that applies
+/// to every single lot, and my cost."* It **overrides** whatever a lot was priced at
+/// individually — that is what "applies to every single lot" means — and it drops per-category
+/// overrides for the same reason [[R-214]]'s repricing does: leaving a 30%-on-footwear rule
+/// silently under a lot just set to 22% makes the manifest disagree with the number he typed.
+#[tauri::command]
+pub async fn set_branch_pricing(
+    branch_id: String,
+    price_pct: f64,
+    cost_pct: Option<f64>,
+) -> Result<usize, String> {
+    let members: Vec<LotBuild> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut st = conn
+            .prepare(&format!("{BUILD_SELECT} WHERE b.parent_id = ?1 AND b.archived = 0"))
+            .map_err(|e| e.to_string())?;
+        let rows = st.query_map([&branch_id], row_to_build).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        out
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    // The branch keeps the figures too, so the screen can show them without reading a member.
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET price_pct=?2, cost_pct=?3, price_pct_json=NULL, \
+             cost_pct_json=NULL, updated_at=?4 WHERE id=?1",
+            rusqlite::params![branch_id, price_pct, cost_pct.unwrap_or(0.0), now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_build",
+        &branch_id,
+        cols(vec![
+            ("price_pct", serde_json::json!(price_pct)),
+            ("cost_pct", serde_json::json!(cost_pct.unwrap_or(0.0))),
+            ("price_pct_json", serde_json::Value::Null),
+            ("cost_pct_json", serde_json::Value::Null),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    for m in &members {
+        reprice_one(&m.id, price_pct, cost_pct.unwrap_or(0.0)).await?;
+    }
+    Ok(members.len())
+}
+
+/// Re-price one lot and rewrite the figures that follow from it.
+async fn reprice_one(id: &str, price_pct: f64, cost_pct: f64) -> Result<(), String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    if build.kind == "branch" {
+        return Ok(());
+    }
+    let lot = build_stacks(&build)?;
+    let pricing = pricing_with_cost(price_pct, None, cost_pct, None);
+    let t = lot_totals(&lot, &pricing);
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET price_pct=?2, cost_pct=?3, price_pct_json=NULL, \
+             cost_pct_json=NULL, ask_total=?4, msrp_total=?5, units=?6, styles=?7, \
+             locations=?8, brands_json=?9, categories_json=?10, title_risk_json=?11, \
+             updated_at=?12 WHERE id=?1",
+            rusqlite::params![
+                id, price_pct, cost_pct, t.ask, t.msrp, t.units, t.styles as i64,
+                t.locations as i64,
+                serde_json::to_string(&t.by_brand).ok(),
+                serde_json::to_string(&t.by_category).ok(),
+                serde_json::to_string(&t.title_risk_units).ok(),
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_build",
+        id,
+        cols(vec![
+            ("price_pct", serde_json::json!(price_pct)),
+            ("cost_pct", serde_json::json!(cost_pct)),
+            ("price_pct_json", serde_json::Value::Null),
+            ("cost_pct_json", serde_json::Value::Null),
+            ("ask_total", serde_json::json!(t.ask)),
+            ("msrp_total", serde_json::json!(t.msrp)),
+            ("units", serde_json::json!(t.units)),
+            ("styles", serde_json::json!(t.styles as i64)),
+            ("locations", serde_json::json!(t.locations as i64)),
+            ("brands_json", serde_json::json!(serde_json::to_string(&t.by_brand).ok())),
+            ("categories_json", serde_json::json!(serde_json::to_string(&t.by_category).ok())),
+            ("title_risk_json", serde_json::json!(serde_json::to_string(&t.title_risk_units).ok())),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    Ok(())
+}
+
+/// The pages one lot contributes: its breakdown, then its items.
+///
+/// `manifest()` builds one `Doc` whose last section is the line items and whose earlier ones
+/// are the summary and the category / brand / segment tables. Splitting it there is what
+/// gives Jack the two pages he described — *"one with breakdown of the combined lot, and the
+/// second sheet/page with all the items listed"*.
+fn lot_pages(build: &LotBuild, opts_base: &ManifestOpts) -> Result<(Doc, Doc), String> {
+    let lot = build_stacks(build)?;
+    if lot.is_empty() {
+        return Err(format!("{} has no stock in it", build.name));
+    }
+    let pricing = pricing_with_cost(
+        build.price_pct,
+        build.price_pct_json.as_deref(),
+        build.cost_pct,
+        build.cost_pct_json.as_deref(),
+    );
+    let opts = ManifestOpts { lot_name: build.name.clone(), ..opts_base.clone() };
+    let mut doc = export::manifest(&lot, &pricing, &opts);
+    let items = doc
+        .sections
+        .pop()
+        .ok_or_else(|| "that manifest came out empty".to_string())?;
+    Ok((
+        Doc { name: format!("{} — breakdown", build.name), sections: doc.sections },
+        Doc { name: build.name.clone(), sections: vec![items] },
+    ))
+}
+
+/// The lots inside a branch, in the order they appear on its first page.
+fn branch_members(branch_id: &str) -> Result<Vec<LotBuild>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut st = conn
+        .prepare(&format!(
+            "{BUILD_SELECT} WHERE b.parent_id = ?1 AND b.archived = 0 AND b.status = 'saved' \
+             ORDER BY b.name"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = st.query_map([branch_id], row_to_build).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// **A branch's workbook: one breakdown page, then one page per lot.**
+///
+/// 21 lots gives 22 sheets. Page 1 is the roster — name, units, retail, sale price, one row
+/// each — and every lot then gets its own sheet named after it.
+///
+/// **xlsx only.** A CSV is one table; there is no honest way to flatten 22 pages into one, and
+/// silently handing over page 1 alone would look like a complete file.
+#[tauri::command]
+pub async fn export_branch_workbook(branch_id: String, path: String) -> Result<ExportResult, String> {
+    let branch = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&branch_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    ensure_artifact(&branch.sheet_id).await?;
+    let members = branch_members(&branch_id)?;
+    if members.is_empty() {
+        return Err("there are no lots in that branch yet".into());
+    }
+    let opts = saved_manifest_opts();
+
+    let lines: Vec<LotLine> = members
+        .iter()
+        .map(|m| LotLine {
+            reference: m.name.clone(),
+            units: m.units,
+            retail: m.msrp_total,
+            sale: m.ask_total,
+        })
+        .collect();
+    let mut docs = vec![export::lot_roster(&lines, &branch.name)];
+    for m in &members {
+        let (breakdown, items) = lot_pages(m, &opts)?;
+        // One page per lot: its breakdown sits above its items on the same sheet, which is
+        // what "each sheet with its respective name is loaded on a different page" asks for.
+        let mut sections = breakdown.sections;
+        sections.extend(items.sections);
+        docs.push(Doc { name: m.name.clone(), sections });
+    }
+
+    let bytes = export::to_xlsx_book(&docs).map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(ExportResult { path, rows: members.len(), reconciled: true })
+}
+
+/// **One lot's workbook: the breakdown, then all its items.** Two pages.
+#[tauri::command]
+pub async fn export_lot_workbook(build_id: String, path: String) -> Result<ExportResult, String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    if build.kind == "branch" {
+        return Err("that is a branch — download the branch workbook instead".into());
+    }
+    ensure_artifact(&build.sheet_id).await?;
+    let (breakdown, items) = lot_pages(&build, &saved_manifest_opts())?;
+    let rows = items.sections.first().map(|s| s.rows.len()).unwrap_or(0);
+    let bytes = export::to_xlsx_book(&[breakdown, items]).map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(ExportResult { path, rows, reconciled: true })
+}
+
+/// Mark a lot sold, and everything it was built from with it.
+///
+/// **The cascade follows `merged_from`, not `parent_id`.** Selling a 3,000-unit merge sells
+/// the three lots it was made of, because that stock has physically gone — Jack: *"lets say i
+/// sell the 3000 lot, the origial lots need to be crossed out in red tracing back to where
+/// they come from."* Selling a lot that merely sits in a branch sells only that lot; a branch
+/// is a folder, not a bill of materials.
+///
+/// **Sold is a status and nothing else.** It writes no `lot_slot_state`, never sets `sent` and
+/// never sets `removed` — shipping stays the separate, deliberately irreversible press,
+/// because "absent means shipped, not undone".
+#[tauri::command]
+pub async fn mark_lot_sold(build_id: String, sold: bool) -> Result<usize, String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    if sold && build.status == "sent" {
+        return Err("that lot has already left the building".into());
+    }
+    if build.kind == "branch" {
+        return Err("a branch is a folder — sell the lots inside it".into());
+    }
+    let (from, to) = if sold { ("saved", "sold") } else { ("sold", "saved") };
+    let now = chrono::Utc::now().to_rfc3339();
+    let sold_at = if sold { Some(now.clone()) } else { None };
+
+    // The merge itself, then everything it was built from.
+    let mut ids = vec![build_id.clone()];
+    ids.extend(sources_of(&build_id)?);
+
+    let mut n = 0usize;
+    for id in &ids {
+        let changed = {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE lot_build SET status=?2, sold_at=?3, updated_at=?4 \
+                 WHERE id=?1 AND status=?5",
+                rusqlite::params![id, to, sold_at, now, from],
+            )
+            .map_err(|e| e.to_string())?
+        };
+        if changed > 0 {
+            n += 1;
+        }
+        emit(
+            "lot_build",
+            id,
+            cols(vec![
+                ("status", serde_json::json!(status_of(id))),
+                ("sold_at", serde_json::json!(sold_at)),
+                ("updated_at", serde_json::json!(now)),
+            ]),
+        );
+    }
+    Ok(n)
 }
 
 /// One row per lot on a level, in the shape of the master spreadsheet Jack keeps by hand.
@@ -1650,63 +1927,6 @@ pub async fn export_lot_roster(
     Ok(ExportResult { path, rows: lines.len(), reconciled: true })
 }
 
-/// Mark a lot sold, and everything inside it with it.
-///
-/// **Sold is a status and nothing else.** It never writes `lot_slot_state`, never sets
-/// `sent`, and never sets `removed` -- shipping stays the separate, deliberately
-/// irreversible press ("absent means shipped, not undone"). A lot can be sold long before
-/// it leaves the building.
-///
-/// The cascade is ONE statement. There are no transactions anywhere in this file, so a loop
-/// of updates could half-apply with no record and no repair path.
-#[tauri::command]
-pub async fn mark_lot_sold(build_id: String, sold: bool) -> Result<usize, String> {
-    let build = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
-            .map_err(|e| e.to_string())?
-    };
-    if sold && build.status == "sent" {
-        return Err("that lot has already left the building".into());
-    }
-    let (from, to) = if sold { ("saved", "sold") } else { ("sold", "saved") };
-    let now = chrono::Utc::now().to_rfc3339();
-    let sold_at = if sold { Some(now.clone()) } else { None };
-
-    // Read the affected set first, so each row can be replicated by name afterwards.
-    let ids = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        subtree(&conn, &build_id)?
-    };
-    let n = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE lot_build SET status=?2, sold_at=?3, updated_at=?4 \
-             WHERE status=?5 AND id IN ( \
-               WITH RECURSIVE tree(id) AS ( \
-                 SELECT ?1 UNION SELECT b.id FROM lot_build b JOIN tree t ON b.parent_id = t.id \
-               ) SELECT id FROM tree)",
-            rusqlite::params![build_id, to, sold_at, now, from],
-        )
-        .map_err(|e| e.to_string())?
-    };
-    for id in &ids {
-        emit(
-            "lot_build",
-            id,
-            cols(vec![
-                ("status", serde_json::json!(status_of(id))),
-                ("sold_at", serde_json::json!(sold_at)),
-                ("updated_at", serde_json::json!(now)),
-            ]),
-        );
-    }
-    // Everything above it shrinks (or grows back), so a parent never overstates what is
-    // still in it. The parent is NOT dissolved -- Jack: "just flag it, dont dissolve the
-    // parent" -- it survives with smaller figures, and the UI names what left.
-    recompute_ancestors(build.parent_id.clone())?;
-    Ok(n)
-}
 
 
 #[tauri::command]
@@ -1789,7 +2009,10 @@ pub async fn archive_lot_build(build_id: String, archived: bool) -> Result<(), S
         for (sheet_id, loc) in &freed {
             emit_slot(sheet_id, loc, "available", None, &now);
         }
-    } else {
+    } else if may_stage(&build.kind) {
+        // Same rule as above: un-archiving a MERGE must not re-stage the union under the
+        // merge's id, or it steals its sources' rows on the way back in. The sources were
+        // never un-staged, so there is nothing to restore.
         set_lot_slot_state(
             build.sheet_id.clone(),
             build.slots.clone(),
@@ -1818,6 +2041,38 @@ pub async fn remove_lot_from_master_list(
         conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
             .map_err(|e| e.to_string())?
     };
+    // A MERGE OWNS NO SLOT ROWS. `build.slots` on a merge is the UNION of its sources, and
+    // `set_lot_slot_state` writes `lot_id = <this lot>` unconditionally — so sending a merge
+    // through here would reassign every source's row to the merge. After that, archiving a
+    // source frees nothing (`WHERE lot_id = <source>` matches none) and archiving the merge
+    // frees all of them at once. Instead the removal is pushed DOWN the provenance list, so
+    // each source marks its own slots and keeps owning them.
+    if !may_stage(&build.kind) {
+        let mut n = 0usize;
+        for src in sources_of(&build_id)? {
+            n += Box::pin(remove_lot_from_master_list(src, removed)).await?;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let status = if removed { "sent" } else { "saved" };
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE lot_build SET status = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![build_id, status, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        emit(
+            "lot_build",
+            &build_id,
+            cols(vec![
+                ("status", serde_json::json!(status)),
+                ("updated_at", serde_json::json!(now)),
+            ]),
+        );
+        return Ok(n);
+    }
+
     let state = if removed { "removed" } else { "staged" };
     let n = set_lot_slot_state(
         build.sheet_id.clone(),
@@ -2323,6 +2578,26 @@ fn row_columns(
         out.insert(name.clone(), v);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod slot_ownership_tests {
+    use super::may_stage;
+
+    /// The rule three call sites got wrong before it had a name (R-224).
+    ///
+    /// A merge holds the UNION of its sources' slots in `slots_json` so its manifest is
+    /// right, but those rows belong to the sources. If a merge could stage, the same
+    /// physical pallet would be owned twice and could be sold twice.
+    #[test]
+    fn only_a_base_lot_may_own_a_slot_row() {
+        assert!(may_stage("lot"), "a base lot stages its own slots — that is the whole point");
+        assert!(!may_stage("combined"), "a merge would steal its sources' rows");
+        assert!(!may_stage("branch"), "a branch holds no stock at all");
+        // Anything unrecognised is treated as a base lot, which is what every row written
+        // before migration 86 is.
+        assert!(may_stage(""));
+    }
 }
 
 #[cfg(test)]

@@ -105,22 +105,16 @@ const planLot = (index: number, target: number) => {
 /// A mutable fixture tree. `let`-scoped at module level so the tree cases can mutate it and
 /// the screen re-renders against the change, which is the only way to drive a combine.
 const TREE: any[] = [
-  { ...BUILD, id: "b1", name: "B- 001", kind: "lot", parent_id: null, status: "saved" },
-  { ...BUILD, id: "b2", name: "B- 002", kind: "lot", parent_id: null, status: "saved" },
-  { ...BUILD, id: "b3", name: "B- 003", kind: "lot", parent_id: null, status: "saved" },
-  { ...BUILD, id: "b4", name: "Kids footwear 1,204", kind: "lot", parent_id: null, status: "sent" },
-  {
-    ...BUILD, id: "brA", name: "3,000-unit lots", kind: "branch", parent_id: null,
-    status: "saved", units: 2060, locations: 48, styles: 61,
-    msrp_total: 145_755.53, ask_total: 43_732.5, slots: [],
-  },
-  {
-    ...BUILD, id: "cA", name: "C- 001", kind: "combined", parent_id: "brA",
-    status: "saved", units: 2060, locations: 48, styles: 61,
-    msrp_total: 145_755.53, ask_total: 43_732.5, slots: [],
-  },
-  { ...BUILD, id: "b5", name: "B- 010", kind: "lot", parent_id: "cA", status: "saved" },
-  { ...BUILD, id: "b6", name: "B- 011", kind: "lot", parent_id: "cA", status: "saved" },
+  { ...BUILD, id: "brA", name: "1,000-unit lots", kind: "branch", parent_id: null, status: "saved",
+    units: 0, locations: 0, styles: 0, msrp_total: 0, ask_total: 0, slots: [], merged_from: [] },
+  { ...BUILD, id: "b1", name: "B- 001", kind: "lot", parent_id: "brA", status: "saved", merged_from: [] },
+  { ...BUILD, id: "b2", name: "B- 002", kind: "lot", parent_id: "brA", status: "saved", merged_from: [] },
+  { ...BUILD, id: "b3", name: "B- 003", kind: "lot", parent_id: "brA", status: "saved", merged_from: [] },
+  { ...BUILD, id: "b4", name: "B- 004", kind: "lot", parent_id: "brA", status: "saved", merged_from: [] },
+  // A merge sits OUTSIDE the branch its sources came from — the whole point of R-224.
+  { ...BUILD, id: "c1", name: "C- 001", kind: "combined", parent_id: null, status: "saved",
+    units: 3066, locations: 71, styles: 96, msrp_total: 218_386.35, ask_total: 65_515.9,
+    merged_from: ["b1", "b2", "b3"] },
 ];
 
 (window as any).__FIXTURE = (cmd: string, a: any) => {
@@ -171,10 +165,11 @@ const TREE: any[] = [
       // Honours the cost the screen passed, so the margin block can be exercised both ways.
       return { ...TOTALS, cost_known: (a?.costPct ?? 0) > 0 };
     case "list_lot_builds":
-      // A live three-level tree: two loose base lots, a branch holding one combined lot,
-      // and that combined lot's two children. Mutated in place by the tree cases below, so
-      // combining and selling can actually be driven here rather than only compiled.
-      return TREE;
+      // A FRESH ARRAY OF FRESH OBJECTS every call, exactly as the real command does. The
+      // tree cases below mutate TREE in place, and returning it directly handed React the
+      // same reference — so `useMemo` never recomputed the layout and the red strike never
+      // appeared, which looked like a product bug and was not.
+      return TREE.map((b: any) => ({ ...b }));
     case "create_lot_branch": {
       const br = {
         ...BUILD, id: `br${TREE.length}`, name: String(a?.name ?? "Branch"),
@@ -189,18 +184,28 @@ const TREE: any[] = [
       const kids = TREE.filter((b: any) => ids.includes(b.id));
       const c = {
         ...BUILD, id: `c${TREE.length}`, name: String(a?.name ?? "Combined"),
-        kind: "combined", parent_id: String(a?.branchId), status: "saved",
-        price_pct: Number(a?.pricePct ?? 0.3), slots: [],
+        kind: "combined", parent_id: a?.branchId ?? null, status: "saved",
+        price_pct: Number(a?.pricePct ?? 0.3), slots: [], merged_from: ids,
         locations: kids.reduce((t: number, k: any) => t + k.locations, 0),
         units: kids.reduce((t: number, k: any) => t + k.units, 0),
         styles: kids.reduce((t: number, k: any) => t + k.styles, 0),
         msrp_total: kids.reduce((t: number, k: any) => t + k.msrp_total, 0),
         ask_total: kids.reduce((t: number, k: any) => t + k.ask_total, 0),
       };
-      kids.forEach((k: any) => { k.parent_id = c.id; });
+      // The sources are UNTOUCHED — they keep their branch and their own pages.
       TREE.push(c);
       return c;
     }
+    case "set_branch_pricing": {
+      const members = TREE.filter((b: any) => b.parent_id === a?.branchId);
+      members.forEach((m: any) => { m.price_pct = a?.pricePct; m.cost_pct = a?.costPct ?? 0; });
+      const br = TREE.find((b: any) => b.id === a?.branchId);
+      if (br) { br.price_pct = a?.pricePct; br.cost_pct = a?.costPct ?? 0; }
+      return members.length;
+    }
+    case "export_branch_workbook":
+    case "export_lot_workbook":
+      return { path: String(a?.path ?? "C:/book.xlsx"), rows: 4, reconciled: true };
     case "set_lot_parent": {
       const row = TREE.find((b: any) => b.id === a?.buildId);
       if (row) row.parent_id = a?.parentId ?? null;
@@ -209,10 +214,12 @@ const TREE: any[] = [
     case "mark_lot_sold": {
       const want = a?.sold ? "sold" : "saved";
       const from = a?.sold ? "saved" : "sold";
+      // DOWN the provenance list, never down parent_id — a branch is a folder.
       const ids = new Set<string>([String(a?.buildId)]);
-      // Same cascade shape as the recursive CTE: keep sweeping until nothing new is added.
       for (let pass = 0; pass < 4; pass++) {
-        TREE.forEach((b: any) => { if (b.parent_id && ids.has(b.parent_id)) ids.add(b.id); });
+        TREE.forEach((b: any) => {
+          if (ids.has(b.id)) (b.merged_from || []).forEach((s: string) => ids.add(s));
+        });
       }
       let n = 0;
       TREE.forEach((b: any) => {

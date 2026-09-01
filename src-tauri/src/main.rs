@@ -957,6 +957,10 @@ fn main() {
             lot_store::mark_lot_sold,
             lot_store::lot_roster_lines,
             lot_store::export_lot_roster,
+            // R-224: branch pricing and the multi-page workbooks.
+            lot_store::set_branch_pricing,
+            lot_store::export_branch_workbook,
+            lot_store::export_lot_workbook,
             // Forecast
             get_profit_forecast,
             // Sync
