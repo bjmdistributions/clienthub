@@ -1698,6 +1698,16 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   // "you can't do that with this" to explain after the fact.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [combining, setCombining] = useState(false);
+  // Names are typed INTO THE SCREEN, never into window.prompt().
+  //
+  // `prompt()` returns null in this webview without showing anything, so a New branch button
+  // wired to it looks broken rather than failing: Jack pressed it and nothing happened. The
+  // same trap as `navigator.clipboard` on the Copy codes button (R-214) — a browser API that
+  // this webview does not implement. Every other naming flow on this screen is already an
+  // inline input; these two now match.
+  const [branchDraft, setBranchDraft] = useState<string | null>(null);
+  const [combineName, setCombineName] = useState("");
+  const [combinePct, setCombinePct] = useState("");
 
   const load = useCallback(() => {
     setDetail({});
@@ -1882,28 +1892,23 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   const loose = (rows ?? []).filter((b) => kindOf(b) === "lot" && !b.parent_id);
   const canCombine = selected.size >= 2;
 
+  // The children usually share a percentage, in which case the combined lot inherits it and
+  // asking would be noise. When they disagree there is no honest default, so the bar shows a
+  // percentage box instead of blending two numbers into one nobody chose.
+  const pickedPct = (() => {
+    const kids = (rows ?? []).filter((r) => selected.has(r.id));
+    const pcts = new Set(kids.map((k) => k.price_pct));
+    return pcts.size === 1 ? [...pcts][0] : null;
+  })();
+
   const doCombine = async (branchId: string) => {
     const ids = [...selected];
-    const name = window.prompt(
-      `Name the combined lot (${ids.length} lots, ${n(
-        ids.reduce((t, id) => t + ((rows ?? []).find((r) => r.id === id)?.units ?? 0), 0),
-      )} units)`,
-      "",
-    );
-    if (name === null) return;
-    // The children all sit at 30% today, so inheriting when they agree is the common case
-    // and asking would be noise. When they disagree there is no honest default, so ask.
-    const kids = (rows ?? []).filter((r) => ids.includes(r.id));
-    const pcts = new Set(kids.map((k) => k.price_pct));
-    let pct = pcts.size === 1 ? [...pcts][0] : NaN;
-    if (Number.isNaN(pct)) {
-      const typed = window.prompt(
-        "Those lots are priced at different percentages, so the combined lot needs its own. Sell at, % of retail:",
-        "30",
-      );
-      if (typed === null) return;
-      pct = parseAmount(typed) / 100;
+    const pct = pickedPct ?? parseAmount(combinePct) / 100;
+    if (!(pct > 0)) {
+      toast("Those lots are priced differently — set the percentage first.", "error");
+      return;
     }
+    const name = combineName;
     setCombining(true);
     try {
       const b = await api.combineLotBuilds({
@@ -1915,6 +1920,8 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
       });
       load();
       onChanged();
+      setCombineName("");
+      setCombinePct("");
       toast(`${b.name} combines ${ids.length} lots — ${n(b.units)} units. They stay sellable on their own.`);
     } catch (e: any) {
       toast(String(e), "error");
@@ -1922,13 +1929,13 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
     setCombining(false);
   };
 
-  const newBranch = async () => {
-    const name = window.prompt("Name this branch — it is the title above its own spreadsheet", "");
-    if (name === null || !name.trim()) return;
+  const newBranch = async (name: string) => {
+    if (!name.trim()) return;
     try {
       const b = await api.createLotBranch(sheetId, name.trim());
+      setBranchDraft(null);
       load();
-      toast(`Branch "${b.name}" added.`);
+      toast(`Branch "${b.name}" added. Combine some lots into it.`);
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -2132,9 +2139,24 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
             : `${n(rows.length)} built from this sheet. Each base lot's locations are already off the master list.`}
         </p>
         <div className="flex items-center gap-1.5">
-          <ActBtn onClick={newBranch} icon={<Plus size={12} />}>
-            New branch
-          </ActBtn>
+          {branchDraft === null ? (
+            <ActBtn onClick={() => setBranchDraft("")} icon={<Plus size={12} />}>
+              New branch
+            </ActBtn>
+          ) : (
+            <input
+              autoFocus
+              className={`${inp} max-w-[220px]`}
+              placeholder="Name this branch, then Enter"
+              value={branchDraft}
+              onChange={(e) => setBranchDraft(e.target.value)}
+              onBlur={() => (branchDraft.trim() ? newBranch(branchDraft) : setBranchDraft(null))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") newBranch(branchDraft);
+                if (e.key === "Escape") setBranchDraft(null);
+              }}
+            />
+          )}
           <span className="text-[11px] text-muted">Download as</span>
           <div className="flex gap-1 bg-surface-2 rounded-lg p-1 border border-line-2">
             {(
@@ -2179,7 +2201,24 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
             <p className="text-[11.5px] text-muted">Make a branch first — a combined lot lives in one.</p>
           ) : (
             <>
-              <span className="text-[11.5px] text-muted">Combine into</span>
+              <input
+                className={`${inp} max-w-[200px]`}
+                placeholder="Name the combined lot"
+                value={combineName}
+                onChange={(e) => setCombineName(e.target.value)}
+              />
+              {pickedPct === null && (
+                <label className="text-[11px] text-muted flex items-center gap-1.5">
+                  Sell at %
+                  <NumberInput
+                    className="w-16 bg-surface border border-line-2 rounded-md px-2 h-8 text-[12px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors"
+                    placeholder="30"
+                    value={combinePct}
+                    onValue={(_, raw) => setCombinePct(raw)}
+                  />
+                </label>
+              )}
+              <span className="text-[11.5px] text-muted">into</span>
               {branches.map((br) => (
                 <ActBtn key={br.id} onClick={() => doCombine(br.id)} busy={combining}>
                   {br.name}
