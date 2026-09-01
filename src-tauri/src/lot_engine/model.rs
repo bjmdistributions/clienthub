@@ -121,6 +121,28 @@ impl Stack {
     }
 }
 
+/// One line of a **roster** — the master spreadsheet, one row per lot rather than per
+/// product.
+///
+/// This is the only type in the engine that describes a *lot* rather than *stock*. It lives
+/// here anyway, because the alternative is each surface hand-building the same four columns
+/// and drifting: the header text is matched by `Section::col` with no trimming, and the two
+/// money formatters already inside this module disagree with each other (`export::money`
+/// gives `1234.56`, `report::money` gives `$1,234`). One writer, one shape.
+///
+/// The caller supplies the lines. Walking the lot tree and deciding which lots belong on
+/// which sheet is application work — the engine may not read a database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LotLine {
+    /// What Jack calls the lot. His column heading for it is "Ref #".
+    pub reference: String,
+    pub units: i64,
+    /// Retail value: the sum of MSRP x units across the lot.
+    pub retail: f64,
+    /// What it sells for — retail through the lot's percentage, per line.
+    pub sale: f64,
+}
+
 /// One row of the raw -> canonical location audit map.
 ///
 /// Emitted as an artifact on every import. It is how an unexpected merge is audited, and

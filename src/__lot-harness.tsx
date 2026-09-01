@@ -102,6 +102,27 @@ const planLot = (index: number, target: number) => {
   };
 };
 
+/// A mutable fixture tree. `let`-scoped at module level so the tree cases can mutate it and
+/// the screen re-renders against the change, which is the only way to drive a combine.
+const TREE: any[] = [
+  { ...BUILD, id: "b1", name: "B- 001", kind: "lot", parent_id: null, status: "saved" },
+  { ...BUILD, id: "b2", name: "B- 002", kind: "lot", parent_id: null, status: "saved" },
+  { ...BUILD, id: "b3", name: "B- 003", kind: "lot", parent_id: null, status: "saved" },
+  { ...BUILD, id: "b4", name: "Kids footwear 1,204", kind: "lot", parent_id: null, status: "sent" },
+  {
+    ...BUILD, id: "brA", name: "3,000-unit lots", kind: "branch", parent_id: null,
+    status: "saved", units: 2060, locations: 48, styles: 61,
+    msrp_total: 145_755.53, ask_total: 43_732.5, slots: [],
+  },
+  {
+    ...BUILD, id: "cA", name: "C- 001", kind: "combined", parent_id: "brA",
+    status: "saved", units: 2060, locations: 48, styles: 61,
+    msrp_total: 145_755.53, ask_total: 43_732.5, slots: [],
+  },
+  { ...BUILD, id: "b5", name: "B- 010", kind: "lot", parent_id: "cA", status: "saved" },
+  { ...BUILD, id: "b6", name: "B- 011", kind: "lot", parent_id: "cA", status: "saved" },
+];
+
 (window as any).__FIXTURE = (cmd: string, a: any) => {
   switch (cmd) {
     case "list_lot_sheets":
@@ -150,7 +171,63 @@ const planLot = (index: number, target: number) => {
       // Honours the cost the screen passed, so the margin block can be exercised both ways.
       return { ...TOTALS, cost_known: (a?.costPct ?? 0) > 0 };
     case "list_lot_builds":
-      return [BUILD, { ...BUILD, id: "b2", name: "Kids footwear 1,204", status: "sent", cost_pct: 0 }];
+      // A live three-level tree: two loose base lots, a branch holding one combined lot,
+      // and that combined lot's two children. Mutated in place by the tree cases below, so
+      // combining and selling can actually be driven here rather than only compiled.
+      return TREE;
+    case "create_lot_branch": {
+      const br = {
+        ...BUILD, id: `br${TREE.length}`, name: String(a?.name ?? "Branch"),
+        kind: "branch", parent_id: null, status: "saved",
+        locations: 0, units: 0, styles: 0, msrp_total: 0, ask_total: 0, slots: [],
+      };
+      TREE.push(br);
+      return br;
+    }
+    case "combine_lot_builds": {
+      const ids: string[] = a?.childIds ?? [];
+      const kids = TREE.filter((b: any) => ids.includes(b.id));
+      const c = {
+        ...BUILD, id: `c${TREE.length}`, name: String(a?.name ?? "Combined"),
+        kind: "combined", parent_id: String(a?.branchId), status: "saved",
+        price_pct: Number(a?.pricePct ?? 0.3), slots: [],
+        locations: kids.reduce((t: number, k: any) => t + k.locations, 0),
+        units: kids.reduce((t: number, k: any) => t + k.units, 0),
+        styles: kids.reduce((t: number, k: any) => t + k.styles, 0),
+        msrp_total: kids.reduce((t: number, k: any) => t + k.msrp_total, 0),
+        ask_total: kids.reduce((t: number, k: any) => t + k.ask_total, 0),
+      };
+      kids.forEach((k: any) => { k.parent_id = c.id; });
+      TREE.push(c);
+      return c;
+    }
+    case "set_lot_parent": {
+      const row = TREE.find((b: any) => b.id === a?.buildId);
+      if (row) row.parent_id = a?.parentId ?? null;
+      return null;
+    }
+    case "mark_lot_sold": {
+      const want = a?.sold ? "sold" : "saved";
+      const from = a?.sold ? "saved" : "sold";
+      const ids = new Set<string>([String(a?.buildId)]);
+      // Same cascade shape as the recursive CTE: keep sweeping until nothing new is added.
+      for (let pass = 0; pass < 4; pass++) {
+        TREE.forEach((b: any) => { if (b.parent_id && ids.has(b.parent_id)) ids.add(b.id); });
+      }
+      let n = 0;
+      TREE.forEach((b: any) => {
+        if (ids.has(b.id) && b.status === from) { b.status = want; n += 1; }
+      });
+      return n;
+    }
+    case "lot_roster_lines":
+      return TREE.filter((b: any) =>
+        a?.nodeId ? b.parent_id === a.nodeId : (b.kind ?? "lot") === "lot" && !b.parent_id,
+      )
+        .filter((b: any) => !b.archived && b.status === "saved")
+        .map((b: any) => ({ reference: b.name, units: b.units, retail: b.msrp_total, sale: b.ask_total }));
+    case "export_lot_roster":
+      return { path: String(a?.path ?? "C:/roster.csv"), rows: 3, reconciled: true };
     case "lot_build_detail":
       return { build: BUILD, totals: TOTALS, location_codes: CODES };
     case "lot_build_location_codes":

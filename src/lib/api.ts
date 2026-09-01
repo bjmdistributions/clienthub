@@ -3249,6 +3249,40 @@ export const api = {
     invoke<LotBuild[]>("list_lot_builds", { sheetId: sheetId ?? null }),
   archiveLotBuild: (buildId: string, archived: boolean) =>
     invoke<void>("archive_lot_build", { buildId, archived }),
+
+  // The lot tree (R-218): branch > combined > base lot, one spreadsheet per level.
+  createLotBranch: (sheetId: string, name: string) =>
+    invoke<LotBuild>("create_lot_branch", { sheetId, name }),
+  combineLotBuilds: (p: {
+    sheetId: string;
+    branchId: string;
+    name: string;
+    childIds: string[];
+    pricePct: number;
+    costPct?: number;
+  }) =>
+    invoke<LotBuild>("combine_lot_builds", {
+      sheetId: p.sheetId,
+      branchId: p.branchId,
+      name: p.name,
+      childIds: p.childIds,
+      pricePct: p.pricePct,
+      costPct: p.costPct ?? null,
+    }),
+  setLotParent: (buildId: string, parentId: string | null) =>
+    invoke<void>("set_lot_parent", { buildId, parentId }),
+  /** Cascades: everything inside it goes with it. */
+  markLotSold: (buildId: string, sold: boolean) =>
+    invoke<number>("mark_lot_sold", { buildId, sold }),
+  lotRosterLines: (sheetId: string, nodeId: string | null) =>
+    invoke<LotLine[]>("lot_roster_lines", { sheetId, nodeId }),
+  exportLotRoster: (p: { sheetId: string; nodeId: string | null; title: string; path: string }) =>
+    invoke<LotExportResult>("export_lot_roster", {
+      sheetId: p.sheetId,
+      nodeId: p.nodeId,
+      title: p.title,
+      path: p.path,
+    }),
   // The deliberate half: staging is automatic, taking stock off the master list is a button.
   removeLotFromMasterList: (buildId: string, removed: boolean) =>
     invoke<number>("remove_lot_from_master_list", { buildId, removed }),
@@ -3642,6 +3676,20 @@ export interface LotBuild {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  /** The node this lot sits inside, or null at the top level (R-218). */
+  parent_id: string | null;
+  /** `lot` | `combined` | `branch`. Only a `lot` owns warehouse slots. */
+  kind: string;
+  /** Stamped when `status` became `sold`. */
+  sold_at: string | null;
+}
+
+/** One row of a roster - the master spreadsheet, one line per lot rather than per product. */
+export interface LotLine {
+  reference: string;
+  units: number;
+  retail: number;
+  sale: number;
 }
 
 export interface LotBuildDetail {

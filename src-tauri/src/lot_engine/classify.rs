@@ -344,11 +344,29 @@ fn segment_pats() -> &'static Vec<(&'static str, Vec<Regex>)> {
             ws.iter().map(|w| Regex::new(&word_pattern(w)).unwrap()).collect()
         };
         vec![
+            // GS is checked BEFORE Kids, and is its own bucket rather than part of it.
+            //
+            // Jack lists them separately -- "Men's / wmns / GS / Kids" -- and he is right to:
+            // grade school is a 3.5-7 shoe an adult often buys, and a toddler 4 is not the
+            // same buyer or the same price. Folding them together, which is what the single
+            // Kids list did, hides the split on every manifest.
+            //
+            // "BIG KID" belongs here, not below: in this data it is the size run GS covers.
+            // The bare abbreviations are the ones the source sheet actually uses -- and they
+            // are matched as WHOLE WORDS by `word_pattern`, so "GS" cannot fire inside
+            // "LEGGINGS" and "TD" cannot fire inside "LTD".
+            (
+                "GS",
+                // BG / GG are Nike's own grade-school codes (boys' and girls' grade school)
+                // and appear bare in this data -- "Air Force 1 BG Trainers".
+                build(&["GS", "GRADE SCHOOL", "BIG KID", "BIG KIDS", "GRADESCHOOL", "BG", "GG"]),
+            ),
             (
                 "Kids",
                 build(&[
-                    "KID", "KIDS", "BIG KID", "LITTLE KID", "TODDLER", "INFANT", "YOUTH", "BOYS",
-                    "GIRLS", "JUNIOR", "GRADE SCHOOL", "PRESCHOOL", "BABY", "CHILDRENS",
+                    "KID", "KIDS", "LITTLE KID", "TODDLER", "INFANT", "YOUTH", "BOYS",
+                    "GIRLS", "JUNIOR", "PRESCHOOL", "PRE SCHOOL", "BABY", "CHILDRENS",
+                    "TD", "PS", "CRIB", "NEONATI",
                 ]),
             ),
             // WMNS is Nike's own women's prefix, used generically in this data. It belongs
@@ -494,6 +512,21 @@ mod tests {
     }
 
     /// Non-footwear is tested first, because an apparel title often says "crew".
+    /// R-223: GS is its own bucket, and it is checked before Kids.
+    #[test]
+    fn grade_school_is_not_filed_under_kids() {
+        assert_eq!(c("Nike Kobe 9 Elite Protro (GS) 6.5").segment.as_deref(), Some("GS"));
+        assert_eq!(c("New Balance Grade School 550 White").segment.as_deref(), Some("GS"));
+        assert_eq!(c("Jordan 4 Retro Big Kid 5.5").segment.as_deref(), Some("GS"));
+        // ...and the younger sizes stay Kids.
+        assert_eq!(c("Jordan Pro Strong (TD)").segment.as_deref(), Some("Kids"));
+        assert_eq!(c("Crocs Classic Puff Moc Little Kid 6").segment.as_deref(), Some("Kids"));
+        assert_eq!(c("Vans Old Skool Crib Infant 3").segment.as_deref(), Some("Kids"));
+        // Whole words only -- the bare abbreviations must not fire inside another word.
+        assert_ne!(c("Nike Pro Leggings Black").segment.as_deref(), Some("GS"));
+        assert_ne!(c("Adidas LTD Edition Jacket").segment.as_deref(), Some("Kids"));
+    }
+
     #[test]
     fn category_cascade_order() {
         assert_eq!(c("Nike Crew Socks 6 Pack").category.as_deref(), Some("Socks"));
@@ -544,7 +577,11 @@ mod tests {
 
     #[test]
     fn segment_kids_beats_gender_and_women_beats_men() {
-        assert_eq!(c("Nike Big Kid Boys Shoes").segment.as_deref(), Some("Kids"));
+        // R-223 moved this expectation, deliberately: "Big Kid" is the GS size run and GS is
+        // now its own bucket, checked first. The property the test exists for is unchanged
+        // and still asserted -- a kids-family marker beats the gender word beside it.
+        assert_eq!(c("Nike Big Kid Boys Shoes").segment.as_deref(), Some("GS"));
+        assert_eq!(c("Nike Toddler Boys Shoes").segment.as_deref(), Some("Kids"));
         assert_eq!(c("Women's Running Shoe").segment.as_deref(), Some("Women's"));
         assert_eq!(c("Men's Running Shoe").segment.as_deref(), Some("Men's"));
         // "WOMEN" contains "MEN" — the order is what stops this reading as Men's.
@@ -567,7 +604,8 @@ mod tests {
         let b = c("New Balance 550 - Men's (Navy/Electric Sky) Size 12");
         assert_eq!(a.brand.as_deref(), Some("New Balance"));
         assert_eq!(b.brand.as_deref(), Some("New Balance"));
-        assert_eq!(a.segment.as_deref(), Some("Kids"));
+        // "Big Kid" is GS since R-223; the point of the test is that a and b differ.
+        assert_eq!(a.segment.as_deref(), Some("GS"));
         assert_eq!(b.segment.as_deref(), Some("Men's"));
         assert_eq!(a.size_us, Some(6.5));
         assert_eq!(b.size_us, Some(12.0));

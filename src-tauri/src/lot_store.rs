@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::pool;
 use crate::lot_engine::export::{self, ManifestOpts};
-use crate::lot_engine::model::{CleanResult, Stack};
+use crate::lot_engine::model::{CleanResult, LotLine, Stack};
 use crate::lot_engine::price::{lot_totals, LotTotals, Pricing};
 use crate::lot_engine::rank::{auto_lots, rank, Allow, AutoPlan, AutoResult, RankOpts, RankResult, Want};
 use crate::lot_engine::{pipeline, report};
@@ -926,6 +926,15 @@ pub struct LotBuild {
     /// before printing a margin.
     pub cost_pct: f64,
     pub cost_pct_json: Option<String>,
+    /// The node this lot sits inside, or `None` at the top level (R-218).
+    pub parent_id: Option<String>,
+    /// `lot` | `combined` | `branch`. The level tag, and the cycle guard.
+    ///
+    /// **Only a `lot` owns slots.** A `combined` and a `branch` carry an empty `slots` and
+    /// must never be handed to `set_lot_slot_state` -- see migration 86 for why.
+    pub kind: String,
+    /// Stamped when `status` became `sold`. `None` otherwise.
+    pub sold_at: Option<String>,
 }
 
 fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
@@ -954,12 +963,21 @@ fn row_to_build(r: &rusqlite::Row) -> rusqlite::Result<LotBuild> {
         // Appended to BUILD_SELECT rather than inserted, so every index above is unmoved.
         cost_pct: r.get(17).unwrap_or(0.0),
         cost_pct_json: r.get(18).unwrap_or(None),
+        // Appended for the same reason. A row written before migration 86 has no parent and
+        // no kind, which is exactly what a base lot at the top level is.
+        parent_id: r.get(19).unwrap_or(None),
+        kind: r
+            .get::<_, Option<String>>(20)
+            .unwrap_or(None)
+            .unwrap_or_else(|| "lot".into()),
+        sold_at: r.get(21).unwrap_or(None),
     })
 }
 
 const BUILD_SELECT: &str = "SELECT b.id, b.sheet_id, b.name, b.status, b.price_pct, \
     b.price_pct_json, b.locations, b.units, b.styles, b.msrp_total, b.ask_total, b.notes, \
-    b.slots_json, b.archived, b.created_at, b.updated_at, s.name, b.cost_pct, b.cost_pct_json \
+    b.slots_json, b.archived, b.created_at, b.updated_at, s.name, b.cost_pct, b.cost_pct_json, \
+    b.parent_id, b.kind, b.sold_at \
     FROM lot_build b LEFT JOIN lot_sheet s ON s.id = b.sheet_id";
 
 fn pricing_from(pct: f64, overrides: Option<&str>) -> Pricing {
@@ -1078,7 +1096,7 @@ pub async fn save_lot_build(
         cols(vec![
             ("sheet_id", serde_json::json!(sheet_id)),
             ("name", serde_json::json!(name)),
-            ("status", serde_json::json!("saved")),
+            ("status", serde_json::json!(status_of(&id))),
             ("price_pct", serde_json::json!(pricing.pct)),
             ("price_pct_json", serde_json::json!(serde_json::to_string(&pricing.overrides).ok())),
             ("locations", serde_json::json!(t.locations as i64)),
@@ -1108,6 +1126,25 @@ pub async fn save_lot_build(
     .await?;
 
     lot_build_detail(id).await.map(|d| d.build)
+}
+
+/// The status the row ACTUALLY carries, for an emit that must not overwrite it.
+///
+/// `save_lot_build`'s `ON CONFLICT` list deliberately leaves `status` alone on an update, so
+/// broadcasting a flat "saved" would un-sell a sold lot and un-send a sent one on every
+/// OTHER device while this one stayed correct. Latent while `sent` was the only other value
+/// and nothing re-saved an existing lot; live the moment `sold` exists.
+fn status_of(id: &str) -> String {
+    pool()
+        .get()
+        .ok()
+        .and_then(|c| {
+            c.query_row("SELECT status FROM lot_build WHERE id=?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()
+        })
+        .unwrap_or_else(|| "saved".into())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1141,13 +1178,536 @@ pub async fn lot_build_detail(build_id: String) -> Result<LotBuildDetail, String
 
 fn build_stacks(build: &LotBuild) -> Result<Vec<Stack>, String> {
     let stacks = stacks_of(&build.sheet_id)?;
-    let want: HashSet<&str> = build.slots.iter().map(|s| s.as_str()).collect();
+    // A `lot` owns its slots. A `combined` or a `branch` owns none -- its stock is the union
+    // of the live base lots underneath it, so it has to be walked. Sold and archived
+    // descendants are excluded, which is what stops a parent overstating itself after one of
+    // its children has been sold out from under it (R-218: "just flag it, dont dissolve").
+    let want: HashSet<String> = if build.kind == "lot" {
+        build.slots.iter().cloned().collect()
+    } else {
+        live_leaf_slots(&build.id)?.into_iter().collect()
+    };
     Ok(stacks
         .iter()
         .filter(|s| want.contains(s.location.as_str()))
         .cloned()
         .collect())
 }
+
+// ---------------------------------------------------------------------------------------
+// The lot tree (R-218)
+//
+// Three levels: a `branch` holds `combined` lots, a `combined` holds base `lot`s, and a
+// base lot is the only kind that owns warehouse slots. `parent_id` is the only edge.
+//
+// **Only a base lot may ever be handed to `set_lot_slot_state`.** `lot_slot_state.lot_id` is
+// a single scalar, overwritten unconditionally, so a parent staging its children's slots
+// would steal them -- after which archiving a child frees nothing and archiving the parent
+// frees every child at once. Nothing below writes a slot row; that is the whole design.
+// ---------------------------------------------------------------------------------------
+
+/// Every id at or below `id`, the node itself first.
+///
+/// One statement, so it cannot half-read. The `kind` ladder enforced by `check_parent` is
+/// what guarantees this terminates -- a cycle in `parent_id` would spin here forever, and on
+/// the server the identical query would do it while holding the process-wide connection
+/// guard.
+fn subtree(conn: &rusqlite::Connection, id: &str) -> Result<Vec<String>, String> {
+    let mut st = conn
+        .prepare(
+            "WITH RECURSIVE tree(id) AS ( \
+               SELECT ?1 \
+               UNION \
+               SELECT b.id FROM lot_build b JOIN tree t ON b.parent_id = t.id \
+             ) SELECT id FROM tree",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// The slots of every base lot under `id` that is still live -- not sold, not archived.
+fn live_leaf_slots(id: &str) -> Result<Vec<String>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let ids = subtree(&conn, id)?;
+    let mut out: Vec<String> = Vec::new();
+    for child in ids.iter().filter(|c| c.as_str() != id) {
+        let row: Option<(String, String, String, i64)> = conn
+            .query_row(
+                "SELECT kind, status, COALESCE(slots_json,'[]'), archived FROM lot_build WHERE id=?1",
+                [child],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
+        let Some((kind, status, slots_json, archived)) = row else { continue };
+        if kind != "lot" || status == "sold" || archived != 0 {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Vec<String>>(&slots_json) {
+            out.extend(v);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// Recompute a node's stored figures from the live base lots beneath it, and replicate them.
+///
+/// Called after every membership change and after every sale, because the roster reads these
+/// stored columns -- and there is no `reconcile` for a roster. `reconcile` is hard-typed to
+/// the three stack documents and returns Ok trivially on an empty lot, so a parent whose
+/// numbers had drifted would be caught by nothing.
+fn recompute_node(node_id: &str) -> Result<(), String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [node_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    if build.kind == "lot" {
+        return Ok(());
+    }
+    let lot = build_stacks(&build)?;
+    let pricing = pricing_with_cost(
+        build.price_pct,
+        build.price_pct_json.as_deref(),
+        build.cost_pct,
+        build.cost_pct_json.as_deref(),
+    );
+    let t = lot_totals(&lot, &pricing);
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET locations=?2, units=?3, styles=?4, msrp_total=?5, ask_total=?6, \
+             brands_json=?7, categories_json=?8, title_risk_json=?9, updated_at=?10 WHERE id=?1",
+            rusqlite::params![
+                node_id,
+                t.locations as i64,
+                t.units,
+                t.styles as i64,
+                t.msrp,
+                t.ask,
+                serde_json::to_string(&t.by_brand).ok(),
+                serde_json::to_string(&t.by_category).ok(),
+                serde_json::to_string(&t.title_risk_units).ok(),
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_build",
+        node_id,
+        cols(vec![
+            ("locations", serde_json::json!(t.locations as i64)),
+            ("units", serde_json::json!(t.units)),
+            ("styles", serde_json::json!(t.styles as i64)),
+            ("msrp_total", serde_json::json!(t.msrp)),
+            ("ask_total", serde_json::json!(t.ask)),
+            ("brands_json", serde_json::json!(serde_json::to_string(&t.by_brand).ok())),
+            ("categories_json", serde_json::json!(serde_json::to_string(&t.by_category).ok())),
+            ("title_risk_json", serde_json::json!(serde_json::to_string(&t.title_risk_units).ok())),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    Ok(())
+}
+
+/// Walk up and recompute every ancestor. A base lot selling changes its combined lot's
+/// figures, which changes its branch's.
+fn recompute_ancestors(mut id: Option<String>) -> Result<(), String> {
+    let mut guard = 0;
+    while let Some(cur) = id {
+        // The kind ladder makes a cycle impossible; this is the belt to its braces, because
+        // the cost of being wrong is an infinite loop inside a command.
+        guard += 1;
+        if guard > 8 {
+            break;
+        }
+        recompute_node(&cur)?;
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        id = conn
+            .query_row("SELECT parent_id FROM lot_build WHERE id=?1", [&cur], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap_or(None);
+    }
+    Ok(())
+}
+
+/// The kind ladder, checked before any write. It is what makes a cycle structurally
+/// impossible, so it is also the cycle guard.
+fn check_parent(child_kind: &str, parent: Option<&LotBuild>) -> Result<(), String> {
+    match (child_kind, parent) {
+        ("branch", None) => Ok(()),
+        ("branch", Some(_)) => Err("a branch is a top level and cannot go inside anything".into()),
+        ("combined", Some(p)) if p.kind == "branch" => Ok(()),
+        ("combined", _) => Err("a combined lot has to sit inside a branch".into()),
+        ("lot", None) => Ok(()),
+        ("lot", Some(p)) if p.kind == "combined" => Ok(()),
+        ("lot", Some(_)) => Err("a lot goes inside a combined lot, not directly inside a branch".into()),
+        _ => Err(format!("{child_kind} is not a kind of lot")),
+    }
+}
+
+/// Write a node row that owns no slots. Branches and combined lots only.
+fn insert_node(
+    id: &str,
+    sheet_id: &str,
+    name: &str,
+    kind: &str,
+    parent_id: Option<&str>,
+    price_pct: f64,
+    cost_pct: f64,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO lot_build (id, sheet_id, name, status, price_pct, locations, units, \
+             styles, msrp_total, ask_total, slots_json, archived, created_at, updated_at, \
+             cost_pct, parent_id, kind) \
+             VALUES (?1,?2,?3,'saved',?4,0,0,0,0,0,'[]',0,?5,?5,?6,?7,?8)",
+            rusqlite::params![id, sheet_id, name, price_pct, now, cost_pct, parent_id, kind],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_build",
+        id,
+        cols(vec![
+            ("sheet_id", serde_json::json!(sheet_id)),
+            ("name", serde_json::json!(name)),
+            ("status", serde_json::json!("saved")),
+            ("price_pct", serde_json::json!(price_pct)),
+            ("cost_pct", serde_json::json!(cost_pct)),
+            ("slots_json", serde_json::json!("[]")),
+            ("archived", serde_json::json!(0)),
+            ("parent_id", serde_json::json!(parent_id)),
+            ("kind", serde_json::json!(kind)),
+            ("created_at", serde_json::json!(now)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    Ok(())
+}
+
+/// Make a branch -- the named section that holds combined lots and owns a spreadsheet.
+#[tauri::command]
+pub async fn create_lot_branch(sheet_id: String, name: String) -> Result<LotBuild, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("a branch needs a name -- it is the heading on its own spreadsheet".into());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    insert_node(&id, &sheet_id, &name, "branch", None, 0.0, 0.0)?;
+    lot_build_detail(id).await.map(|d| d.build)
+}
+
+/// Combine several base lots into one, inside a branch.
+///
+/// The children **stay live and sellable** and keep their own slots -- Jack chose this over
+/// a merge that consumes them. Nothing here touches `lot_slot_state`: ownership stays with
+/// the base lot that staged the slot, which is what keeps archive and remove-from-list
+/// working untouched.
+#[tauri::command]
+pub async fn combine_lot_builds(
+    sheet_id: String,
+    branch_id: String,
+    name: String,
+    child_ids: Vec<String>,
+    price_pct: f64,
+    cost_pct: Option<f64>,
+) -> Result<LotBuild, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("give the combined lot a name -- it is a row on the branch's spreadsheet".into());
+    }
+    if child_ids.len() < 2 {
+        return Err("pick at least two lots to combine".into());
+    }
+    let branch = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&branch_id], row_to_build)
+            .map_err(|_| "that branch no longer exists".to_string())?
+    };
+    if branch.kind != "branch" {
+        return Err("a combined lot has to go inside a branch".into());
+    }
+    check_parent("combined", Some(&branch))?;
+
+    // Validate every child BEFORE writing anything. There are no transactions in this file,
+    // so the only way not to half-apply is not to start.
+    let kids: Vec<LotBuild> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for cid in &child_ids {
+            let b = conn
+                .query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [cid], row_to_build)
+                .map_err(|_| format!("one of the lots you picked no longer exists ({cid})"))?;
+            out.push(b);
+        }
+        out
+    };
+    for k in &kids {
+        if k.kind != "lot" {
+            return Err(format!("{} is not a base lot, so it cannot go in here", k.name));
+        }
+        if k.sheet_id != sheet_id {
+            return Err(format!("{} came from a different warehouse sheet", k.name));
+        }
+        if k.archived {
+            return Err(format!("{} is archived", k.name));
+        }
+        if k.status == "sold" {
+            return Err(format!("{} has already been sold", k.name));
+        }
+        if k.status == "sent" {
+            return Err(format!("{} has already left the building", k.name));
+        }
+        if let Some(p) = &k.parent_id {
+            if p != &branch_id {
+                return Err(format!(
+                    "{} is already inside another combined lot -- take it out of that one first",
+                    k.name
+                ));
+            }
+        }
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    insert_node(&id, &sheet_id, &name, "combined", Some(&branch_id), price_pct, cost_pct.unwrap_or(0.0))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for k in &kids {
+        {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE lot_build SET parent_id=?2, updated_at=?3 WHERE id=?1",
+                rusqlite::params![k.id, id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        emit(
+            "lot_build",
+            &k.id,
+            cols(vec![
+                ("parent_id", serde_json::json!(id)),
+                ("updated_at", serde_json::json!(now)),
+            ]),
+        );
+    }
+
+    recompute_node(&id)?;
+    recompute_node(&branch_id)?;
+    lot_build_detail(id).await.map(|d| d.build)
+}
+
+/// Move a lot into a node, or take it back out to the top level.
+#[tauri::command]
+pub async fn set_lot_parent(build_id: String, parent_id: Option<String>) -> Result<(), String> {
+    let (child, old_parent) = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let b = conn
+            .query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?;
+        let p = b.parent_id.clone();
+        (b, p)
+    };
+    let parent = match &parent_id {
+        Some(pid) => {
+            if pid == &build_id {
+                return Err("a lot cannot contain itself".into());
+            }
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            let p = conn
+                .query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [pid], row_to_build)
+                .map_err(|_| "that lot no longer exists".to_string())?;
+            if p.sheet_id != child.sheet_id {
+                return Err("those two lots came from different warehouse sheets".into());
+            }
+            // Belt and braces against a cycle: the ladder already forbids it, but a bad
+            // parent_id here would spin `subtree` forever.
+            let conn2 = pool().get().map_err(|e| e.to_string())?;
+            if subtree(&conn2, &build_id)?.iter().any(|d| d == pid) {
+                return Err("that would put a lot inside itself".into());
+            }
+            Some(p)
+        }
+        None => None,
+    };
+    check_parent(&child.kind, parent.as_ref())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET parent_id=?2, updated_at=?3 WHERE id=?1",
+            rusqlite::params![build_id, parent_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    emit(
+        "lot_build",
+        &build_id,
+        cols(vec![
+            ("parent_id", serde_json::json!(parent_id)),
+            ("updated_at", serde_json::json!(now)),
+        ]),
+    );
+    // Both sides of the move: the node it left shrinks, the node it joined grows.
+    recompute_ancestors(old_parent)?;
+    recompute_ancestors(parent_id)?;
+    Ok(())
+}
+
+/// One row per lot on a level, in the shape of the master spreadsheet Jack keeps by hand.
+///
+/// **One sheet per level, which is what he asked for**: *"the small lots should always still
+/// exist because they will be their own spreadsheet. then when i create a branch of
+/// combining bigger lots, that specific section will be its own spreadsheet."*
+///
+/// * `node_id` = `None` -> the base lots of a sheet, which is his existing master list.
+/// * `node_id` = a branch -> the combined lots inside it.
+/// * `node_id` = a combined lot -> the base lots inside it.
+///
+/// A **sold** lot is off its sheet -- that is the rule he stated. So is an archived one. The
+/// predicate is spelled identically here and on the server; two surfaces handing out
+/// different spreadsheets for the same branch is the whole failure this is written to avoid.
+#[tauri::command]
+pub async fn lot_roster_lines(
+    sheet_id: String,
+    node_id: Option<String>,
+) -> Result<Vec<LotLine>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let (sql, args): (String, Vec<String>) = match &node_id {
+        Some(n) => (
+            "SELECT name, units, msrp_total, ask_total FROM lot_build \
+             WHERE parent_id = ?1 AND archived = 0 AND status = 'saved' ORDER BY name"
+                .into(),
+            vec![n.clone()],
+        ),
+        None => (
+            "SELECT name, units, msrp_total, ask_total FROM lot_build \
+             WHERE sheet_id = ?1 AND kind = 'lot' AND parent_id IS NULL AND archived = 0 \
+             AND status = 'saved' ORDER BY name"
+                .into(),
+            vec![sheet_id.clone()],
+        ),
+    };
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            Ok(LotLine {
+                reference: r.get(0)?,
+                units: r.get(1)?,
+                retail: r.get(2)?,
+                sale: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Write that roster to a file the person picks.
+///
+/// Always through the save dialog, never the default export path: those are built from the
+/// lot's name with every non-alphanumeric mapped to a dash, so a branch and a lot with
+/// similar names would overwrite each other's spreadsheet in silence.
+#[tauri::command]
+pub async fn export_lot_roster(
+    sheet_id: String,
+    node_id: Option<String>,
+    title: String,
+    path: String,
+) -> Result<ExportResult, String> {
+    let lines = lot_roster_lines(sheet_id, node_id).await?;
+    if lines.is_empty() {
+        return Err("there is nothing on that spreadsheet yet".into());
+    }
+    let doc = export::lot_roster(&lines, &title);
+    let p = std::path::PathBuf::from(&path);
+    let bytes = if p.extension().map(|e| e.eq_ignore_ascii_case("xlsx")).unwrap_or(false) {
+        export::to_xlsx(&doc).map_err(|e| e.to_string())?
+    } else {
+        export::to_csv(&doc).into_bytes()
+    };
+    std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+    // `reconciled` is true because there is nothing to reconcile: the three-way check is
+    // over a lot's stacks, and a roster is a list of lots. Saying false would read as a
+    // failed check rather than an inapplicable one.
+    Ok(ExportResult { path, rows: lines.len(), reconciled: true })
+}
+
+/// Mark a lot sold, and everything inside it with it.
+///
+/// **Sold is a status and nothing else.** It never writes `lot_slot_state`, never sets
+/// `sent`, and never sets `removed` -- shipping stays the separate, deliberately
+/// irreversible press ("absent means shipped, not undone"). A lot can be sold long before
+/// it leaves the building.
+///
+/// The cascade is ONE statement. There are no transactions anywhere in this file, so a loop
+/// of updates could half-apply with no record and no repair path.
+#[tauri::command]
+pub async fn mark_lot_sold(build_id: String, sold: bool) -> Result<usize, String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    if sold && build.status == "sent" {
+        return Err("that lot has already left the building".into());
+    }
+    let (from, to) = if sold { ("saved", "sold") } else { ("sold", "saved") };
+    let now = chrono::Utc::now().to_rfc3339();
+    let sold_at = if sold { Some(now.clone()) } else { None };
+
+    // Read the affected set first, so each row can be replicated by name afterwards.
+    let ids = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        subtree(&conn, &build_id)?
+    };
+    let n = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE lot_build SET status=?2, sold_at=?3, updated_at=?4 \
+             WHERE status=?5 AND id IN ( \
+               WITH RECURSIVE tree(id) AS ( \
+                 SELECT ?1 UNION SELECT b.id FROM lot_build b JOIN tree t ON b.parent_id = t.id \
+               ) SELECT id FROM tree)",
+            rusqlite::params![build_id, to, sold_at, now, from],
+        )
+        .map_err(|e| e.to_string())?
+    };
+    for id in &ids {
+        emit(
+            "lot_build",
+            id,
+            cols(vec![
+                ("status", serde_json::json!(status_of(id))),
+                ("sold_at", serde_json::json!(sold_at)),
+                ("updated_at", serde_json::json!(now)),
+            ]),
+        );
+    }
+    // Everything above it shrinks (or grows back), so a parent never overstates what is
+    // still in it. The parent is NOT dissolved -- Jack: "just flag it, dont dissolve the
+    // parent" -- it survives with smaller figures, and the UI names what left.
+    recompute_ancestors(build.parent_id.clone())?;
+    Ok(n)
+}
+
 
 #[tauri::command]
 pub async fn list_lot_builds(sheet_id: Option<String>) -> Result<Vec<LotBuild>, String> {

@@ -149,6 +149,13 @@ pub struct LotTotals {
     pub cost_known: bool,
     pub by_brand: Vec<GroupTotal>,
     pub by_category: Vec<GroupTotal>,
+    /// Men's / Women's / GS / Kids / Unisex, and `Not stated` for everything the title did
+    /// not say (R-223).
+    ///
+    /// **`Not stated` is a row, never an omission.** On the first real warehouse sheet 17% of
+    /// units carried no segment at all; leaving them out would make a manifest whose columns
+    /// look complete and do not add up to the lot. Every breakdown table sums to `units`.
+    pub by_segment: Vec<GroupTotal>,
     /// Units by `title_risk`, indexed 0..=3. Grades 2 and 3 are the only ones that can
     /// mis-describe a lot.
     pub title_risk_units: [i64; 4],
@@ -209,6 +216,7 @@ pub fn lot_totals(stacks: &[Stack], p: &Pricing) -> LotTotals {
     let mut t = LotTotals::default();
     let mut brands: BTreeMap<String, Agg> = BTreeMap::new();
     let mut cats: BTreeMap<String, Agg> = BTreeMap::new();
+    let mut segs: BTreeMap<String, Agg> = BTreeMap::new();
     let mut styles: std::collections::HashSet<&str> = Default::default();
     let mut locations: std::collections::HashSet<&str> = Default::default();
 
@@ -229,6 +237,7 @@ pub fn lot_totals(stacks: &[Stack], p: &Pricing) -> LotTotals {
         for (map, key) in [
             (&mut brands, s.brand.clone().unwrap_or_else(|| "Unbranded".into())),
             (&mut cats, s.category.clone().unwrap_or_else(|| "Uncategorized".into())),
+            (&mut segs, s.segment.clone().unwrap_or_else(|| "Not stated".into())),
         ] {
             let e = map.entry(key).or_default();
             e.units += s.units;
@@ -255,6 +264,7 @@ pub fn lot_totals(stacks: &[Stack], p: &Pricing) -> LotTotals {
     t.margin = if t.cost_known && t.ask > 0.0 { t.profit / t.ask } else { 0.0 };
     t.by_brand = finish(brands, t.units);
     t.by_category = finish(cats, t.units);
+    t.by_segment = finish(segs, t.units);
     t
 }
 

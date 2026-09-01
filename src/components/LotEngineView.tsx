@@ -410,6 +410,14 @@ function Builder({
   const [totals, setTotals] = useState<LotTotals | null>(null);
   const [saving, setSaving] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Remembered, because a bar that reopens itself on every visit is one you have to collapse
+  // every time. Same storage convention as the accent picker.
+  const [barOpen, setBarOpen] = useState(
+    () => localStorage.getItem("clienthub_lotbar_collapsed") !== "1",
+  );
+  useEffect(() => {
+    localStorage.setItem("clienthub_lotbar_collapsed", barOpen ? "0" : "1");
+  }, [barOpen]);
 
   const seq = useRef(0);
 
@@ -587,10 +595,40 @@ function Builder({
       </div>
 
       {/* Below 2xl the lot lives in a bar pinned to the bottom, so the running total is
-          never off screen while you are picking. */}
+          never off screen while you are picking. It has to be BOUNDED and collapsible: the
+          panel is as tall as the sheet has categories (one override row each), and unbounded
+          it measured 724px of an 820px window with eight locations picked — the screen was
+          the lot panel. Capped at 42vh with its own scroller, and it folds to a summary line
+          that still carries the running total, which is the only part you need while picking.
+          The 2xl rail above is already capped and is deliberately left alone. */}
       {picked.length > 0 && (
         <div className="2xl:hidden sticky bottom-0 mt-4 -mx-1 px-1 pb-1 pt-2 bg-surface/95 backdrop-blur border-t border-line">
-          {lotPanel}
+          {barOpen ? (
+            <>
+              <button
+                onClick={() => setBarOpen(false)}
+                className="w-full flex items-center justify-center gap-1 pb-1.5 text-[11px] text-muted hover:text-accent transition-colors"
+                aria-expanded
+              >
+                <ChevronDown size={12} /> Collapse
+              </button>
+              <div className="max-h-[42vh] overflow-y-auto overscroll-contain pr-1">{lotPanel}</div>
+            </>
+          ) : (
+            <button
+              onClick={() => setBarOpen(true)}
+              className="w-full flex items-center justify-between gap-2 py-1.5 text-left"
+              aria-expanded={false}
+            >
+              <span className="flex items-center gap-1.5 text-[12px] font-medium text-ink">
+                <ChevronRight size={13} /> The lot
+              </span>
+              <span className="text-[11.5px] text-muted tabular-nums truncate">
+                {n(picked.length)} slots
+                {totals ? ` · ${n(totals.units)} units · ${fmtAmount(totals.ask)}` : " · …"}
+              </span>
+            </button>
+          )}
         </div>
       )}
 
@@ -1655,13 +1693,70 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
   // already read should cost nothing. Cleared whenever the list itself is reloaded.
   const [detail, setDetail] = useState<Record<string, LotBuildDetail>>({});
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
+  // The tree (R-218). Selection is only ever over BASE lots at the top level -- those are
+  // the only rows that can be combined, so nothing else is selectable and there is no
+  // "you can't do that with this" to explain after the fact.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [combining, setCombining] = useState(false);
 
   const load = useCallback(() => {
     setDetail({});
+    setSelected(new Set());
     api.listLotBuilds(sheetId).then(setRows).catch((e) => toast(String(e), "error"));
   }, [sheetId]);
 
   useEffect(load, [load]);
+
+  const toggleSel = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
+  /// The spreadsheet for one level. `node` null is the base lots -- his existing master
+  /// list. A branch gets the combined lots inside it; a combined lot gets its own children.
+  const downloadRoster = async (node: LotBuild | null, title: string) => {
+    const safe = title.replace(/[^A-Za-z0-9._-]+/g, "-");
+    const dest = await saveDialog({
+      defaultPath: `${safe}.${format}`,
+      filters: [
+        format === "xlsx"
+          ? { name: "Excel workbook", extensions: ["xlsx"] }
+          : { name: "CSV", extensions: ["csv"] },
+      ],
+    });
+    if (!dest) return;
+    setBusy(node?.id ?? "roster");
+    try {
+      // Deliberately NOT the rename-on-save behaviour the three lot exports have: this file
+      // is a list of lots, so naming it must not rename any of them.
+      const r = await api.exportLotRoster({ sheetId, nodeId: node?.id ?? null, title, path: dest });
+      toast(`${n(r.rows)} lots written.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  const markSold = async (b: LotBuild, sold: boolean) => {
+    setBusy(b.id);
+    try {
+      const touched = await api.markLotSold(b.id, sold);
+      load();
+      onChanged();
+      toast(
+        sold
+          ? touched > 1
+            ? `${b.name} sold, and the ${touched - 1} lots inside it with it. They are off their spreadsheets.`
+            : `${b.name} sold. It is off the spreadsheet.`
+          : `${b.name} is back on the spreadsheet.`,
+      );
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
 
   // Straight to a save dialog, so the file lands where it is wanted rather than in a
   // folder beside the sheet that the toast then has to name.
@@ -1779,23 +1874,267 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
     }
   };
 
-  if (!rows) return <div className="h-32 rounded-xl bg-surface-2 animate-pulse" />;
-  if (!rows.length)
-    return (
-      <p className="text-[12.5px] text-muted">
-        No lots built from this sheet yet. Build one on the first tab and it appears here.
-      </p>
+  // The three levels. `kind` is absent on every row written before migration 86, which is
+  // exactly what a base lot at the top level is -- hence the `?? "lot"` rather than a filter
+  // that would make every existing lot vanish from the screen.
+  const kindOf = (b: LotBuild) => b.kind || "lot";
+  const branches = (rows ?? []).filter((b) => kindOf(b) === "branch");
+  const loose = (rows ?? []).filter((b) => kindOf(b) === "lot" && !b.parent_id);
+  const canCombine = selected.size >= 2;
+
+  const doCombine = async (branchId: string) => {
+    const ids = [...selected];
+    const name = window.prompt(
+      `Name the combined lot (${ids.length} lots, ${n(
+        ids.reduce((t, id) => t + ((rows ?? []).find((r) => r.id === id)?.units ?? 0), 0),
+      )} units)`,
+      "",
     );
+    if (name === null) return;
+    // The children all sit at 30% today, so inheriting when they agree is the common case
+    // and asking would be noise. When they disagree there is no honest default, so ask.
+    const kids = (rows ?? []).filter((r) => ids.includes(r.id));
+    const pcts = new Set(kids.map((k) => k.price_pct));
+    let pct = pcts.size === 1 ? [...pcts][0] : NaN;
+    if (Number.isNaN(pct)) {
+      const typed = window.prompt(
+        "Those lots are priced at different percentages, so the combined lot needs its own. Sell at, % of retail:",
+        "30",
+      );
+      if (typed === null) return;
+      pct = parseAmount(typed) / 100;
+    }
+    setCombining(true);
+    try {
+      const b = await api.combineLotBuilds({
+        sheetId,
+        branchId,
+        name: name.trim() || `Combined ${new Date().toISOString().slice(0, 10)}`,
+        childIds: ids,
+        pricePct: pct,
+      });
+      load();
+      onChanged();
+      toast(`${b.name} combines ${ids.length} lots — ${n(b.units)} units. They stay sellable on their own.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setCombining(false);
+  };
+
+  const newBranch = async () => {
+    const name = window.prompt("Name this branch — it is the title above its own spreadsheet", "");
+    if (name === null || !name.trim()) return;
+    try {
+      const b = await api.createLotBranch(sheetId, name.trim());
+      load();
+      toast(`Branch "${b.name}" added.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+  };
+
+  // One lot card. Extracted so the same row renders at all three levels of the tree --
+  // a base lot on its own, a base lot inside a combined lot, and a combined lot inside a
+  // branch. `depth` only indents; it never changes what the row can do.
+  const renderLot = (b: LotBuild, depth = 0) => (
+    <div
+      key={b.id}
+      className={`rounded-xl border bg-surface px-3.5 py-3 ${
+        selected.has(b.id) ? "border-accent" : "border-line"
+      } ${b.status === "sold" ? "opacity-60" : ""}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        {/* Only a top-level base lot can be combined, so only one is selectable. A tick
+            that does nothing on two thirds of the rows is worse than no tick. */}
+        {depth === 0 && kindOf(b) === "lot" && b.status === "saved" && (
+          <input
+            type="checkbox"
+            checked={selected.has(b.id)}
+            onChange={() => toggleSel(b.id)}
+            className="mt-1 accent-accent shrink-0"
+            aria-label={`Pick ${b.name} to combine`}
+          />
+        )}
+        {/* The whole heading opens the breakdown — a saved lot's first question is
+            always "how much of each brand", and until now that answer was only in an
+            exported CSV. */}
+        {renaming === b.id ? (
+          <input
+            autoFocus
+            className={`${inp} max-w-[340px]`}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => rename(b)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") rename(b);
+              if (e.key === "Escape") setRenaming(null);
+            }}
+          />
+        ) : (
+        <button
+          onClick={() => expand(b)}
+          className="flex items-start gap-2 min-w-0 text-left group"
+          aria-expanded={open === b.id}
+        >
+          <span className="text-muted group-hover:text-accent transition-colors mt-0.5 shrink-0">
+            {open === b.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13.5px] font-semibold text-ink truncate group-hover:text-accent transition-colors">
+              {b.name}
+            </span>
+
+            <span className="block text-[11.5px] text-muted mt-0.5 tabular-nums">
+              {n(b.locations)} slots · {n(b.units)} units · {n(b.styles)} styles ·{" "}
+              {fmtAmount(b.msrp_total)} retail ·{" "}
+              <span className="text-accent font-medium">{fmtAmount(b.ask_total)}</span> at{" "}
+              {(b.price_pct * 100).toFixed(1)}%
+              {b.cost_pct > 0 && (
+                <>
+                  {" · cost "}
+                  <span className="tabular-nums">{(b.cost_pct * 100).toFixed(1)}%</span>
+                </>
+              )}
+            </span>
+          </span>
+        </button>
+        )}
+        {/* Three states now, so a switch rather than a ternary -- `draft` already fell
+            silently through the old two-branch version, and `sold` would have joined it. */}
+        <span
+          className={`text-[10.5px] px-1.5 h-5 rounded-md flex items-center shrink-0 ${
+            b.status === "sent"
+              ? "bg-success-bg text-success-ink"
+              : b.status === "sold"
+                ? "bg-warning-bg text-warning-ink"
+                : "bg-surface-3 text-muted"
+          }`}
+        >
+          {b.status === "sent"
+            ? "off the list"
+            : b.status === "sold"
+              ? "sold"
+              : b.status === "saved"
+                ? kindOf(b) === "combined"
+                  ? "combined"
+                  : "in a lot"
+                : b.status}
+        </span>
+      </div>
+
+      {open === b.id &&
+        (detail[b.id] ? (
+          <LotBreakdown detail={detail[b.id]} />
+        ) : loadingDetail === b.id ? (
+          <div className="h-28 rounded-lg bg-surface-2 animate-pulse mt-2.5" />
+        ) : null)}
+
+      {/* Priced here, before it is downloaded — one number across every line. Per
+          category is a Build-tab job; this is the figure you quote a buyer. */}
+      <div className="flex flex-wrap items-end gap-2 mt-2.5 rounded-lg bg-surface-2 border border-line-2 px-2.5 py-2">
+        <label className="text-[10.5px] text-muted">
+          Sell at, % of retail
+          <NumberInput
+            className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
+            placeholder={(b.price_pct * 100).toFixed(1)}
+            value={pctDraft[b.id] ?? ""}
+            onValue={(_, raw) => setPctDraft((d) => ({ ...d, [b.id]: raw }))}
+          />
+        </label>
+        <label className="text-[10.5px] text-muted">
+          Cost, %
+          <NumberInput
+            className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
+            placeholder={b.cost_pct > 0 ? (b.cost_pct * 100).toFixed(1) : "none"}
+            value={costDraft[b.id] ?? ""}
+            onValue={(_, raw) => setCostDraft((d) => ({ ...d, [b.id]: raw }))}
+          />
+        </label>
+        <ActBtn onClick={() => reprice(b)} busy={busy === b.id}>
+          Apply to all {n(b.units)} units
+        </ActBtn>
+        <span className="text-[10.5px] text-muted leading-snug max-w-[290px]">
+          One percentage across every line, replacing any per-category rates — re-priced
+          before you download it.
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+        <ActBtn onClick={() => exportOne(b, "manifest")} busy={busy === b.id} icon={<Download size={12} />}>
+          Manifest
+        </ActBtn>
+        <ActBtn onClick={() => exportOne(b, "brands")} busy={busy === b.id} icon={<Download size={12} />}>
+          Brand counts
+        </ActBtn>
+        <ActBtn onClick={() => exportOne(b, "pull")} busy={busy === b.id} icon={<Download size={12} />}>
+          Pull sheet
+        </ActBtn>
+        <ActBtn onClick={() => copyCodes(b)} icon={<ClipboardCopy size={12} />}>
+          Copy codes
+        </ActBtn>
+        <ActBtn
+          onClick={() => {
+            setDraft(b.name);
+            setRenaming(b.id);
+          }}
+        >
+          Rename
+        </ActBtn>
+        <ActBtn onClick={() => markSold(b, b.status !== "sold")} busy={busy === b.id}>
+          {b.status === "sold" ? "Not sold after all" : "Mark sold"}
+        </ActBtn>
+        <div className="flex-1" />
+        <ActBtn
+          onClick={() =>
+            b.status === "sent"
+              ? api
+                  .removeLotFromMasterList(b.id, false)
+                  .then(() => {
+                    load();
+                    onChanged();
+                    toast("Put back on the master list.");
+                  })
+                  .catch((e) => toast(String(e), "error"))
+              : setConfirmRemove(b)
+          }
+          icon={<Trash2 size={12} />}
+        >
+          {b.status === "sent" ? "Put back on the list" : "Remove from master list"}
+        </ActBtn>
+        <ActBtn
+          onClick={() =>
+            api
+              .archiveLotBuild(b.id, true)
+              .then(() => {
+                load();
+                onChanged();
+                toast("Lot archived. Its slots that were only staged are back in the pool.");
+              })
+              .catch((e) => toast(String(e), "error"))
+          }
+        >
+          Archive
+        </ActBtn>
+      </div>
+    </div>
+  );
+
+  if (!rows) return <div className="h-32 rounded-xl bg-surface-2 animate-pulse" />;
 
   return (
     <div className="max-w-[900px] space-y-2">
       <ManifestSettings />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[12.5px] text-muted">
-          {n(rows.length)} {rows.length === 1 ? "lot" : "lots"} built from this sheet. Each one's
-          locations are already off the master list.
+          {rows.length === 0
+            ? "No lots built from this sheet yet. Build one on the first tab and it appears here."
+            : `${n(rows.length)} built from this sheet. Each base lot's locations are already off the master list.`}
         </p>
         <div className="flex items-center gap-1.5">
+          <ActBtn onClick={newBranch} icon={<Plus size={12} />}>
+            New branch
+          </ActBtn>
           <span className="text-[11px] text-muted">Download as</span>
           <div className="flex gap-1 bg-surface-2 rounded-lg p-1 border border-line-2">
             {(
@@ -1817,155 +2156,92 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
           </div>
         </div>
       </div>
-      {rows.map((b) => (
-        <div key={b.id} className="rounded-xl border border-line bg-surface px-3.5 py-3">
-          <div className="flex items-start justify-between gap-3">
-            {/* The whole heading opens the breakdown — a saved lot's first question is
-                always "how much of each brand", and until now that answer was only in an
-                exported CSV. */}
-            {renaming === b.id ? (
-              <input
-                autoFocus
-                className={`${inp} max-w-[340px]`}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onBlur={() => rename(b)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") rename(b);
-                  if (e.key === "Escape") setRenaming(null);
-                }}
-              />
-            ) : (
-            <button
-              onClick={() => expand(b)}
-              className="flex items-start gap-2 min-w-0 text-left group"
-              aria-expanded={open === b.id}
-            >
-              <span className="text-muted group-hover:text-accent transition-colors mt-0.5 shrink-0">
-                {open === b.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-[13.5px] font-semibold text-ink truncate group-hover:text-accent transition-colors">
-                  {b.name}
-                </span>
-
-                <span className="block text-[11.5px] text-muted mt-0.5 tabular-nums">
-                  {n(b.locations)} slots · {n(b.units)} units · {n(b.styles)} styles ·{" "}
-                  {fmtAmount(b.msrp_total)} retail ·{" "}
-                  <span className="text-accent font-medium">{fmtAmount(b.ask_total)}</span> at{" "}
-                  {(b.price_pct * 100).toFixed(1)}%
-                  {b.cost_pct > 0 && (
-                    <>
-                      {" · cost "}
-                      <span className="tabular-nums">{(b.cost_pct * 100).toFixed(1)}%</span>
-                    </>
-                  )}
-                </span>
-              </span>
-            </button>
-            )}
-            <span
-              className={`text-[10.5px] px-1.5 h-5 rounded-md flex items-center shrink-0 ${
-                b.status === "sent" ? "bg-success-bg text-success-ink" : "bg-surface-3 text-muted"
-              }`}
-            >
-              {b.status === "sent" ? "off the list" : "in a lot"}
-            </span>
-          </div>
-
-          {open === b.id &&
-            (detail[b.id] ? (
-              <LotBreakdown detail={detail[b.id]} />
-            ) : loadingDetail === b.id ? (
-              <div className="h-28 rounded-lg bg-surface-2 animate-pulse mt-2.5" />
-            ) : null)}
-
-          {/* Priced here, before it is downloaded — one number across every line. Per
-              category is a Build-tab job; this is the figure you quote a buyer. */}
-          <div className="flex flex-wrap items-end gap-2 mt-2.5 rounded-lg bg-surface-2 border border-line-2 px-2.5 py-2">
-            <label className="text-[10.5px] text-muted">
-              Sell at, % of retail
-              <NumberInput
-                className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
-                placeholder={(b.price_pct * 100).toFixed(1)}
-                value={pctDraft[b.id] ?? ""}
-                onValue={(_, raw) => setPctDraft((d) => ({ ...d, [b.id]: raw }))}
-              />
-            </label>
-            <label className="text-[10.5px] text-muted">
-              Cost, %
-              <NumberInput
-                className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
-                placeholder={b.cost_pct > 0 ? (b.cost_pct * 100).toFixed(1) : "none"}
-                value={costDraft[b.id] ?? ""}
-                onValue={(_, raw) => setCostDraft((d) => ({ ...d, [b.id]: raw }))}
-              />
-            </label>
-            <ActBtn onClick={() => reprice(b)} busy={busy === b.id}>
-              Apply to all {n(b.units)} units
-            </ActBtn>
-            <span className="text-[10.5px] text-muted leading-snug max-w-[290px]">
-              One percentage across every line, replacing any per-category rates — re-priced
-              before you download it.
-            </span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-            <ActBtn onClick={() => exportOne(b, "manifest")} busy={busy === b.id} icon={<Download size={12} />}>
-              Manifest
-            </ActBtn>
-            <ActBtn onClick={() => exportOne(b, "brands")} busy={busy === b.id} icon={<Download size={12} />}>
-              Brand counts
-            </ActBtn>
-            <ActBtn onClick={() => exportOne(b, "pull")} busy={busy === b.id} icon={<Download size={12} />}>
-              Pull sheet
-            </ActBtn>
-            <ActBtn onClick={() => copyCodes(b)} icon={<ClipboardCopy size={12} />}>
-              Copy codes
-            </ActBtn>
-            <ActBtn
-              onClick={() => {
-                setDraft(b.name);
-                setRenaming(b.id);
-              }}
-            >
-              Rename
-            </ActBtn>
-            <div className="flex-1" />
-            <ActBtn
-              onClick={() =>
-                b.status === "sent"
-                  ? api
-                      .removeLotFromMasterList(b.id, false)
-                      .then(() => {
-                        load();
-                        onChanged();
-                        toast("Put back on the master list.");
-                      })
-                      .catch((e) => toast(String(e), "error"))
-                  : setConfirmRemove(b)
-              }
-              icon={<Trash2 size={12} />}
-            >
-              {b.status === "sent" ? "Put back on the list" : "Remove from master list"}
-            </ActBtn>
-            <ActBtn
-              onClick={() =>
-                api
-                  .archiveLotBuild(b.id, true)
-                  .then(() => {
-                    load();
-                    onChanged();
-                    toast("Lot archived. Its slots that were only staged are back in the pool.");
-                  })
-                  .catch((e) => toast(String(e), "error"))
-              }
-            >
-              Archive
-            </ActBtn>
-          </div>
+      {/* Pinned while anything is ticked: the lots being combined may be scrolled away by
+          the time you decide where to put them. */}
+      {selected.size > 0 && (
+        <div className="sticky top-0 z-10 rounded-xl border border-accent bg-surface-2 px-3.5 py-2.5 flex items-center gap-3 flex-wrap">
+          <p className="text-[12.5px] text-ink">
+            <span className="font-semibold tabular-nums">{n(selected.size)}</span> picked ·{" "}
+            <span className="tabular-nums">
+              {n(
+                [...selected].reduce(
+                  (t, id) => t + (rows.find((r) => r.id === id)?.units ?? 0),
+                  0,
+                ),
+              )}
+            </span>{" "}
+            units
+          </p>
+          <div className="flex-1" />
+          {!canCombine ? (
+            <p className="text-[11.5px] text-muted">Pick one more to combine.</p>
+          ) : branches.length === 0 ? (
+            <p className="text-[11.5px] text-muted">Make a branch first — a combined lot lives in one.</p>
+          ) : (
+            <>
+              <span className="text-[11.5px] text-muted">Combine into</span>
+              {branches.map((br) => (
+                <ActBtn key={br.id} onClick={() => doCombine(br.id)} busy={combining}>
+                  {br.name}
+                </ActBtn>
+              ))}
+            </>
+          )}
+          <ActBtn onClick={() => setSelected(new Set())}>Clear</ActBtn>
         </div>
-      ))}
+      )}
+
+      {/* The tree. Base lots that are in no branch first, then a heading per branch --
+          "have each othe branches physicaly in thw ui be separated with a title above each".
+          Sold lots stay visible here and are simply off their spreadsheet; only the roster
+          filters them out. */}
+      {loose.length > 0 && (
+        <section className="space-y-2">
+          <LevelHeading
+            title="Not in a branch"
+            note={`${n(loose.length)} ${loose.length === 1 ? "lot" : "lots"} · ${n(
+              loose.reduce((t, x) => t + x.units, 0),
+            )} units`}
+            onDownload={() => downloadRoster(null, "Master list")}
+            busy={busy === "roster"}
+          />
+          {loose.map((b) => renderLot(b))}
+        </section>
+      )}
+
+      {branches.map((br) => {
+        const kids = rows.filter((x) => x.parent_id === br.id);
+        return (
+          <section key={br.id} className="space-y-2">
+            <LevelHeading
+              title={br.name}
+              branch
+              note={`${n(kids.length)} combined ${kids.length === 1 ? "lot" : "lots"} · ${n(
+                br.units,
+              )} units · ${fmtAmount(br.ask_total)}`}
+              onDownload={() => downloadRoster(br, br.name)}
+              busy={busy === br.id}
+            />
+            {kids.length === 0 ? (
+              <p className="text-[11.5px] text-muted pl-3">
+                Nothing in this branch yet. Tick some lots above and combine them into it.
+              </p>
+            ) : (
+              kids.map((c) => (
+                <div key={c.id} className="space-y-2">
+                  {renderLot(c, 1)}
+                  <div className="pl-6 space-y-2 border-l border-line-2 ml-3">
+                    {rows
+                      .filter((x) => x.parent_id === c.id)
+                      .map((leaf) => renderLot(leaf, 2))}
+                  </div>
+                </div>
+              ))
+            )}
+          </section>
+        );
+      })}
+
 
       {confirmRemove && (
         <div className="fixed inset-0 z-50 bg-ink/30 flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -2022,6 +2298,34 @@ function SavedLotsTab({ sheetId, onChanged }: { sheetId: string; onChanged: () =
  * first question anyone asks about a lot, and until now the only way to answer it was to
  * export a CSV and open it somewhere else.
  */
+/// The title above a level, and the button that downloads that level's spreadsheet.
+///
+/// Every level has one, which is the shape Jack described: the base lots are a spreadsheet,
+/// and each branch of combined lots is its own.
+function LevelHeading(p: {
+  title: string;
+  note: string;
+  branch?: boolean;
+  onDownload: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-center justify-between gap-3 flex-wrap pt-1 ${
+        p.branch ? "border-t-2 border-accent/40 mt-5" : ""
+      }`}
+    >
+      <div className="min-w-0">
+        <p className="text-[14px] font-semibold text-ink truncate">{p.title}</p>
+        <p className="text-[11px] text-muted tabular-nums mt-0.5">{p.note}</p>
+      </div>
+      <ActBtn onClick={p.onDownload} busy={p.busy} icon={<Download size={12} />}>
+        Spreadsheet
+      </ActBtn>
+    </div>
+  );
+}
+
 function LotBreakdown({ detail }: { detail: LotBuildDetail }) {
   const t = detail.totals;
   const risk = t.title_risk_units;

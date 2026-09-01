@@ -1867,4 +1867,34 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE lot_sheet ADD COLUMN price_overrides_json TEXT;
         "#,
     ),
+    (
+        86,
+        // The lot TREE (R-218). A saved lot may now sit inside a combined lot, which sits
+        // inside a named branch, and each level is its own spreadsheet. Jack: "three levels,
+        // branch then combined then base."
+        //
+        // 86 and not 85: the pushed-but-unmerged `lot-engine-mapping` branch (R-216) already
+        // defines 85. `run_migrations` runs only `version > current`, so an 85 arriving on a
+        // device that already applied 86 would be SKIPPED FOREVER -- that branch must be
+        // renumbered to 87 before it merges.
+        //
+        // `parent_id` is the only edge. `kind` is the level tag AND the cycle guard: a 'lot'
+        // may sit under a 'combined', a 'combined' under a 'branch', a 'branch' under
+        // nothing. A cycle would make the recursive CTE that walks the tree never terminate.
+        //
+        // Only a 'lot' owns slots. 'combined' and 'branch' rows carry slots_json '[]' and
+        // never write lot_slot_state -- that table's `lot_id` is a single scalar, so a parent
+        // staging its children's slots would STEAL them, and archiving a child would then
+        // free nothing while archiving the parent freed every child at once.
+        //
+        // `sold_at` is stamped when status becomes 'sold'. Sold is NOT 'sent': a lot can be
+        // sold before it ships, and 'sent' means the stock has physically left, which is
+        // deliberately irreversible ("absent means shipped, not undone").
+        r#"
+        ALTER TABLE lot_build ADD COLUMN parent_id TEXT;
+        ALTER TABLE lot_build ADD COLUMN kind TEXT NOT NULL DEFAULT 'lot';
+        ALTER TABLE lot_build ADD COLUMN sold_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_lot_build_parent ON lot_build(parent_id);
+        "#,
+    ),
 ];

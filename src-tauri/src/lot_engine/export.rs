@@ -1,12 +1,20 @@
-//! The three artifacts a lot produces, and the assertion that ties them together.
+//! The artifacts a lot produces, and the assertion that ties them together.
 //!
 //! | Artifact | For | Contains |
 //! |---|---|---|
-//! | **Manifest** | Buyer | Lot totals, a per-category summary with the price per unit, then every line |
+//! | **Manifest** | Buyer | Lot totals, then category / brand / segment summaries with shares, then every line |
 //! | **Brand counts** | Sales | Brand, units, share of the lot, styles, retail, and how many slots hold it |
-//! | **Pull sheet** | Warehouse | Slot, units, styles, retail, the brands in it and its box numbers — in walk order |
+//! | **Pull sheet** | Warehouse | Slot, units and retail, in walk order — and nothing else |
+//! | **Roster** | Jack | One row per LOT, not per product: `Ref #`, units, retail, sale price |
 //!
-//! They must reconcile to the same unit total or none of them can be trusted. That check is
+//! The first three are built from stacks and describe one lot. The **roster** is the odd one
+//! out: it describes a *set of lots* — one per level of the lot tree — so its lines are
+//! handed in by the caller rather than derived here. It is in this module anyway, because
+//! two hand-written copies of the same four columns would drift, and the drift would be a
+//! document a buyer is holding.
+//!
+//! The first three must reconcile to the same unit total or none of them can be trusted.
+//! That check is
 //! [`reconcile`], and it addresses columns **by header name, not position** — a
 //! position-based test silently checked the wrong column once a manifest gained one.
 //!
@@ -20,8 +28,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use super::model::{Stack, TitleRisk};
-use super::price::{lot_totals, Pricing};
+use super::model::{LotLine, Stack, TitleRisk};
+use super::price::{lot_totals, GroupTotal, Pricing};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Section {
@@ -127,6 +135,23 @@ pub struct ManifestOpts {
     /// The per-category price-per-unit table.
     #[serde(default = "yes")]
     pub show_by_category: bool,
+    /// The per-segment table -- Men's / Women's / GS / Kids / Unisex, and `Not stated`.
+    ///
+    /// Jack, 2026-08-31, writing out the shape he wants on every manifest: *"how many
+    /// Quantity per Mens/wmns/GS/Kids ... and make sure we dont miss anyything that could be
+    /// hidden with weird text."* The second half is the requirement that matters -- the
+    /// `Not stated` row is never dropped, so the table always sums to the lot.
+    #[serde(default = "yes")]
+    pub show_by_segment: bool,
+    /// The per-brand table. On by default.
+    ///
+    /// Jack, 2026-08-31: *"i noticed when downloaded a specifc manifest it does cat3egory
+    /// breakdown but does not do brands. i think brand percentages are equally as important
+    /// and should be displayed."* He is buying and selling by brand — a lot is "mostly Nike"
+    /// long before it is "mostly footwear" — so a manifest that summarises only by category
+    /// omits the thing the buyer asked about.
+    #[serde(default = "yes")]
+    pub show_by_brand: bool,
 }
 
 fn yes() -> bool {
@@ -147,6 +172,8 @@ impl Default for ManifestOpts {
             show_msrp: true,
             show_summary: true,
             show_by_category: true,
+            show_by_brand: true,
+            show_by_segment: true,
         }
     }
 }
@@ -181,23 +208,28 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
     }
 
     // The buyer's own check: $75 of retail came out at $19.50 a shoe.
-    let by_cat = Section {
-        title: "By category".into(),
+    //
+    // Two of these now, category and brand, built by one closure so their shapes cannot
+    // drift apart on the same page. `Share` is on both: it is what R-222 actually asked for,
+    // and a percentage on one table and not the other, side by side, reads as an omission.
+    let group_table = |title: &str, first: &str, groups: &[GroupTotal]| Section {
+        title: title.into(),
         headers: vec![
-            "Category".into(),
+            first.into(),
             "Units".into(),
+            "Share".into(),
             "Styles".into(),
             "Retail".into(),
             "Price per unit".into(),
             "Price".into(),
         ],
-        rows: t
-            .by_category
+        rows: groups
             .iter()
             .map(|g| {
                 vec![
                     g.name.clone(),
                     g.units.to_string(),
+                    pct(g.share),
                     g.styles.to_string(),
                     money(g.msrp),
                     money(g.per_unit),
@@ -206,6 +238,9 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
             })
             .collect(),
     };
+    let by_cat = group_table("By category", "Category", &t.by_category);
+    let by_brand = group_table("By brand", "Brand", &t.by_brand);
+    let by_segment = group_table("By who it is for", "Segment", &t.by_segment);
 
     // Asked for AND there is something to say. A column of blanks is noise.
     let show_check =
@@ -283,12 +318,18 @@ pub fn manifest(stacks: &[Stack], p: &Pricing, opts: &ManifestOpts) -> Doc {
         })
         .collect();
 
-    let mut sections: Vec<Section> = Vec::with_capacity(3);
+    let mut sections: Vec<Section> = Vec::with_capacity(5);
     if opts.show_summary {
         sections.push(summary);
     }
     if opts.show_by_category {
         sections.push(by_cat);
+    }
+    if opts.show_by_brand {
+        sections.push(by_brand);
+    }
+    if opts.show_by_segment {
+        sections.push(by_segment);
     }
     // The line items are always LAST, because `Doc::lines()` is `sections.last()` and
     // `reconcile` reads its Qty column. Dropping the two above cannot disturb that.
@@ -335,75 +376,105 @@ pub fn brand_counts(stacks: &[Stack], p: &Pricing, lot_name: &str) -> Doc {
     }
 }
 
-/// For the warehouse: one row per slot, in walk order, with everything needed to pull it.
-pub fn pull_sheet(stacks: &[Stack], p: &Pricing, lot_name: &str) -> Doc {
+/// For the warehouse: one row per slot, in walk order.
+///
+/// **Three columns and no more — location, units, retail.** Jack, 2026-08-31: *"when i do a
+/// pull sheet to not include brand names or box or anything like that. just location, units
+/// and msrp is cool."* Styles, Price, Brands and Boxes were all dropped on that instruction.
+/// The reasoning holds up: this is the sheet somebody carries round the warehouse to pull
+/// stock, so it wants the shelf and how much comes off it. The brand mix belongs on the
+/// buyer's manifest and on brand counts, and the ask price has no business on a document the
+/// floor reads.
+///
+/// **`Units` may not be renamed or removed.** `reconcile` sums this column by header name to
+/// prove the three exports agree with the lot — see the note on that function.
+pub fn pull_sheet(stacks: &[Stack], _p: &Pricing, lot_name: &str) -> Doc {
     struct Slot {
         units: i64,
         msrp: f64,
-        ask: f64,
-        styles: BTreeSet<String>,
-        brands: BTreeMap<String, i64>,
-        boxes: BTreeSet<String>,
     }
     let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
     for s in stacks {
-        let e = slots.entry(s.location.clone()).or_insert_with(|| Slot {
-            units: 0,
-            msrp: 0.0,
-            ask: 0.0,
-            styles: BTreeSet::new(),
-            brands: BTreeMap::new(),
-            boxes: BTreeSet::new(),
-        });
+        let e = slots
+            .entry(s.location.clone())
+            .or_insert_with(|| Slot { units: 0, msrp: 0.0 });
         e.units += s.units;
         e.msrp += s.msrp * s.units as f64;
-        e.ask += p.extended(s);
-        e.styles.insert(s.title.clone());
-        *e.brands
-            .entry(s.brand.clone().unwrap_or_else(|| "Unbranded".into()))
-            .or_insert(0) += s.units;
-        if !s.r#box.is_empty() {
-            e.boxes.insert(s.r#box.clone());
-        }
     }
 
     // BTreeMap keys are already in walk order, because the canonical slot code sorts that
     // way by construction.
     let rows = slots
         .into_iter()
-        .map(|(loc, s)| {
-            let mut brands: Vec<(String, i64)> = s.brands.into_iter().collect();
-            brands.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            vec![
-                loc,
-                s.units.to_string(),
-                s.styles.len().to_string(),
-                money(s.msrp),
-                money(s.ask),
-                brands
-                    .iter()
-                    .map(|(n, u)| format!("{n} {u}"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                s.boxes.into_iter().collect::<Vec<_>>().join(", "),
-            ]
-        })
+        .map(|(loc, s)| vec![loc, s.units.to_string(), money(s.msrp)])
         .collect();
 
     Doc {
         name: format!("{lot_name} — pull sheet"),
         sections: vec![Section {
             title: "Slots".into(),
-            headers: vec![
-                "Location".into(),
-                "Units".into(),
-                "Styles".into(),
-                "Retail".into(),
-                "Price".into(),
-                "Brands".into(),
-                "Boxes".into(),
-            ],
+            headers: vec!["Location".into(), "Units".into(), "Retail".into()],
             rows,
+        }],
+    }
+}
+
+/// `$68,700.53` — thousands-separated, always two decimals.
+///
+/// Deliberately NOT `money()`, which writes a bare `1234.56` for the per-line columns of the
+/// stack exports. A roster is the sheet Jack hands round, and his own copy of it is written
+/// this way; matching it is the point.
+fn money_usd(v: f64) -> String {
+    let neg = v < 0.0;
+    let cents = (v.abs() * 100.0).round() as i64;
+    let whole = (cents / 100).to_string();
+    let mut grouped = String::new();
+    for (i, c) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    format!("{}${}.{:02}", if neg { "-" } else { "" }, grouped, cents % 100)
+}
+
+/// **The roster** — one row per lot, in the shape of the master spreadsheet Jack keeps by
+/// hand: `Ref #`, `Unit count`, `Retail Value`, `Sale Price`.
+///
+/// One of these exists per level of the lot tree: the base lots are one roster, each branch
+/// is another, and a branch's own roster lists its combined lots. Which lots are on which
+/// sheet is decided by the caller — the engine is handed the lines and formats them.
+///
+/// Two deliberate departures from his hand-kept file, both worth knowing before comparing
+/// the two side by side:
+///
+/// * His second heading is `"Unit count "` with a **trailing space**. We emit it without.
+///   `Section::col` compares with `eq_ignore_ascii_case` and does not trim, so the space
+///   would make the column unfindable by every reader we have, including our own tests.
+/// * His unit counts are sometimes text (`"1,010"`) and one is simply wrong (B-003 reads
+///   100 against a real 1,000). We emit bare integers, so the column sums.
+pub fn lot_roster(lines: &[LotLine], title: &str) -> Doc {
+    Doc {
+        name: title.to_string(),
+        sections: vec![Section {
+            title: "Lots".into(),
+            headers: vec![
+                "Ref #".into(),
+                "Unit count".into(),
+                "Retail Value".into(),
+                "Sale Price".into(),
+            ],
+            rows: lines
+                .iter()
+                .map(|l| {
+                    vec![
+                        l.reference.clone(),
+                        l.units.to_string(),
+                        money_usd(l.retail),
+                        money_usd(l.sale),
+                    ]
+                })
+                .collect(),
         }],
     }
 }
@@ -655,6 +726,8 @@ mod manifest_shape_tests {
         let opts = ManifestOpts {
             show_summary: false,
             show_by_category: false,
+            show_by_brand: false,
+            show_by_segment: false,
             show_upc: false,
             show_msrp: false,
             ..Default::default()
@@ -814,6 +887,83 @@ mod tests {
         assert_eq!(cat.rows[0][per], "49.40");
     }
 
+    /// R-222. The manifest summarised by category and not by brand, and Jack buys and sells
+    /// by brand. Both tables now, both carrying the percentage he asked for.
+    #[test]
+    fn the_manifest_breaks_down_by_brand_as_well_as_category() {
+        let m = manifest(&fixture(), &Pricing::flat(0.26), &ManifestOpts::default());
+        let brand = m
+            .sections
+            .iter()
+            .find(|x| x.title == "By brand")
+            .expect("the manifest has a brand table");
+
+        // Same shape as the category table — one builder, so they cannot drift on the page.
+        let cat = m.sections.iter().find(|x| x.title == "By category").unwrap();
+        assert_eq!(brand.headers[1..], cat.headers[1..]);
+        assert_eq!(brand.headers[0], "Brand");
+        assert_eq!(cat.headers[0], "Category");
+
+        // 46 Nike + 20 Nike = 66 of 68 units, biggest first.
+        let share = brand.col("Share").unwrap();
+        assert_eq!(brand.rows[0][0], "Nike");
+        assert_eq!(brand.rows[0][share], "97.1%");
+        assert_eq!(brand.sum_i64("Units").unwrap(), 68);
+        // The percentage is on the category table too — one page, one convention.
+        assert!(cat.col("Share").is_some());
+    }
+
+    /// R-223. Men's / Women's / GS / Kids on every manifest -- and the rule that matters:
+    /// nothing may be hidden. Every unit on the lot is on the table, under a name.
+    #[test]
+    fn the_segment_table_names_everything_including_what_the_title_did_not_say() {
+        let mut st = fixture();
+        st[0].segment = Some("Men's".into());
+        st[1].segment = Some("GS".into());
+        st[2].segment = None; // "hidden with weird text" -- must still be a row
+        let m = manifest(&st, &Pricing::flat(0.26), &ManifestOpts::default());
+        let seg = m
+            .sections
+            .iter()
+            .find(|x| x.title == "By who it is for")
+            .expect("the manifest breaks down by segment");
+        let names: Vec<&str> = seg.rows.iter().map(|r| r[0].as_str()).collect();
+        assert!(names.contains(&"Men's") && names.contains(&"GS"));
+        assert!(names.contains(&"Not stated"), "unsegmented stock must be a named row, never dropped");
+        // The whole point: the table adds up to the lot.
+        assert_eq!(seg.sum_i64("Units").unwrap(), 68);
+    }
+
+    /// The same completeness rule on the other two tables, so none of them can quietly
+    /// shrink. This is the assertion that would fail if a future filter dropped a bucket.
+    #[test]
+    fn every_breakdown_table_sums_to_the_lot() {
+        let mut st = fixture();
+        st[2].brand = None;
+        st[2].category = None;
+        st[2].segment = None;
+        let m = manifest(&st, &Pricing::flat(0.26), &ManifestOpts::default());
+        for title in ["By category", "By brand", "By who it is for"] {
+            let sec = m.sections.iter().find(|x| x.title == title).unwrap();
+            assert_eq!(sec.sum_i64("Units").unwrap(), 68, "{title} does not sum to the lot");
+        }
+    }
+
+    /// It is a switch like the rest of R-215's, and it defaults ON.
+    #[test]
+    fn the_brand_table_can_be_turned_off_and_is_on_by_default() {
+        let st = fixture();
+        let p = Pricing::flat(0.26);
+        assert!(manifest(&st, &p, &ManifestOpts::default())
+            .sections
+            .iter()
+            .any(|x| x.title == "By brand"));
+        let off = ManifestOpts { show_by_brand: false, ..Default::default() };
+        assert!(!manifest(&st, &p, &off).sections.iter().any(|x| x.title == "By brand"));
+        // Turning it off must not disturb the line items, which are always last.
+        assert_eq!(manifest(&st, &p, &off).lines().unwrap().sum_i64("Qty").unwrap(), 68);
+    }
+
     /// The description-check column appears only when there is something to check.
     #[test]
     fn the_check_column_appears_only_when_it_has_something_to_say() {
@@ -850,8 +1000,58 @@ mod tests {
         assert_eq!(sec.rows.len(), 2);
         assert_eq!(sec.rows[0][0], "43-127-04A");
         assert_eq!(sec.rows[1][0], "43-127-05A");
-        let brands = sec.col("Brands").unwrap();
-        assert_eq!(sec.rows[0][brands], "Nike 46, New Balance 2");
+    }
+
+    /// Rewritten rather than deleted when the columns were cut: it used to assert the brand
+    /// string, so it is the test that would have silently kept passing on a stale shape.
+    /// Both directions are pinned — the three that stay, and the four that must not return.
+    #[test]
+    fn the_pull_sheet_carries_only_location_units_and_retail() {
+        let pl = pull_sheet(&fixture(), &Pricing::flat(0.26), "Lot 1");
+        let sec = pl.lines().unwrap();
+        assert_eq!(sec.headers, vec!["Location", "Units", "Retail"]);
+        for gone in ["Styles", "Price", "Brands", "Boxes"] {
+            assert!(sec.col(gone).is_none(), "{gone} is back on the pull sheet");
+        }
+        // The column reconcile() sums by name has to survive the cut.
+        assert_eq!(sec.sum_i64("Units").unwrap(), 68);
+    }
+
+    /// Golden, against the real numbers off Jack's own master sheet: B-001 is 1,030 units,
+    /// $68,700.53 retail, $20,613.00 sale.
+    #[test]
+    fn the_roster_matches_the_master_spreadsheet_shape() {
+        let d = lot_roster(
+            &[
+                LotLine { reference: "B-001".into(), units: 1030, retail: 68_700.53, sale: 20_613.0 },
+                LotLine { reference: "B-021".into(), units: 831, retail: 41_464.11, sale: 12_441.0 },
+            ],
+            "Master shoe list",
+        );
+        let sec = d.lines().unwrap();
+        assert_eq!(sec.headers, vec!["Ref #", "Unit count", "Retail Value", "Sale Price"]);
+        assert_eq!(sec.rows[0], vec!["B-001", "1030", "$68,700.53", "$20,613.00"]);
+        assert_eq!(sec.rows[1], vec!["B-021", "831", "$41,464.11", "$12,441.00"]);
+        // Bare integers, so the column sums — his hand-kept copy has "1,010" as text.
+        assert_eq!(sec.sum_i64("Unit count").unwrap(), 1861);
+        // The heading is emitted WITHOUT his trailing space, or col() could never find it.
+        assert!(sec.col("Unit count ").is_none());
+    }
+
+    #[test]
+    fn roster_money_groups_thousands_and_survives_the_edges() {
+        let d = lot_roster(
+            &[
+                LotLine { reference: "a".into(), units: 0, retail: 0.0, sale: 999.995 },
+                LotLine { reference: "b".into(), units: 1, retail: 1_234_567.891, sale: -5.5 },
+            ],
+            "edges",
+        );
+        let r = &d.lines().unwrap().rows;
+        assert_eq!(r[0][2], "$0.00");
+        assert_eq!(r[0][3], "$1,000.00");
+        assert_eq!(r[1][2], "$1,234,567.89");
+        assert_eq!(r[1][3], "-$5.50");
     }
 
     #[test]

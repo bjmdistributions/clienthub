@@ -1068,7 +1068,8 @@ mod tests {
         let st = &r.stacks[0];
         assert_eq!(st.brand.as_deref(), Some("Nike"));
         assert_eq!(st.category.as_deref(), Some("Footwear"));
-        assert_eq!(st.segment.as_deref(), Some("Kids"));
+        // "Big Kid" is the GS size run, its own segment since R-223.
+        assert_eq!(st.segment.as_deref(), Some("GS"));
         assert_eq!(st.size_us, Some(6.5));
     }
 }

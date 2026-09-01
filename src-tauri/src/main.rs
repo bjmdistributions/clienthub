@@ -950,6 +950,13 @@ fn main() {
             lot_store::set_lot_manifest_opts,
             lot_store::lot_sheet_products,
             lot_store::resync_lot_engine,
+            // The lot tree (R-218): branch > combined > base lot.
+            lot_store::create_lot_branch,
+            lot_store::combine_lot_builds,
+            lot_store::set_lot_parent,
+            lot_store::mark_lot_sold,
+            lot_store::lot_roster_lines,
+            lot_store::export_lot_roster,
             // Forecast
             get_profit_forecast,
             // Sync
