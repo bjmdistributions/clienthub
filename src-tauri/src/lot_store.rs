@@ -1705,16 +1705,36 @@ fn lot_pages(build: &LotBuild, opts_base: &ManifestOpts) -> Result<(Doc, Doc), S
     ))
 }
 
-/// The lots inside a branch, in the order they appear on its first page.
-fn branch_members(branch_id: &str) -> Result<Vec<LotBuild>, String> {
+/// The lots on one level, in the order they appear on its first page.
+///
+/// `node` is a branch id, or `None` for the TOP LEVEL — the base lots that are in no branch.
+/// That level is a level like any other and gets the same workbook; leaving it out was why
+/// twenty-one unbranched lots had nowhere to download from.
+///
+/// Merged lots are excluded from the top level on purpose: a merge holds the same physical
+/// stock as its sources, so listing both would count it twice on the one page that is meant
+/// to reconcile against the master sheet. A merge downloads its own two-page workbook.
+fn level_members(sheet_id: &str, node: Option<&str>) -> Result<Vec<LotBuild>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let mut st = conn
-        .prepare(&format!(
-            "{BUILD_SELECT} WHERE b.parent_id = ?1 AND b.archived = 0 AND b.status = 'saved' \
-             ORDER BY b.name"
-        ))
-        .map_err(|e| e.to_string())?;
-    let rows = st.query_map([branch_id], row_to_build).map_err(|e| e.to_string())?;
+    let (sql, arg) = match node {
+        Some(b) => (
+            format!(
+                "{BUILD_SELECT} WHERE b.parent_id = ?1 AND b.archived = 0 \
+                 AND b.status = 'saved' ORDER BY b.name"
+            ),
+            b.to_string(),
+        ),
+        None => (
+            format!(
+                "{BUILD_SELECT} WHERE b.sheet_id = ?1 AND b.parent_id IS NULL \
+                 AND COALESCE(b.kind,'lot') = 'lot' AND b.archived = 0 \
+                 AND b.status = 'saved' ORDER BY b.name"
+            ),
+            sheet_id.to_string(),
+        ),
+    };
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = st.query_map([&arg], row_to_build).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r.map_err(|e| e.to_string())?);
@@ -1730,17 +1750,18 @@ fn branch_members(branch_id: &str) -> Result<Vec<LotBuild>, String> {
 /// **xlsx only.** A CSV is one table; there is no honest way to flatten 22 pages into one, and
 /// silently handing over page 1 alone would look like a complete file.
 #[tauri::command]
-pub async fn export_branch_workbook(branch_id: String, path: String) -> Result<ExportResult, String> {
-    let branch = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&branch_id], row_to_build)
-            .map_err(|e| e.to_string())?
-    };
-    ensure_artifact(&branch.sheet_id).await?;
-    let members = branch_members(&branch_id)?;
+pub async fn export_branch_workbook(
+    sheet_id: String,
+    branch_id: Option<String>,
+    title: String,
+    path: String,
+) -> Result<ExportResult, String> {
+    ensure_artifact(&sheet_id).await?;
+    let members = level_members(&sheet_id, branch_id.as_deref())?;
     if members.is_empty() {
-        return Err("there are no lots in that branch yet".into());
+        return Err("there are no lots on that level yet".into());
     }
+    let branch = LotBuild { name: title, ..members[0].clone() };
     let opts = saved_manifest_opts();
 
     let lines: Vec<LotLine> = members

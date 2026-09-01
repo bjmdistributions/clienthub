@@ -32,7 +32,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { Download, Plus } from "lucide-react";
+import { ClipboardCopy, Download, Plus, Trash2 } from "lucide-react";
+import { writeText as clipboardWrite } from "@tauri-apps/plugin-clipboard-manager";
 import { api, type LotBuild, type LotBuildDetail } from "../lib/api";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { toast } from "./Toast";
@@ -239,6 +240,12 @@ export default function LotCanvas({
   const [combineName, setCombineName] = useState("");
   const [combinePct, setCombinePct] = useState("");
   const [narrow, setNarrow] = useState(false);
+  const [format, setFormat] = useState<"csv" | "xlsx">("xlsx");
+  const [confirmRemove, setConfirmRemove] = useState<LotBuild | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [pctDraft, setPctDraft] = useState<Record<string, string>>({});
+  const [costDraft, setCostDraft] = useState<Record<string, string>>({});
   const wrap = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(() => {
@@ -375,7 +382,7 @@ export default function LotCanvas({
     try {
       const r =
         kind === "branch"
-          ? await api.exportBranchWorkbook(b.id, dest)
+          ? await api.exportBranchWorkbook(sheetId, b.id === "__top" ? null : b.id, b.name, dest)
           : await api.exportLotWorkbook(b.id, dest);
       toast(
         kind === "branch"
@@ -386,6 +393,99 @@ export default function LotCanvas({
       toast(String(e), "error");
     }
     setBusy(null);
+  };
+
+  /** The three stack exports. Straight to a save dialog, as they always were. */
+  const exportOne = async (b: LotBuild, kind: "manifest" | "brands" | "pull") => {
+    const safe = b.name.replace(/[^A-Za-z0-9._-]+/g, "-");
+    const dest = await saveDialog({
+      defaultPath: `${safe}-${kind}.${format}`,
+      filters: [
+        format === "xlsx"
+          ? { name: "Excel workbook", extensions: ["xlsx"] }
+          : { name: "CSV", extensions: ["csv"] },
+      ],
+    });
+    if (!dest) return;
+    setBusy(b.id);
+    try {
+      const r = await api.exportLotBuild(b.id, kind, { format, destPath: dest });
+      toast(`${n(r.rows)} rows written.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  /**
+   * The slot codes, on the clipboard in one action — the thing Jack reaches for most.
+   *
+   * The NATIVE clipboard, never navigator.clipboard: the web API throws NotAllowedError in
+   * this webview because the click has already been through an await (the codes are fetched
+   * first) and no longer counts as the user gesture it demands. Same reason as R-214.
+   */
+  const copyCodes = async (b: LotBuild) => {
+    setBusy(b.id);
+    try {
+      const codes = await api.lotBuildLocationCodes(b.id);
+      await clipboardWrite(codes);
+      toast(`${n(codes.split("\n").filter(Boolean).length)} codes copied.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  const rename = async (b: LotBuild) => {
+    const name = draft.trim();
+    setRenaming(null);
+    if (!name || name === b.name) return;
+    try {
+      await api.renameLotBuild(b.id, name);
+      load();
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+  };
+
+  /** One percentage across this one lot, replacing any per-category rates. */
+  const reprice = async (b: LotBuild) => {
+    const pct = pctDraft[b.id] ? parseAmount(pctDraft[b.id]) / 100 : b.price_pct;
+    const cost = costDraft[b.id] ? parseAmount(costDraft[b.id]) / 100 : b.cost_pct;
+    setBusy(b.id);
+    try {
+      await api.repriceLotBuild(b.id, pct, cost);
+      setPctDraft((d) => ({ ...d, [b.id]: "" }));
+      setCostDraft((d) => ({ ...d, [b.id]: "" }));
+      load();
+      onChanged();
+      toast("Repriced.");
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  const archive = async (b: LotBuild) => {
+    try {
+      await api.archiveLotBuild(b.id, true);
+      load();
+      onChanged();
+      toast("Lot archived. Slots that were only staged are back in the pool.");
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+  };
+
+  const putBack = async (b: LotBuild) => {
+    try {
+      await api.removeLotFromMasterList(b.id, false);
+      load();
+      onChanged();
+      toast("Put back on the master list.");
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
   };
 
   const expand = async (b: LotBuild) => {
@@ -472,18 +572,82 @@ export default function LotCanvas({
         />
       )}
 
+      {/* THE WORKBENCH. A 248px card cannot hold eight controls, so the canvas navigates
+          and this panel does the work — everything the old list row had, on the lot you
+          clicked. Removing these was the mistake this panel exists to undo. */}
       {open && detail[open] && (
-        <div className="rounded-xl border border-line bg-surface p-3.5">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-[13px] font-semibold text-ink">{detail[open].build.name}</p>
-            <button
-              onClick={() => setOpen(null)}
-              className="text-[11.5px] text-muted hover:text-accent transition-colors"
-            >
-              Close
-            </button>
+        <LotWorkbench
+          build={detail[open].build}
+          detail={detail[open]}
+          format={format}
+          setFormat={setFormat}
+          renaming={renaming === open}
+          draft={draft}
+          setDraft={setDraft}
+          startRename={(b) => {
+            setDraft(b.name);
+            setRenaming(b.id);
+          }}
+          onRename={rename}
+          pctDraft={pctDraft[open] ?? ""}
+          setPctDraft={(v) => setPctDraft((d) => ({ ...d, [open]: v }))}
+          costDraft={costDraft[open] ?? ""}
+          setCostDraft={(v) => setCostDraft((d) => ({ ...d, [open]: v }))}
+          onReprice={reprice}
+          onExport={exportOne}
+          onWorkbook={(b) => download(b, "lot")}
+          onCopyCodes={copyCodes}
+          onSold={markSold}
+          onRemove={setConfirmRemove}
+          onPutBack={putBack}
+          onArchive={archive}
+          onClose={() => setOpen(null)}
+          busy={busy}
+        />
+      )}
+
+      {confirmRemove && (
+        <div
+          className="fixed inset-0 z-50 bg-ink/30 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-surface rounded-2xl border border-line max-w-[460px] w-full p-5">
+            <p className="text-[15px] font-semibold text-ink">
+              Take {confirmRemove.locations} slots off the master list?
+            </p>
+            <p className="text-[12.5px] text-muted mt-2 leading-relaxed">
+              This says the stock has physically left. Those locations stay off every future
+              search, and they stay off even when a refreshed export still lists them — absent
+              means shipped, not undone. Nothing is deleted, and you can put them back from
+              here.
+            </p>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setConfirmRemove(null)}
+                className="text-[12.5px] text-ink-2 border border-line-3 hover:border-accent hover:text-accent px-3 h-9 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const b = confirmRemove;
+                  setConfirmRemove(null);
+                  try {
+                    const c = await api.removeLotFromMasterList(b.id, true);
+                    load();
+                    onChanged();
+                    toast(`${n(c)} locations are off the master list for good.`);
+                  } catch (e: any) {
+                    toast(String(e), "error");
+                  }
+                }}
+                className="text-[12.5px] bg-danger text-on-accent px-3 h-9 rounded-lg hover:opacity-90 transition-opacity"
+              >
+                Take them off
+              </button>
+            </div>
           </div>
-          <Breakdown detail={detail[open]} />
         </div>
       )}
     </div>
@@ -765,6 +929,23 @@ function LaneRail(p: {
       <p className="text-[11px] text-ink-2 tabular-nums mt-1">{fmtAmount(ask)}</p>
       {cost > 0 && (
         <p className="text-[10.5px] text-accent tabular-nums">You keep {fmtAmount(ask - cost)}</p>
+      )}
+      {/* The top level is a level too. Before this it had no Spreadsheet button at all, so
+          twenty-one unbranched lots had nowhere to download from — the single worst thing
+          the canvas rewrite broke. Its workbook is the same shape as a branch's. */}
+      {!b && (
+        <button
+          onClick={() =>
+            p.onDownload(
+              { id: "__top", name: "Master list" } as unknown as LotBuild,
+              "branch",
+            )
+          }
+          disabled={p.busy === "__top"}
+          className="w-full mt-2 h-7 rounded-md border border-line-3 text-[11px] text-ink-2 hover:border-accent hover:text-accent transition-colors flex items-center justify-center gap-1"
+        >
+          <Download size={11} /> Spreadsheet
+        </button>
       )}
       {b && (
         <>
@@ -1055,6 +1236,149 @@ function Table(p: { title: string; rows: string[][] }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+
+/* ------------------------------------------------------------------ workbench -------- */
+
+/**
+ * Everything a lot can do, on the lot you clicked.
+ *
+ * This is the part the canvas rewrite dropped and Jack noticed immediately: *"i cant even
+ * click on each individual lots to get codes i need. you took away all the main features."*
+ * Copy codes, the three stack exports, rename, reprice, archive and remove-from-master-list
+ * were all working before and none of them were his to lose.
+ */
+function LotWorkbench(p: {
+  build: LotBuild;
+  detail: LotBuildDetail;
+  format: "csv" | "xlsx";
+  setFormat: (v: "csv" | "xlsx") => void;
+  renaming: boolean;
+  draft: string;
+  setDraft: (v: string) => void;
+  startRename: (b: LotBuild) => void;
+  onRename: (b: LotBuild) => void;
+  pctDraft: string;
+  setPctDraft: (v: string) => void;
+  costDraft: string;
+  setCostDraft: (v: string) => void;
+  onReprice: (b: LotBuild) => void;
+  onExport: (b: LotBuild, kind: "manifest" | "brands" | "pull") => void;
+  onWorkbook: (b: LotBuild) => void;
+  onCopyCodes: (b: LotBuild) => void;
+  onSold: (b: LotBuild, sold: boolean) => void;
+  onRemove: (b: LotBuild) => void;
+  onPutBack: (b: LotBuild) => void;
+  onArchive: (b: LotBuild) => void;
+  onClose: () => void;
+  busy: string | null;
+}) {
+  const b = p.build;
+  const sold = b.status === "sold";
+  const sent = b.status === "sent";
+  return (
+    <div className="rounded-xl border border-line bg-surface p-3.5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        {p.renaming ? (
+          <input
+            autoFocus
+            className={`${inp} max-w-[320px]`}
+            value={p.draft}
+            onChange={(e) => p.setDraft(e.target.value)}
+            onBlur={() => p.onRename(b)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") p.onRename(b);
+              if (e.key === "Escape") p.onClose();
+            }}
+          />
+        ) : (
+          <p className="text-[14px] font-semibold text-ink truncate">{b.name}</p>
+        )}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[11px] text-muted">Download as</span>
+          <div className="flex gap-1 bg-surface-2 rounded-lg p-1 border border-line-2">
+            {(
+              [
+                ["xlsx", "Excel"],
+                ["csv", "CSV"],
+              ] as ["csv" | "xlsx", string][]
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => p.setFormat(id)}
+                className={`text-[11.5px] px-2.5 h-6 rounded-md transition-colors ${
+                  p.format === id ? "bg-accent text-on-accent" : "text-ink-2 hover:text-accent"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={p.onClose}
+            className="text-[11.5px] text-muted hover:text-accent transition-colors ml-1"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+
+      {/* Priced here, before it is downloaded — one number across every line. */}
+      <div className="flex flex-wrap items-end gap-2 rounded-lg bg-surface-2 border border-line-2 px-2.5 py-2">
+        <label className="text-[10.5px] text-muted">
+          Sell at, % of retail
+          <NumberInput
+            className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
+            placeholder={(b.price_pct * 100).toFixed(1)}
+            value={p.pctDraft}
+            onValue={(_, raw) => p.setPctDraft(raw)}
+          />
+        </label>
+        <label className="text-[10.5px] text-muted">
+          Cost, %
+          <NumberInput
+            className="w-20 bg-surface border border-line-2 rounded-md px-2 h-7 text-[11.5px] text-ink text-right tabular-nums focus:outline-none focus:border-accent transition-colors mt-0.5"
+            placeholder={b.cost_pct > 0 ? (b.cost_pct * 100).toFixed(1) : "none"}
+            value={p.costDraft}
+            onValue={(_, raw) => p.setCostDraft(raw)}
+          />
+        </label>
+        <Btn onClick={() => p.onReprice(b)} busy={p.busy === b.id}>
+          Apply to all {n(b.units)} units
+        </Btn>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Btn onClick={() => p.onWorkbook(b)} busy={p.busy === b.id}>
+          Workbook — 2 pages
+        </Btn>
+        <Btn onClick={() => p.onExport(b, "manifest")} busy={p.busy === b.id}>
+          Manifest
+        </Btn>
+        <Btn onClick={() => p.onExport(b, "brands")} busy={p.busy === b.id}>
+          Brand counts
+        </Btn>
+        <Btn onClick={() => p.onExport(b, "pull")} busy={p.busy === b.id}>
+          Pull sheet
+        </Btn>
+        <Btn onClick={() => p.onCopyCodes(b)} busy={p.busy === b.id}>
+          Copy codes
+        </Btn>
+        <Btn onClick={() => p.startRename(b)}>Rename</Btn>
+        <div className="flex-1" />
+        <Btn onClick={() => p.onSold(b, !sold)} busy={p.busy === b.id}>
+          {sold ? "Not sold after all" : "Mark sold"}
+        </Btn>
+        <Btn onClick={() => (sent ? p.onPutBack(b) : p.onRemove(b))}>
+          {sent ? "Put back on the list" : "Remove from master list"}
+        </Btn>
+        <Btn onClick={() => p.onArchive(b)}>Archive</Btn>
+      </div>
+
+      <Breakdown detail={p.detail} />
     </div>
   );
 }

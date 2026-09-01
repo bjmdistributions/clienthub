@@ -3274,8 +3274,14 @@ export const api = {
   setBranchPricing: (branchId: string, pricePct: number, costPct?: number) =>
     invoke<number>("set_branch_pricing", { branchId, pricePct, costPct: costPct ?? null }),
   /** A branch: one breakdown page, then one page per lot. xlsx only. */
-  exportBranchWorkbook: (branchId: string, path: string) =>
-    invoke<LotExportResult>("export_branch_workbook", { branchId, path }),
+  /** A level: 1 breakdown page + one page per lot. `branchId` null is the top level. */
+  exportBranchWorkbook: (
+    sheetId: string,
+    branchId: string | null,
+    title: string,
+    path: string,
+  ) =>
+    invoke<LotExportResult>("export_branch_workbook", { sheetId, branchId, title, path }),
   /** One lot: breakdown, then all its items. Two pages. */
   exportLotWorkbook: (buildId: string, path: string) =>
     invoke<LotExportResult>("export_lot_workbook", { buildId, path }),
