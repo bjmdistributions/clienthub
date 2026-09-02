@@ -1773,7 +1773,9 @@ pub async fn export_branch_workbook(
             sale: m.ask_total,
         })
         .collect();
-    let mut docs = vec![export::lot_roster(&lines, &branch.name)];
+    // Page 1 is called MASTER, matching the workbook Jack keeps by hand. Not the level's
+    // name: he opens these beside his own file and the tab has to read the same.
+    let mut docs = vec![export::lot_roster(&lines, "MASTER")];
     for m in &members {
         let (breakdown, items) = lot_pages(m, &opts)?;
         // One page per lot: its breakdown sits above its items on the same sheet, which is
@@ -1805,6 +1807,28 @@ pub async fn export_lot_workbook(build_id: String, path: String) -> Result<Expor
     let bytes = export::to_xlsx_book(&[breakdown, items]).map_err(|e| e.to_string())?;
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(ExportResult { path, rows, reconciled: true })
+}
+
+/// The item lines a lot contains — the same rows that go on its page in the workbook.
+///
+/// Nothing else answered *"what actually is contained"*: `lot_build_detail` gives totals and
+/// `lot_sheet_products` is per SHEET, not per lot. This is the manifest's line section,
+/// handed back as a table so the row that opens in place shows the real contents rather than
+/// another summary of them.
+#[tauri::command]
+pub async fn lot_build_lines(build_id: String) -> Result<export::Section, String> {
+    let build = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        conn.query_row(&format!("{BUILD_SELECT} WHERE b.id = ?1"), [&build_id], row_to_build)
+            .map_err(|e| e.to_string())?
+    };
+    ensure_artifact(&build.sheet_id).await?;
+    let (_, items) = lot_pages(&build, &saved_manifest_opts())?;
+    items
+        .sections
+        .into_iter()
+        .next()
+        .ok_or_else(|| "that lot has no lines".to_string())
 }
 
 /// Mark a lot sold, and everything it was built from with it.

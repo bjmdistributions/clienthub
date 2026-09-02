@@ -32,7 +32,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { ClipboardCopy, Download, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, List, Plus, Share2 } from "lucide-react";
 import { writeText as clipboardWrite } from "@tauri-apps/plugin-clipboard-manager";
 import { api, type LotBuild, type LotBuildDetail } from "../lib/api";
 import { fmtAmount, parseAmount } from "../lib/format";
@@ -40,6 +40,9 @@ import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 
 const n = (v: number) => v.toLocaleString();
+
+/** The manifest line section of one lot: what is actually in it. */
+type LotLines = { title: string; headers: string[]; rows: string[][] };
 
 /** Card and grid geometry. Kept together because the SVG and the DOM both read them. */
 const NODE_W = 248;
@@ -240,6 +243,10 @@ export default function LotCanvas({
   const [combineName, setCombineName] = useState("");
   const [combinePct, setCombinePct] = useState("");
   const [narrow, setNarrow] = useState(false);
+  // The list is the default. The diagram earns its place while combining and gets in the way
+  // the rest of the time, so it is a toggle rather than the only way in.
+  const [view, setView] = useState<"list" | "diagram">("list");
+  const [lines, setLines] = useState<Record<string, LotLines>>({});
   const [format, setFormat] = useState<"csv" | "xlsx">("xlsx");
   const [confirmRemove, setConfirmRemove] = useState<LotBuild | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -494,14 +501,67 @@ export default function LotCanvas({
       return;
     }
     setOpen(b.id);
-    if (detail[b.id]) return;
-    try {
-      const d = await api.lotBuildDetail(b.id);
-      setDetail((m) => ({ ...m, [b.id]: d }));
-    } catch (e: any) {
-      toast(String(e), "error");
+    if (!detail[b.id]) {
+      try {
+        const d = await api.lotBuildDetail(b.id);
+        setDetail((m) => ({ ...m, [b.id]: d }));
+      } catch (e: any) {
+        toast(String(e), "error");
+      }
+    }
+    // The contents, which is what "see what actually is contained" asks for. Fetched
+    // separately so a slow line list never delays the totals.
+    if (!lines[b.id]) {
+      try {
+        const l = await api.lotBuildLines(b.id);
+        setLines((m) => ({ ...m, [b.id]: l }));
+      } catch (e: any) {
+        toast(String(e), "error");
+      }
     }
   };
+
+  /**
+   * Everything a lot can do, rendered UNDER THE ROW that was clicked.
+   *
+   * It used to render at the bottom of the page, below a diagram that is 2,400px tall with
+   * 21 lots — so clicking a lot opened a panel two screens down and looked like nothing had
+   * happened. That is the whole of "i still see nothing when i click the individual lots".
+   */
+  const workbench = (b: LotBuild) =>
+    detail[b.id] ? (
+      <LotWorkbench
+        build={detail[b.id].build}
+        detail={detail[b.id]}
+        lines={lines[b.id]}
+        format={format}
+        setFormat={setFormat}
+        renaming={renaming === b.id}
+        draft={draft}
+        setDraft={setDraft}
+        startRename={(x) => {
+          setDraft(x.name);
+          setRenaming(x.id);
+        }}
+        onRename={rename}
+        pctDraft={pctDraft[b.id] ?? ""}
+        setPctDraft={(v) => setPctDraft((d) => ({ ...d, [b.id]: v }))}
+        costDraft={costDraft[b.id] ?? ""}
+        setCostDraft={(v) => setCostDraft((d) => ({ ...d, [b.id]: v }))}
+        onReprice={reprice}
+        onExport={exportOne}
+        onWorkbook={(x) => download(x, "lot")}
+        onCopyCodes={copyCodes}
+        onSold={markSold}
+        onRemove={setConfirmRemove}
+        onPutBack={putBack}
+        onArchive={archive}
+        onClose={() => setOpen(null)}
+        busy={busy}
+      />
+    ) : (
+      <div className="h-32 rounded-xl bg-surface-2 animate-pulse" />
+    );
 
   if (!rows)
     return (
@@ -536,10 +596,46 @@ export default function LotCanvas({
         />
       )}
 
+      {rows.length > 0 && (
+        <div className="flex items-center gap-1 bg-surface-2 rounded-lg p-1 border border-line-2 w-fit">
+          {(
+            [
+              ["list", "List", <List size={12} key="l" />],
+              ["diagram", "Diagram", <Share2 size={12} key="d" />],
+            ] as ["list" | "diagram", string, React.ReactNode][]
+          ).map(([id, label, icon]) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={`flex items-center gap-1.5 text-[11.5px] px-2.5 h-7 rounded-md transition-colors ${
+                view === id ? "bg-accent text-on-accent" : "text-ink-2 hover:text-accent"
+              }`}
+            >
+              {icon} {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {rows.length === 0 ? (
         <p className="text-[12.5px] text-muted">
           No lots built from this sheet yet. Build one on the first tab and it appears here.
         </p>
+      ) : view === "list" || narrow ? (
+        <ListView
+          L={L}
+          selected={selected}
+          pickable={pickable}
+          onToggle={toggle}
+          open={open}
+          onExpand={expand}
+          detail={detail}
+          lines={lines}
+          onDownload={download}
+          onPricing={load}
+          busy={busy}
+          row={(b) => workbench(b)}
+        />
       ) : narrow ? (
         <Outline
           L={L}
@@ -569,40 +665,6 @@ export default function LotCanvas({
           open={open}
           busy={busy}
           onPricing={load}
-        />
-      )}
-
-      {/* THE WORKBENCH. A 248px card cannot hold eight controls, so the canvas navigates
-          and this panel does the work — everything the old list row had, on the lot you
-          clicked. Removing these was the mistake this panel exists to undo. */}
-      {open && detail[open] && (
-        <LotWorkbench
-          build={detail[open].build}
-          detail={detail[open]}
-          format={format}
-          setFormat={setFormat}
-          renaming={renaming === open}
-          draft={draft}
-          setDraft={setDraft}
-          startRename={(b) => {
-            setDraft(b.name);
-            setRenaming(b.id);
-          }}
-          onRename={rename}
-          pctDraft={pctDraft[open] ?? ""}
-          setPctDraft={(v) => setPctDraft((d) => ({ ...d, [open]: v }))}
-          costDraft={costDraft[open] ?? ""}
-          setCostDraft={(v) => setCostDraft((d) => ({ ...d, [open]: v }))}
-          onReprice={reprice}
-          onExport={exportOne}
-          onWorkbook={(b) => download(b, "lot")}
-          onCopyCodes={copyCodes}
-          onSold={markSold}
-          onRemove={setConfirmRemove}
-          onPutBack={putBack}
-          onArchive={archive}
-          onClose={() => setOpen(null)}
-          busy={busy}
         />
       )}
 
@@ -886,6 +948,8 @@ function LaneRail(p: {
   onDownload: (b: LotBuild, kind: "branch" | "lot") => void;
   busy: string | null;
   onPricing: () => void;
+  /** In the list the rail is a full-width heading rather than a 176px sticky column. */
+  wide?: boolean;
 }) {
   const members = p.L.placed.filter((x) => x.lane === p.lane.id && x.lot.status === "saved");
   const units = members.reduce((t, m) => t + m.lot.units, 0);
@@ -1254,6 +1318,7 @@ function Table(p: { title: string; rows: string[][] }) {
 function LotWorkbench(p: {
   build: LotBuild;
   detail: LotBuildDetail;
+  lines: LotLines | undefined;
   format: "csv" | "xlsx";
   setFormat: (v: "csv" | "xlsx") => void;
   renaming: boolean;
@@ -1378,7 +1443,219 @@ function LotWorkbench(p: {
         <Btn onClick={() => p.onArchive(b)}>Archive</Btn>
       </div>
 
+      <Lines lines={p.lines} />
       <Breakdown detail={p.detail} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ list view ------- */
+
+/**
+ * The list. **This is the default view, and the canvas is the toggle.**
+ *
+ * Jack, on the canvas-only screen: *"i still see nothing when i click the individual lots...
+ * ui display of the whole thing makes it incredibly hard to use."* He was right twice over.
+ * The detail panel rendered BELOW the diagram, and with 21 lots that diagram is ~2,400px
+ * tall — so clicking a card near the top opened a panel two and a half screens down and
+ * nothing appeared to happen. And a wide scrolling diagram is the wrong shape for the work he
+ * does every day; it earns its place only while combining.
+ *
+ * So: a row opens IN PLACE, directly under the row that was clicked, and it carries the
+ * actual items — not another summary of them.
+ */
+function ListView(p: {
+  L: Layout;
+  selected: Set<string>;
+  pickable: (b: LotBuild) => boolean;
+  onToggle: (id: string) => void;
+  open: string | null;
+  onExpand: (b: LotBuild) => void;
+  detail: Record<string, LotBuildDetail>;
+  lines: Record<string, LotLines>;
+  onDownload: (b: LotBuild, kind: "branch" | "lot") => void;
+  onPricing: () => void;
+  busy: string | null;
+  row: (b: LotBuild) => React.ReactNode;
+}) {
+  return (
+    <div className="space-y-5 max-w-[1100px]">
+      {p.L.lanes.map((lane) => {
+        const members = p.L.placed.filter((x) => x.lane === lane.id);
+        return (
+          <section key={lane.id ?? "loose"} className="space-y-1.5">
+            <LaneRail
+              lane={lane}
+              L={p.L}
+              onDownload={p.onDownload}
+              busy={p.busy}
+              onPricing={p.onPricing}
+              wide
+            />
+            {members.length === 0 ? (
+              <p className="text-[11.5px] text-muted pl-1">
+                Nothing in this branch yet. Tick lots above and combine them into it.
+              </p>
+            ) : (
+              members.map((pl) => (
+                <div key={pl.lot.id}>
+                  <ListRow
+                    pl={pl}
+                    L={p.L}
+                    picked={p.selected.has(pl.lot.id)}
+                    pickable={p.pickable(pl.lot)}
+                    onToggle={p.onToggle}
+                    onExpand={p.onExpand}
+                    open={p.open === pl.lot.id}
+                  />
+                  {p.open === pl.lot.id && (
+                    <div className="mt-1 mb-2">{p.row(pl.lot)}</div>
+                  )}
+                </div>
+              ))
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One row. Wide enough to read at a glance, and the whole heading opens it. */
+function ListRow(p: {
+  pl: Placed;
+  L: Layout;
+  picked: boolean;
+  pickable: boolean;
+  onToggle: (id: string) => void;
+  onExpand: (b: LotBuild) => void;
+  open: boolean;
+}) {
+  const b = p.pl.lot;
+  const merged = (b.merged_from || []).length > 0;
+  const struck = p.L.struck.has(b.id);
+  const consumer = p.L.consumer.get(b.id);
+  const sold = b.status === "sold";
+
+  return (
+    <div
+      className={`rounded-xl border bg-surface px-3.5 py-2.5 ${
+        p.picked ? "border-accent" : "border-line"
+      } ${b.status === "sent" ? "opacity-60" : ""}`}
+    >
+      <div className="flex items-center gap-2.5">
+        {p.pickable && (
+          <input
+            type="checkbox"
+            checked={p.picked}
+            onChange={() => p.onToggle(b.id)}
+            className="accent-accent shrink-0"
+            aria-label={`Pick ${b.name} to combine`}
+          />
+        )}
+        <button
+          onClick={() => p.onExpand(b)}
+          className="flex items-center gap-2 min-w-0 flex-1 text-left group"
+          aria-expanded={p.open}
+        >
+          <span className="text-muted group-hover:text-accent transition-colors shrink-0">
+            {p.open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+          <span className="min-w-0">
+            <span
+              className={`block text-[13.5px] font-semibold truncate group-hover:text-accent transition-colors ${
+                struck ? "line-through text-danger-ink" : "text-ink"
+              }`}
+            >
+              {b.name}
+            </span>
+            <span className="block text-[11.5px] text-muted tabular-nums mt-0.5">
+              {n(b.units)} units · {n(b.styles)} styles · {fmtAmount(b.msrp_total)} retail ·{" "}
+              <span className="text-accent font-medium">{fmtAmount(b.ask_total)}</span> at{" "}
+              {(b.price_pct * 100).toFixed(1)}%
+              {b.cost_pct > 0 && (
+                <> · you keep {fmtAmount(b.ask_total - b.msrp_total * b.cost_pct)}</>
+              )}
+            </span>
+          </span>
+        </button>
+        {merged && (
+          <span className="text-[10.5px] text-muted shrink-0">
+            from {b.merged_from.length} lots
+          </span>
+        )}
+        {consumer && (
+          <span className="text-[10.5px] text-muted shrink-0 truncate max-w-[140px]">
+            in {consumer.name}
+          </span>
+        )}
+        <span
+          className={`text-[10.5px] px-1.5 h-5 rounded-md flex items-center shrink-0 ${
+            b.status === "sent"
+              ? "bg-success-bg text-success-ink"
+              : sold
+                ? "bg-warning-bg text-warning-ink"
+                : "bg-surface-3 text-muted"
+          }`}
+        >
+          {b.status === "sent" ? "off the list" : sold ? "sold" : merged ? "combined" : "in a lot"}
+        </span>
+      </div>
+      {struck && (
+        <p className="text-[10.5px] text-danger-ink mt-1 pl-6">
+          cross this off your master spreadsheet
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The items in a lot, straight from the manifest — the same rows the workbook page carries. */
+function Lines({ lines }: { lines: LotLines | undefined }) {
+  if (!lines) return <div className="h-24 rounded-lg bg-surface-2 animate-pulse" />;
+  const qty = lines.headers.findIndex((h) => h.toLowerCase() === "qty");
+  return (
+    <div>
+      <p className="text-[11px] font-medium text-ink-2 mb-1">
+        What is in it — {n(lines.rows.length)} lines
+      </p>
+      <div className="rounded-lg border border-line-2 overflow-hidden">
+        <div className="max-h-[320px] overflow-y-auto overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 bg-surface-2">
+              <tr>
+                {lines.headers.map((h, i) => (
+                  <th
+                    key={h}
+                    className={`px-2 py-1.5 font-medium text-muted whitespace-nowrap ${
+                      i === 0 ? "text-left" : i >= qty ? "text-right" : "text-left"
+                    }`}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {lines.rows.map((r, i) => (
+                <tr key={i} className="border-t border-line-2">
+                  {r.map((c, j) => (
+                    <td
+                      key={j}
+                      className={`px-2 py-1 text-ink-2 ${
+                        j >= qty ? "text-right tabular-nums whitespace-nowrap" : ""
+                      } ${j === 1 ? "max-w-[380px] truncate" : ""}`}
+                      title={j === 1 ? c : undefined}
+                    >
+                      {c}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

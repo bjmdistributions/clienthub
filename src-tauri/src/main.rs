@@ -961,6 +961,7 @@ fn main() {
             lot_store::set_branch_pricing,
             lot_store::export_branch_workbook,
             lot_store::export_lot_workbook,
+            lot_store::lot_build_lines,
             // Forecast
             get_profit_forecast,
             // Sync

@@ -237,6 +237,16 @@ const TREE: any[] = [
       return { path: String(a?.path ?? "C:/roster.csv"), rows: 3, reconciled: true };
     case "lot_build_detail":
       return { build: BUILD, totals: TOTALS, location_codes: CODES };
+    case "lot_build_lines":
+      return {
+        title: "Lines",
+        headers: ["UPC","Description","Brand","Category","Segment","Size","Qty","MSRP","Unit price"],
+        rows: [
+          ["198266177526","Vans Old Skool Shoe (Camo Black)","Vans","Footwear","Unisex","10","28","74.99","22.50"],
+          ["197804317882","Vans Women Knu Skool Shoe Sepia Rose, 8","Vans","Footwear","Women's","8","27","79.99","24.00"],
+          ["198739803549","Skechers Kids Twinkle Toes Heart Steps Sneaker, Pink/Multi","Skechers","Footwear","Kids","12","11","44.99","13.50"],
+        ],
+      };
     case "lot_build_location_codes":
       return CODES;
     case "export_lot_build":

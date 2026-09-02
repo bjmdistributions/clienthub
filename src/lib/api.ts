@@ -3273,6 +3273,9 @@ export const api = {
   /** One percentage and one cost across every lot in a branch. Overrides each lot's own. */
   setBranchPricing: (branchId: string, pricePct: number, costPct?: number) =>
     invoke<number>("set_branch_pricing", { branchId, pricePct, costPct: costPct ?? null }),
+  /** The item lines a lot contains — the same rows that go on its workbook page. */
+  lotBuildLines: (buildId: string) =>
+    invoke<{ title: string; headers: string[]; rows: string[][] }>("lot_build_lines", { buildId }),
   /** A branch: one breakdown page, then one page per lot. xlsx only. */
   /** A level: 1 breakdown page + one page per lot. `branchId` null is the top level. */
   exportBranchWorkbook: (
