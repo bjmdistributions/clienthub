@@ -1155,6 +1155,62 @@ mod tests {
         assert!(to_xlsx_book(&[]).unwrap().starts_with(b"PK"));
     }
 
+    /// **The workbook Jack actually downloads**, composed exactly as
+    /// `lot_store::export_branch_workbook` composes it: page 1 the roster named MASTER, then
+    /// one page per lot carrying that lot's whole manifest. Three lots must give four tabs.
+    ///
+    /// He asked to be told, without hedging, that 21 lots gives 22 pages in the shape of the
+    /// file he keeps by hand. This is the assertion behind that answer.
+    #[test]
+    fn a_branch_workbook_is_master_plus_one_page_per_lot() {
+        let p = Pricing::flat(0.3);
+        let names = ["B- 001", "B- 002", "B- 003"];
+        let lines: Vec<LotLine> = names
+            .iter()
+            .map(|nm| LotLine { reference: (*nm).into(), units: 1030, retail: 68_700.53, sale: 20_613.0 })
+            .collect();
+
+        let mut docs = vec![lot_roster(&lines, "MASTER")];
+        for nm in names {
+            let opts = ManifestOpts { lot_name: nm.into(), ..Default::default() };
+            let mut m = manifest(&fixture(), &p, &opts);
+            let items = m.sections.pop().unwrap();
+            let mut sections = m.sections;
+            sections.push(items);
+            docs.push(Doc { name: nm.into(), sections });
+        }
+
+        // Page 1 is the four-column master list and nothing else.
+        let master = docs[0].lines().unwrap();
+        assert_eq!(docs[0].name, "MASTER");
+        assert_eq!(master.headers, vec!["Ref #", "Unit count", "Retail Value", "Sale Price"]);
+        assert_eq!(master.rows.len(), 3);
+
+        // Every page after it is one lot's full manifest, named after the lot.
+        assert_eq!(docs.len(), 4, "three lots must give four pages");
+        for (i, nm) in names.iter().enumerate() {
+            let d = &docs[i + 1];
+            assert_eq!(&d.name, nm);
+            assert!(d.sections.iter().any(|s| s.title == "Lot"));
+            assert!(d.sections.iter().any(|s| s.title == "By category"));
+            assert!(d.sections.iter().any(|s| s.title == "By brand"));
+            assert!(d.sections.iter().any(|s| s.title == "By who it is for"));
+            let items = d.lines().unwrap();
+            assert_eq!(items.title, "Lines");
+            for col in ["UPC", "Description", "Brand", "Category", "Segment", "Size", "Qty", "MSRP"] {
+                assert!(items.col(col).is_some(), "{nm} is missing the {col} column");
+            }
+        }
+
+        // And it really writes four worksheets.
+        let bytes = to_xlsx_book(&docs).unwrap();
+        let has = |s: &str| bytes.windows(s.len()).any(|w| w == s.as_bytes());
+        for i in 1..=4 {
+            assert!(has(&format!("xl/worksheets/sheet{i}.xml")), "no page {i}");
+        }
+        assert!(!has("xl/worksheets/sheet5.xml"), "four pages produced a fifth");
+    }
+
     #[test]
     fn worksheet_names_are_legal_and_unique() {
         let mut used = Vec::new();
