@@ -263,6 +263,15 @@ pub struct EmailSettings {
     /// creds still come from the keyring / server round-trip.
     #[serde(default)]
     pub owner_staff_id: String,
+    /// Address mail leaves as when it differs from the SMTP login. Blank = use `user`.
+    /// Gmail silently rewrites this back to the login unless it is a verified
+    /// *Send mail as* address (or an alias) on the authenticating account.
+    #[serde(default)]
+    pub from_email: String,
+    /// Same, but used only by the invoice path, so invoices can carry a billing address
+    /// while everything else goes out as the sales one. Blank = fall back to `from_email`.
+    #[serde(default)]
+    pub from_invoices: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -461,7 +470,17 @@ pub async fn test_smtp() -> Result<()> {
 }
 
 pub async fn send(to: &str, subject: &str, body: &str, attachment: Option<&str>) -> Result<()> {
-    send_threaded(to, subject, body, attachment, None).await
+    send_threaded(to, subject, body, attachment, None, None).await
+}
+
+/// Like `send`, but stamps the invoice From address (`from_invoices`) when one is set, so
+/// a customer replying to an invoice reaches the billing mailbox rather than the sales one.
+/// Falls back to `from_email` and then the SMTP login, same as every other send.
+pub async fn send_invoice_mail(
+    to: &str, subject: &str, body: &str, attachment: Option<&str>,
+) -> Result<()> {
+    let from = load_settings().map(|s| s.from_invoices).unwrap_or_default();
+    send_threaded(to, subject, body, attachment, None, Some(&from)).await
 }
 
 /// Like `send`, but if `in_reply_to` is a message-id, sets the `In-Reply-To` and
@@ -470,6 +489,7 @@ pub async fn send(to: &str, subject: &str, body: &str, attachment: Option<&str>)
 /// wrapped if it isn't already (RFC 5322 msg-id form).
 pub async fn send_threaded(
     to: &str, subject: &str, body: &str, attachment: Option<&str>, in_reply_to: Option<&str>,
+    from: Option<&str>,
 ) -> Result<()> {
     let settings = load_settings()?;
     let pass_or_token = match settings.auth_method {
@@ -477,10 +497,26 @@ pub async fn send_threaded(
         AuthMethod::Oauth2 => oauth2_access_token().await?,
     };
 
+    // Explicit `from` (the invoice path) wins, then the configured default, then the SMTP
+    // login. Note Gmail rewrites From back to the login unless the address is verified under
+    // *Send mail as* on the authenticating account, so a wrong value here fails silently.
+    let from_addr = [from.unwrap_or(""), &settings.from_email, &settings.user]
+        .into_iter()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string();
+
     let mut builder = Message::builder()
-        .from(settings.user.parse()?)
+        .from(from_addr.parse()?)
         .to(to.parse()?)
         .subject(subject);
+
+    // Replies belong with the address the mail went out as. Without this a customer
+    // replying to an invoice lands in the sending admin's personal mailbox instead.
+    if from_addr != settings.user.trim() {
+        builder = builder.reply_to(from_addr.parse()?);
+    }
 
     if let Some(mid) = in_reply_to.map(str::trim).filter(|m| !m.is_empty()) {
         use lettre::message::header::{InReplyTo, References};

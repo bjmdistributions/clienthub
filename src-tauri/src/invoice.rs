@@ -1287,7 +1287,7 @@ pub async fn send_invoice(invoice_id: &str) -> Result<()> {
         clause_email_block(&invoice_return_policy(invoice_id)),
     );
 
-    crate::email::send(&to, &subject, &body, Some(&pdf)).await?;
+    crate::email::send_invoice_mail(&to, &subject, &body, Some(&pdf)).await?;
 
     let now = Utc::now().to_rfc3339();
     // Only a draft is promoted to 'sent'. A paid-but-never-emailed invoice keeps
@@ -1413,7 +1413,7 @@ pub async fn send_quote(quote_id: &str, thread: bool) -> Result<()> {
         clause_email_block(""),
     );
 
-    crate::email::send_threaded(&to, &subject, &body, Some(&pdf), in_reply_to.as_deref()).await?;
+    crate::email::send_threaded(&to, &subject, &body, Some(&pdf), in_reply_to.as_deref(), None).await?;
 
     let now = Utc::now().to_rfc3339();
     let mut cols = serde_json::Map::new();

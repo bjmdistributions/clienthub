@@ -1224,6 +1224,10 @@ export interface EmailSettings {
   auth_method: "password" | "oauth2";
   /** Staff id of the admin who currently owns/receives the shared inbox. */
   owner_staff_id?: string;
+  /** Address mail leaves as, when it differs from the login. Blank = use `user`. */
+  from_email?: string;
+  /** Invoice-only From, so invoices carry a billing address. Blank = `from_email`. */
+  from_invoices?: string;
 }
 
 export interface CompanyInfo {

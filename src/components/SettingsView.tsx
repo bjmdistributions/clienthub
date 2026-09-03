@@ -979,7 +979,7 @@ function InboxRow({ ib }: { ib: EmailInbox }) {
 function SendingCard() {
   const [settings, setSettings] = useState<EmailSettings>({
     smtp_host: "smtp.gmail.com", smtp_port: 587, imap_host: "imap.gmail.com", imap_port: 993,
-    user: "", auth_method: "password",
+    user: "", auth_method: "password", from_email: "", from_invoices: "",
   });
   const [provider,   setProvider]   = useState("gmail");
   const [smtpPass,   setSmtpPass]   = useState("");
@@ -1164,6 +1164,22 @@ function SendingCard() {
             </div>
           </div>
         )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Send from">
+            <input className={inpSm} value={settings.from_email ?? ""} placeholder={settings.user || "sales@company.com"}
+              onChange={(e) => setSettings({ ...settings, from_email: e.target.value })} />
+          </Field>
+          <Field label="Send invoices from">
+            <input className={inpSm} value={settings.from_invoices ?? ""} placeholder={settings.from_email || settings.user || "invoices@company.com"}
+              onChange={(e) => setSettings({ ...settings, from_invoices: e.target.value })} />
+          </Field>
+        </div>
+        <p className="text-[11px] text-muted -mt-1">
+          Leave either blank to send as {settings.user || "the account above"}. Quotes, newsletters and replies use the first;
+          only invoices use the second. Gmail rewrites the From back to the login unless the address is verified under
+          Send mail as (or is an alias) on that account — there is no error when it does.
+        </p>
 
         <Advanced label="Advanced (mail server)">
           <div className="grid grid-cols-2 gap-3">

@@ -17321,7 +17321,13 @@ pub async fn push_desktop_smtp_to_pi(from_name: String) -> Result<bool, String> 
         ("smtp_username", settings.user.clone()),
         ("smtp_password", password),
         ("smtp_from_name", from_name),
-        ("smtp_from_email", settings.user.clone()),
+        // Push the address the desktop actually sends as, not the login — this line used to
+        // write `settings.user` and overwrite the server's correct value on every push.
+        ("smtp_from_email", if settings.from_email.trim().is_empty() {
+            settings.user.clone()
+        } else {
+            settings.from_email.trim().to_string()
+        }),
     ];
 
     let conn = pool().get().map_err(|e| e.to_string())?;
