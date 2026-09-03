@@ -30,11 +30,18 @@ const TIER_NAME: Record<string, string> = {
   P: "Platinum", S: "Diamond", A: "Gold", B: "Silver", C: "Bronze", Prospect: "Prospect",
 };
 
-// Designed series colors — fixed hues so charts stay vivid in light/dark/matte
-// instead of greying out with the theme accent. Revenue = indigo, profit = emerald.
-const C_REVENUE = "#6366F1";
-
 const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
+
+// Top-spender podium: gold, silver, bronze. Same muted metals as TIER_CLR so the
+// page speaks one vocabulary of metal. `sheen` is the lit edge of a struck disc —
+// a 145° gradient, not a glossy web-2.0 bevel. Fourth place and below get no disc
+// at all, which is what makes the top three read as a podium.
+const MEDAL = [
+  { sheen: "#E3C55A", metal: "#C9A227" },
+  { sheen: "#D6DCE4", metal: "#A6AEBC" },
+  { sheen: "#D0A070", metal: "#B17F4A" },
+];
+const MEDAL_INK = "#1F1B12";
 
 // Resolve brand tokens to concrete chart colors; re-render on light/dark flip.
 function usePalette() {
@@ -69,6 +76,7 @@ function usePalette() {
         boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
       },
       cursor: { fill: `rgb(${cssVar("--c-accent")} / 0.06)` },
+      itemStyle: { color: rgbVar("--c-ink") },
     },
     AX: { fontSize: 10, fill: `rgb(${cssVar("--c-muted")})` },
   };
@@ -113,7 +121,10 @@ export default function AnalyticsView() {
   const STATUS_CLR = P.STATUS;
   const TT = P.TT;
   const AX = P.AX;
-  const indigo = C_REVENUE;  // revenue / category bars → designed indigo (vivid in matte, not the grey accent)
+  // Revenue reads as volume, not as a judgement, so it takes the neutral ink bar and
+  // leaves colour to mean profit (green) or loss (red). It inverts with the theme, so
+  // it stays legible on white and on near-black without a second fixed hue.
+  const revenueClr = P.bar;
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
@@ -346,7 +357,7 @@ export default function AnalyticsView() {
             </p>
           </div>
           <div className="flex items-center gap-5 mt-0.5">
-            <Legend color={indigo}  label="Revenue" />
+            <Legend color={revenueClr} label="Revenue" />
             <Legend color={CLR.emerald} label="Profit"  />
           </div>
         </div>
@@ -360,7 +371,7 @@ export default function AnalyticsView() {
               <YAxis tick={AX} axisLine={false} tickLine={false}
                 tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
               <Tooltip formatter={(v: any) => fmtAmount(Number(v))} {...TT} />
-              <Bar dataKey="revenue" name="Revenue" fill={indigo}
+              <Bar dataKey="revenue" name="Revenue" fill={revenueClr}
                 radius={[4, 4, 0, 0]} maxBarSize={40} />
               <Bar dataKey="profit"  name="Profit"
                 radius={[4, 4, 0, 0]} maxBarSize={40}>
@@ -532,12 +543,20 @@ export default function AnalyticsView() {
                       transitionDelay: `${200 + i * 70}ms`,
                     }} />
                   <div className="relative flex items-center gap-3 px-4 py-3.5">
-                    <span className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center
-                                      justify-center text-[10px] font-bold text-white ${
-                      i === 0 ? "bg-warning" :
-                      i === 1 ? "bg-slate-400" :
-                      i === 2 ? "bg-warning/70" : "bg-surface-3"
-                    }`}>{i + 1}</span>
+                    {i < 3 ? (
+                      <span
+                        className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center
+                                   text-[11px] font-bold tabular-nums"
+                        style={{
+                          background: `linear-gradient(145deg, ${MEDAL[i].sheen} 0%, ${MEDAL[i].metal} 62%)`,
+                          boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.30), 0 1px 2px rgba(0,0,0,0.22)`,
+                          color: MEDAL_INK,
+                        }}
+                      >{i + 1}</span>
+                    ) : (
+                      <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center
+                                       text-[11px] font-semibold tabular-nums text-faint">{i + 1}</span>
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
                       <div className="text-[11px] text-muted">
@@ -642,7 +661,7 @@ export default function AnalyticsView() {
                     <div className="h-full rounded-full transition-all duration-700 ease-out"
                       style={{
                         width: c.revenue > 0 && bars ? `${(c.revenue / maxCat) * 100}%` : "0%",
-                        backgroundColor: indigo,
+                        backgroundColor: revenueClr,
                         transitionDelay: `${i * 55}ms`,
                       }} />
                   </div>

@@ -94,12 +94,14 @@ import {
   AlignRight,
   ExternalLink,
   Share2,
+  MessageSquarePlus,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "./Toast";
 import VariablePicker from "./VariablePicker";
+import { FeedbackPanel } from "./FeedbackPanel";
 import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
 import { FormsPanel } from "./FormsPanel";
@@ -174,7 +176,7 @@ type SettingsTab =
   | "account" | "appearance" | "company" | "invoice" | "quote" | "storefront" | "categories" | "customfields"
   | "email" | "whatsapp" | "templates" | "automation" | "forms"
   | "ai" | "sheets" | "import" | "payments" | "billing" | "shopify" | "facebook" | "webforms"
-  | "sync" | "splits" | "backup" | "team";
+  | "sync" | "splits" | "backup" | "team" | "feedback";
 
 const SETTINGS_GROUPS: {
   group: string;
@@ -224,13 +226,21 @@ const SETTINGS_GROUPS: {
       { id: "team",   label: "Team",   icon: Users,     desc: "Users, roles & invites" },
     ],
   },
+  {
+    // Feedback's home. It was an unlabelled icon in the sidebar footer; anyone can
+    // send it, so it stays visible to non-admins too (see NON_ADMIN_SECTIONS).
+    group: "Help",
+    items: [
+      { id: "feedback", label: "Send feedback", icon: MessageSquarePlus, desc: "Requests and bug reports go straight to the team" },
+    ],
+  },
 ];
 
 export default function SettingsView({ me }: { me: Me | null | undefined }) {
   // Everyone can open Settings, but only admins see org-sensitive sections;
   // viewers/sales get Appearance (per-device) + their own Account.
   const admin = isAdmin(me);
-  const NON_ADMIN_SECTIONS: SettingsTab[] = ["account", "appearance"];
+  const NON_ADMIN_SECTIONS: SettingsTab[] = ["account", "appearance", "feedback"];
   const groups = admin
     ? SETTINGS_GROUPS
     : SETTINGS_GROUPS
@@ -362,6 +372,7 @@ export default function SettingsView({ me }: { me: Me | null | undefined }) {
           {tab === "facebook"    && <FacebookTab />}
           {tab === "webforms"    && <IntakeTab />}
           {tab === "customfields"&& <CustomFieldsTab />}
+          {tab === "feedback"    && <FeedbackPanel me={me} />}
         </div>
       </div>
     </div>
@@ -596,7 +607,7 @@ function AppearanceTab() {
           </span>
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${matte ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${matte ? "translate-x-[22px]" : "translate-x-0.5"}`} />
         </span>
       </button>
 
@@ -622,7 +633,7 @@ function AppearanceTab() {
           </span>
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${navAuto ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${navAuto ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${navAuto ? "translate-x-[22px]" : "translate-x-0.5"}`} />
         </span>
       </button>
     </div>
@@ -1421,7 +1432,7 @@ function CaptureCard() {
       aside={
         <button onClick={toggle} role="switch" aria-checked={on}
           className={`w-11 h-6 rounded-full relative transition-colors ${on ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`} />
         </button>
       }>
       <div className="space-y-3">
@@ -1483,12 +1494,15 @@ function EmailTab() {
 // rgb(240,239,236) against a white card — a 1.05:1 track you cannot see). So the knob
 // takes `on-accent`, the token that exists to stay legible on the accent fill, and a
 // muted fill when off; the ring gives the pill an edge in every theme so an OFF switch
-// still reads as a control rather than a smudge.
+// still reads as a control rather than a smudge. `left-0` is load-bearing: a button
+// centres its content, so an absolute knob with no left anchors to the track's MIDPOINT
+// and translate-x-[22px] threw it clean off the right edge — ON rendered as a solid
+// accent blob with no knob at all.
 function ClauseSwitch({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
   return (
     <button type="button" onClick={onClick} role="switch" aria-checked={on} aria-label={label}
       className={`w-11 h-6 rounded-full relative flex-shrink-0 transition-colors ring-1 ${on ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
-      <span className={`absolute top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
+      <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
     </button>
   );
 }
@@ -4454,7 +4468,7 @@ function SheetsTab() {
             title={config.writeback_enabled ? "Turn write-back off" : "Turn write-back on"}
             className={`shrink-0 w-11 h-6 rounded-full relative transition-colors ${config.writeback_enabled ? "bg-accent" : "bg-surface-3"}`}
           >
-            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${config.writeback_enabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+            <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${config.writeback_enabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
           </button>
         </div>
 

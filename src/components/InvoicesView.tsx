@@ -761,11 +761,15 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <label className="text-[11px] font-medium text-muted">Return policy</label>
           {/* Same token treatment as the Settings clause switch: a white knob vanished
               against both the near-white OFF track and mono-dark's near-white accent,
-              so an OFF toggle read as nothing at all. See ClauseSwitch in SettingsView. */}
+              so an OFF toggle read as nothing at all. See ClauseSwitch in SettingsView.
+              `left-0` is load-bearing: a button centres its content, so an absolute knob
+              with no left anchors to the track's MIDPOINT, and translate-x-[22px] then
+              threw it clean off the right edge — ON rendered as a solid accent blob with
+              no knob at all. Same defect in the other button-based switches. */}
           <button type="button" onClick={() => setPolicyOn((v) => !v)} role="switch" aria-checked={policyOn}
             aria-label="Include the return policy on this invoice"
             className={`w-11 h-6 rounded-full relative transition-colors ring-1 ${policyOn ? "bg-accent ring-accent" : "bg-surface-3 ring-line-3"}`}>
-            <span className={`absolute top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform ${policyOn ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
+            <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${policyOn ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
           </button>
           {policyOn && !policyText.trim() && (
             <span className="text-[11px] text-muted">Add the wording in Settings, or type it here.</span>

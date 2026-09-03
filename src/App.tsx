@@ -24,7 +24,6 @@ import {
   X,
   FileSignature,
   Bell,
-  MessageSquarePlus,
   ClipboardCheck,
   ClipboardList,
   Building2,
@@ -67,7 +66,6 @@ import ReleaseLetterView from "./components/ReleaseLetterView";
 import ClientStatementView from "./components/ClientStatementView";
 import FinancialsView from "./components/FinancialsView";
 import { ApprovalsView } from "./components/ApprovalsView";
-import { FeedbackModal } from "./components/FeedbackModal";
 import CheckupView from "./components/CheckupView";
 import QuickLogModal from "./components/QuickLogModal";
 import UpdateNotification from "./components/UpdateNotification";
@@ -185,6 +183,7 @@ export default function App() {
   /** Anchor a flyout beside the button that opened it. */
   const openFlyout = (id: string, e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setSignOutArm(false);
     setFlyout((prev) => (prev?.id === id ? null : { id, top: Math.max(8, r.top) }));
   };
   // A flyout opened from the footer would hang off the bottom of the window. Clamp it
@@ -408,7 +407,10 @@ export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [orgName, setOrgName] = useState<string>("");
   const [apCount, setApCount] = useState<number>(0);
-  const [fbOpen, setFbOpen] = useState<boolean>(false);
+  // Sign out is two-step: the first click arms it, the second one goes. It sits in
+  // the footer next to the collapse control, one stray click from a row you press all
+  // day, and a mis-click drops every unsynced local edit behind a re-auth.
+  const [signOutArm, setSignOutArm] = useState<boolean>(false);
   // First-run getting-started tour (after setup + sign-in), and a replay hook.
   useEffect(() => {
     if (onboarded === true && me) {
@@ -480,6 +482,14 @@ export default function App() {
     try { await api.employeeLogout(); } catch {}
     setMe(null);
   };
+
+  // Disarm on its own. An armed confirm left sitting in the footer is the very
+  // mis-click the two-step exists to prevent.
+  useEffect(() => {
+    if (!signOutArm) return;
+    const id = setTimeout(() => setSignOutArm(false), 6000);
+    return () => clearTimeout(id);
+  }, [signOutArm]);
 
   useEffect(() => {
     const handler = async (e: Event) => {
@@ -1010,9 +1020,12 @@ export default function App() {
   if (onboarded === null) return null; // resolving onboarding status for this account
   if (onboarded === false) return <OnboardingWizard onDone={() => setOnboarded(true)} />;
 
-  // Bell, dark mode and split view. They sit in the brand row when the sidebar is
-  // open and move into the account menu when it is collapsed - split view has no other
-  // entry point anywhere in the app, so dropping them from the rail would strand it.
+  // Bell, dark mode and split view. They have their own strip under the brand row when
+  // the sidebar is open and move into the account menu when it is collapsed - split view
+  // has no other entry point anywhere in the app, so dropping them from the rail would
+  // strand it. They used to be crammed into the brand row itself alongside the collapse
+  // control: four icons wedged against the wordmark, which is why the row now carries
+  // the brand alone.
   const shellButtons = (
     <>
         {/* Approvals notification bell (admins only) */}
@@ -1020,7 +1033,7 @@ export default function App() {
           <button
             onClick={() => setTab("approvals")}
             title={apCount > 0 ? `${apCount} waiting for review` : "Notifications"}
-            className="relative w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+            className="relative w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
             style={{ color: tab === "approvals" ? "var(--accent-400)" : "#7A7A90" }}
             onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (tab !== "approvals") e.currentTarget.style.color = "var(--accent-400)"; }}
             onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = tab === "approvals" ? "var(--accent-400)" : "#7A7A90"; }}
@@ -1039,7 +1052,7 @@ export default function App() {
         <button
           onClick={() => setDark(d => !d)}
           title={dark ? "Switch to light mode" : "Switch to dark mode"}
-          className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
           style={{ color: dark ? "#FCD34D" : "#7A7A90" }}
           onMouseEnter={e => {
             e.currentTarget.style.background = "rgba(255,255,255,0.08)";
@@ -1060,7 +1073,7 @@ export default function App() {
         <button
           onClick={toggleSplit}
           title={splitTab ? "Close split view" : "Open split view (two tabs side by side)"}
-          className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
+          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
           style={{ color: splitTab ? "var(--accent-400)" : "#7A7A90" }}
           onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; if (!splitTab) e.currentTarget.style.color = "var(--accent-400)"; }}
           onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = splitTab ? "var(--accent-400)" : "#7A7A90"; }}
@@ -1077,9 +1090,11 @@ export default function App() {
         background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
-        {/* Brand. The collapse control is pinned here in both states: it used to be
-            the last row of the scrolling nav, which on a short window put the only way
-            back out several hundred pixels below the fold. */}
+        {/* Brand. Expanded, this row is the wordmark and nothing else - the bell, theme,
+            split-view and collapse icons all used to sit on it, which read as clutter
+            hung off the logo. Collapsed, the whole row IS the expand control: the rail
+            has no other way back out, and burying it in the nav once put it several
+            hundred pixels below the fold on a short window. */}
         <div className={`h-[54px] ${navCollapsed ? "px-0" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
           {navCollapsed ? (
             <button
@@ -1098,21 +1113,19 @@ export default function App() {
             <>
               <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
               <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
-              {shellButtons}
-              <button
-                onClick={toggleNav}
-                title="Collapse sidebar (Cmd/Ctrl + B)"
-                aria-label="Collapse sidebar"
-                className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-150"
-                style={{ color: "#7A7A90" }}
-                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
-              >
-                <PanelLeftClose size={13} strokeWidth={2} />
-              </button>
             </>
           )}
         </div>
+
+        {/* Shell strip. The three app-wide toggles, on their own line under the brand
+            rather than on the main content header - they belong to the shell, not to
+            whatever screen happens to be open. Expanded only; collapsed they are in the
+            account flyout, since a 96px rail has no room for a toolbar. */}
+        {!navCollapsed && (
+          <div className="px-3 py-1.5 flex items-center gap-1 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
+            {shellButtons}
+          </div>
+        )}
 
         {/* Nav */}
         <nav
@@ -1273,7 +1286,9 @@ export default function App() {
                 </span>
               </button>
 
-              {/* Signed-in user + sign out */}
+              {/* Signed-in user, then the two session controls: collapse the rail and sign
+                  out. Feedback used to hold the left slot; it has a Settings section of
+                  its own now, which is where a form with three fields belonged all along. */}
               <div className="flex items-center gap-2 px-1.5 pt-2 mt-1" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
                 {me?.avatar
                   ? <img src={me.avatar} alt="" className="w-6 h-6 rounded-md object-cover flex-shrink-0" />
@@ -1286,26 +1301,57 @@ export default function App() {
                   <div className="text-[10px] truncate" style={{ color: "#4A4A5A" }}>{me?.role_name}</div>
                 </div>
                 <button
-                  onClick={() => setFbOpen(true)}
-                  title="Send feedback"
+                  onClick={toggleNav}
+                  title="Collapse sidebar (Cmd/Ctrl + B)"
+                  aria-label="Collapse sidebar"
                   className="p-1.5 rounded-md transition-colors flex-shrink-0"
                   style={{ color: "#7A7A90" }}
                   onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
                   onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
                 >
-                  <MessageSquarePlus size={13} />
+                  <PanelLeftClose size={13} strokeWidth={2} />
                 </button>
                 <button
-                  onClick={signOut}
+                  onClick={() => setSignOutArm((v) => !v)}
                   title="Sign out"
+                  aria-expanded={signOutArm}
                   className="p-1.5 rounded-md transition-colors flex-shrink-0"
-                  style={{ color: "#7A7A90" }}
-                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+                  style={{ color: signOutArm ? "#F87171" : "#7A7A90", background: signOutArm ? "rgba(248,113,113,0.14)" : "" }}
+                  onMouseEnter={e => { if (!signOutArm) { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "#F87171"; } }}
+                  onMouseLeave={e => { if (!signOutArm) { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; } }}
                 >
                   <LogOut size={13} />
                 </button>
               </div>
+
+              {/* Step two. Signing out is not destructive, but it is a re-auth away from
+                  everything, and the button now lives one icon from the collapse control
+                  you press all day - so it asks. */}
+              {signOutArm && (
+                <div className="px-1.5 pt-2 mt-1 space-y-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.045)" }}>
+                  <div className="text-[11px]" style={{ color: "#C7C7D1" }}>Sign out of {orgName || "Ecliptr"}?</div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={signOut}
+                      className="flex-1 h-7 rounded-md text-[11px] font-medium transition-colors"
+                      style={{ background: "rgba(248,113,113,0.16)", color: "#F87171" }}
+                      onMouseEnter={e => (e.currentTarget.style.background = "rgba(248,113,113,0.26)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "rgba(248,113,113,0.16)")}
+                    >
+                      Sign out
+                    </button>
+                    <button
+                      onClick={() => setSignOutArm(false)}
+                      className="flex-1 h-7 rounded-md text-[11px] transition-colors"
+                      style={{ background: "rgba(255,255,255,0.06)", color: "#C7C7D1" }}
+                      onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.11)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1354,13 +1400,15 @@ export default function App() {
                     <Columns2 size={14} strokeWidth={1.7} />
                     <span>{splitTab ? "Close split view" : "Split view"}</span>
                   </button>
-                  <button onClick={() => { setFbOpen(true); setFlyout(null); }} className={RAIL_MENU_ROW}>
-                    <MessageSquarePlus size={14} strokeWidth={1.7} />
-                    <span>Send feedback</span>
-                  </button>
-                  <button onClick={() => { setFlyout(null); signOut(); }} className={RAIL_MENU_ROW}>
+                  {/* Two-step here too, in the one row the menu has room for: the first
+                      click relabels it, the second signs out. */}
+                  <button
+                    onClick={() => { if (signOutArm) { setFlyout(null); signOut(); } else setSignOutArm(true); }}
+                    className={RAIL_MENU_ROW}
+                    style={signOutArm ? { color: "#F87171" } : undefined}
+                  >
                     <LogOut size={14} strokeWidth={1.7} />
-                    <span>Sign out</span>
+                    <span>{signOutArm ? "Confirm sign out" : "Sign out"}</span>
                   </button>
                 </>
               ) : flyout.id === "__all" ? (
@@ -1397,7 +1445,6 @@ export default function App() {
 
       </aside>
 
-      {fbOpen && <FeedbackModal me={me} onClose={() => setFbOpen(false)} />}
 
       {/* Main */}
       <main className="flex-1 overflow-hidden">

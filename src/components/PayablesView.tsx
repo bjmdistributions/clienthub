@@ -167,7 +167,7 @@ export default function PayablesView() {
             <span className="text-[12px] text-ink-2">Show speculative</span>
             <button onClick={() => setShowSpec((v) => !v)} role="switch" aria-checked={showSpec}
               className={`w-9 h-5 rounded-full relative transition-colors ${showSpec ? "bg-accent" : "bg-surface-3"}`}>
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showSpec ? "translate-x-[18px]" : "translate-x-0.5"}`} />
+              <span className={`absolute top-0.5 left-0 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showSpec ? "translate-x-[18px]" : "translate-x-0.5"}`} />
             </button>
           </label>
         </div>
