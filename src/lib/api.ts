@@ -1476,6 +1476,21 @@ export interface Offer {
   created_at: string;
 }
 export interface LotOption { name: string; values: string[] }
+export interface LotMatch {
+  client_id: string;
+  client_name: string;
+  score: number;
+  bought: string;
+  unit_price: number;
+  qty: number;
+  invoice_id: string;
+  invoice_number: string;
+  issue_date: string;
+  closed: boolean;
+  price_close: boolean;
+  shared: string[];
+}
+
 export interface LotVariant {
   values: string[];              // one value per option, aligned to options order (e.g. ["Red","M"])
   qty: number;
@@ -2962,6 +2977,9 @@ export const api = {
     invoke<void>("reorder_payment_methods", { ids }),
 
   // Line item templates
+  /** R-236: buyers whose purchase history is genuinely close to this lot.
+   *  An empty array is a real answer — no history is close — not a failure. */
+  findLotMatches: (lotId: string) => invoke<LotMatch[]>("find_lot_matches", { lotId }),
   listLineItemTemplates: () => invoke<LineItemTemplate[]>("list_line_item_templates"),
   createLineItemTemplate: (description: string, rate: number, qty: number) =>
     invoke<string>("create_line_item_template", { description, rate, qty }),

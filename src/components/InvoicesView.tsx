@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api, Client, Invoice, LineItem, PaymentMethod, LineItemTemplate, Payment, CompanyInfo, InvoiceTemplate, DealFlow } from "../lib/api";
+import { parseLineItems, queryTokens, matchesAllTokens, matchingItems, describeItem, isNoiseItem } from "../lib/itemSearch";
 import { fmtAmount, localDay } from "../lib/format";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileDown, Send, Plus, X, Check, Trash2, ExternalLink, Edit2, FileText, RotateCcw, CreditCard, Download, XCircle, Search, MoreVertical, type LucideIcon } from "lucide-react";
@@ -108,6 +109,18 @@ export default function InvoicesView() {
   };
   useEffect(() => { load(); }, []);
 
+  // R-235: the client screen hands an invoice over by stashing its id, the same
+  // way it hands a deal to Deal flow. Read it once and clear it, so returning to
+  // this tab later does not reopen a drawer he already closed.
+  useEffect(() => {
+    let wanted: string | null = null;
+    try {
+      wanted = localStorage.getItem("invoices_open_id");
+      if (wanted) localStorage.removeItem("invoices_open_id");
+    } catch { /* ignore */ }
+    if (wanted) openDetail(wanted);
+  }, []);
+
   const handlePdf = async (id: string) => {
     setBusy(id);
     try {
@@ -165,6 +178,12 @@ export default function InvoicesView() {
 
   const clientName = (id: string) => clients.find((c) => c.id === id)?.name ?? id;
   const q = search.trim().toLowerCase();
+  // R-234: searching is a search of everything sold, not of the current tab.
+  // A product sold months ago is by definition completed, and completed rows are
+  // hidden on every tab but Paid/All — so honouring the tab here would make the
+  // feature unable to find the exact thing it exists to find.
+  const qTokens = queryTokens(search);
+  const searching = qTokens.length > 0;
   // The status tab filters the table (recurring renders its own view). Voided
   // invoices only show under "all" so they stay out of the working lists.
   const visible = invoices.filter((i) => {
@@ -173,7 +192,9 @@ export default function InvoicesView() {
     // "Active" is the default working view: live deals only — hide fell-through
     // (voided) invoices and anything in a refund. They stay reachable under the
     // "All" tab (voided dimmed) and Deal Flow → Refunds.
-    if (viewTab === "active") {
+    if (searching) {
+      // Every non-archived invoice is in scope; voided rows still render dimmed.
+    } else if (viewTab === "active") {
       if (isVoided(i) || inRefund) return false;
     } else if (isVoided(i)) {
       if (viewTab === "drafts" || viewTab === "sent" || viewTab === "paid") return false;
@@ -182,11 +203,20 @@ export default function InvoicesView() {
     else if (viewTab === "paid")   { if (lo !== "paid") return false; }
     // Completed invoices hidden unless the toggle is on (or on the paid/all tabs).
     // "All" is the see-everything archive — every invoice ever, always searchable.
-    if (!showCompleted && viewTab !== "paid" && viewTab !== "all" && i.is_complete) return false;
-    // Search by number / client / amount.
-    if (q) {
-      const hay = `${i.number} ${clientName(i.client_id)} ${i.total}`.toLowerCase();
-      if (!hay.includes(q)) return false;
+    if (!searching && !showCompleted && viewTab !== "paid" && viewTab !== "all" && i.is_complete) return false;
+    // Search by number / client / amount — and by what was actually sold. Every
+    // token must appear somewhere, in any order, so "lego crocs" matches
+    // "Crocs - Lego collab". Freight lines are not products and never match.
+    if (searching) {
+      // Freight lines are excluded here as well as in matchingItems below —
+      // otherwise "shipping" matches the invoice but highlights nothing on it,
+      // and the row appears with no reason attached.
+      const goods = parseLineItems(i.line_items_json)
+        .filter((it) => !isNoiseItem(it.description || ""))
+        .map((it) => it.description || "")
+        .join(" ");
+      const hay = `${i.number} ${clientName(i.client_id)} ${i.total} ${goods}`;
+      if (!matchesAllTokens(hay, qTokens)) return false;
     }
     return true;
   });
@@ -263,7 +293,7 @@ export default function InvoicesView() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by number, client, or amount…"
+            placeholder="Search by item, number, client, or amount…"
             className="w-full pl-9 pr-8 h-9 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
           />
           {search && (
@@ -277,6 +307,14 @@ export default function InvoicesView() {
           Show completed
         </label>
       </div>
+
+      {/* R-234: a search deliberately ignores the tab, so say so rather than
+          leaving him to wonder why completed and voided rows appeared. */}
+      {searching && (
+        <p className="-mt-2 mb-4 text-[12px] text-muted">
+          Searching every invoice — {visible.length} match{visible.length === 1 ? "" : "es"}, including completed and fell-through.
+        </p>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 mb-5">
@@ -373,8 +411,12 @@ export default function InvoicesView() {
                 profit = null;
               }
               const voided = isVoided(inv);
+              // R-234: when a search is running, show WHICH goods matched, with
+              // what they fetched. That is the whole point of searching by item.
+              const hits = searching ? matchingItems(parseLineItems(inv.line_items_json), qTokens) : [];
               return (
-                <tr key={inv.id} className={`border-b border-line-2 last:border-0 hover:bg-surface-2 cursor-pointer transition-colors ${rowIdx % 2 === 1 ? "bg-surface-2/40" : ""} ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
+                <Fragment key={inv.id}>
+                <tr className={`border-b border-line-2 last:border-0 hover:bg-surface-2 cursor-pointer transition-colors ${rowIdx % 2 === 1 ? "bg-surface-2/40" : ""} ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
                   <td className="px-4 py-3 font-mono text-[11px] text-muted">{inv.number}</td>
                   <td className="px-4 py-3 text-[13px] font-medium text-ink">{clientName(inv.client_id)}</td>
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{inv.issue_date.slice(0, 10)}</td>
@@ -445,6 +487,21 @@ export default function InvoicesView() {
                     </div>
                   </td>
                 </tr>
+                {hits.length > 0 && (
+                  <tr className={`border-b border-line-2 cursor-pointer hover:bg-surface-2 ${voided ? "opacity-55" : ""}`} onClick={() => openDetail(inv.id)}>
+                    <td colSpan={8} className="px-4 pb-2.5 pt-0">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-1 border-l-2 border-accent/40 ml-1">
+                        {hits.map((it, n) => (
+                          <span key={n} className="text-[12px] text-ink-2">
+                            {it.description}
+                            <span className="text-muted"> · {describeItem(it)}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
             {invoices.length === 0 ? (

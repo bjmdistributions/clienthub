@@ -4,32 +4,87 @@
     {
       "name": "www",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8098", "--directory", "C:/Users/Jack/Desktop/clienthub-api/www"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8098",
+        "--directory",
+        "C:/Users/Jack/Desktop/clienthub-api/www"
+      ],
       "port": 8098
     },
     {
       "name": "desktop",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5173
     },
     {
       "name": "desktop-harness",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5199", "--strictPort"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5199",
+        "--strictPort"
+      ],
       "port": 5199
     },
     {
       "name": "atlas",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/atlas", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/atlas",
+        "run",
+        "dev"
+      ],
       "port": 4318
     },
     {
       "name": "bjm-web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "C:/Users/Jack/Desktop/Websites/bjmdistributions", "run", "dev", "--", "-p", "3100"],
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/Websites/bjmdistributions",
+        "run",
+        "dev",
+        "--",
+        "-p",
+        "3100"
+      ],
       "port": 3100
+    },
+    {
+      "name": "desktop-harness-r231",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5198",
+        "--strictPort"
+      ],
+      "port": 5198
+    },
+    {
+      "name": "desktop-harness-r235",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5197",
+        "--strictPort"
+      ],
+      "port": 5197
     }
   ]
 }

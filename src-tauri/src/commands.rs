@@ -1595,6 +1595,38 @@ pub struct SearchDeal { pub id: String, pub title: String, pub client_name: Stri
 #[derive(Serialize, Debug, Clone)]
 pub struct SearchSupplier { pub id: String, pub name: String }
 
+/// Split a search box query into lowercase tokens. Multi-token AND is the app's
+/// one search grammar — it matches the bank ledger search on the server
+/// (`clienthub-api/src/routes/bank.rs`) and the Invoices screen, so "lego crocs"
+/// finds "Crocs - Lego collab" regardless of the order the words were typed.
+fn search_tokens(query: &str) -> Vec<String> {
+    query.to_lowercase().split_whitespace().map(|t| t.to_string()).collect()
+}
+
+/// True when every token appears somewhere in this invoice's line-item
+/// descriptions. A malformed blob is an empty invoice, never an error: an
+/// invalid blob reaching a JSON call blanked the whole financials screen once
+/// (v0.15.116).
+fn line_items_match(line_items_json: &str, tokens: &[String]) -> bool {
+    if tokens.is_empty() { return false; }
+    let parsed: serde_json::Value = match serde_json::from_str(line_items_json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let items = match parsed.as_array() { Some(a) => a, None => return false };
+    let mut hay = String::new();
+    for it in items {
+        let d = it.get("description").and_then(|v| v.as_str()).unwrap_or("").trim();
+        // Freight is ~a fifth of every line item ever written; indexing it makes
+        // every query for a shipped thing match every invoice.
+        let lower = d.to_lowercase();
+        if lower.is_empty() || lower == "shipping" || lower == "freight" { continue; }
+        hay.push_str(&lower);
+        hay.push(' ');
+    }
+    tokens.iter().all(|t| hay.contains(t.as_str()))
+}
+
 #[tauri::command]
 pub async fn global_search(query: String) -> Result<GlobalSearchResults, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -1610,8 +1642,32 @@ pub async fn global_search(query: String) -> Result<GlobalSearchResults, String>
     let mut stmt_i = conn.prepare(
         "SELECT i.id, i.number, COALESCE(c.name,'') FROM invoices i LEFT JOIN clients c ON c.id=i.client_id WHERE (LOWER(i.number) LIKE ?1 OR LOWER(c.name) LIKE ?1) AND COALESCE(i.archived,0)=0 ORDER BY i.issue_date DESC LIMIT 5"
     ).map_err(|e| e.to_string())?;
-    let invoices: Vec<SearchInvoice> = stmt_i.query_map([&pat], |r| Ok(SearchInvoice { id: r.get(0)?, number: r.get(1)?, client_name: r.get(2)? }))
+    let mut invoices: Vec<SearchInvoice> = stmt_i.query_map([&pat], |r| Ok(SearchInvoice { id: r.get(0)?, number: r.get(1)?, client_name: r.get(2)? }))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    // R-234: the palette also finds an invoice by WHAT WAS SOLD. Line items are a
+    // JSON blob on the invoice, so this matches the parsed descriptions in Rust
+    // rather than running a LIKE over the raw blob — a raw LIKE would also match
+    // the JSON keys, so a search for "rate" or "amount" would return every
+    // invoice ever written. Freight lines are not products and never match.
+    if invoices.len() < 5 {
+        let tokens = search_tokens(&query);
+        if !tokens.is_empty() {
+            let mut stmt_g = conn.prepare(
+                "SELECT i.id, i.number, COALESCE(c.name,''), i.line_items_json FROM invoices i LEFT JOIN clients c ON c.id=i.client_id WHERE COALESCE(i.archived,0)=0 ORDER BY i.issue_date DESC"
+            ).map_err(|e| e.to_string())?;
+            let rows: Vec<(String, String, String, String)> = stmt_g
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+            for (id, number, client_name, blob) in rows {
+                if invoices.len() >= 5 { break; }
+                if invoices.iter().any(|x| x.id == id) { continue; }
+                if line_items_match(&blob, &tokens) {
+                    invoices.push(SearchInvoice { id, number, client_name });
+                }
+            }
+        }
+    }
 
     let mut stmt_d = conn.prepare(
         "SELECT d.id, d.title, COALESCE(c.name,'') FROM deals d LEFT JOIN clients c ON c.id=d.client_id WHERE (LOWER(d.title) LIKE ?1 OR LOWER(c.name) LIKE ?1) AND COALESCE(d.archived,0)=0 ORDER BY d.updated_at DESC LIMIT 5"
@@ -19931,5 +19987,312 @@ mod shipping_metadata_tests {
         conn.execute("INSERT INTO deal_flows (id, metadata) VALUES ('df1', NULL)", []).unwrap();
         let out: Value = serde_json::from_str(&shipped_deal_metadata(&conn, "df1").unwrap()).unwrap();
         assert_eq!(out["shipping_status"], "shipped");
+    }
+}
+
+/* ── Find matches — buyers for a lot, from what they have bought (R-236) ─────
+ *
+ * Jack, 2026-09-03: "only do it when its very similar, dont always show a buyer
+ * for something if there is no history with anything close. but if its shoes or
+ * a category and around the same price and the deal has closed that should be
+ * the highest match."
+ *
+ * The restraint is the feature. A matcher that always finds somebody is worse
+ * than none, so this scores and then applies a FLOOR — measured against his 11
+ * available lots on 2026-09-03, six of them correctly return nothing.
+ *
+ * Nothing links a sale to a lot (`linked_deal_id` is unset on all 93 lots), so
+ * similarity is inferred from text and category — never from a lot id on a past
+ * deal, which does not exist.
+ */
+
+/// Words that carry no product meaning here. Without this list, "Shipping" —
+/// 21% of every line item ever written — matches every lot, and the packaging
+/// words ("pallet", "mixed", "units") match across unrelated categories.
+const MATCH_STOPWORDS: &[&str] = &[
+    "shipping", "freight", "test", "pallet", "pallets", "unit", "units", "mixed",
+    "new", "lot", "load", "loads", "mens", "womens", "kids", "assorted", "misc",
+    "and", "the", "with", "for",
+];
+
+/// One scoring term each, straight from his sentence.
+const MATCH_TOKEN_POINTS: i32 = 40;
+const MATCH_PRICE_POINTS: i32 = 25;
+const MATCH_CLOSED_POINTS: i32 = 35;
+/// The floor. One shared word alone (40) is never enough; it takes a word plus
+/// either a closed deal or a comparable price.
+const MATCH_FLOOR: i32 = 75;
+const MATCH_LIMIT: usize = 5;
+
+fn match_tokens(text: &str) -> std::collections::HashSet<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() > 2 && !MATCH_STOPWORDS.contains(t))
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// A lot's price for ONE unit, or None when nothing prices it. Follows the R-232
+/// rule: `per_unit` is already per unit, `total` divides by the quantity, and a
+/// `custom` (free-text) price prices nothing. None rather than 0.0, so "no price"
+/// can never be compared as if it were free.
+fn lot_unit_price(asking_price: f64, price_type: &str, quantity: f64) -> Option<f64> {
+    if asking_price <= 0.0 {
+        return None;
+    }
+    match price_type {
+        "per_unit" => Some(asking_price),
+        "total" if quantity > 0.0 => Some(asking_price / quantity),
+        _ => None,
+    }
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct LotMatch {
+    pub client_id: String,
+    pub client_name: String,
+    pub score: i32,
+    /// The single best piece of evidence — what they bought, and for how much.
+    pub bought: String,
+    pub unit_price: f64,
+    pub qty: f64,
+    pub invoice_id: String,
+    pub invoice_number: String,
+    pub issue_date: String,
+    pub closed: bool,
+    pub price_close: bool,
+    /// Every word the lot and that purchase share, so the reason is legible.
+    pub shared: Vec<String>,
+}
+
+/// Buyers whose purchase history is genuinely close to this lot. Empty is a
+/// valid and common answer, and the UI must present it as one.
+#[tauri::command]
+pub async fn find_lot_matches(lot_id: String) -> Result<Vec<LotMatch>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+
+    let (name, category, asking_price, price_type, quantity): (String, String, f64, String, f64) = conn
+        .query_row(
+            "SELECT name, COALESCE(category,''), COALESCE(asking_price,0), COALESCE(price_type,''), COALESCE(quantity,0) FROM inventory WHERE id=?1",
+            [&lot_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let lot_tokens = match_tokens(&format!("{} {}", name, category));
+    if lot_tokens.is_empty() {
+        return Ok(vec![]);
+    }
+    let unit = lot_unit_price(asking_price, &price_type, quantity);
+
+    // Every line item ever invoiced, with its buyer and whether that deal closed.
+    // A voided invoice did not sell anything, so it is not evidence of appetite.
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id, i.number, i.client_id, COALESCE(c.name,''), COALESCE(i.issue_date,''), i.line_items_json, \
+                    COALESCE(i.is_complete,0), COALESCE(i.voided,0) \
+             FROM invoices i LEFT JOIN clients c ON c.id=i.client_id \
+             WHERE COALESCE(i.archived,0)=0 AND COALESCE(i.voided,0)=0",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, String, String, String, String, i64, i64)> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Best evidence per buyer — one row each, never the same person three times
+    // for three purchases.
+    let mut best: std::collections::HashMap<String, LotMatch> = std::collections::HashMap::new();
+
+    for (inv_id, number, client_id, client_name, issue_date, blob, is_complete, _voided) in rows {
+        if client_id.is_empty() {
+            continue;
+        }
+        let items: Vec<serde_json::Value> = match serde_json::from_str::<serde_json::Value>(&blob) {
+            Ok(serde_json::Value::Array(a)) => a,
+            _ => continue,
+        };
+        let closed = is_complete != 0;
+
+        for it in items {
+            let desc = it.get("description").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if desc.is_empty() {
+                continue;
+            }
+            let their = match_tokens(desc);
+            let shared: Vec<String> = {
+                let mut v: Vec<String> = lot_tokens.intersection(&their).cloned().collect();
+                v.sort();
+                v
+            };
+            if shared.is_empty() {
+                continue;
+            }
+
+            let rate = it.get("rate").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            // "Around the same price" — deliberately wide, because liquidation
+            // pricing swings hard on condition and quantity.
+            let price_close = match unit {
+                Some(u) if rate > 0.0 => {
+                    let ratio = rate / u;
+                    (0.5..=2.0).contains(&ratio)
+                }
+                _ => false,
+            };
+
+            let mut score = shared.len() as i32 * MATCH_TOKEN_POINTS;
+            if price_close { score += MATCH_PRICE_POINTS; }
+            if closed { score += MATCH_CLOSED_POINTS; }
+            if score < MATCH_FLOOR {
+                continue;
+            }
+
+            let candidate = LotMatch {
+                client_id: client_id.clone(),
+                client_name: client_name.clone(),
+                score,
+                bought: desc.to_string(),
+                unit_price: rate,
+                qty: it.get("qty").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                invoice_id: inv_id.clone(),
+                invoice_number: number.clone(),
+                issue_date: issue_date.clone(),
+                closed,
+                price_close,
+                shared,
+            };
+            best.entry(client_id.clone())
+                .and_modify(|cur| { if candidate.score > cur.score { *cur = candidate.clone(); } })
+                .or_insert(candidate);
+        }
+    }
+
+    let mut out: Vec<LotMatch> = best.into_values().collect();
+    // Highest score first; a closed deal breaks a tie, then the more recent one.
+    out.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then(b.closed.cmp(&a.closed))
+            .then(b.issue_date.cmp(&a.issue_date))
+    });
+    out.truncate(MATCH_LIMIT);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod item_search_tests {
+    use super::{line_items_match, search_tokens};
+
+    const SOLD: &str = r#"[{"description":"Nike Dunks","qty":400,"rate":18.5,"amount":7400},
+                           {"description":"Shipping","qty":1,"rate":900,"amount":900}]"#;
+
+    #[test]
+    fn every_token_must_appear_in_any_order() {
+        assert!(line_items_match(SOLD, &search_tokens("nike dunks")));
+        assert!(line_items_match(SOLD, &search_tokens("dunks nike")));
+        assert!(line_items_match(SOLD, &search_tokens("nike")));
+        // "jordan" is not on this invoice, so the AND fails even though "nike" hits.
+        assert!(!line_items_match(SOLD, &search_tokens("nike jordan")));
+    }
+
+    #[test]
+    fn freight_is_not_a_product() {
+        // 21% of every line item ever written is a "Shipping" row. Indexing it
+        // would make a search for anything shipped match every invoice.
+        assert!(!line_items_match(SOLD, &search_tokens("shipping")));
+        assert!(!line_items_match(SOLD, &search_tokens("freight")));
+    }
+
+    #[test]
+    fn json_keys_are_not_searchable() {
+        // The reason this matches parsed descriptions rather than running a LIKE
+        // over the raw blob: the blob contains its own keys.
+        assert!(!line_items_match(SOLD, &search_tokens("rate")));
+        assert!(!line_items_match(SOLD, &search_tokens("amount")));
+        assert!(!line_items_match(SOLD, &search_tokens("description")));
+    }
+
+    #[test]
+    fn a_malformed_blob_is_an_empty_invoice_never_an_error() {
+        // v0.15.116: an invalid blob reaching a JSON call blanked all financials.
+        assert!(!line_items_match("", &search_tokens("nike")));
+        assert!(!line_items_match("not json", &search_tokens("nike")));
+        assert!(!line_items_match("{}", &search_tokens("nike")));
+        assert!(!line_items_match("[]", &search_tokens("nike")));
+        assert!(!line_items_match(SOLD, &search_tokens("")));
+    }
+}
+
+#[cfg(test)]
+mod lot_match_tests {
+    use super::{lot_unit_price, match_tokens, MATCH_CLOSED_POINTS, MATCH_FLOOR,
+                MATCH_PRICE_POINTS, MATCH_TOKEN_POINTS};
+
+    /// The scoring rule, isolated from SQLite so the arithmetic can be asserted.
+    fn score(lot: &str, bought: &str, unit: Option<f64>, rate: f64, closed: bool) -> i32 {
+        let shared = match_tokens(lot).intersection(&match_tokens(bought)).count() as i32;
+        if shared == 0 { return 0; }
+        let mut s = shared * MATCH_TOKEN_POINTS;
+        if let Some(u) = unit {
+            if rate > 0.0 && (0.5..=2.0).contains(&(rate / u)) { s += MATCH_PRICE_POINTS; }
+        }
+        if closed { s += MATCH_CLOSED_POINTS; }
+        s
+    }
+
+    #[test]
+    fn a_closed_deal_in_the_same_category_at_a_similar_price_is_the_top_match() {
+        // Jack's own words: "if its shoes or a category and around the same price
+        // and the deal has closed that should be the highest match."
+        let s = score("Chaco Sandals Shoes", "Asics Shoes", Some(17.0), 22.0, true);
+        assert_eq!(s, MATCH_TOKEN_POINTS + MATCH_PRICE_POINTS + MATCH_CLOSED_POINTS);
+        assert!(s >= MATCH_FLOOR);
+    }
+
+    #[test]
+    fn one_shared_word_on_its_own_is_never_enough() {
+        // The restraint. A lone category word with no closed deal and no price
+        // agreement must NOT surface a buyer.
+        assert!(score("Chaco Sandals Shoes", "Mixed Shoes", None, 0.0, false) < MATCH_FLOOR);
+        // ...but the same word plus a closed deal is.
+        assert!(score("Chaco Sandals Shoes", "Mixed Shoes", None, 0.0, true) >= MATCH_FLOOR);
+    }
+
+    #[test]
+    fn no_shared_word_is_no_match_however_close_the_price() {
+        // Bed sheets and shoes at the same price are not the same appetite.
+        assert_eq!(score("Bed Sheet Sets", "Asics Shoes", Some(6.0), 6.0, true), 0);
+    }
+
+    #[test]
+    fn freight_and_packaging_words_never_carry_a_match() {
+        // "Shipping" is 21% of every line item ever written; "pallet" and "mixed"
+        // span every category. If these scored, every lot would match everyone.
+        for noise in ["Shipping", "Mail Pallets", "Mixed Pallets"] {
+            assert_eq!(score("Mixed Shoe Pallets", noise, None, 0.0, true), 0,
+                       "noise word matched: {noise}");
+        }
+    }
+
+    #[test]
+    fn a_price_ten_times_over_is_not_around_the_same_price() {
+        let far = score("Nike Shoes", "Nike Vapor Maxs", Some(4.0), 75.0, false);
+        let near = score("Nike Shoes", "Nike Vapor Maxs", Some(50.0), 75.0, false);
+        assert_eq!(far, MATCH_TOKEN_POINTS);
+        assert_eq!(near, MATCH_TOKEN_POINTS + MATCH_PRICE_POINTS);
+    }
+
+    #[test]
+    fn a_lot_with_no_price_of_its_own_compares_no_prices() {
+        // R-232: a custom (free-text) price prices nothing, and a total needs a
+        // quantity. None, never 0.0 — "no price" must not compare as free.
+        assert_eq!(lot_unit_price(0.0, "per_unit", 100.0), None);
+        assert_eq!(lot_unit_price(1500.0, "custom", 100.0), None);
+        assert_eq!(lot_unit_price(1500.0, "total", 0.0), None);
+        assert_eq!(lot_unit_price(1500.0, "total", 100.0), Some(15.0));
+        assert_eq!(lot_unit_price(15.0, "per_unit", 100.0), Some(15.0));
     }
 }

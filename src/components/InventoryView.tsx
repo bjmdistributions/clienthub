@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus } from "../lib/api";
+import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/location";
 import LocationField from "./LocationField";
@@ -2190,6 +2190,11 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
   const [zoom, setZoom] = useState(false);
   const [mBusy, setMBusy] = useState(false);
   const [fbOpen, setFbOpen] = useState(false);
+  // R-236 — buyers whose history is close to this lot. `null` means not asked
+  // yet; an empty array means asked and genuinely nothing is close, which is a
+  // real answer and is rendered as one.
+  const [matches, setMatches] = useState<LotMatch[] | null>(null);
+  const [matching, setMatching] = useState(false);
   // If the photo set shrinks (sync/edit elsewhere) while the detail is open, keep
   // the selected index in range so photos[big] never becomes undefined.
   useEffect(() => { if (big > photos.length - 1) setBig(0); }, [photos.length, big]);
@@ -2475,6 +2480,19 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           {lot.status !== "sold" && lot.status !== "archived" && (
             <button onClick={onLink} className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2"><Link2 size={13} /> Link to deal</button>
           )}
+          <button
+            onClick={async () => {
+              setMatching(true);
+              try { setMatches(await api.findLotMatches(lot.id)); }
+              catch (e: any) { toast(String(e), "error"); setMatches(null); }
+              finally { setMatching(false); }
+            }}
+            disabled={matching}
+            title="Buyers who have bought something close to this before"
+            className="flex items-center gap-1 border border-line text-ink-2 px-3 h-9 rounded-lg text-[12px] hover:bg-surface-2 disabled:opacity-40"
+          >
+            <Users size={13} /> {matching ? "Looking…" : "Find matches"}
+          </button>
           <div className="flex items-center gap-2">
             {lot.status !== "sold" && (
               <button onClick={() => onStatus("sold")} className="flex items-center gap-1 border border-success text-success-ink px-3 h-9 rounded-lg text-[12px] hover:bg-success-bg"><DollarSign size={13} /> Mark sold</button>
@@ -2488,6 +2506,53 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           </div>
           <button onClick={onDelete} className="flex items-center gap-1 border border-danger text-danger-ink px-3 h-9 rounded-lg text-[12px] hover:bg-danger-bg ml-auto"><Trash2 size={13} /> Delete</button>
         </div>
+        {matches !== null && (
+          <div className="w-full basis-full border border-line rounded-xl bg-surface-2 p-4 my-1">
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <span className="text-[13px] font-semibold text-ink">
+                {matches.length === 0 ? "No close match" : `${matches.length} buyer${matches.length === 1 ? "" : "s"} worth calling`}
+              </span>
+              <button onClick={() => setMatches(null)} className="text-muted hover:text-ink transition-colors" aria-label="Close the matches"><X size={14} /></button>
+            </div>
+            {matches.length === 0 ? (
+              /* The restraint Jack asked for by name: no history is close, so
+                 nothing is offered. Never a padded top-three. */
+              <p className="text-[12.5px] text-muted">
+                Nothing in the purchase history is close to this lot. Only buyers who have bought
+                something similar — same kind of goods, comparable price — appear here.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {matches.map((m) => (
+                  <div key={m.client_id} className="flex items-start justify-between gap-3 bg-surface border border-line rounded-lg px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-ink truncate">{m.client_name}</div>
+                      {/* The evidence. A recommendation with no reason is not
+                          actionable on a phone call. */}
+                      <div className="text-[11.5px] text-muted mt-0.5 truncate">
+                        bought {m.bought}
+                        {m.unit_price > 0 ? ` at ${fmtAmount(m.unit_price)}/unit` : ""}
+                        {m.issue_date ? ` · ${m.issue_date.slice(0, 10)}` : ""}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {m.closed && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-success-bg text-success-ink border border-success-line">
+                          Closed
+                        </span>
+                      )}
+                      {m.price_close && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-surface-3 text-ink-2 border border-line">
+                          Similar price
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
     {zoom && photos.length > 0 && (

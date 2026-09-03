@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-234/235/236 harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it —
+      same trick and same rules as shell-harness.html and lot-harness.html.
+
+      Why it exists: the three screens changed by R-234 (invoice item search),
+      R-235 (the client screen's three deal sections) and R-236 (Find matches)
+      all sit behind App.tsx's auth gate, so `npm run dev` stops at sign-in and
+      none of them can be looked at. A responsive sweep that is READ rather than
+      RENDERED is how v0.14.95 shipped broken.
+
+      ?screen=client (default) | invoices | inventory
+
+      Every figure is invented, but the SHAPES are taken from the live DB — an
+      invoice carries line_items_json as a STRING, `voided` as a boolean and
+      `is_complete` as a boolean, because that is what the Rust hands back. A
+      fixture that lies about a field's type hides the bug it was meant to catch.
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        unregisterListener: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r235-harness.tsx"></script>
+  </body>
+</html>

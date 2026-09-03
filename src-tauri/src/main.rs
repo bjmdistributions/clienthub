@@ -599,6 +599,7 @@ fn main() {
             export_analytics_xlsx,
             search_clients,
             global_search,
+            find_lot_matches,
             list_stale_clients,
             due_followups,
             list_clients_filtered,

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, Children } from "react";
 import {
   api, Client, Interaction, Invoice, BuyerTier, PortalLink, CustomField, CompanyInfo,
-  PaymentMethod, CounterpartyPaymentRow, DealFlow, Supplier, PartyLink,
+  PaymentMethod, CounterpartyPaymentRow, DealFlow, Supplier, PartyLink, LineItem,
 } from "../lib/api";
 import { fmtAmount, fmtPhone, localDay, parseLocalDay, primarySupplierLabel } from "../lib/format";
+import { parseLineItems, describeItem } from "../lib/itemSearch";
 import ReliabilityBadge from "./ReliabilityBadge";
 import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
@@ -22,6 +23,9 @@ import {
   FileText,
   MessageSquare,
   ShoppingCart,
+  XCircle,
+  CheckCircle2,
+  RotateCcw,
   Target,
   User,
   Tag,
@@ -153,6 +157,13 @@ const WAITING_ON: Record<string, string> = {
 const openDeal = (invoiceNumber: string) => {
   try { localStorage.setItem("dealflow_invoice_filter", invoiceNumber); } catch { /* ignore */ }
   window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "dealflow" }));
+};
+
+/** Open one invoice's own drawer — the same stash-then-switch handoff, so a line
+ *  item on this screen reaches the full invoice in one click (R-235). */
+const openInvoice = (invoiceId: string) => {
+  try { localStorage.setItem("invoices_open_id", invoiceId); } catch { /* ignore */ }
+  window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
 };
 
 /** Open the receipt builder on this client — same stash-then-switch handoff. */
@@ -488,6 +499,144 @@ export function ActivityStream({ items, header }: { items: StreamItem[]; header?
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── The three deal sections (R-235) ─────────────────────────────────────────
+ *
+ * Jack, 2026-09-03: "I want to see 3 sections, deals completed, deals fell
+ * throguh, and current deals meaning theyre still in deal flow. I want it to
+ * explicitly show the items on the invoice with all details and alllow me to
+ * click on any of them to see them fully."
+ *
+ * The buckets are built off `invoices`, NEVER off `flows`. `list_deal_flows`
+ * filters `COALESCE(i.voided,0)=0`, so a fell-through deal is invisible to it by
+ * construction — which is why this screen could not show his losses at all
+ * before this section existed. `list_invoices_for_client` filters `archived`
+ * only and carries both `voided` and `line_items_json`, so every bucket and
+ * every line item comes from data the screen already held in memory.
+ *
+ * Fell-through wins where an invoice is both voided and complete (Jack,
+ * 2026-09-03): voiding is the later act and the deliberate one.
+ */
+
+export type DealRow = {
+  invoice: Invoice;
+  flow: DealFlow | undefined;
+  items: LineItem[];
+  refunded: number;
+};
+
+function DealSection({ title, icon, rows, tone, empty, defaultOpen, showStage }: {
+  title: string;
+  icon: React.ReactNode;
+  rows: DealRow[];
+  tone: "success" | "danger" | "accent";
+  empty: string;
+  defaultOpen: boolean;
+  showStage: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const value = rows.reduce((sum, r) => sum + (r.invoice.total || 0), 0);
+  const badge = {
+    success: "bg-success-bg text-success-ink border-success-line",
+    danger: "bg-danger-bg text-danger-ink border-danger-line",
+    accent: "bg-accent/10 text-accent-hover border-accent/20",
+  }[tone];
+
+  return (
+    <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between gap-3 text-left">
+        <span className="flex items-center gap-2">
+          {icon}
+          <span className="text-[13px] font-semibold text-ink">{title}</span>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium border ${badge}`}>
+            {rows.length}
+          </span>
+        </span>
+        <span className="flex items-center gap-3">
+          <span className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(value)}</span>
+          <ChevronDown size={15} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+        </span>
+      </button>
+
+      {open && (rows.length === 0 ? (
+        <p className="text-[12.5px] text-muted mt-3">{empty}</p>
+      ) : (
+        <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
+          {rows.map(({ invoice, flow, items, refunded }) => {
+            const supplier = flow ? primarySupplierLabel(flow.supplier_payments) : "";
+            return (
+              <div key={invoice.id} className="px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <button
+                      onClick={() => openInvoice(invoice.id)}
+                      title="Open this invoice"
+                      className="text-[13px] text-ink hover:text-accent-hover transition-colors text-left truncate"
+                    >
+                      {invoice.number ? `Invoice ${invoice.number}` : flow?.name || "Deal"}
+                    </button>
+                    {showStage && flow && (
+                      <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-accent/10 text-accent-hover border border-accent/20">
+                        {STAGE_LABEL[flow.stage] || flow.stage}
+                      </span>
+                    )}
+                    {refunded > 0 && (
+                      <span className="ml-2 inline-flex items-center gap-1 text-[10.5px] font-semibold text-danger-ink">
+                        <RotateCcw size={10} /> Refunded {fmtAmount(refunded)}
+                      </span>
+                    )}
+                    <div className="text-[11.5px] text-muted mt-0.5">
+                      {[
+                        invoice.issue_date ? invoice.issue_date.slice(0, 10) : null,
+                        showStage && flow ? WAITING_ON[flow.stage] : null,
+                        supplier ? `supplier ${supplier}` : null,
+                      ].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className={`text-[13px] font-semibold tabular-nums ${tone === "danger" ? "line-through text-faint" : "text-ink"}`}>
+                      {fmtAmount(invoice.total)}
+                    </span>
+                    {invoice.number && (
+                      <button onClick={() => openDeal(invoice.number)} title="Open this deal in Deal flow"
+                        aria-label="Open this deal in Deal flow"
+                        className="w-6 h-6 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
+                        <ArrowRight size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* What was actually on it. This is the half he asked for by
+                    name: the goods, with quantity and price, without opening
+                    anything. Clicking one opens the invoice it sits on. */}
+                {items.length > 0 && (
+                  <div className="mt-2 pl-2 border-l-2 border-line-2 space-y-0.5">
+                    {items.map((it, n) => (
+                      <button
+                        key={n}
+                        onClick={() => openInvoice(invoice.id)}
+                        title="Open this invoice"
+                        className="w-full flex items-baseline justify-between gap-3 text-left hover:bg-surface-2 rounded px-1 -mx-1 py-0.5 transition-colors"
+                      >
+                        <span className="text-[12px] text-ink-2 truncate">
+                          {it.description || "(no description)"}
+                        </span>
+                        <span className="text-[11.5px] text-muted tabular-nums flex-shrink-0">
+                          {describeItem(it)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -882,6 +1031,31 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
   const refundedTotal = completed.reduce((s, f) => s + (refundByDeal[f.id] || 0), 0);
   const openDeals = flows.filter((f) => f.stage !== "complete");
 
+  // R-235 — the three sections, bucketed off `invoices` rather than `flows`,
+  // because `list_deal_flows` filters voided invoices out by construction and a
+  // fell-through deal would therefore be unreachable here. Measured on the live
+  // DB 2026-09-03: the three buckets cover every non-archived invoice, with none
+  // left over. Where an invoice is both voided and complete (one live row today)
+  // fell-through wins — voiding is the later, deliberate act.
+  const dealRows = (() => {
+    const flowFor = new Map<string, DealFlow>();
+    for (const f of flows) if (f.invoice_id) flowFor.set(f.invoice_id, f);
+    const completed: DealRow[] = [], fellThrough: DealRow[] = [], current: DealRow[] = [];
+    for (const invoice of invoices) {
+      const flow = flowFor.get(invoice.id);
+      const row: DealRow = {
+        invoice,
+        flow,
+        items: parseLineItems(invoice.line_items_json),
+        refunded: flow ? (refundByDeal[flow.id] || 0) : 0,
+      };
+      if (invoice.voided) fellThrough.push(row);
+      else if (flow?.stage === "complete" || invoice.is_complete) completed.push(row);
+      else current.push(row);
+    }
+    return { completed, fellThrough, current };
+  })();
+
   const meta = client.metadata || {};
   // Sales rep — must be shown. No rep set reads "Unassigned"; it used to fall
   // back to the CLIENT'S OWN company name, which put the buyer's company beside
@@ -1247,42 +1421,36 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
         </div>
       </div>
 
-      {/* ── Open with them ───────────────────────────────── */}
-      {openDeals.length > 0 && (
-        <div className="bg-surface border border-line rounded-2xl p-6 mb-4">
-          <SubHeading icon={<ShoppingCart size={15} className="text-muted" />}>Open with them</SubHeading>
-          <div className="mt-3 border border-line rounded-lg divide-y divide-line-2 overflow-hidden">
-            {openDeals.map((f) => {
-              const supplier = primarySupplierLabel(f.supplier_payments);
-              return (
-                <div key={f.id} className="flex items-center justify-between gap-3 px-3 py-3">
-                  <div className="min-w-0">
-                    <div className="text-[13px] text-ink truncate">
-                      {f.invoice_number ? `Invoice ${f.invoice_number}` : f.name || "Deal"}
-                      <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-medium bg-accent/10 text-accent-hover border border-accent/20">
-                        {STAGE_LABEL[f.stage] || f.stage}
-                      </span>
-                    </div>
-                    <div className="text-[11.5px] text-muted mt-0.5">
-                      {[WAITING_ON[f.stage], supplier ? `supplier ${supplier}` : null].filter(Boolean).join(" · ")}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-[13px] font-semibold text-ink tabular-nums">{fmtAmount(f.invoice_total)}</span>
-                    {f.invoice_number && (
-                      <button onClick={() => openDeal(f.invoice_number as string)} title="Open this deal in Deal flow"
-                        aria-label="Open this deal in Deal flow"
-                        className="w-6 h-6 inline-flex items-center justify-center rounded text-faint hover:text-ink-2 hover:bg-surface-2 transition-colors">
-                        <ArrowRight size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {/* ── The three deal sections (R-235) ──────────────── */}
+      {/* His order, his words: completed, fell through, current. Current opens
+          by default because it is the only one that needs an action today. */}
+      <DealSection
+        title="Current deals"
+        icon={<ShoppingCart size={15} className="text-muted" />}
+        rows={dealRows.current}
+        tone="accent"
+        empty="Nothing live with them right now."
+        defaultOpen
+        showStage
+      />
+      <DealSection
+        title="Deals completed"
+        icon={<CheckCircle2 size={15} className="text-muted" />}
+        rows={dealRows.completed}
+        tone="success"
+        empty="They have not closed a deal yet."
+        defaultOpen
+        showStage={false}
+      />
+      <DealSection
+        title="Deals fell through"
+        icon={<XCircle size={15} className="text-muted" />}
+        rows={dealRows.fellThrough}
+        tone="danger"
+        empty="Nothing has fallen through with them."
+        defaultOpen={false}
+        showStage={false}
+      />
 
       {/* ── The party link ───────────────────────────────── */}
       {linkSupported && (
@@ -1304,7 +1472,12 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
       )}
 
       {/* ── Activity ─────────────────────────────────────── */}
-      <div className="mb-4">
+      {/* R-235, Jack 2026-09-03: "bank payments and activity take up too much
+          screen and dont really give me a good break down." The three deal
+          sections above are the breakdown; this is demoted to a disclosure
+          rather than deleted, because it is the only home on this screen for
+          calls, notes and email — nothing else carries them. */}
+      <Disclosure title="Activity — notes, calls and email" icon={<MessageSquare size={14} className="text-muted" />}>
         {showNoteForm && (
           <div className="bg-surface border border-line rounded-2xl mb-3 overflow-hidden">
             <NoteForm clientId={clientId} onClose={() => { setShowNoteForm(false); load(); }} />
@@ -1342,12 +1515,13 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
             </div>
           }
         />
-      </div>
+      </Disclosure>
 
       {/* ── Bank payments ────────────────────────────────── */}
-      {/* Open by default: this section shipped in v0.15.141 and Jack did not know
-          it existed. Demoted below the activity stream, not hidden inside it. */}
-      <Disclosure title="Bank payments" icon={<Banknote size={14} className="text-muted" />} defaultOpen>
+      {/* Was open by default because it shipped in v0.15.141 and Jack did not
+          know it existed. Now collapsed (R-235): the deal sections carry the
+          money story, and this was one of the two blocks eating the screen. */}
+      <Disclosure title="Bank payments" icon={<Banknote size={14} className="text-muted" />}>
         {/* THREE groups, never merged (R-156 W1-d, R-157/F2): booked to a deal of
             their own, which that deal already counts; booked to somebody else's
             deal, which counts on that deal and not here at all; and tagged to them
