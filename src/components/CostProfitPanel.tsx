@@ -2,13 +2,23 @@ import { DealFlow, PayoutShare, dealPayoutSplit } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 
 /**
- * Shared Cost & Profit display used by both the Deal Flow complete panel and the
- * Invoice detail panel, so the two are visually identical and read the same
- * deal_flow rows (single source of truth). Renders the 4-col P&L grid plus the
- * config-driven payout-split breakdown when the deal is complete and profitable.
- * The split is derived from the org's configured recipients — no assumed split
- * or partner names, and hidden entirely when payouts aren't set up.
+ * Cost & Profit display for the invoice detail drawer (via InvoiceCostSection), reading
+ * the same deal_flow rows Deal Flow does (single source of truth). Renders the P&L grid
+ * plus the config-driven payout-split breakdown when the deal is complete and profitable.
+ * The split is derived from the org's configured recipients — no assumed split or partner
+ * names, and hidden entirely when payouts aren't set up.
+ *
+ * LAYOUT: the P&L grid is **two columns, always**. It used to be `xl:grid-cols-4`, which is
+ * a VIEWPORT query — and its only host is a fixed `w-[480px]` drawer. So on any window wider
+ * than 1280px the grid split into four ~102px columns while the drawer stayed 480px, and a
+ * 16px bold money figure (~110px for "$214,500.00") ran straight out through the card's
+ * rounded border. Do not reintroduce a screen breakpoint here: the container width does not
+ * follow the window. See gotchas — a viewport breakpoint inside a fixed-width panel.
  */
+/** Step the type down for long figures rather than letting them overflow the card. */
+const moneySize = (v: string) =>
+  v.length <= 11 ? "text-[16px]" : v.length <= 14 ? "text-[15px]" : "text-[13px]";
+
 export default function CostProfitPanel({
   flow,
   recipients,
@@ -36,8 +46,8 @@ export default function CostProfitPanel({
 
   return (
     <div className="space-y-3">
-      {/* P&L grid */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+      {/* P&L grid — two columns, always. See the LAYOUT note above. */}
+      <div className="grid grid-cols-2 gap-2">
         {[
           { label: "Revenue", value: fmtAmount(gross), clr: "text-ink" },
           { label: "Costs",   value: fmtAmount(cost),  clr: "text-ink" },
@@ -52,9 +62,12 @@ export default function CostProfitPanel({
             clr:   margin >= 20 ? "text-success-ink" : margin >= 10 ? "text-warning-ink" : "text-danger-ink",
           },
         ].map((item) => (
-          <div key={item.label} className="bg-surface border border-line rounded-xl px-3 py-2.5">
+          <div key={item.label} className="bg-surface border border-line rounded-xl px-3 py-2.5 min-w-0">
             <div className="text-[12px] font-medium text-muted">{item.label}</div>
-            <div className={`text-[16px] font-bold tabular-nums mt-0.5 ${item.clr}`}>{item.value}</div>
+            {/* Money is never truncated — an unreadable figure is worse than a small one —
+                so an unusually long value steps the type down instead of spilling. Two
+                columns fit eight figures at 16px; the steps cover the rest. */}
+            <div className={`${moneySize(item.value)} font-bold tabular-nums mt-0.5 ${item.clr}`}>{item.value}</div>
           </div>
         ))}
       </div>
