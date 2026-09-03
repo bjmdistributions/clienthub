@@ -1627,6 +1627,98 @@ pub struct NewLead {
 }
 
 /// Match emails against signup rules, then known clients. Returns the leads that
+/// Record an outbound email against whoever it was sent to, so "last contact" reflects mail
+/// WE sent as well as mail we received.
+///
+/// The schema has always carried `email_out` and every last-contact query already counts it,
+/// but until now the ONLY thing that wrote it was a human picking "Email" in the manual
+/// quick-log. Replying to a customer from inside Ecliptr left their last-contact date
+/// untouched, and a customer who had never written in still read "No contact yet".
+///
+/// Matched exactly the way the inbound scanner matches (`LOWER(email)=LOWER(?1)`). A miss is
+/// silent and correct: mail to someone who is not a client is not contact with a client.
+/// Never fatal -- a failure here must not fail the send that already happened.
+///
+/// Deliberately NOT called from the newsletter or follow-up loops: those iterate every
+/// recipient, and one `email_out` row per recipient per blast would bury the timeline.
+pub fn log_outbound(to: &str, subject: &str, body: &str) {
+    // Accept either "a@b.com" or "Name <a@b.com>".
+    let addr = to.rsplit('<').next().unwrap_or(to).trim_end_matches('>').trim();
+    if addr.is_empty() {
+        return;
+    }
+    let conn = match pool().get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("log_outbound: no db handle: {}", e);
+            return;
+        }
+    };
+    let client_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM clients WHERE LOWER(email)=LOWER(?1) LIMIT 1",
+            [addr],
+            |r| r.get(0),
+        )
+        .ok();
+    let cid = match client_id {
+        Some(c) => c,
+        None => return,
+    };
+    let iid = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let mut cols = serde_json::Map::new();
+    cols.insert("client_id".into(), serde_json::Value::String(cid.clone()));
+    cols.insert("kind".into(), serde_json::Value::String("email_out".into()));
+    cols.insert("subject".into(), serde_json::Value::String(subject.to_string()));
+    cols.insert("body".into(), serde_json::Value::String(body.to_string()));
+    cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+    if let Err(e) = crate::sync::record_upsert("interactions", &iid, cols) {
+        tracing::warn!("log_outbound: record_upsert failed: {}", e);
+        return;
+    }
+    if let Err(e) = conn.execute(
+        "INSERT INTO interactions (id,client_id,kind,subject,body,created_at)
+         VALUES (?1,?2,'email_out',?3,?4,?5)",
+        rusqlite::params![iid, cid, subject, body, now],
+    ) {
+        tracing::warn!("log_outbound: insert failed: {}", e);
+    }
+}
+
+/// The text the sender actually typed: everything above the first quote marker. A reply to
+/// one of our own newsletters carries our footer -- including the word "unsubscribe" --
+/// quoted underneath it, so matching the whole body opted people out for merely replying.
+fn text_above_quote(body: &str) -> &str {
+    let mut pos = 0usize;
+    for line in body.split_inclusive('\n') {
+        let t = line.trim_start();
+        if t.starts_with('>')
+            || t.starts_with("-----Original Message")
+            || (t.starts_with("On ") && t.contains(" wrote:"))
+        {
+            return &body[..pos];
+        }
+        pos += line.len();
+    }
+    body
+}
+
+/// Scan every monitored mailbox AND write what it found.
+///
+/// `scan()` alone advances each mailbox's UID cursor without processing, and the IMAP search
+/// is `UID last+1:*` with no UNSEEN term -- so anything a bare `scan()` returns is permanently
+/// invisible to the pipeline that writes `email_in`. Only the background watcher called
+/// `process_new_emails`, which meant a manual "Scan" could consume mail the watcher would
+/// otherwise have logged, leaving no row to correct afterwards.
+pub async fn scan_and_process() -> Result<Vec<ParsedEmail>> {
+    let emails = scan().await?;
+    if let Err(e) = process_new_emails(&emails).await {
+        tracing::warn!("process_new_emails after manual scan failed: {}", e);
+    }
+    Ok(emails)
+}
+
 /// were newly auto-created (for the caller to notify on).
 async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
     let mut new_leads: Vec<NewLead> = Vec::new();
@@ -1699,22 +1791,6 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
                 }
             }
 
-            if regex::Regex::new(r"(?i)\bunsubscribe\b").map_or(false, |re| re.is_match(&email.body_text)) {
-                let conn = pool().get()?;
-                let _ = conn.execute(
-                    "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), '$.newsletter_contact_frequency', 'never') WHERE id=?1",
-                    [&cid],
-                );
-                let iid = uuid::Uuid::new_v4().to_string();
-                let now = Utc::now().to_rfc3339();
-                conn.execute(
-                    "INSERT INTO interactions (id,client_id,kind,subject,body,created_at) VALUES (?1,?2,'unsubscribe','Unsubscribe request detected',?3,?4)",
-                    rusqlite::params![iid, &cid, &email.subject, now],
-                )?;
-                tracing::info!("client {} unsubscribed via email", &cid[..8]);
-                continue;
-            }
-
             let conn = pool().get()?;
             let interaction_id = uuid::Uuid::new_v4().to_string();
             // The message's OWN date, not the moment we happened to read it. A mailbox
@@ -1732,26 +1808,78 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
                 .map(|d| d.with_timezone(&Utc).to_rfc3339())
                 .unwrap_or_else(|| Utc::now().to_rfc3339());
 
+            // A Google Group delivers the SAME message to every member, and more than one
+            // member mailbox is monitored here, so one customer email arrives two or three
+            // times carrying the identical RFC Message-ID. Each copy used to become its own
+            // timeline row, and each one synced onward.
+            let msg_id = email.message_id.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            if let Some(mid) = msg_id {
+                let seen: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM interactions WHERE client_id=?1 AND message_id=?2 LIMIT 1",
+                        rusqlite::params![&cid, mid],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+                if seen {
+                    tracing::info!("skipped duplicate group copy of {}", mid);
+                    continue;
+                }
+            }
+
             let mut cols = serde_json::Map::new();
             cols.insert("client_id".into(), serde_json::Value::String(cid.clone()));
             cols.insert("kind".into(), serde_json::Value::String("email_in".into()));
             cols.insert("subject".into(), serde_json::Value::String(email.subject.clone()));
             cols.insert("body".into(), serde_json::Value::String(email.body_text.clone()));
             cols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+            if let Some(mid) = msg_id {
+                cols.insert("message_id".into(), serde_json::Value::String(mid.to_string()));
+            }
             crate::sync::record_upsert("interactions", &interaction_id, cols)
                 .context("sync record_upsert interaction")?;
 
             conn.execute(
-                "INSERT INTO interactions (id,client_id,kind,subject,body,created_at)
-                 VALUES (?1,?2,'email_in',?3,?4,?5)",
+                "INSERT INTO interactions (id,client_id,kind,subject,body,created_at,message_id)
+                 VALUES (?1,?2,'email_in',?3,?4,?5,?6)",
                 rusqlite::params![
                     interaction_id,
                     cid,
                     &email.subject,
                     &email.body_text,
                     now,
+                    msg_id,
                 ],
             )?;
+
+            // Opt-out runs AFTER the message is on record, and matches only the text the
+            // sender actually typed. It used to run first and `continue`, so a customer
+            // replying with a real question whose quoted footer contained "unsubscribe" was
+            // opted out AND their reply was never logged. That insert also had no
+            // `record_upsert`, so neither the opt-out nor the row ever left this device.
+            if regex::Regex::new(r"(?i)\bunsubscribe\b")
+                .map_or(false, |re| re.is_match(text_above_quote(&email.body_text)))
+            {
+                let _ = conn.execute(
+                    "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), '$.newsletter_contact_frequency', 'never') WHERE id=?1",
+                    [&cid],
+                );
+                let iid = uuid::Uuid::new_v4().to_string();
+                let mut ucols = serde_json::Map::new();
+                ucols.insert("client_id".into(), serde_json::Value::String(cid.clone()));
+                ucols.insert("kind".into(), serde_json::Value::String("unsubscribe".into()));
+                ucols.insert("subject".into(), serde_json::Value::String("Unsubscribe request detected".into()));
+                ucols.insert("body".into(), serde_json::Value::String(email.subject.clone()));
+                ucols.insert("created_at".into(), serde_json::Value::String(now.clone()));
+                crate::sync::record_upsert("interactions", &iid, ucols)
+                    .context("sync record_upsert unsubscribe")?;
+                conn.execute(
+                    "INSERT INTO interactions (id,client_id,kind,subject,body,created_at) VALUES (?1,?2,'unsubscribe','Unsubscribe request detected',?3,?4)",
+                    rusqlite::params![iid, &cid, &email.subject, now],
+                )?;
+                tracing::info!("client {} unsubscribed via email", &cid[..8]);
+                continue;
+            }
 
             let body = email.body_text.clone();
             tokio::spawn(async move {

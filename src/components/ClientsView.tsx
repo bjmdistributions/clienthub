@@ -18,8 +18,12 @@ const ACTIVITY_META: Record<string, { label: string; Icon: typeof Clock; cls: st
   meeting:    { label: "Meeting",    Icon: Calendar,     cls: "text-success-ink" },
   note:       { label: "Note",       Icon: StickyNote,   cls: "text-muted" },
   checkup:    { label: "Check-in",   Icon: CheckCircle2, cls: "text-success-ink" },
-  email_in:   { label: "Email",      Icon: Mail,         cls: "text-muted" },
-  email_out:  { label: "Email",      Icon: Mail,         cls: "text-muted" },
+  // In and out are deliberately distinct: "Email - 3d ago" read identically whether the
+  // customer was waiting on us or we had chased them and heard nothing.
+  email_in:   { label: "Email in",   Icon: Mail,         cls: "text-muted" },
+  email_out:  { label: "Email out",  Icon: Send,         cls: "text-muted" },
+  // Legacy rows from the mobile Add Note form, which used to write a bare "email".
+  email:      { label: "Email",      Icon: Mail,         cls: "text-muted" },
 };
 
 const relTime = (d: string | null | undefined): string => {

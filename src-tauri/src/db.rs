@@ -1921,4 +1921,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE lot_build ADD COLUMN merged_from_json TEXT;
         "#,
     ),
+    (
+        89,
+        // Inbound email dedup (R-239). 89 and not 88: migration 87's note above reserves
+        // 88 for the unmerged `lot-engine-mapping` branch.
+        //
+        // sales@ and invoices@ are Google GROUPS, so one customer email is delivered to
+        // EVERY member mailbox, and more than one of those mailboxes is monitored here. The
+        // same message therefore arrived twice and became two timeline rows -- forever, and
+        // synced to every device. A Group preserves the original RFC Message-ID across its
+        // member copies, so matching on it collapses them exactly.
+        r#"
+        ALTER TABLE interactions ADD COLUMN message_id TEXT;
+        CREATE INDEX IF NOT EXISTS idx_interactions_msgid ON interactions(client_id, message_id);
+        "#,
+    ),
 ];

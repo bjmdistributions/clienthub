@@ -131,6 +131,17 @@ pub struct Client {
 /// emailed by us. Correlated `NOT EXISTS` subqueries — no N+1. Append as
 /// `, {FIRST_CONTACT_SQL} AS first_contact` to any `... FROM clients c` select and
 /// read with `r.get::<_, i64>("first_contact")? != 0`.
+/// The ONE definition of "last contact" for a client aliased `c`: the most recent of an
+/// invoice we sent, a quote we sent, or a real interaction. Newsletters are excluded on
+/// purpose -- a bulk blast is not contact with a person -- and so is `reminder`, which is
+/// automated and used to hide genuinely cold clients from the stale filter.
+///
+/// This lived inline in four places, and in two more (the CSV export and the stale-days
+/// filter) as a bare `MAX(interactions.created_at)` with no kind filter and no invoices or
+/// quotes at all. That is why the "90+ days" filter returned a client whose row on screen
+/// displayed an invoice from last week.
+const LAST_CONTACT_SQL: &str = "NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out','email','signup')),'')),'')";
+
 /// Deal-flow stages considered COMMITTED for the DASHBOARD cash-position math: the
 /// deal has progressed past the speculative start (`none` / `invoiced`) so its
 /// money is real. Jack's complaint was that early speculative invoices (still at
@@ -210,7 +221,7 @@ pub async fn client_last_activity() -> Result<Vec<ClientActivity>, String> {
                  UNION ALL SELECT client_id, 'quote', sent_at FROM quotes WHERE COALESCE(sent_at,'') <> ''
                  UNION ALL SELECT client_id, 'newsletter', sent_at FROM newsletter_sends WHERE status='sent' AND COALESCE(sent_at,'') <> ''
                  UNION ALL SELECT client_id, kind, created_at FROM interactions
-                          WHERE kind IN ('checkup','call','note','meeting','email_in','email_out') AND COALESCE(created_at,'') <> ''
+                          WHERE kind IN ('checkup','call','note','meeting','email_in','email_out','email','signup') AND COALESCE(created_at,'') <> ''
                )
              ) WHERE rn = 1",
         )
@@ -255,7 +266,7 @@ pub async fn list_clients() -> Result<Vec<Client>, String> {
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                     NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                                COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
-                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out')),'')),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out','email','signup')),'')),''),
                     MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}),
                     COALESCE(c.is_blacklisted,0),
                     COALESCE(c.approval_status,'active'),
@@ -326,7 +337,7 @@ pub async fn get_client(id: String) -> Result<Option<Client>, String> {
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
-                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out')),'')),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out','email','signup')),'')),''),
                 MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}),
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
@@ -1298,8 +1309,15 @@ pub async fn export_clients_csv(ids: Vec<String>, output_path: String) -> Result
                 "SELECT COALESCE(SUM(total),0) FROM invoices WHERE client_id=?1 AND status='paid'", [id], |r| r.get(0)
             ).unwrap_or(0.0);
 
+            // Same definition as the screen (see LAST_CONTACT_SQL) -- this used to be a bare
+            // MAX over every interaction kind, with no invoices or quotes, so the exported
+            // column disagreed with the list, the detail header and the stale filter alike.
             let last_contact: Option<String> = conn.query_row(
-                "SELECT MAX(created_at) FROM interactions WHERE client_id=?1", [id], |r| r.get(0)
+                "SELECT NULLIF(MAX(\
+                    COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=?1 AND COALESCE(archived,0)=0),''),\
+                    COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=?1),''),\
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=?1 AND kind IN ('checkup','call','note','meeting','email_in','email_out','email','signup')),'')),'')",
+                [id], |r| r.get(0)
             ).ok();
 
             wtr.write_record(&[
@@ -1691,14 +1709,14 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
     let sql = format!(
         "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
-                MAX(i.created_at),
+                ({lc}),
                     COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0),
                 ({fc}) AS first_contact
          FROM clients c
          LEFT JOIN interactions i ON i.client_id = c.id
          GROUP BY c.id
-     HAVING MAX(i.created_at) IS NULL OR MAX(i.created_at) < datetime('now', ?1)
-     ORDER BY MAX(i.created_at) ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
+     HAVING ({lc}) IS NULL OR ({lc}) < datetime('now', ?1)
+     ORDER BY ({lc}) ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL, lc = LAST_CONTACT_SQL);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([cutoff], |r| {
         let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
@@ -1798,7 +1816,7 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
                 NULLIF(MAX(COALESCE((SELECT MAX(sent_at) FROM invoices WHERE client_id=c.id AND COALESCE(archived,0)=0),''),
                            COALESCE((SELECT MAX(sent_at) FROM quotes WHERE client_id=c.id),''),
-                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out')),'')),''),
+                    COALESCE((SELECT MAX(created_at) FROM interactions WHERE client_id=c.id AND kind IN ('checkup','call','note','meeting','email_in','email_out','email','signup')),'')),''),
                 MAX(0, COALESCE((SELECT SUM(total) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0), 0) - {refunded}) AS total_revenue,
                 COALESCE(c.is_blacklisted,0),
                 COALESCE(c.approval_status,'active'),
@@ -1906,7 +1924,11 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
 
     if let Some(days) = filter.stale_days {
         let cutoff = format!("-{} days", days);
-        sql.push_str(&format!(" HAVING MAX(i.created_at) IS NULL OR MAX(i.created_at) < datetime('now', ?{})", param_idx));
+        sql.push_str(&format!(
+            " HAVING ({lc}) IS NULL OR ({lc}) < datetime('now', ?{p})",
+            lc = LAST_CONTACT_SQL,
+            p = param_idx
+        ));
         params.push(Box::new(cutoff));
     }
 
@@ -6965,7 +6987,11 @@ pub async fn send_email(
 ) -> Result<(), String> {
     crate::email::send(&to, &subject, &body, attachment_path.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Outbound mail is contact too. Without this a reply sent from Ecliptr never moved the
+    // client's last-contact date.
+    crate::email::log_outbound(&to, &subject, &body);
+    Ok(())
 }
 
 #[tauri::command]
@@ -7262,7 +7288,7 @@ pub async fn transfer_org_inbox(target_staff_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn scan_inbox() -> Result<Vec<crate::email::ParsedEmail>, String> {
-    crate::email::scan().await.map_err(|e| e.to_string())
+    crate::email::scan_and_process().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -16642,6 +16668,7 @@ pub async fn send_draft(id: String) -> Result<(), String> {
     crate::email::send(&to_addr, &subject, &body, None)
         .await
         .map_err(|e| e.to_string())?;
+    crate::email::log_outbound(&to_addr, &subject, &body);
 
     let now = Utc::now().to_rfc3339();
     let conn = pool().get().map_err(|e| e.to_string())?;

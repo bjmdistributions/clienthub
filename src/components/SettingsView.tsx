@@ -809,22 +809,37 @@ function TestResultLine({ state }: { state: TestState }) {
 
 // ── Calm settings-card scaffolding (shared, reused by the de-clutter pass) ──
 // One clear card per thing: icon + title + one-line plain purpose, then body.
-function SettingCard({ icon: Icon, title, purpose, aside, children }: {
-  icon: typeof Mail; title: string; purpose: string; aside?: React.ReactNode; children: React.ReactNode;
+function SettingCard({ icon: Icon, title, purpose, aside, collapsible = false, children }: {
+  icon: typeof Mail; title: string; purpose: string; aside?: React.ReactNode;
+  /** Opt-in: header toggles the body. Off by default so the other cards are unchanged. */
+  collapsible?: boolean;
+  children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  const shown = !collapsible || open;
+  // The status pill stays in the header while collapsed — the whole point is to see
+  // at a glance whether this is set up without expanding it.
+  const head = (
+    <div className={`flex items-start justify-between gap-3 ${shown ? "mb-5" : ""}`}>
+      <div className="flex items-start gap-3">
+        <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0 mt-0.5"><Icon size={17} /></span>
+        <div>
+          <div className="text-[15px] font-semibold text-ink flex items-center gap-1.5">
+            {title}
+            {collapsible && <ChevronDown size={14} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />}
+          </div>
+          <div className="text-[12.5px] text-muted mt-0.5">{purpose}</div>
+        </div>
+      </div>
+      {aside && <div className="flex-shrink-0">{aside}</div>}
+    </div>
+  );
   return (
     <div className="bg-surface border border-line rounded-2xl p-6">
-      <div className="flex items-start justify-between gap-3 mb-5">
-        <div className="flex items-start gap-3">
-          <span className="w-9 h-9 rounded-xl bg-surface-2 text-ink-2 flex items-center justify-center flex-shrink-0 mt-0.5"><Icon size={17} /></span>
-          <div>
-            <div className="text-[15px] font-semibold text-ink">{title}</div>
-            <div className="text-[12.5px] text-muted mt-0.5">{purpose}</div>
-          </div>
-        </div>
-        {aside && <div className="flex-shrink-0">{aside}</div>}
-      </div>
-      {children}
+      {collapsible
+        ? <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="w-full text-left">{head}</button>
+        : head}
+      {shown && children}
     </div>
   );
 }
@@ -1110,7 +1125,7 @@ function SendingCard() {
 
   return (
     <SettingCard icon={Send} title="Sending email" purpose="Invoices, quotes, and newsletters go out from here."
-      aside={<ConnectedPill ok={connected} />}>
+      aside={<ConnectedPill ok={connected} />} collapsible>
       {/* Org-shared vs personal. The shared inbox is set up once and every admin
           inherits it automatically; an admin can opt this device onto its own. */}
       <div className="mb-4 rounded-xl border border-line bg-surface-2/40 p-3.5">
@@ -1215,7 +1230,7 @@ function SendingCard() {
           for the shared config). The new owner's device pulls the creds itself. */}
       {admin && useOrg && staff.length > 0 && (
         <div className="mt-5 pt-4 border-t border-line">
-          <div className="text-[12px] font-medium text-ink-2 mb-1.5">Transfer shared inbox to another admin</div>
+          <Advanced label="Transfer shared inbox to another admin">
           <p className="text-[11.5px] text-muted mb-2.5">Hands the send + monitored inboxes to a different email admin. Credentials move with it — no re-typing.</p>
           <div className="flex items-center gap-2 flex-wrap">
             <select className={inpSm} value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
@@ -1228,6 +1243,7 @@ function SendingCard() {
               className="border border-line text-ink-2 px-4 h-9 rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-40 transition-colors">Transfer</button>
           </div>
           {transferMsg && <div className="mt-2 text-[12px] text-ink-2">{transferMsg}</div>}
+          </Advanced>
         </div>
       )}
     </SettingCard>
@@ -1269,7 +1285,7 @@ function InboxCard() {
 
   return (
     <SettingCard icon={Inbox} title="Inbox" purpose="Mail Ecliptr reads for replies and form submissions."
-      aside={<ConnectedPill ok={inboxes.length > 0} />}>
+      aside={<ConnectedPill ok={inboxes.length > 0} />} collapsible>
       {inboxes.length > 0 && <div className="space-y-2 mb-3">{inboxes.map((ib) => <InboxRow key={ib.id} ib={ib} />)}</div>}
 
       {adding ? (
