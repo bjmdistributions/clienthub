@@ -294,9 +294,10 @@ export default function App() {
   }, [navCollapsed]);
 
   // Split-screen: optional second pane showing another tab alongside the main one.
-  const [splitTab, setSplitTabState] = useState<Tab | null>(
-    () => (localStorage.getItem("clienthub_split_tab") as Tab) || null
-  );
+  const [splitTab, setSplitTabState] = useState<Tab | null>(() => {
+    const stored = localStorage.getItem("clienthub_split_tab");
+    return stored ? (LEGACY_TAB_IDS[stored] || (stored as Tab)) : null;
+  });
   const setSplit = (t: Tab | null) => {
     setSplitTabState(t);
     if (t) localStorage.setItem("clienthub_split_tab", t);

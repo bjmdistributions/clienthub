@@ -2778,14 +2778,16 @@ export default function FinancialsView() {
             // device (main.rs), not continuously. "Auto-syncing" read as live.
             <span className="text-[11.5px] text-muted whitespace-nowrap">Bank feed checked every 20 min</span>
           )}
-          <button
-            onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
-            title="Record a cash movement — reachable from any tab"
-            className="text-[12px] text-muted hover:text-ink-2 flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <Plus size={13} />
-            Record cash
-          </button>
+          {tab !== "tobook" && (
+            <button
+              onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
+              title="Record a cash movement — reachable from any tab"
+              className="text-[12px] text-muted hover:text-ink-2 flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <Plus size={13} />
+              Record cash
+            </button>
+          )}
           <button
             onClick={refreshScreen}
             disabled={refreshing}

@@ -804,7 +804,7 @@ export default function ClientsView() {
                 placeholder={`Type DELETE to confirm deleting ${selectedIds.size}`}
                 value={deleteTyped}
                 onChange={(e) => setDeleteTyped(e.target.value)}
-                onBlur={commitDeleteTyped}
+                onBlur={() => setDeleteTyped(null)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") commitDeleteTyped();
                   if (e.key === "Escape") setDeleteTyped(null);
