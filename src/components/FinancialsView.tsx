@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
-  Building2, RefreshCw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle,
+  Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
@@ -2352,7 +2352,15 @@ export default function FinancialsView() {
     if (t.allocated > 0.0001 && t.unallocated <= 0.0001) return <span className="text-muted">Linked</span>;
     if (t.allocated > 0.0001)
       return <span className="text-muted tabular-nums">{fmtAmount(t.allocated)} of {fmtAmount(t.amount)}</span>;
-    return <span className="text-muted">Link a deal</span>;
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); toggleRow(t); }}
+        title="Pick a deal to tie this payment to"
+        className="inline-flex items-center gap-1.5 h-7 px-2 rounded-lg border border-line text-[12px] text-ink-2 font-medium hover:bg-surface-2 hover:border-line-3 transition-colors whitespace-nowrap"
+      >
+        <Link2 size={11} /> Link a deal
+      </button>
+    );
   };
 
   const openTxn = openId ? txns.find((t) => t.id === openId) ?? null : null;
@@ -2770,6 +2778,14 @@ export default function FinancialsView() {
             // device (main.rs), not continuously. "Auto-syncing" read as live.
             <span className="text-[11.5px] text-muted whitespace-nowrap">Bank feed checked every 20 min</span>
           )}
+          <button
+            onClick={() => { setCashDate(localDay()); setCashOpen(true); }}
+            title="Record a cash movement — reachable from any tab"
+            className="text-[12px] text-muted hover:text-ink-2 flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Plus size={13} />
+            Record cash
+          </button>
           <button
             onClick={refreshScreen}
             disabled={refreshing}
@@ -3385,13 +3401,13 @@ export default function FinancialsView() {
                     title="Reset each bank's sync position and re-pull all transactions from the start — use if transactions are missing."
                     className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50 transition-colors"
                   >
-                    Re-pull all
+                    <RotateCcw size={14} /> Re-pull all
                   </button>
                   <button
                     onClick={clearAndRepull}
                     disabled={plaidSyncing}
                     title="Delete every bank transaction (and its tags/allocations) and re-pull fresh — use after removing a wrong account."
-                    className="flex items-center gap-1.5 h-9 px-3 border border-line text-muted rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/30 hover:bg-danger-bg disabled:opacity-50 transition-colors"
+                    className="flex items-center gap-1.5 h-9 px-3 ml-auto border border-danger-ink/25 text-danger-ink/80 rounded-lg text-[13px] font-medium hover:text-danger-ink hover:border-danger-ink/40 hover:bg-danger-bg disabled:opacity-50 transition-colors"
                   >
                     <Trash2 size={14} /> Clear all & re-pull
                   </button>
