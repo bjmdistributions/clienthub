@@ -4846,19 +4846,24 @@ pub async fn uncomplete_deal_flow(id: String) -> Result<(), String> {
     let df = read_df(&id)?;
     if df.stage != "complete" { return Ok(()); }
 
+    // Reopening undoes the COMPLETION step only, so the deal lands on `supplier_paid`
+    // with its payments and supplier legs intact — the same rule the server and the
+    // phone already applied. Until R-231 (Jack, 2026-09-03, D-19) this reset the deal
+    // to `invoiced`, which sent a fully-paid deal back to the very start on one surface
+    // and one step back on the others.
     let now = Utc::now().to_rfc3339();
     let mut cols = Map::new();
-    cols.insert("stage".into(), Value::String("invoiced".into()));
+    cols.insert("stage".into(), Value::String("supplier_paid".into()));
     cols.insert("completed_at".into(), Value::Null);
     cols.insert("updated_at".into(), Value::String(now.clone()));
     sync::record_upsert("deal_flows", &id, cols).map_err(|e| e.to_string())?;
 
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        conn.execute("UPDATE deal_flows SET stage='invoiced', completed_at=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE deal_flows SET stage='supplier_paid', completed_at=NULL, updated_at=?1 WHERE id=?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?;
     }
 
-    sync_invoice_stage(&df.invoice_id, "invoiced")?;
+    sync_invoice_stage(&df.invoice_id, "supplier_paid")?;
 
     // Critical: clear is_complete and profit data so the invoice reappears in Deal Flow
     {
