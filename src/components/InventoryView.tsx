@@ -97,6 +97,35 @@ const lotUnitPrice = (lot: Lot) =>
 const variantUnitPrice = (v: LotVariant, lot: Lot) =>
   v.price != null && v.price > 0 ? v.price : lotUnitPrice(lot);
 
+// The unit-price band the VARIANTS imply. A lot priced only through its sizes has no
+// asking_price of its own, and every headline used to print `fmtAmount(0)` — "$0.00 /
+// unit" on the card and the detail, which is the thing custom price text was written to
+// avoid. When the lot carries no price, its variants are the price.
+const variantPriceBand = (det: LotDetails): { low: number; high: number } | null => {
+  const ps = (det.variants ?? [])
+    .map((v) => v.price)
+    .filter((x): x is number => x != null && x > 0);
+  if (ps.length === 0) return null;
+  return { low: Math.min(...ps), high: Math.max(...ps) };
+};
+// The per-unit line, or null when nothing anywhere prices this lot. NEVER "$0.00 / unit".
+const unitPriceLine = (lot: Lot, det: LotDetails): string | null => {
+  const own = lotUnitPrice(lot);
+  if (own > 0) return `${fmtAmount(own)} / unit`;
+  const band = variantPriceBand(det);
+  if (!band) return null;
+  return band.low < band.high
+    ? `${fmtAmount(band.low)}–${fmtAmount(band.high)} / unit`
+    : `${fmtAmount(band.high)} / unit`;
+};
+// The headline. A lot with no price of its own but priced variants reads "From $X", the
+// same language the storefront already uses for it; one with no price at all says so.
+const headlinePrice = (lot: Lot, det: LotDetails, total: number): string => {
+  if (total > 0) return fmtAmount(total);
+  const band = variantPriceBand(det);
+  return band ? `From ${fmtAmount(band.low)}` : "No price set";
+};
+
 // A lot's "needs attention" list: missing info a buyer would expect, plus media that
 // hasn't fully synced (a photo missing on this device, or still uploading to the server).
 type MediaIssue = { missing_local: boolean; pending_upload: boolean };
@@ -887,6 +916,8 @@ function LotCard({
   // under the load total — with the per-unit price at that pallet size beside it.
   const cardDet: LotDetails = (() => { try { return (JSON.parse(lot.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
   const palletLine = palletPriceLine(cardDet);
+  // Null when nothing prices this lot — the row is then omitted rather than reading $0.00.
+  const unitLine = unitPriceLine(lot, cardDet);
   const prevTotal = prevAsk != null && prevAsk > lot.asking_price ? (lot.price_type === "per_unit" ? prevAsk * lot.quantity : prevAsk) : null;
   // Stagger cap 8, +20ms each — enter feedback, not decoration.
   const delay = `${Math.min(index, 8) * 20}ms`;
@@ -985,18 +1016,18 @@ function LotCard({
           ) : (
             <>
               <div className="flex items-center gap-1.5">
-                <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : "text-ink"}`}>{fmtAmount(loadPrice)}</div>
+                <div className={`text-[19px] font-semibold tabular-nums leading-none ${sold ? "text-muted" : loadPrice > 0 ? "text-ink" : "text-muted"}`}>{headlinePrice(lot, cardDet, loadPrice)}</div>
                 {prevTotal != null && !sold && !archived && (
                   <span className="text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full bg-success-bg text-success-ink">Reduced</span>
                 )}
               </div>
               {prevTotal != null ? (
                 <div className="text-[11px] text-muted tabular-nums mt-1">
-                  <span className="line-through">{fmtAmount(prevTotal)}</span> · {palletLine || `${fmtAmount(unitAsk)} / unit`}
+                  <span className="line-through">{fmtAmount(prevTotal)}</span> · {palletLine || unitLine}
                 </div>
-              ) : (
-                <div className="text-[11px] text-muted tabular-nums mt-1">{palletLine || `${fmtAmount(unitAsk)} / unit`}</div>
-              )}
+              ) : unitLine ? (
+                <div className="text-[11px] text-muted tabular-nums mt-1">{palletLine || unitLine}</div>
+              ) : null}
               {unitCost > 0 && (
                 <div className="text-[11px] text-muted tabular-nums mt-1.5">
                   Profit {fmtAmount(profit)} · {marginStr}
@@ -2302,7 +2333,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
               <>
                 <p className="text-[12px] font-medium text-muted">Load price</p>
                 <div className="flex items-center gap-2.5 mt-1">
-                  <p className="text-[26px] font-semibold text-ink tabular-nums leading-none">{fmtAmount(totalAskAll)}</p>
+                  <p className={`text-[26px] font-semibold tabular-nums leading-none ${totalAskAll > 0 ? "text-ink" : "text-muted"}`}>{headlinePrice(lot, det, totalAskAll)}</p>
                   {prevTotalAll != null && (
                     <span className="flex items-center gap-1.5 text-[11px]">
                       <span className="text-muted line-through tabular-nums">{fmtAmount(prevTotalAll)}</span>
@@ -2310,7 +2341,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
                     </span>
                   )}
                 </div>
-                <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{palletPriceLine(det) || `${fmtAmount(uAsk)} / unit`} · {unitsLabel(lot, det)}</p>
+                <p className="text-[12.5px] text-muted tabular-nums mt-1.5">{[palletPriceLine(det) || unitPriceLine(lot, det), unitsLabel(lot, det)].filter(Boolean).join(" · ")}</p>
                 {/* Internal margin — discreet, our-eyes-only. Hidden if cost is unset. */}
                 {uCost > 0 && (
                   <div className="mt-3 pt-3 border-t border-line flex items-center justify-between text-[12px] text-muted tabular-nums">
