@@ -36,7 +36,7 @@ export default function CommandPalette({ onClose }: Props) {
     } else if (item.type === "Invoice") {
       window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "invoices" }));
     } else if (item.type === "Deal") {
-      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "deals" }));
+      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "completed" }));
     } else if (item.type === "Supplier") {
       window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "suppliers" }));
     }
