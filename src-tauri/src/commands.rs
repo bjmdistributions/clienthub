@@ -6359,6 +6359,10 @@ pub struct Supplier {
 ///  * **Refunds subtract in full per deal flow** (Jack, 2026-08-19: "if there are refunds
 ///    in a specific deal flow, the refunds negate that suppliers payment for that deal").
 ///    A supplier's share of a loss-making deal is a loss. No cap, no floor.
+///  * **Refunds come off REVENUE as well as profit** (R-233, 2026-09-03). Money handed back
+///    was never earned, so both figures net it — and they must net the SAME number or the
+///    margin they feed is nonsense. Measured before the fix: four suppliers, $56,998 of
+///    revenue that had already been refunded, one of them overstated by 200%.
 ///  * **One deal flow per invoice** (`MIN(d2.id)`) — duplicate 'complete' rows would double
 ///    both the amount paid and the deal count.
 const SUPPLIER_STATS_SQL: &str = "
@@ -6367,19 +6371,22 @@ const SUPPLIER_STATS_SQL: &str = "
            COUNT(DISTINCT df_id)                 AS deal_count,
            MAX(completed_at)                     AS last_deal_date,
            SUM(amt) / COUNT(DISTINCT df_id)      AS avg_deal_amount,
-           SUM(CASE WHEN df_total > 0 THEN eff_profit    * amt / df_total ELSE 0 END) AS total_profit,
-           SUM(CASE WHEN df_total > 0 THEN gross_revenue * amt / df_total ELSE 0 END) AS total_revenue
+           SUM(CASE WHEN df_total > 0 THEN (net_profit    - refunded) * amt / df_total ELSE 0 END) AS total_profit,
+           SUM(CASE WHEN df_total > 0 THEN (gross_revenue - refunded) * amt / df_total ELSE 0 END) AS total_revenue
     FROM (
       SELECT json_extract(sp.value, '$.supplier_id') AS sup_id,
-             df.id AS df_id, df.completed_at, df.gross_revenue,
+             df.id AS df_id, df.completed_at, df.gross_revenue, df.net_profit,
              CAST(json_extract(sp.value, '$.amount') AS REAL) AS amt,
-             df.net_profit -
-                 COALESCE((SELECT SUM(x.amt2) FROM (
+             -- Each refund counted ONCE: hand-entered refunds plus bank-linked refund_out
+             -- allocations, the allocation side guarded by EXISTS(bank_txn) so an orphan
+             -- cannot subtract money that never left. Selected as its own column so profit
+             -- and revenue subtract the identical figure.
+             COALESCE((SELECT SUM(x.amt2) FROM (
                      SELECT r.amount AS amt2, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
                      UNION ALL
                      SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
                        AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)
-                   ) x WHERE x.dfid = df.id),0) AS eff_profit,
+                   ) x WHERE x.dfid = df.id),0) AS refunded,
              (SELECT SUM(CAST(json_extract(sp2.value, '$.amount') AS REAL))
                 FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp2
                WHERE json_extract(sp2.value, '$.supplier_id') IS NOT NULL) AS df_total

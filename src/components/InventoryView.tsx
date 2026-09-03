@@ -79,6 +79,24 @@ const inp = "border border-line px-3 h-9 rounded-lg text-[13px] w-full focus:out
 // explicit class (the old form's w-full fought flex/fixed widths and collapsed boxes).
 const cellInp = "border border-line rounded-lg h-9 px-2.5 text-[13px] focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors";
 
+// ── Variant pricing (R-232) ──────────────────────────────────────────────────
+// A variant's price is ALWAYS PER UNIT. It is not a second price_type and there is
+// nothing to migrate: measured 2026-09-03, no lot in the field carried a variant price
+// at all, so the meaning was free to state rather than inherit.
+//
+// Two consequences the display must honour, and both were wrong before:
+//   * `qty` is OPTIONAL. "This size costs this much, ask for counts" is a legitimate row
+//     and must never render as "0 units" — that is the thing custom price text existed
+//     to explain.
+//   * a blank price falls back to the LOT's unit price, so a size priced like the rest
+//     needs no entry, and a `total`-priced lot divides by quantity to get there.
+const lotUnitPrice = (lot: Lot) =>
+  lot.price_type === "custom" ? 0
+    : lot.price_type === "total" && lot.quantity > 0 ? lot.asking_price / lot.quantity
+    : lot.asking_price;
+const variantUnitPrice = (v: LotVariant, lot: Lot) =>
+  v.price != null && v.price > 0 ? v.price : lotUnitPrice(lot);
+
 // A lot's "needs attention" list: missing info a buyer would expect, plus media that
 // hasn't fully synced (a photo missing on this device, or still uploading to the server).
 type MediaIssue = { missing_local: boolean; pending_upload: boolean };
@@ -1411,8 +1429,8 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
         <div className="border border-line rounded-xl overflow-hidden">
           <div className="flex items-center gap-3 px-3 py-2 bg-surface-2 text-[11px] font-semibold text-muted">
             <span className="flex-1 min-w-0 truncate">{options.map((o: any) => o.name || "Attribute").join(" / ")}</span>
-            <span className="w-24 text-right">Qty</span>
-            <span className="w-32 text-right">Price (optional)</span>
+            <span className="w-24 text-right">Qty (optional)</span>
+            <span className="w-32 text-right">Price / unit</span>
           </div>
           <div className="max-h-72 overflow-y-auto divide-y divide-line-2">
             {combos.map((c, ci) => {
@@ -1420,7 +1438,7 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
               return (
                 <div key={ci} className="flex items-center gap-3 px-3 py-2">
                   <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{c.join(" / ")}</span>
-                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="0"
+                  <NumberInput className={cellInp + " w-24 text-right tabular-nums"} integer value={v?.qty || ""} placeholder="—"
                     onValue={(n) => upsert(c, { qty: n })} />
                   <div className="relative w-32">
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
@@ -1432,7 +1450,7 @@ function VariantSplitEditor({ options, variants, onOptions, onVariants }: {
             })}
           </div>
           <div className="flex items-center justify-between px-3 py-2 bg-surface-2/60 text-[12px]">
-            <span className="text-muted">{combos.length} variant{combos.length !== 1 ? "s" : ""} · blank price uses the lot's asking price</span>
+            <span className="text-muted">{combos.length} variant{combos.length !== 1 ? "s" : ""} · price is per unit; blank uses the lot's unit price · qty optional</span>
             <span className="font-semibold text-ink tabular-nums">Total: {total.toLocaleString()} units</span>
           </div>
         </div>
@@ -1663,9 +1681,14 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // When the lot is split into variants, the total quantity IS the sum of the splits
       // (Jack: "do variants then quantity"). Otherwise the plain Quantity box wins.
       const variantQtyTotal = cleanVariants.reduce((s, v) => s + (v.qty || 0), 0);
+      // Variants win ONLY when they actually carry counts. Since R-232 a variant may be
+      // price-only ("this size costs this much, ask for counts"), and a lot split that
+      // way sums to zero — which would wipe the typed quantity and take the lot's whole
+      // value with it, since load price is unit price times quantity.
+      const variantsCarryQty = variantQtyTotal > 0;
       // Variants win, then the per-pallet multiplication, then the plain box. What
       // lands in `quantity` is always the total unit count.
-      const effQty = hasVariants ? variantQtyTotal : totalUnits;
+      const effQty = hasVariants && variantsCarryQty ? variantQtyTotal : totalUnits;
       const cleanCats = Array.from(new Set(cats.map((c) => c.trim()).filter(Boolean)));
       const primaryCat = cleanCats[0] || category.trim() || "";
       const conditionClean = condition.trim();
@@ -2313,18 +2336,34 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
             </div>
           )}
 
-          {/* Variant breakdown — how the units split (brands/sizes/…) */}
+          {/* Variant breakdown (R-232). Every row states its own PER-UNIT price, whether
+              that price is the variant's or inherited from the lot, so a size never needs
+              prose to explain what its number means. A row with no qty simply omits the
+              count instead of claiming "0 units". */}
           {variantRows.length > 0 && (
             <div>
-              <p className="text-[12.5px] font-medium text-muted mb-1.5">Breakdown</p>
+              <p className="text-[12.5px] font-medium text-muted mb-1.5">Variants</p>
               <div className="border border-line rounded-lg overflow-hidden divide-y divide-line-2">
-                {variantRows.map((v, i) => (
-                  <div key={i} className="flex items-center gap-3 px-3 py-2">
-                    <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{(v.values || []).join(" / ")}</span>
-                    <span className="text-[13px] text-ink-2 tabular-nums">{(v.qty || 0).toLocaleString()} units</span>
-                    {v.price != null && v.price > 0 && <span className="text-[13px] font-medium text-ink tabular-nums w-20 text-right">{fmtAmount(v.price)}</span>}
-                  </div>
-                ))}
+                {variantRows.map((v, i) => {
+                  const unit = variantUnitPrice(v, lot);
+                  const qty = v.qty || 0;
+                  return (
+                    <div key={i} className="flex items-center gap-3 px-3 py-2 min-w-0">
+                      <span className="flex-1 min-w-0 text-[13px] text-ink truncate">{(v.values || []).join(" / ")}</span>
+                      {qty > 0 && (
+                        <span className="text-[12.5px] text-muted tabular-nums flex-shrink-0">{qty.toLocaleString()} units</span>
+                      )}
+                      {unit > 0 && (
+                        <span className="text-[13px] font-medium text-ink tabular-nums flex-shrink-0">
+                          {fmtAmount(unit)} <span className="text-[11px] font-normal text-muted">/ unit</span>
+                        </span>
+                      )}
+                      {qty > 0 && unit > 0 && (
+                        <span className="text-[12px] text-muted tabular-nums flex-shrink-0 w-20 text-right">({fmtAmount(qty * unit)})</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
