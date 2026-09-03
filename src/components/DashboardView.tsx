@@ -426,8 +426,8 @@ export default function DashboardView({ onNavigate, me }: Props) {
                       <stop offset="100%" stopColor="#06B6D4" />
                     </linearGradient>
                     <linearGradient id="revenueGrad" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#6366F1" />
-                      <stop offset="100%" stopColor="#818CF8" />
+                      <stop offset="0%" stopColor="rgb(var(--c-chart-revenue))" />
+                      <stop offset="100%" stopColor="rgb(var(--c-chart-revenue))" />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="2 4" stroke="var(--t-b1)" vertical={false} />
