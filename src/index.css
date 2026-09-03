@@ -108,6 +108,12 @@
   /* Foreground on the accent fill. Light theme accents are deep → white reads;
      light accents (amber) override below. Dark/matte set near-black (pastel accents). */
   --c-on-accent: 255 255 255;
+  /* Revenue on the analytics charts. A data hue, not the brand accent and not a status
+     colour: it must sit beside --c-success without competing with it, and it deliberately
+     keeps its colour under mono, the same way success/warning/danger do. Chosen by Jack
+     2026-09-03; separation vs success measured (ΔE 17.6 normal / 15.9 deutan in light,
+     19.1 / 15.8 in dark). See decisions/colour-on-a-chart-means-profit. */
+  --c-chart-revenue: 47 111 168;
   --c-success:        5 150 105;
   --c-success-bg:   236 253 245;
   --c-success-ink:    6 95 70;
@@ -167,6 +173,9 @@ html.dark {
   --c-accent: 255 138 71;
   --c-accent-hover: 255 164 92;
   --c-on-accent: 12 15 22;
+  /* Lighter step of the chart-revenue hue — the light-theme value is too dark to read
+     against the near-black surface. */
+  --c-chart-revenue: 107 163 220;
   /* Money-positive green: confident, not neon. */
   --c-success:       62 199 133;
   --c-success-bg:    16 42 32;

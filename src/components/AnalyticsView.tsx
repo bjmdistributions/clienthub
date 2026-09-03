@@ -32,17 +32,6 @@ const TIER_NAME: Record<string, string> = {
 
 const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
 
-// Top-spender podium: gold, silver, bronze. Same muted metals as TIER_CLR so the
-// page speaks one vocabulary of metal. `sheen` is the lit edge of a struck disc —
-// a 145° gradient, not a glossy web-2.0 bevel. Fourth place and below get no disc
-// at all, which is what makes the top three read as a podium.
-const MEDAL = [
-  { sheen: "#E3C55A", metal: "#C9A227" },
-  { sheen: "#D6DCE4", metal: "#A6AEBC" },
-  { sheen: "#D0A070", metal: "#B17F4A" },
-];
-const MEDAL_INK = "#1F1B12";
-
 // Resolve brand tokens to concrete chart colors; re-render on light/dark flip.
 function usePalette() {
   const [, force] = useState(0);
@@ -57,11 +46,14 @@ function usePalette() {
   const warning = rgbVar("--c-warning");
   const info    = rgbVar("--c-info");
   const neutral = rgbVar("--c-faint");
+  // Revenue's own data hue. Not the accent (that greys out under mono and is spoken for by
+  // the app's chrome) and not a status colour (those are reserved).
+  const chartRevenue = rgbVar("--c-chart-revenue");
   // Data bars are a neutral ink tone (inverts in dark), not the brand accent —
   // keeps charts matte; colour is reserved for profit (green) / loss (red).
   const bar     = rgbVar("--c-ink-2");
   return {
-    accent, success, danger, warning, info, neutral, bar,
+    accent, success, danger, warning, info, neutral, bar, chartRevenue,
     grid: rgbVar("--c-line"),
     CLR: { indigo: accent, emerald: success, rose: danger, amber: warning, sky: info, slate: neutral },
     STATUS: { paid: success, sent: info, overdue: danger, draft: neutral, void: danger } as Record<string, string>,
@@ -121,10 +113,9 @@ export default function AnalyticsView() {
   const STATUS_CLR = P.STATUS;
   const TT = P.TT;
   const AX = P.AX;
-  // Revenue reads as volume, not as a judgement, so it takes the neutral ink bar and
-  // leaves colour to mean profit (green) or loss (red). It inverts with the theme, so
-  // it stays legible on white and on near-black without a second fixed hue.
-  const revenueClr = P.bar;
+  // Revenue's hue is a theme token, not a literal, so it steps for dark instead of
+  // being one fixed colour asked to work on both surfaces. Profit keeps green/red.
+  const revenueClr = P.chartRevenue;
   const [stats,     setStats]     = useState<DashboardStats | null>(null);
   const [rangeData, setRangeData] = useState<any | null>(null);
   const [tiers,     setTiers]     = useState<any[]>([]);
@@ -543,20 +534,10 @@ export default function AnalyticsView() {
                       transitionDelay: `${200 + i * 70}ms`,
                     }} />
                   <div className="relative flex items-center gap-3 px-4 py-3.5">
-                    {i < 3 ? (
-                      <span
-                        className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center
-                                   text-[11px] font-bold tabular-nums"
-                        style={{
-                          background: `linear-gradient(145deg, ${MEDAL[i].sheen} 0%, ${MEDAL[i].metal} 62%)`,
-                          boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.30), 0 1px 2px rgba(0,0,0,0.22)`,
-                          color: MEDAL_INK,
-                        }}
-                      >{i + 1}</span>
-                    ) : (
-                      <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center
-                                       text-[11px] font-semibold tabular-nums text-faint">{i + 1}</span>
-                    )}
+                    {/* No badge. Rank is already said twice - by the row order and by the
+                        proportional fill behind the row - so a medal on top of it was
+                        decoration restating the list. Fixed-width slot keeps names aligned. */}
+                    <span className="w-4 flex-shrink-0 text-[11px] font-semibold tabular-nums text-faint">{i + 1}</span>
                     <div className="flex-1 min-w-0">
                       <div className="text-[13px] font-medium text-ink truncate">{c.name}</div>
                       <div className="text-[11px] text-muted">

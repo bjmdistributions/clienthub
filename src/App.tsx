@@ -1090,39 +1090,25 @@ export default function App() {
         background: "linear-gradient(180deg, #161618 0%, #0C0C0D 100%)",
         borderRight: "1px solid rgba(255,255,255,0.05)",
       }}>
-        {/* Brand. Expanded, this row is the wordmark and nothing else - the bell, theme,
-            split-view and collapse icons all used to sit on it, which read as clutter
-            hung off the logo. Collapsed, the whole row IS the expand control: the rail
-            has no other way back out, and burying it in the nav once put it several
-            hundred pixels below the fold on a short window. */}
-        <div className={`h-[54px] ${navCollapsed ? "px-0" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
-          {navCollapsed ? (
-            <button
-              onClick={toggleNav}
-              title="Expand sidebar (Cmd/Ctrl + B)"
-              aria-label="Expand sidebar"
-              className="w-full h-full flex items-center justify-center gap-1 transition-colors"
-              style={{ color: "#7A7A90" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.color = "var(--accent-400)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
-            >
-              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-5 w-5 flex-shrink-0" />
-              <PanelLeftOpen size={13} strokeWidth={1.8} />
-            </button>
-          ) : (
-            <>
-              <img src="/ecliptr-mark.svg" alt="Ecliptr" className="h-6 w-6 flex-shrink-0" />
-              <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
-            </>
+        {/* Brand. The mark, and the org name when there is room for it - nothing else in
+            either state. The rail toggle is NOT here: collapsed, it used to be an icon
+            pinned beside the logo, which is the arrangement Jack rejected. It lives at the
+            bottom of the footer in both states now, so it is always in the same place. */}
+        <div className={`h-[54px] ${navCollapsed ? "px-0 justify-center" : "px-4"} flex items-center gap-2.5 flex-shrink-0`} style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
+          <img src="/ecliptr-mark.svg" alt="Ecliptr" className={`${navCollapsed ? "h-6 w-6" : "h-6 w-6"} flex-shrink-0`} />
+          {!navCollapsed && (
+            <h1 className="text-[15px] font-bold text-white tracking-tight flex-1 truncate">{orgName || "Ecliptr"}</h1>
           )}
         </div>
 
         {/* Shell strip. The three app-wide toggles, on their own line under the brand
             rather than on the main content header - they belong to the shell, not to
-            whatever screen happens to be open. Expanded only; collapsed they are in the
-            account flyout, since a 96px rail has no room for a toolbar. */}
+            whatever screen happens to be open. Centred, so the row reads as one group
+            sitting under the mark rather than three icons left over from the brand row.
+            Expanded only; collapsed they are in the account flyout, since a 96px rail has
+            no room for a toolbar. */}
         {!navCollapsed && (
-          <div className="px-3 py-1.5 flex items-center gap-1 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
+          <div className="px-3 py-1.5 flex items-center justify-center gap-2 flex-shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.045)" }}>
             {shellButtons}
           </div>
         )}
@@ -1250,6 +1236,21 @@ export default function App() {
                 {me?.is_admin && apCount > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" style={{ border: "1px solid #101011" }} />
                 )}
+              </button>
+              {/* The only way back out of the rail, and it sits in the same corner as the
+                  collapse control does when the sidebar is open. It must never move into
+                  the nav: that is scrollable, and a short window once put it hundreds of
+                  pixels below the fold with no other exit. */}
+              <button
+                onClick={toggleNav}
+                title="Expand sidebar (Cmd/Ctrl + B)"
+                aria-label="Expand sidebar"
+                className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
+                style={{ color: "#7A7A90" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "var(--accent-400)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = ""; e.currentTarget.style.color = "#7A7A90"; }}
+              >
+                <PanelLeftOpen size={13} strokeWidth={2} />
               </button>
             </div>
           ) : (
