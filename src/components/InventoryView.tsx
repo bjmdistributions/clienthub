@@ -391,7 +391,7 @@ export default function InventoryView() {
       sessionStorage.setItem("email_preselect_ids", JSON.stringify(recipientIds));
       sessionStorage.setItem("newsletter_prefill_content", JSON.stringify({ subject, body }));
       exitSelect();
-      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "email" }));
+      window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "newsletter" }));
     } catch (e: any) { toast(String(e), "error"); }
   };
   const resync = async () => {

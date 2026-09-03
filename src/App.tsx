@@ -119,7 +119,13 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "health" | "deals" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "email" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+
+/** Ids a persisted string can still carry from before the R-231 rename
+ *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
+ *  where a raw id comes back off disk, so an installed device keeps its last tab
+ *  and rail pins instead of silently falling back to Dashboard or losing a pin. */
+const LEGACY_TAB_IDS: Record<string, Tab> = { deals: "completed", health: "tiers", email: "newsletter" };
 
 /** Below this window width the sidebar collapses itself.
  *
@@ -164,9 +170,10 @@ const RAIL_MENU_ROW =
   "text-[#8A8A9A] hover:text-white hover:bg-white/[0.06] transition-colors";
 
 export default function App() {
-  const [tab, setTabState] = useState<Tab>(() =>
-    (localStorage.getItem("clienthub_last_tab") as Tab) || "dashboard"
-  );
+  const [tab, setTabState] = useState<Tab>(() => {
+    const stored = localStorage.getItem("clienthub_last_tab");
+    return stored ? (LEGACY_TAB_IDS[stored] || (stored as Tab)) : "dashboard";
+  });
   const [pageKey, setPageKey] = useState(0);
   // Collapsed rail: which menu (All screens, or the account menu) is showing its
   // flyout, and the viewport y it hangs off. The per-group flyouts this was built for
@@ -218,7 +225,7 @@ export default function App() {
   const [railPins, setRailPins] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(RAIL_PINS_KEY) || "null");
-      if (Array.isArray(saved)) return saved.filter((id) => typeof id === "string");
+      if (Array.isArray(saved)) return saved.filter((id) => typeof id === "string").map((id) => LEGACY_TAB_IDS[id] || id);
     } catch { /* fall through to the default */ }
     return DEFAULT_PINS;
   });
@@ -295,7 +302,7 @@ export default function App() {
     if (t) localStorage.setItem("clienthub_split_tab", t);
     else localStorage.removeItem("clienthub_split_tab");
   };
-  const toggleSplit = () => setSplit(splitTab ? null : (tab === "inventory" ? "email" : "inventory"));
+  const toggleSplit = () => setSplit(splitTab ? null : (tab === "inventory" ? "newsletter" : "inventory"));
 
   // Draggable split divider — left pane width as a fraction of the row.
   const [splitRatio, setSplitRatio] = useState(() => {
@@ -660,7 +667,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "clients", label: "Clients", icon: Users, children: [
       { id: "checkup", label: "Checkup", icon: ClipboardCheck },
-      { id: "health",  label: "Tiers",   icon: Layers },
+      { id: "tiers",   label: "Tiers",   icon: Layers },
       { id: "approvals", label: "Approvals", icon: Bell },
     ] },
     { id: "suppliers", label: "Suppliers", icon: Package },
@@ -671,7 +678,7 @@ export default function App() {
     { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
     { id: "dealflow", label: "Deal Flow", icon: GitBranch },
     { id: "invoices", label: "Invoice", icon: FileText, children: [
-      { id: "deals",      label: "Completed",  icon: Briefcase },
+      { id: "completed",  label: "Completed",  icon: Briefcase },
       { id: "receivables", label: "Receivables", icon: Wallet },
       { id: "payables",   label: "Payables",   icon: Banknote },
     ] },
@@ -680,7 +687,7 @@ export default function App() {
       { id: "clientreceipt", label: "Client receipt", icon: Receipt },
     ] },
     { id: "financials", label: "Financials", icon: Landmark },
-    { id: "email", label: "Newsletter", icon: Mail },
+    { id: "newsletter", label: "Newsletter", icon: Mail },
     { id: "brief", label: "Brief", icon: Newspaper },
     { id: "analytics", label: "Analytics", icon: BarChart3, children: [
       { id: "automation", label: "Automation", icon: Bot },
@@ -742,7 +749,7 @@ export default function App() {
       >
         <Icon size={isChild && !navCollapsed ? 13 : 15} strokeWidth={active ? 2.1 : 1.6} style={active ? { color: "var(--accent-400)" } : undefined} />
         {!navCollapsed && item.label}
-        {item.id === "email" && draftCount > 0 && (
+        {item.id === "newsletter" && draftCount > 0 && (
           navCollapsed
             ? <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full" style={{ background: "#FCD34D" }} />
             : <span className="ml-auto text-[10px] font-bold rounded-full px-1.5 leading-5"
@@ -771,7 +778,7 @@ export default function App() {
    *  count only while that child is not itself on screen underneath it - otherwise
    *  the same number would appear twice, one row above the other. */
   const railCount = (n: NavNode, expanded: boolean): number => {
-    if (n.id === "email") return visible("email") ? draftCount : 0;
+    if (n.id === "newsletter") return visible("newsletter") ? draftCount : 0;
     if (n.id === "approvals") return visible("approvals") ? apCount : 0;
     if (!expanded && n.children?.some((c) => c.id === "approvals") && visible("approvals")) return apCount;
     return 0;
@@ -784,9 +791,9 @@ export default function App() {
     n > 0 ? (
       <span
         className={`absolute top-1 right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold leading-[15px] text-center ${
-          id === "email" ? "" : "bg-red-500 text-white"
+          id === "newsletter" ? "" : "bg-red-500 text-white"
         }`}
-        style={id === "email"
+        style={id === "newsletter"
           ? { background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }
           : undefined}
       >
@@ -834,7 +841,7 @@ export default function App() {
       >
         <span className="truncate">{item.label}</span>
         {count > 0 && (
-          <span className="ml-auto pl-1 text-[9px] font-bold tabular-nums" style={{ color: item.id === "email" ? "#FCD34D" : "#F87171" }}>
+          <span className="ml-auto pl-1 text-[9px] font-bold tabular-nums" style={{ color: item.id === "newsletter" ? "#FCD34D" : "#F87171" }}>
             {count > 9 ? "9+" : count}
           </span>
         )}
@@ -951,9 +958,9 @@ export default function App() {
           // until All screens started passing draftCount through it.
           <span
             className={`ml-auto min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold leading-4 text-center ${
-              item.id === "email" ? "" : "bg-red-500 text-white"
+              item.id === "newsletter" ? "" : "bg-red-500 text-white"
             }`}
-            style={item.id === "email"
+            style={item.id === "newsletter"
               ? { background: "rgba(251,191,36,0.15)", color: "#FCD34D", border: "1px solid rgba(251,191,36,0.25)" }
               : undefined}
           >
@@ -970,6 +977,7 @@ export default function App() {
   // Renders a tab's content without the outer scroll/background chrome, so it
   // can be dropped into either the single main area or a split pane.
   const paneContent = (t: Tab) => {
+    if (!visible(t)) return null;
     if (t === "dashboard") return <DashboardView onNavigate={setTab} me={me} />;
     if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
@@ -997,12 +1005,12 @@ export default function App() {
             {t === "lotengine"  && <LotEngineView />}
             {t === "sheetcopy"  && <SheetCopyView />}
             {t === "financials" && <FinancialsView />}
-            {t === "deals"      && <CloseoutView />}
+            {t === "completed"  && <CloseoutView />}
             {t === "analytics"  && <AnalyticsView />}
-            {t === "health"     && <TiersView />}
+            {t === "tiers"      && <TiersView />}
             {t === "automation" && <AutomationLogView />}
             {t === "brief"      && <BriefView currentUser={me ? { name: me.display_name, role: me.is_admin ? "owner" : "sales_rep" } : null} />}
-            {t === "email"      && <EmailView />}
+            {t === "newsletter" && <EmailView />}
             {t === "settings"   && <SettingsView me={me} />}
             {t === "platform"   && <PlatformView />}
             {t === "datasafety" && <DataSafetyView />}
@@ -1420,7 +1428,7 @@ export default function App() {
                 <div className="max-h-[60vh] overflow-y-auto">
                   {flatTabs.map((t) => (
                     <div key={t.id} className="relative group/allrow">
-                      {flyoutRow(t, t.id === "approvals" ? apCount : t.id === "email" ? draftCount : undefined)}
+                      {flyoutRow(t, t.id === "approvals" ? apCount : t.id === "newsletter" ? draftCount : undefined)}
                       {NAV.some((n) => n.id === t.id) && (
                         <button
                           type="button"

@@ -87,6 +87,10 @@ export default function ClientsView() {
   const [buyerTiers, setBuyerTiers]         = useState<BuyerTier[]>([]);
   const [duplicates, setDuplicates]         = useState<DuplicateGroup[]>([]);
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
+  // Inline "type DELETE to confirm" for bulk-deleting >10 clients — window.prompt()
+  // is inert in the Tauri webview, so this mirrors LotEngineView's branch/combine
+  // naming inputs (state + focused <input>) rather than a native dialog.
+  const [deleteTyped, setDeleteTyped]       = useState<string | null>(null);
   const [showTiers, setShowTiers]           = useState(false);
   const [sortKey, setSortKey]               = useState<string>("profit");
   const [sortDir, setSortDir]               = useState<1 | -1>(-1);
@@ -302,14 +306,7 @@ export default function ClientsView() {
     setSelectedIds(allDisplayedSelected ? new Set() : new Set(displayed.map((c) => c.id)));
   };
 
-  const handleBulkDelete = async () => {
-    const n = selectedIds.size;
-    if (n > 10) {
-      const typed = prompt(`Type DELETE to confirm deleting ${n} clients:`);
-      if (typed !== "DELETE") return;
-    } else {
-      if (!confirm(`Delete ${n} clients? This cannot be undone.`)) return;
-    }
+  const runBulkDelete = async () => {
     const ids = Array.from(selectedIds);
     let deleted = 0;
     try {
@@ -329,6 +326,23 @@ export default function ClientsView() {
       const failed = ids.length - deleted;
       alert(`Deleted ${deleted} of ${ids.length} clients. ${failed} couldn't be deleted because they still have invoices, deals or other linked records.`);
     }
+  };
+
+  const handleBulkDelete = async () => {
+    const n = selectedIds.size;
+    if (n > 10) {
+      setDeleteTyped("");
+      return;
+    }
+    if (!confirm(`Delete ${n} clients? This cannot be undone.`)) return;
+    await runBulkDelete();
+  };
+
+  // Commits only on an exact "DELETE" match; anything else just closes the input.
+  const commitDeleteTyped = () => {
+    const typed = deleteTyped;
+    setDeleteTyped(null);
+    if (typed === "DELETE") runBulkDelete();
   };
 
   const handleBulkCategory = async (cat: string) => {
@@ -353,7 +367,7 @@ export default function ClientsView() {
     // Hand the selection to the Newsletter composer via sessionStorage, then
     // switch tabs. EmailView reads the stash once its client list has loaded.
     sessionStorage.setItem("email_preselect_ids", JSON.stringify(Array.from(selectedIds)));
-    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "email" }));
+    window.dispatchEvent(new CustomEvent("navigate-tab", { detail: "newsletter" }));
     setSelectedIds(new Set());
   };
 
@@ -778,9 +792,33 @@ export default function ClientsView() {
           <button onClick={handleExportCsv} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-line-3 hover:bg-surface-2">
             <Download size={12} /> Export CSV
           </button>
-          <button onClick={handleBulkDelete} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-danger text-danger-ink hover:bg-danger-bg">
-            <Trash2 size={12} /> Delete
-          </button>
+          {deleteTyped === null ? (
+            <button onClick={handleBulkDelete} className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-danger text-danger-ink hover:bg-danger-bg">
+              <Trash2 size={12} /> Delete
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <input
+                autoFocus
+                className="h-8 px-2.5 rounded-md text-[12px] bg-surface border border-danger text-ink placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-danger/40 w-[210px]"
+                placeholder={`Type DELETE to confirm deleting ${selectedIds.size}`}
+                value={deleteTyped}
+                onChange={(e) => setDeleteTyped(e.target.value)}
+                onBlur={commitDeleteTyped}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitDeleteTyped();
+                  if (e.key === "Escape") setDeleteTyped(null);
+                }}
+              />
+              <button
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={commitDeleteTyped}
+                className="flex items-center gap-1 h-8 px-3 rounded-md text-[12px] bg-surface border border-danger text-danger-ink hover:bg-danger-bg"
+              >
+                <Trash2 size={12} /> Confirm
+              </button>
+            </div>
+          )}
         </div>
       )}
 

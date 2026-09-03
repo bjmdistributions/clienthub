@@ -36,7 +36,7 @@ describe("tabPerm", () => {
   });
 
   it("gates the money tabs behind deal_flow:view", () => {
-    for (const f of ["invoices", "deals", "dealflow", "receivables", "payables"] as const) {
+    for (const f of ["invoices", "completed", "dealflow", "receivables", "payables"] as const) {
       expect(tabPerm(f)).toBe("deal_flow:view");
     }
   });
@@ -72,7 +72,7 @@ describe("canEditFeature", () => {
 
   it("routes every deal surface through deal_flow:edit", () => {
     const editor = me("deal_flow:edit");
-    for (const f of ["invoices", "deals", "dealflow"] as const) {
+    for (const f of ["invoices", "completed", "dealflow"] as const) {
       expect(canEditFeature(editor, f)).toBe(true);
     }
   });

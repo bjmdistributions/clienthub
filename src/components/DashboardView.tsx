@@ -263,7 +263,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
               {([
                 { label: "Clients", value: totalClients, icon: Users, tab: "clients" },
                 { label: "Open deals", value: openDeals, icon: GitBranch, tab: "dealflow" },
-                { label: "Completed this month", value: completedThisMonth, icon: CheckCircle2, tab: "deals" },
+                { label: "Completed this month", value: completedThisMonth, icon: CheckCircle2, tab: "completed" },
               ] as const).map((c) => {
                 const Icon = c.icon;
                 return (
@@ -504,7 +504,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
               { label: "Add client",  sub: "Create a new client profile",  icon: Users,    tab: "clients"  },
               // Only surface the invoice action to users who can see the money.
               ...(showMoney ? [{ label: "New invoice", sub: "Generate and send an invoice", icon: FileText, tab: "invoices" }] : []),
-              { label: "Newsletter",  sub: "Reach your client list",       icon: Mail,     tab: "email"    },
+              { label: "Newsletter",  sub: "Reach your client list",       icon: Mail,     tab: "newsletter" },
             ].map((a) => {
               const Icon = a.icon;
               return (

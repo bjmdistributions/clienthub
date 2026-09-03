@@ -6,9 +6,9 @@ export interface Perms {
 }
 
 export type Feature =
-  | "dashboard" | "clients" | "invoices" | "quotes" | "deals" | "dealflow"
-  | "suppliers" | "analytics" | "email" | "brief" | "globe" | "settings"
-  | "health" | "inventory" | "automation" | "notes" | "receivables" | "payables"
+  | "dashboard" | "clients" | "invoices" | "quotes" | "completed" | "dealflow"
+  | "suppliers" | "analytics" | "newsletter" | "brief" | "globe" | "settings"
+  | "tiers" | "inventory" | "automation" | "notes" | "receivables" | "payables"
   | "financials" | "clientreceipt";
 
 /** True if the user holds a permission (wildcard "*" grants everything). */
@@ -27,9 +27,9 @@ export function tabPerm(feature: Feature): string | null {
     case "notes":
       return null;
     case "clients":
-    case "health":      return "clients:view";
+    case "tiers":       return "clients:view";
     case "invoices":
-    case "deals":
+    case "completed":
     case "dealflow":
     case "receivables":
     case "payables":     return "deal_flow:view";
@@ -44,7 +44,7 @@ export function tabPerm(feature: Feature): string | null {
     case "inventory":    return "inventory:view";
     case "analytics":
     case "brief":        return "analytics:view";
-    case "email":        return "email:view";
+    case "newsletter":   return "email:view";
     // Everyone can OPEN Settings (to reach Appearance + their own Profile); the
     // org-sensitive sections gate themselves to admins inside SettingsView.
     case "settings":     return null;
@@ -61,9 +61,9 @@ export function canViewTab(me: Perms | null | undefined, feature: Feature): bool
 /** Edit-capability for a feature's module (view→edit). */
 export function canEditFeature(me: Perms | null | undefined, feature: Feature): boolean {
   const map: Partial<Record<Feature, string>> = {
-    clients: "clients:edit", invoices: "deal_flow:edit", deals: "deal_flow:edit",
+    clients: "clients:edit", invoices: "deal_flow:edit", completed: "deal_flow:edit",
     dealflow: "deal_flow:edit", quotes: "quotes:edit", suppliers: "inventory:edit",
-    inventory: "inventory:edit", email: "email:edit",
+    inventory: "inventory:edit", newsletter: "email:edit",
   };
   const need = map[feature];
   return need ? can(me, need) : can(me, "*");
