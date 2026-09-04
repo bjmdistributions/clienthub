@@ -17321,7 +17321,7 @@ pub async fn delete_newsletter_schedule(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn save_smtp_settings_for_pi(settings: serde_json::Value) -> Result<(), String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let pairs = [("smtp_host", "smtp_host"), ("smtp_port", "smtp_port"), ("smtp_username", "smtp_username"), ("smtp_password", "smtp_password"), ("smtp_from_name", "smtp_from_name"), ("smtp_from_email", "smtp_from_email")];
+    let pairs = [("smtp_host", "smtp_host"), ("smtp_port", "smtp_port"), ("smtp_username", "smtp_username"), ("smtp_password", "smtp_password"), ("smtp_from_name", "smtp_from_name"), ("smtp_from_email", "smtp_from_email"), ("smtp_from_invoices", "smtp_from_invoices")];
     for (key, field) in &pairs {
         if let Some(val) = settings.get(field) {
             let val_str = match val {
@@ -17367,6 +17367,9 @@ pub async fn push_desktop_smtp_to_pi(from_name: String) -> Result<bool, String> 
         ("smtp_username", settings.user.clone()),
         ("smtp_password", password),
         ("smtp_from_name", from_name),
+        // The invoice From, so a phone-sent invoice replies to the same address a
+        // desktop-sent one does. Blank is pushed as blank — the server falls back.
+        ("smtp_from_invoices", settings.from_invoices.trim().to_string()),
         // Push the address the desktop actually sends as, not the login — this line used to
         // write `settings.user` and overwrite the server's correct value on every push.
         ("smtp_from_email", if settings.from_email.trim().is_empty() {
@@ -17426,7 +17429,7 @@ pub async fn share_connections_with_team() -> Result<String, String> {
 pub async fn get_smtp_settings_for_pi() -> Result<serde_json::Value, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut result = serde_json::Map::new();
-    for key in &["smtp_host", "smtp_port", "smtp_username", "smtp_from_name", "smtp_from_email"] {
+    for key in &["smtp_host", "smtp_port", "smtp_username", "smtp_from_name", "smtp_from_email", "smtp_from_invoices"] {
         let val: Option<String> = conn.query_row(
             "SELECT value FROM settings WHERE key=?1", [*key], |r| r.get(0),
         ).ok();
