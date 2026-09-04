@@ -41,14 +41,18 @@ const PROFIT_RANGES = [
   { label: "$20k+",           min: 20000,     max: Infinity },
 ];
 
+// These read `last_deal_date`, which is COMPLETED deal flows only — so a supplier wired
+// $80,000 last week whose flow is still awaiting goods has no last_deal_date at all. The
+// labels used to say "Never used" and "Used in 30 days", which asserted a relationship the
+// figure does not measure. Say what is actually counted instead.
 const ACTIVITY = [
-  { label: "Any time",        days: 0 },
-  { label: "Used in 30 days", days: 30 },
-  { label: "Used in 90 days", days: 90 },
-  { label: "Never used",      days: -1 },
+  { label: "Any time",              days: 0 },
+  { label: "Completed in 30 days",  days: 30 },
+  { label: "Completed in 90 days",  days: 90 },
+  { label: "No completed deals",    days: -1 },
 ];
 
-type SortKey = "name" | "total_paid" | "total_profit" | "margin" | "deal_count" | "avg_deal_amount" | "last_deal_date";
+type SortKey = "name" | "total_paid" | "total_profit" | "margin" | "deal_count" | "avg_deal_amount" | "last_deal_date" | "last_contact";
 
 const selectCls =
   "border border-line h-8 px-2.5 rounded-lg text-[12px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
@@ -294,6 +298,7 @@ export default function SuppliersView() {
         case "name":           return s.name.toLowerCase();
         case "margin":         return marginOf(s) ?? -Infinity;
         case "last_deal_date": return s.last_deal_date ? parseDay(s.last_deal_date).getTime() : -Infinity;
+        case "last_contact": return s.last_contact ? parseDay(s.last_contact).getTime() : -Infinity;
         default:               return s[sortKey] as number;
       }
     };
@@ -489,6 +494,7 @@ export default function SuppliersView() {
                 <Th label="Deals"     k="deal_count"       sortKey={sortKey} asc={sortAsc} onSort={sortBy} align="center" />
                 <Th label="Avg deal"  k="avg_deal_amount"  sortKey={sortKey} asc={sortAsc} onSort={sortBy} />
                 <Th label="Last deal" k="last_deal_date"   sortKey={sortKey} asc={sortAsc} onSort={sortBy} align="left" />
+                <Th label="Last contact" k="last_contact"  sortKey={sortKey} asc={sortAsc} onSort={sortBy} align="left" />
                 <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Payment</th>
               </tr>
             </thead>
@@ -534,6 +540,11 @@ export default function SuppliersView() {
                       {s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "—"}
                     </td>
                     <td className="px-5 py-3 text-[12px] text-muted">{shortDate(s.last_deal_date)}</td>
+                    <td className="px-5 py-3 text-[12px] text-muted">
+                      {s.last_contact
+                        ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}`
+                        : "—"}
+                    </td>
                     <td className="px-5 py-3 text-[12px] text-muted truncate max-w-[140px]">{s.payment_method || "—"}</td>
                   </tr>
                 );
@@ -728,6 +739,10 @@ function Profile({ s, history, payments, dealCount, onOpenDeals, onUntagPayment,
           { label: "Deals",    value: String(s.deal_count) },
           { label: "Avg deal", value: s.avg_deal_amount > 0 ? fmtAmount(s.avg_deal_amount) : "—" },
           { label: "Last deal",value: shortDate(s.last_deal_date) },
+          { label: "Last contact",
+            value: s.last_contact
+              ? `${s.last_contact_kind === "email_out" ? "Out" : "In"} · ${shortDate(s.last_contact)}`
+              : "—" },
         ].map((st) => (
           <div key={st.label} className="bg-surface-2 border border-line rounded-lg px-3 py-2 min-w-0">
             <div className="text-[11.5px] text-muted truncate">{st.label}</div>

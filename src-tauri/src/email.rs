@@ -1663,7 +1663,15 @@ pub fn log_outbound(to: &str, subject: &str, body: &str) {
         .ok();
     let cid = match client_id {
         Some(c) => c,
-        None => return,
+        None => {
+            // Not a client -- it may still be a supplier. Same reasoning as the inbound
+            // scanner: mail we send a supplier is contact with that supplier.
+            if let Some(sid) = supplier_id_for(addr) {
+                let when = Utc::now().to_rfc3339();
+                log_supplier_contact(&sid, "email_out", subject, body, &when, None);
+            }
+            return;
+        }
     };
     let iid = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -1933,9 +1941,98 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
                 let _permit = match sem.acquire().await { Ok(p) => p, Err(_) => return };
                 let _ = crate::ai::extract_structured(&body).await;
             });
+        } else if let Some(sid) = supplier_id_for(&email.from) {
+            // Suppliers had no contact tracking at all before R-239: this scanner had no
+            // supplier concept whatsoever, so a supplier emailing us matched nothing and the
+            // message was discarded. The only recency figure was `last_deal_date`, gated to
+            // COMPLETED deals -- so a supplier paid last week could still read "Never used".
+            let when = email
+                .date
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+                .map(|d| d.with_timezone(&Utc).to_rfc3339())
+                .unwrap_or_else(|| Utc::now().to_rfc3339());
+            let mid = email.message_id.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            if log_supplier_contact(&sid, "email_in", &email.subject, &email.body_text, &when, mid) {
+                tracing::info!("logged inbound supplier contact for {}", &sid[..8.min(sid.len())]);
+            }
         }
     }
     Ok(new_leads)
+}
+
+/// The supplier that owns this address, if any. Matched exactly the way clients are
+/// (`LOWER(email)=LOWER(?1)`), and only consulted AFTER the client lookup misses -- a person
+/// who is both is a client first, because that is the relationship the money flows through.
+fn supplier_id_for(from: &str) -> Option<String> {
+    let conn = pool().get().ok()?;
+    conn.query_row(
+        "SELECT id FROM suppliers WHERE LOWER(email)=LOWER(?1) AND COALESCE(archived,0)=0 LIMIT 1",
+        [from],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Write one supplier contact row, deduped by RFC Message-ID exactly like the client path --
+/// group mail reaches every member mailbox, and more than one is monitored here.
+///
+/// Returns false when the message was already stored, so callers can skip follow-on work.
+fn log_supplier_contact(
+    supplier_id: &str,
+    kind: &str,
+    subject: &str,
+    body: &str,
+    created_at: &str,
+    message_id: Option<&str>,
+) -> bool {
+    let conn = match pool().get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("log_supplier_contact: no db handle: {}", e);
+            return false;
+        }
+    };
+    if let Some(mid) = message_id {
+        let seen: bool = conn
+            .query_row(
+                "SELECT 1 FROM supplier_interactions WHERE supplier_id=?1 AND message_id=?2 LIMIT 1",
+                rusqlite::params![supplier_id, mid],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if seen {
+            return false;
+        }
+    }
+    let iid = uuid::Uuid::new_v4().to_string();
+    // Every NOT NULL column travels, or a create Upsert silently writes zero rows on the
+    // peer and is marked applied forever.
+    let mut cols = serde_json::Map::new();
+    cols.insert("supplier_id".into(), serde_json::Value::String(supplier_id.to_string()));
+    cols.insert("kind".into(), serde_json::Value::String(kind.to_string()));
+    cols.insert("subject".into(), serde_json::Value::String(subject.to_string()));
+    cols.insert("body".into(), serde_json::Value::String(body.to_string()));
+    cols.insert("created_at".into(), serde_json::Value::String(created_at.to_string()));
+    cols.insert("org_id".into(), serde_json::Value::String("org_default".into()));
+    if let Some(mid) = message_id {
+        cols.insert("message_id".into(), serde_json::Value::String(mid.to_string()));
+    }
+    if let Err(e) = crate::sync::record_upsert("supplier_interactions", &iid, cols) {
+        tracing::warn!("log_supplier_contact: record_upsert failed: {}", e);
+        return false;
+    }
+    if let Err(e) = conn.execute(
+        "INSERT INTO supplier_interactions (id,supplier_id,kind,subject,body,created_at,message_id,org_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,'org_default')",
+        rusqlite::params![iid, supplier_id, kind, subject, body, created_at, message_id],
+    ) {
+        tracing::warn!("log_supplier_contact: insert failed: {}", e);
+        return false;
+    }
+    true
 }
 
 /// Return the name of a client only if it's currently PENDING approval. Used to

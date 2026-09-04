@@ -607,7 +607,7 @@ pub fn is_tombstoned(table: &str, row_id: &str) -> bool {
 
 // ---------- Apply remote events ----------
 
-const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers", "txn_rule", "lot_sheet", "lot_slot_state", "lot_build"];
+const ALLOWED_TABLES: &[&str] = &["clients", "interactions", "invoices", "settings", "payment_methods", "deals", "deal_flows", "suppliers", "supplier_price_history", "scheduled_sends", "users", "payments", "inventory", "quotes", "messages", "newsletter_schedules", "staff_accounts", "roles", "invites", "deal_reps", "orgs", "notes", "pending_approvals", "forms", "checkup_sessions", "checkup_items", "refunds", "client_credits", "rep_payouts", "intake_sources", "categories", "bank_txn", "bank_allocation", "cash_purchase", "business_expense", "reserve_entry", "loan", "deal_receipts", "offers", "txn_rule", "lot_sheet", "lot_slot_state", "lot_build", "supplier_interactions"];
 
 /// True if peers will actually apply an event for `table`. Emitting a record for a
 /// table outside this set produces an event the apply side dead-letters (logged and

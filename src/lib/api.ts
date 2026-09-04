@@ -653,6 +653,11 @@ export interface Supplier {
   total_paid: number;
   deal_count: number;
   last_deal_date?: string | null;
+  /** Most recent email to or from this supplier (R-239). Distinct from last_deal_date,
+   *  which counts COMPLETED deals only. */
+  last_contact?: string | null;
+  /** 'email_in' or 'email_out' — which direction that most recent contact was. */
+  last_contact_kind?: string | null;
   avg_deal_amount: number;
   total_profit: number;    // profit on their deals, apportioned by their share of the payments
   total_revenue: number;   // apportioned the same way — 0 means "no revenue recorded", not "0%"

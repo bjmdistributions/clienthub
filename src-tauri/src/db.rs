@@ -1936,4 +1936,31 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_interactions_msgid ON interactions(client_id, message_id);
         "#,
     ),
+    (
+        90,
+        // Supplier contact history (R-239). Suppliers had NO contact tracking of any kind:
+        // `interactions.client_id` is NOT NULL with an FK to `clients`, and the desktop runs
+        // `PRAGMA foreign_keys=ON`, so a supplier row cannot live in that table -- it would
+        // still need a valid client. Dropping that NOT NULL means rebuilding a table that
+        // SYNCS across every device, which is not worth the risk for an additive feature.
+        //
+        // So: its own table, same shape. `org_id` carries the same NOT NULL DEFAULT as
+        // `interactions` -- a row that writes it empty never enters the pull log and is
+        // filtered out of every org-scoped read afterwards (the lot-engine failure).
+        r#"
+        CREATE TABLE IF NOT EXISTS supplier_interactions (
+            id TEXT PRIMARY KEY,
+            supplier_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            subject TEXT,
+            body TEXT,
+            created_at TEXT NOT NULL,
+            message_id TEXT,
+            org_id TEXT NOT NULL DEFAULT 'org_default',
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_supplier_interactions_sup ON supplier_interactions(supplier_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_supplier_interactions_msgid ON supplier_interactions(supplier_id, message_id);
+        "#,
+    ),
 ];

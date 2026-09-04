@@ -809,9 +809,11 @@ function TestResultLine({ state }: { state: TestState }) {
 
 // ── Calm settings-card scaffolding (shared, reused by the de-clutter pass) ──
 // One clear card per thing: icon + title + one-line plain purpose, then body.
-function SettingCard({ icon: Icon, title, purpose, aside, collapsible = false, children }: {
+function SettingCard({ icon: Icon, title, purpose, aside, collapsible = true, children }: {
   icon: typeof Mail; title: string; purpose: string; aside?: React.ReactNode;
-  /** Opt-in: header toggles the body. Off by default so the other cards are unchanged. */
+  /** Every settings card collapses by default — the screen was too tall to scan, and the
+   *  status pill stays in the header so you can still see what is set up without opening
+   *  anything. Pass `collapsible={false}` for a card that must always be open. */
   collapsible?: boolean;
   children: React.ReactNode;
 }) {

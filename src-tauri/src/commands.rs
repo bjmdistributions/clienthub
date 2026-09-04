@@ -6418,6 +6418,15 @@ pub struct Supplier {
     pub total_paid: f64,
     pub deal_count: u32,
     pub last_deal_date: Option<String>,
+    /// Most recent email to or from this supplier, and which direction it was.
+    ///
+    /// Suppliers had NO contact history of any kind before R-239 -- the scanner had no
+    /// supplier concept at all, so a supplier emailing us was discarded. The only recency
+    /// figure was `last_deal_date`, which is COMPLETED deals only, so a supplier wired
+    /// $80,000 last week whose flow is still awaiting goods read "Last deal --" and passed
+    /// the "Never used" filter.
+    pub last_contact: Option<String>,
+    pub last_contact_kind: Option<String>,
     pub avg_deal_amount: f64,
     /// Profit earned on the deals this supplier stocked, apportioned by their share of
     /// that deal's supplier payments. `total_revenue` is apportioned the same way so the
@@ -6572,6 +6581,8 @@ fn map_supplier_row(r: &rusqlite::Row) -> rusqlite::Result<Supplier> {
         total_paid: r.get("total_paid").unwrap_or(0.0),
         deal_count: r.get::<_, i64>("deal_count").unwrap_or(0) as u32,
         last_deal_date: r.get("last_deal_date").ok(),
+        last_contact: r.get("last_contact").ok(),
+        last_contact_kind: r.get("last_contact_kind").ok(),
         avg_deal_amount: r.get("avg_deal_amount").unwrap_or(0.0),
         total_profit: r.get("total_profit").unwrap_or(0.0),
         total_revenue: r.get("total_revenue").unwrap_or(0.0),
@@ -6588,6 +6599,10 @@ pub async fn list_suppliers() -> Result<Vec<Supplier>, String> {
                 COALESCE(stats.total_paid, 0.0) as total_paid,
                 COALESCE(stats.deal_count, 0) as deal_count,
                 stats.last_deal_date,
+                (SELECT created_at FROM supplier_interactions WHERE supplier_id=s.id
+                  ORDER BY created_at DESC LIMIT 1) AS last_contact,
+                (SELECT kind FROM supplier_interactions WHERE supplier_id=s.id
+                  ORDER BY created_at DESC LIMIT 1) AS last_contact_kind,
                 COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount,
                 COALESCE(stats.total_profit, 0.0) as total_profit,
                 COALESCE(stats.total_revenue, 0.0) as total_revenue
@@ -6611,6 +6626,10 @@ pub async fn get_supplier(id: String) -> Result<Supplier, String> {
                 COALESCE(stats.total_paid, 0.0) as total_paid,
                 COALESCE(stats.deal_count, 0) as deal_count,
                 stats.last_deal_date,
+                (SELECT created_at FROM supplier_interactions WHERE supplier_id=s.id
+                  ORDER BY created_at DESC LIMIT 1) AS last_contact,
+                (SELECT kind FROM supplier_interactions WHERE supplier_id=s.id
+                  ORDER BY created_at DESC LIMIT 1) AS last_contact_kind,
                 COALESCE(stats.avg_deal_amount, 0.0) as avg_deal_amount,
                 COALESCE(stats.total_profit, 0.0) as total_profit,
                 COALESCE(stats.total_revenue, 0.0) as total_revenue
