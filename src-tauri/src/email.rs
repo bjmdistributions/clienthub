@@ -1860,10 +1860,53 @@ async fn process_new_emails(emails: &[ParsedEmail]) -> Result<Vec<NewLead>> {
             if regex::Regex::new(r"(?i)\bunsubscribe\b")
                 .map_or(false, |re| re.is_match(text_above_quote(&email.body_text)))
             {
+                // Write the SAME flags the one-click unsubscribe link writes
+                // (`clienthub-api/src/routes/unsubscribe.rs::mark_client_unsubscribed`).
+                //
+                // This used to set ONLY `metadata.newsletter_contact_frequency='never'` -- a key
+                // written here and read NOWHERE in either repo. So replying "unsubscribe" to a
+                // newsletter left the client on every mailing list, still receiving them, and
+                // absent from the Unsubscribed filter on both surfaces (which reads
+                // `metadata.unsubscribed`). Two ways to opt out, only one of them honoured.
+                //
+                // `exclusive` is the real column so a later metadata write cannot clobber it;
+                // `metadata.exclusive` is mirrored for the server and mobile readers. Both are
+                // synced, or the opt-out would never leave this device.
+                let meta_json: String = conn
+                    .query_row(
+                        "SELECT COALESCE(metadata,'{}') FROM clients WHERE id=?1",
+                        [&cid],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "{}".to_string());
+                let mut meta: serde_json::Value =
+                    serde_json::from_str(&meta_json).unwrap_or_else(|_| serde_json::json!({}));
+                if !meta.is_object() {
+                    meta = serde_json::json!({});
+                }
+                if let Some(o) = meta.as_object_mut() {
+                    o.insert("exclusive".into(), serde_json::json!(true));
+                    o.insert("unsubscribed".into(), serde_json::json!(true));
+                    o.insert("unsubscribed_at".into(), serde_json::json!(now.clone()));
+                    // Kept for backwards compatibility with rows already carrying it.
+                    o.insert(
+                        "newsletter_contact_frequency".into(),
+                        serde_json::json!("never"),
+                    );
+                }
+                let meta_out = meta.to_string();
                 let _ = conn.execute(
-                    "UPDATE clients SET metadata = json_set(COALESCE(metadata,'{}'), '$.newsletter_contact_frequency', 'never') WHERE id=?1",
-                    [&cid],
+                    "UPDATE clients SET exclusive=1, metadata=?1, updated_at=?2 WHERE id=?3",
+                    rusqlite::params![meta_out, now, &cid],
                 );
+                let mut ccols = serde_json::Map::new();
+                ccols.insert("exclusive".into(), serde_json::json!(1));
+                ccols.insert("metadata".into(), serde_json::Value::String(meta_out));
+                ccols.insert("updated_at".into(), serde_json::Value::String(now.clone()));
+                if let Err(e) = crate::sync::record_upsert("clients", &cid, ccols) {
+                    tracing::warn!("unsubscribe: record_upsert client failed: {}", e);
+                }
+
                 let iid = uuid::Uuid::new_v4().to_string();
                 let mut ucols = serde_json::Map::new();
                 ucols.insert("client_id".into(), serde_json::Value::String(cid.clone()));
