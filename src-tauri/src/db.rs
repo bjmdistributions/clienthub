@@ -266,7 +266,7 @@ fn seed_defaults(conn: &rusqlite::Connection) -> Result<()> {
     if count == 0 {
         let defaults = [
             "Electronics", "Clothing", "General Merchandise", "Toys",
-            "Shoes", "Candy/Food/Drinks", "Beauty/Cosmetics", "OTHER", "EVERYTHING",
+            "Shoes", "Candy/Food/Drinks", "Beauty/Cosmetics", "EVERYTHING",
         ];
         for (i, label) in defaults.iter().enumerate() {
             let id = uuid::Uuid::new_v4().to_string();
