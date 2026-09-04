@@ -598,6 +598,19 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
     api.getClientCreditStatus(clientId).then(setCredit).catch(() => setCredit(null));
   }, [clientId, createNew, initial]);
 
+  // R-243 store credit: money already owed back to this buyer, spent as a negative line
+  // on their next invoice. Same trigger as the limit guardrail above — a NEW invoice for
+  // an existing client. `creditApplied` is what this form has drawn down so far; it is
+  // clamped against the lines actually present before any drawdown is recorded, so
+  // deleting the line by hand cannot spend a credit.
+  const [storeCredit, setStoreCredit] = useState<{ balance: number; entries: any[] } | null>(null);
+  const [creditApplied, setCreditApplied] = useState(0);
+  useEffect(() => {
+    setCreditApplied(0);
+    if (initial || createNew || !clientId) { setStoreCredit(null); return; }
+    api.getClientCredit(clientId).then(setStoreCredit).catch(() => setStoreCredit(null));
+  }, [clientId, createNew, initial]);
+
   const updateItem = (i: number, field: keyof LineItem, val: any) => {
     const copy = [...items];
     (copy[i] as any)[field] = val;
@@ -621,6 +634,28 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
   const tax = subtotal * (taxRate / 100);
   const total = subtotal + tax;
   const overLimit = !!(credit && credit.credit_limit > 0 && credit.exposure + total > credit.credit_limit);
+
+  // The date the credit was raised, printed on the line so the invoice says what it is
+  // for. Entries come back newest-first, so this is the most recent one still owed.
+  const creditIssuedOn = (() => {
+    const issued = (storeCredit?.entries || []).find((e: any) => e.amount > 0 && e.created_at);
+    if (!issued) return "";
+    const d = new Date(issued.created_at);
+    return isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  })();
+  const creditLeft = Math.round(((storeCredit?.balance || 0) - creditApplied) * 100) / 100;
+
+  // Never let the credit exceed what is being invoiced — a credit bigger than the goods
+  // would make the invoice negative, and the remainder stays on the ledger for next time.
+  const applyCredit = () => {
+    const use = Math.round(Math.min(creditLeft, Math.max(subtotal, 0)) * 100) / 100;
+    if (use <= 0) return;
+    setItems([...items, {
+      description: `Credit applied${creditIssuedOn ? ` — issued ${creditIssuedOn}` : ""}`,
+      qty: 1, rate: -use, amount: -use,
+    }]);
+    setCreditApplied(creditApplied + use);
+  };
 
   // Feed the live in-app preview with the current edits; missing fields fall back
   // to sample content inside InvoicePreview.
@@ -666,7 +701,18 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
       // invoice actually clears the stored clause instead of merging the old one back.
       const data = { due_date: dueDate, issue_date: issueDate, line_items: items, tax_rate: taxRate / 100, notes: notes || undefined, recurring: recurring || undefined, return_policy: policyOn ? policyText : "" };
       if (initial) await api.updateInvoice(initial.id, data);
-      else await api.createInvoice({ ...data, client_id: cid });
+      else {
+        const invId = await api.createInvoice({ ...data, client_id: cid });
+        // Draw the credit down only for what the invoice actually carries: if the line
+        // was deleted again by hand, `negTotal` is 0 and nothing is spent.
+        const negTotal = -items.reduce((sum, it) => sum + Math.min(it.amount, 0), 0);
+        const draw = Math.round(Math.min(creditApplied, negTotal) * 100) / 100;
+        if (draw > 0) {
+          const number = await api.getInvoice(invId).then((v) => v?.number).catch(() => "");
+          await api.addClientCredit(cid, -draw, { kind: "applied", note: number ? `Applied to invoice ${number}` : "Applied to an invoice" })
+            .catch((e: any) => toast(`Invoice created, but the credit was not drawn down: ${e}`, "error"));
+        }
+      }
       onClose();
     } catch (e: any) { toast(String(e), "error"); }
     finally { setSubmitting(false); }
@@ -759,6 +805,27 @@ function InvoiceForm({ clients, initial, onClose }: { clients: Client[]; initial
           <Field label="Email"><input className={inp} value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} /></Field>
           <Field label="Phone"><input className={inp} value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} /></Field>
           <Field label="Company"><input className={inp} value={newClient.company} onChange={(e) => setNewClient({ ...newClient, company: e.target.value })} /></Field>
+        </div>
+      )}
+
+      {/* R-243. Sits directly above the line items because that is where it writes, and
+          it is always visible rather than behind a hover — an owed credit forgotten at
+          invoice time is money given away twice. */}
+      {!initial && storeCredit && storeCredit.balance > 0 && (
+        <div className="mb-5 p-4 bg-accent/10 border border-accent/10 rounded-xl flex items-center justify-between gap-4 flex-wrap">
+          <div className="text-[13px] text-ink min-w-0">
+            <strong className="font-semibold">You owe this buyer {fmtAmount(storeCredit.balance)} in credit.</strong>
+            {creditIssuedOn ? ` Issued ${creditIssuedOn}.` : ""}
+            {creditApplied > 0
+              ? ` ${fmtAmount(creditApplied)} is on this invoice as a line below${creditLeft > 0 ? `, leaving ${fmtAmount(creditLeft)} for next time` : ""}.`
+              : " Apply it and it comes off this invoice as a line."}
+          </div>
+          {creditLeft > 0 && subtotal > 0 && (
+            <button type="button" onClick={applyCredit}
+              className="border border-line text-ink-2 hover:bg-surface-2 px-4 h-9 rounded-lg text-[13px] font-medium transition-colors flex-shrink-0">
+              Apply {fmtAmount(Math.min(creditLeft, subtotal))}
+            </button>
+          )}
         </div>
       )}
 

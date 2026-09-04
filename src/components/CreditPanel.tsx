@@ -4,6 +4,14 @@ import { fmtAmount, parseAmount } from "../lib/format";
 
 // Customer store-credit: balance + ledger, with issue (owed to customer) and
 // apply/use (drawn down toward a future deal). Overdraw is rejected by the engine.
+// When a credit was raised — the invoice form prints the same date on the line it adds,
+// so the customer's invoice and this ledger say the same thing.
+const fmtDay = (iso?: string) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+};
+
 export default function CreditPanel({ clientId }: { clientId: string }) {
   const [data, setData] = useState<any>(null);
   const [amt, setAmt] = useState("");
@@ -61,8 +69,8 @@ export default function CreditPanel({ clientId }: { clientId: string }) {
           {entries.length > 0 && (
             <div className="space-y-1 pt-1">
               {entries.slice(0, 8).map((e) => (
-                <div key={e.id} className="flex items-center justify-between text-[11.5px] py-0.5">
-                  <span className="text-muted">{e.kind}{e.note ? ` · ${e.note}` : ""}</span>
+                <div key={e.id} className="flex items-center justify-between text-[11.5px] py-0.5 gap-2">
+                  <span className="text-muted min-w-0 truncate">{fmtDay(e.created_at)}{fmtDay(e.created_at) ? " · " : ""}{e.kind}{e.note ? ` · ${e.note}` : ""}</span>
                   <span className={`tabular-nums ${e.amount < 0 ? "text-danger-ink" : "text-success-ink"}`}>{e.amount < 0 ? "−" : "+"}{fmtAmount(Math.abs(e.amount))}</span>
                 </div>
               ))}
