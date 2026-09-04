@@ -65,10 +65,6 @@ const unitsLabel = (lot: Lot, det: LotDetails) => {
 const statusColor = (s: string) => {
   switch (s) { case "available": return "bg-success-bg text-success-ink"; case "reserved": return "bg-info-bg text-info-ink"; case "sold": return "bg-surface-3 text-ink-2"; case "archived": return "bg-warning-bg text-warning-ink"; default: return "bg-surface-3 text-ink-2"; }
 };
-// The leading status dot on the pill — single source of the per-status colour.
-const statusDot = (s: string) => {
-  switch (s) { case "available": return "bg-success"; case "reserved": return "bg-info"; case "sold": return "bg-ink-2"; case "archived": return "bg-warning"; default: return "bg-ink-2"; }
-};
 // Pill tokens for a deal stage — negotiating leans on the accent, earlier stages
 // read as informational. Shared by the link picker and the linked-deal row.
 const dealStageColor = (s: string) => s === "negotiating" ? "bg-accent/10 text-accent" : "bg-info-bg text-info-ink";
@@ -818,7 +814,7 @@ export default function InventoryView() {
               {staleModal.map((s) => (
                 <div key={s.id} className="flex items-center justify-between gap-2 py-2">
                   <span className="text-[13px] text-ink truncate">{s.name}</span>
-                  <span className="text-[10px] font-medium uppercase tracking-wide text-muted flex-shrink-0">{s.status}</span>
+                  <span className="text-[10px] font-medium text-muted flex-shrink-0">{s.status}</span>
                 </div>
               ))}
             </div>
@@ -938,9 +934,8 @@ function LotCard({
           <Package size={26} className={`text-faint ${archived ? "opacity-60" : ""}`} strokeWidth={1.5} />
         )}
 
-        {/* Status pill — sentence case, static leading dot */}
+        {/* Status pill — sentence case */}
         <span className={`absolute top-2.5 left-2.5 text-[10px] font-semibold px-2 py-0.5 rounded-full flex items-center gap-1.5 bg-surface/85 backdrop-blur-sm ${statusColor(lot.status)}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${statusDot(lot.status)}`} />
           {lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}
         </span>
 
@@ -2248,10 +2243,10 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
               <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex items-center gap-1.5 ${statusColor(lot.status)}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${statusDot(lot.status)}`} />
                 {lot.status.charAt(0).toUpperCase() + lot.status.slice(1)}
               </span>
-              {allCats.map((c) => <span key={c} className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold">{c}</span>)}
+              {allCats.slice(0, 3).map((c) => <span key={c} className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold whitespace-nowrap flex-shrink-0">{c}</span>)}
+              {allCats.length > 3 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent font-semibold whitespace-nowrap flex-shrink-0" title={allCats.slice(3).join(" · ")}>+{allCats.length - 3}</span>}
               {condition && <span className="text-[10px] px-2 py-0.5 rounded-full bg-surface-3 text-ink-2 font-semibold border border-line">{condition}</span>}
             </div>
             <h3 className="text-[17px] font-semibold text-ink leading-tight">{lot.name}</h3>
@@ -2436,8 +2431,8 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
                         <div className="flex items-center gap-2 flex-wrap text-[13px]">
                           <span className="font-medium text-ink truncate">{o.name || "Anonymous"}</span>
                           {o.amount != null && <span className="font-semibold text-accent tabular-nums">{fmtAmount(o.amount)}<span className="text-[10px] font-normal text-muted ml-0.5">{o.offer_type === "per_unit" ? "/unit" : " for the lot"}</span></span>}
-                          {o.status === "accepted" && <span className="text-[10px] font-bold uppercase tracking-wide text-success-ink">Accepted</span>}
-                          {o.status === "declined" && <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Declined</span>}
+                          {o.status === "accepted" && <span className="text-[10px] font-bold text-success-ink">Accepted</span>}
+                          {o.status === "declined" && <span className="text-[10px] font-bold text-muted">Declined</span>}
                         </div>
                         <a href={`mailto:${o.email}`} className="text-[11.5px] text-muted hover:text-accent break-all">{o.email}</a>
                         {o.message && <p className="text-[12px] text-ink-2 whitespace-pre-wrap mt-1">{o.message}</p>}

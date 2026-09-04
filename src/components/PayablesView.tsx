@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, PayablesAging, APItem, PayableSupplier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, ArrowUpRight, Inbox, Check } from "lucide-react";
+import StatusPill from "./StatusPill";
 
 // Age buckets (days the obligation has been owed). Calm → alarming ramp.
 const BUCKETS = [
@@ -224,7 +225,7 @@ export default function PayablesView() {
                       <div className="flex items-center gap-2">
                         <span className="text-[13px] font-semibold text-ink truncate">{it.payee || "(unnamed)"}</span>
                         {!it.committed && (
-                          <span className="text-[9px] font-bold uppercase tracking-wide text-muted bg-surface-2 border border-line px-1.5 py-0.5 rounded flex-shrink-0" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</span>
+                          <StatusPill tone="neutral" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</StatusPill>
                         )}
                         <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${it.days > 90 ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
                           {owedWords(it.days)}
@@ -275,7 +276,7 @@ function ByPayee({ payees }: { payees: PayableSupplier[] }) {
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-[13px] font-semibold text-ink truncate">{p.payee || "(unnamed)"}</span>
               {p.oldest_days > 90 && (
-                <span className="text-[9px] font-bold uppercase text-danger-ink bg-danger-bg px-1.5 py-0.5 rounded flex-shrink-0">{p.oldest_days}d</span>
+                <StatusPill tone="danger">{p.oldest_days}d</StatusPill>
               )}
             </div>
             <span className="text-[15px] font-bold text-ink tabular-nums flex-shrink-0">{fmtAmount(p.total)}</span>

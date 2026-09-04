@@ -22,6 +22,8 @@ import {
   ChevronRight,
   Columns2,
   X,
+  Wifi,
+  WifiOff,
   FileSignature,
   Bell,
   ClipboardCheck,
@@ -1210,13 +1212,9 @@ export default function App() {
           {navCollapsed ? (
             <div className="flex flex-col items-center gap-1.5">
               <span className="py-0.5" title={`Ollama ${aiOnline ? "online" : "offline"}`}>
-                {aiOnline ? (
-                  <span className="pulse-ring flex-shrink-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-success relative z-10 flex-shrink-0 block" />
-                  </span>
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0 block" />
-                )}
+                {aiOnline
+                  ? <Wifi size={12} className="text-success-ink" />
+                  : <WifiOff size={12} className="text-danger-ink" />}
               </span>
               <button
                 onClick={handleSync}
@@ -1266,13 +1264,9 @@ export default function App() {
             <div className="space-y-1">
               <div className="flex items-center justify-between px-1.5 py-0.5">
                 <span className="flex items-center gap-2 text-[11px]" style={{ color: "#4A4A5A" }}>
-                  {aiOnline ? (
-                    <span className="pulse-ring flex-shrink-0">
-                      <span className="w-1.5 h-1.5 rounded-full bg-success relative z-10 flex-shrink-0 block" />
-                    </span>
-                  ) : (
-                    <span className="w-1.5 h-1.5 rounded-full bg-danger flex-shrink-0" />
-                  )}
+                  {aiOnline
+                    ? <Wifi size={11} className="text-success-ink" />
+                    : <WifiOff size={11} className="text-danger-ink" />}
                   Ollama
                 </span>
                 <span className={`text-[11px] font-medium ${aiOnline ? "text-success-ink" : "text-danger-ink"}`}>
@@ -1481,7 +1475,7 @@ export default function App() {
               <div className="sticky top-0 z-20 flex items-center gap-2 px-3 h-10 flex-shrink-0"
                 style={{ background: "var(--t-s1)", borderBottom: "1px solid var(--t-b1)" }}>
                 <Columns2 size={12} style={{ color: "var(--t-tx4)" }} />
-                <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--t-tx4)" }}>Split</span>
+                <span className="text-[10px] font-semibold" style={{ color: "var(--t-tx4)" }}>Split</span>
                 <select
                   value={splitTab}
                   onChange={(e) => setSplit(e.target.value as Tab)}

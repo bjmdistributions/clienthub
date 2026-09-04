@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type ApprovalRequest, type Client, type ClientInput } from "../lib/api";
 import PendingReviewModal from "./PendingReviewModal";
 import { UserPlus, Inbox, ChevronRight, X, Store } from "lucide-react";
+import StatusPill from "./StatusPill";
 
 const kindLabel = (k: string) =>
   k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k === "unsubscribe" ? "Unsubscribed" : k;
@@ -150,7 +151,7 @@ export function ApprovalsView() {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="text-[13.5px] font-semibold text-ink truncate">{c.name}</span>
-                          {src && <span className="text-[10px] font-medium uppercase tracking-wide text-muted bg-surface-2 px-1.5 py-0.5 rounded flex-shrink-0">{src}</span>}
+                          {src && <StatusPill tone="neutral">{src}</StatusPill>}
                         </div>
                         <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "New customer to review"}</div>
                       </div>

@@ -5,6 +5,7 @@ import {
   Copy, Check, BookOpen, ChevronRight, Settings2, Zap,
 } from "lucide-react";
 import { SetupGuide } from "./IntakeSetupGuide";
+import StatusPill from "./StatusPill";
 
 // Jump to a Settings sub-tab (persisted key the SettingsView reads on mount).
 function goToSettings(tab: string) {
@@ -146,7 +147,7 @@ export default function AutomationLogView() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-[13.5px] font-semibold text-ink truncate">{s.name}</span>
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-muted bg-surface-2 px-1.5 py-0.5 rounded">{s.kind || "form"}</span>
+                      <StatusPill tone="neutral">{s.kind || "form"}</StatusPill>
                     </div>
                     <div className="text-[11.5px] text-muted mt-0.5 tabular-nums">
                       {s.captured_count} lead{s.captured_count !== 1 ? "s" : ""} captured

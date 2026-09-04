@@ -6,6 +6,7 @@ import {
 import { fmtAmount, fmtPhone, localDay, parseLocalDay, primarySupplierLabel } from "../lib/format";
 import { parseLineItems, describeItem } from "../lib/itemSearch";
 import ReliabilityBadge from "./ReliabilityBadge";
+import StatusPill from "./StatusPill";
 import CreditPanel from "./CreditPanel";
 import PersonPayments from "./PersonPayments";
 import PersonPickerModal, { PersonRef } from "./PersonPicker";
@@ -272,8 +273,8 @@ function FlagSwitch({ label, on, onToggle, title, tone = "accent" }: {
         }`}
       >
         <span
-          className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-all ${
-            on ? "left-[18px]" : "left-[3px]"
+          className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full shadow-[0_1px_2px_rgba(0,0,0,0.25)] transition-all ${
+            on ? "left-[18px] bg-on-accent" : "left-[3px] bg-faint"
           }`}
         />
       </span>
@@ -1285,9 +1286,9 @@ export default function ClientDetailView({ clientId, onBack, onEdit, onDeleted }
                 <span className="inline-flex items-center gap-1.5" title="Sales rep"><User size={14} /> Rep: <span className={`font-medium ${rep ? "text-ink-2" : "text-faint"}`}>{repDisplay}</span></span>
               </div>
               <div className="mt-2.5 flex items-center gap-2 flex-wrap">
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${leadStatusColor(client.lead_status)}`}>
+                <StatusPill className={leadStatusColor(client.lead_status)}>
                   {client.lead_status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                </span>
+                </StatusPill>
                 {tierLabel && <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${tierChipCls}`}>{tierLabel}</span>}
                 {tier && tier.avg_commission_pct > 0 && (
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium ${

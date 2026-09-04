@@ -176,12 +176,12 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
           <div>
             <h2 className="text-[15px] font-semibold text-ink mb-3">This {freq >= 28 ? "month" : freq === 7 ? "week" : "period"} at a glance</h2>
             <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
+              <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line">
                 <HeroCell label="Revenue" value={fmtAmount(brief.revenue_this_week)} extra={changePct(brief.revenue_change_pct)} />
                 <HeroCell label="Profit" value={fmtAmount(brief.profit_this_week)} extra={changePct(brief.profit_change_pct)}
                   sub={`${(+brief.avg_margin_this_week || 0).toFixed(1)}% margin`} />
-                <HeroCell label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} />
-                <HeroCell label="Win rate" value={`${(+brief.win_rate_this_week || 0).toFixed(0)}%`} />
+                <HeroCell label="Deals closed" value={String(brief.deals_closed_this_week)} sub={`${brief.deals_lost_this_week} lost`} className="border-t border-line xl:border-t-0" />
+                <HeroCell label="Win rate" value={`${(+brief.win_rate_this_week || 0).toFixed(0)}%`} className="border-t border-line xl:border-t-0" />
               </div>
             </div>
           </div>
@@ -436,10 +436,10 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
 // ─── Stat card (at-a-glance row) ─────────────────────────────────────────────
 // One cell of the at-a-glance hero row (the row card owns the border).
 function HeroCell({
-  label, value, extra, sub,
-}: { label: string; value: string; extra?: React.ReactNode; sub?: string }) {
+  label, value, extra, sub, className = "",
+}: { label: string; value: string; extra?: React.ReactNode; sub?: string; className?: string }) {
   return (
-    <div className="p-5">
+    <div className={`p-5 ${className}`}>
       <div className="text-[12.5px] font-medium text-muted">{label}</div>
       <div className="text-[24px] font-bold text-ink tabular-nums mt-1.5 leading-none">{value}</div>
       {(extra || sub) && (

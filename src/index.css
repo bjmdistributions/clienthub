@@ -453,18 +453,6 @@ button:not(:disabled):active { opacity: 0.78; transition: opacity 60ms; }
   pointer-events: none;
 }
 
-/* ── Pulse ring (Ollama online) ───────────────────────────── */
-.pulse-ring { position: relative; display: inline-flex; align-items: center; justify-content: center; }
-.pulse-ring::before {
-  content: '';
-  position: absolute;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background: #34D399;
-  animation: pulse-expand 2s ease-out infinite;
-}
-
 /* ── Page transition ──────────────────────────────────────── */
 .page-enter { animation: page-slide-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both; }
 

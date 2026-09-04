@@ -299,7 +299,7 @@ export default function AnalyticsView() {
           leads, profit/margin/outstanding read left to right.
       ─────────────────────────────────────────────────────────── */}
       <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-        <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
+        <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line">
           <div className="p-5">
             <div className="text-[12.5px] font-medium text-muted">
               Revenue · {preset === "Custom" ? "custom range" : preset.toLowerCase()}
@@ -323,12 +323,12 @@ export default function AnalyticsView() {
             </div>
             <div className="text-[11px] text-faint mt-1.5">after all costs</div>
           </div>
-          <div className="p-5 border-t border-line lg:border-t-0">
+          <div className="p-5 border-t border-line xl:border-t-0">
             <div className="text-[12.5px] font-medium text-muted">Avg margin</div>
             <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{aMargin.toFixed(1)}%</div>
             <div className="text-[11px] text-faint mt-1.5">across closed deals</div>
           </div>
-          <div className="p-5 border-t border-line lg:border-t-0">
+          <div className="p-5 border-t border-line xl:border-t-0">
             <div className="text-[12.5px] font-medium text-muted">Outstanding</div>
             <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
               style={{ color: stats.outstanding > 0 ? CLR.amber : "var(--t-tx1)" }}>
@@ -384,7 +384,7 @@ export default function AnalyticsView() {
         const refunded = rangeData?.refunded_in_range ?? stats.refunded_total ?? 0;
         return (
           <div className="bg-surface border border-line rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-2 xl:grid-cols-4 divide-x divide-line">
+            <div className="grid grid-cols-2 xl:grid-cols-4 xl:divide-x xl:divide-line">
               <div className="p-5">
                 <div className="text-[12.5px] font-medium text-muted">Deals won</div>
                 <div className="text-[26px] font-bold text-ink tabular-nums mt-1.5 leading-none">{won}</div>
@@ -396,7 +396,7 @@ export default function AnalyticsView() {
                   style={{ color: lost > 0 ? CLR.rose : "var(--t-tx1)" }}>{lost}</div>
                 <div className="text-[11px] text-faint mt-1.5">fell through</div>
               </div>
-              <div className="p-5 border-t border-line lg:border-t-0">
+              <div className="p-5 border-t border-line xl:border-t-0">
                 <div className="text-[12.5px] font-medium text-muted">Win rate</div>
                 <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
                   style={{ color: winRate >= 60 ? CLR.emerald : winRate >= 40 ? CLR.amber : CLR.rose }}>
@@ -404,7 +404,7 @@ export default function AnalyticsView() {
                 </div>
                 <div className="text-[11px] text-faint mt-1.5">won vs fell through</div>
               </div>
-              <div className="p-5 border-t border-line lg:border-t-0">
+              <div className="p-5 border-t border-line xl:border-t-0">
                 <div className="text-[12.5px] font-medium text-muted">Refunded</div>
                 <div className="text-[26px] font-bold tabular-nums mt-1.5 leading-none"
                   style={{ color: refunded > 0 ? CLR.rose : "var(--t-tx1)" }}>
@@ -491,7 +491,7 @@ export default function AnalyticsView() {
                   <div key={s.status}>
                     <div className="flex items-center justify-between mb-1.5">
                       <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full flex-shrink-0"
+                        <span className="w-2 h-2 rounded-sm flex-shrink-0"
                           style={{ backgroundColor: clr }} />
                         <span className="text-[12px] text-ink-2 capitalize">
                           {s.status.replace("_", " ")}

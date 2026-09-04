@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { IntakeSourceSummary } from "../lib/api";
 import { ArrowLeft, ArrowRight, ArrowDown, Copy, Check, Code2, MousePointerClick, ShoppingBag, FileInput, Sparkles } from "lucide-react";
+import StatusPill from "./StatusPill";
 
 // A visual, on-brand setup guide for turning any website form into pending
 // Ecliptr leads. Illustrations are stylized mock UI blocks (NOT screenshots).
@@ -59,7 +60,7 @@ function FlowIllustration() {
               <div className="text-[12px] font-semibold text-ink">New pending lead</div>
               <div className="text-[10.5px] text-muted">jane@acme.com · from your website</div>
             </div>
-            <span className="ml-auto text-[9px] font-bold uppercase tracking-wide text-accent-hover bg-accent/10 px-1.5 py-0.5 rounded">Pending</span>
+            <span className="ml-auto"><StatusPill tone="accent">Pending</StatusPill></span>
           </div>
         </MockWindow>
       </div>

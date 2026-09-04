@@ -12,6 +12,7 @@ import { toast } from "./Toast";
 import ReconciliationPanel from "./ReconciliationPanel";
 import RefundWorkspace from "./RefundWorkspace";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import StatusPill from "./StatusPill";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -873,7 +874,7 @@ function DealFlowCard({
                   {refundPaid > 0.005 && (
                     <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(raw)}</span>
                   )}
-                  <span>{fmtAmount(proj)} <span className="text-[8px] text-muted uppercase">proj</span></span>
+                  <span>{fmtAmount(proj)} <span className="text-[8px] text-muted">proj</span></span>
                 </span>
               );
             })()}
@@ -887,7 +888,7 @@ function DealFlowCard({
                   {refundPaid > 0.005 && (
                     <span className="text-[10px] font-medium text-muted line-through decoration-danger-ink decoration-[1.5px]">{fmtAmount(flow.net_profit)}</span>
                   )}
-                  <span>{fmtAmount(net)} <span className="text-[8px] text-muted uppercase">{mgn.toFixed(0)}% mgn</span></span>
+                  <span>{fmtAmount(net)} <span className="text-[8px] text-muted">{mgn.toFixed(0)}% mgn</span></span>
                 </span>
               );
             })()}
@@ -1384,7 +1385,7 @@ function SectionSupplier({ flow, onReload, onAdvance, locked }: { flow: DealFlow
                 <div className="text-[13px] font-medium text-ink truncate flex items-center gap-1.5">
                   {p.supplier_name}
                   {p.category && p.category !== "supplier" && (
-                    <span className="text-[9px] font-bold uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded flex-shrink-0">{catLabel(p.category)}</span>
+                    <StatusPill tone="accent">{catLabel(p.category)}</StatusPill>
                   )}
                 </div>
                 {p.quantity != null && p.unit_price != null && (

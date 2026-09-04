@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import VariablePicker, { VariableReference } from "./VariablePicker";
 import NumberInput from "./NumberInput";
+import StatusPill from "./StatusPill";
 import { NewsletterSchedule } from "../lib/api";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
@@ -120,7 +121,7 @@ export default function EmailView() {
                   >
                     <div className="font-medium text-[13px] text-ink truncate flex items-center gap-1.5">
                       <span className="truncate">{e.from_name || e.from}</span>
-                      {e.source && <span className="text-[9px] uppercase tracking-wide text-muted bg-surface-3 rounded px-1 py-0.5 flex-shrink-0">{e.source}</span>}
+                      {e.source && <StatusPill tone="neutral">{e.source}</StatusPill>}
                     </div>
                     <div className="text-[13px] text-ink-2 truncate mt-0.5">{e.subject}</div>
                     <div className="text-[12px] text-muted truncate mt-0.5">
@@ -1519,7 +1520,7 @@ function RecurringTab() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-[14px] font-semibold text-ink truncate">{s.name}</span>
-                  {!s.active && <span className="text-[10px] uppercase tracking-wide text-faint border border-line rounded px-1.5 py-0.5">Paused</span>}
+                  {!s.active && <StatusPill tone="neutral">Paused</StatusPill>}
                 </div>
                 <div className="text-[12px] text-muted truncate">{s.subject}</div>
                 <div className="text-[11px] text-faint mt-0.5">

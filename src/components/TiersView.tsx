@@ -115,7 +115,7 @@ export default function TiersView() {
                 <TierBadge tier={t} size="sm" />
               </div>
               <div className="text-[22px] font-bold text-ink tabular-nums leading-none">{count}</div>
-              <div className="text-[10px] text-muted mt-1 uppercase tracking-wide">clients</div>
+              <div className="text-[10px] text-muted mt-1">clients</div>
             </button>
           );
         })}

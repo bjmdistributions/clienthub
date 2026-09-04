@@ -37,6 +37,7 @@ import {
   FbPageLite,
   NewsletterProductTemplate,
 } from "../lib/api";
+import StatusPill from "./StatusPill";
 import { buildNewsletterBody } from "../lib/newsletter";
 import { fmtAmount, parseAmount, parseCount } from "../lib/format";
 import { isAdmin } from "../lib/permissions";
@@ -95,6 +96,7 @@ import {
   ExternalLink,
   Share2,
   MessageSquarePlus,
+  MinusCircle,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -472,7 +474,7 @@ function MyPlanCard() {
     <div className="bg-surface border border-line rounded-xl p-6">
       <div className="flex items-center justify-between mb-4">
         <SectionLabel>My Plan</SectionLabel>
-        <span className="text-[11px] font-bold uppercase tracking-wider text-accent bg-accent/10 border border-accent/20 px-2.5 py-1 rounded-full">{pretty}</span>
+        <StatusPill tone="accent">{pretty}</StatusPill>
       </div>
       <div className="space-y-3">
         <Row label="Team members" used={plan.members ?? 0} limit={plan.member_limit ?? null} />
@@ -607,7 +609,7 @@ function AppearanceTab() {
           </span>
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${matte ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${matte ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${matte ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
         </span>
       </button>
 
@@ -633,7 +635,7 @@ function AppearanceTab() {
           </span>
         </span>
         <span className={`flex-shrink-0 w-11 h-6 rounded-full relative transition-colors ${navAuto ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${navAuto ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${navAuto ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
         </span>
       </button>
     </div>
@@ -795,9 +797,9 @@ type TestState = { status: "idle" | "testing" | "ok" | "fail"; message?: string 
 
 function StatusDot({ state }: { state: TestState }) {
   if (state.status === "testing") return <RefreshCw size={12} className="text-muted animate-spin" />;
-  if (state.status === "ok") return <span className="w-2 h-2 rounded-full bg-success-ink" title="Connected" />;
-  if (state.status === "fail") return <span className="w-2 h-2 rounded-full bg-danger-ink" title="Failed" />;
-  return <span className="w-2 h-2 rounded-full bg-line-3" title="Untested" />;
+  if (state.status === "ok") return <span title="Connected"><Check size={12} className="text-success-ink" /></span>;
+  if (state.status === "fail") return <span title="Failed"><AlertCircle size={12} className="text-danger-ink" /></span>;
+  return <span title="Untested"><MinusCircle size={12} className="text-faint" /></span>;
 }
 
 function TestResultLine({ state }: { state: TestState }) {
@@ -850,7 +852,7 @@ function SettingCard({ icon: Icon, title, purpose, aside, collapsible = true, ch
 function ConnectedPill({ ok, onLabel = "Connected", offLabel = "Not set up" }: { ok: boolean; onLabel?: string; offLabel?: string }) {
   return ok
     ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-success-ink bg-success-bg border border-success-ink/20 px-2.5 h-7 rounded-full"><Check size={13} /> {onLabel}</span>
-    : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><span className="w-2 h-2 rounded-full bg-line-3" /> {offLabel}</span>;
+    : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-muted bg-surface-2 border border-line px-2.5 h-7 rounded-full"><X size={13} /> {offLabel}</span>;
 }
 
 // Cloud-sync health. Deliberately not ConnectedPill: having a token stored is not
@@ -1368,9 +1370,17 @@ function CapturedCustomerCard({ c }: { c: CapturedCustomer }) {
       </div>
       {c.categories.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-3.5 pb-3.5 pt-1">
-          {c.categories.map((cat) => (
-            <span key={cat} className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{cat}</span>
+          {c.categories.slice(0, 3).map((cat) => (
+            <span key={cat} className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">{cat}</span>
           ))}
+          {c.categories.length > 3 && (
+            <span
+              className="text-[11px] font-medium text-muted bg-surface-2 border border-line px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0"
+              title={c.categories.slice(3).join(", ")}
+            >
+              +{c.categories.length - 3}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -1466,7 +1476,7 @@ function CaptureCard() {
       aside={
         <button onClick={toggle} role="switch" aria-checked={on}
           className={`w-11 h-6 rounded-full relative transition-colors ${on ? "bg-accent" : "bg-surface-3"}`}>
-          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+          <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${on ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
         </button>
       }>
       <div className="space-y-3">
@@ -1496,7 +1506,7 @@ function CaptureCard() {
         {previewErr && <div className="text-[12px] text-muted flex items-center gap-1.5"><AlertCircle size={13} className="text-danger-ink" /> {previewErr}</div>}
         {preview?.found && preview.customer && (
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-muted mb-2">Preview — what Ecliptr would create</div>
+            <div className="text-[11px] text-muted mb-2">Preview — what Ecliptr would create</div>
             <CapturedCustomerCard c={preview.customer} />
           </div>
         )}
@@ -1676,7 +1686,7 @@ function WhatsAppFooterField() {
     <div>
       <label className="block text-[12px] font-medium text-muted mb-1.5">WhatsApp Share Footer</label>
       <div className="flex gap-2">
-        <input className={inp} value={footer} onChange={e => setFooter(e.target.value)} placeholder="💬 Reply to claim or for more info" />
+        <input className={inp} value={footer} onChange={e => setFooter(e.target.value)} placeholder="Reply to claim or for more info" />
         <button onClick={save} className="bg-accent hover:bg-accent-hover text-on-accent px-3 h-10 rounded-lg text-[13px] font-medium flex-shrink-0">
           {saved ? "Saved" : "Save"}
         </button>
@@ -3656,9 +3666,9 @@ function PaymentsTab() {
           >
             <div className="flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-semibold font-mono bg-surface-3 px-2 py-0.5 rounded-md text-muted uppercase tracking-wide">
+                <StatusPill tone="neutral">
                   {m.kind}
-                </span>
+                </StatusPill>
                 <span className="text-[13px] font-medium text-ink">{m.label}</span>
               </div>
               {m.details && (
@@ -3824,7 +3834,7 @@ function StorefrontTab() {
   const inpCls = "w-full bg-surface-2 border border-line rounded-lg h-9 px-2.5 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-accent/40";
   const Toggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
     <button onClick={onClick} className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${on ? "bg-accent" : "bg-surface-3 border border-line"}`}>
-      <span className={`absolute top-[3px] left-[3px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${on ? "translate-x-5" : ""}`} />
+      <span className={`absolute top-[3px] left-[3px] w-[18px] h-[18px] rounded-full shadow transition-transform ${on ? "bg-on-accent translate-x-5" : "bg-faint"}`} />
     </button>
   );
 
@@ -4502,7 +4512,7 @@ function SheetsTab() {
             title={config.writeback_enabled ? "Turn write-back off" : "Turn write-back on"}
             className={`shrink-0 w-11 h-6 rounded-full relative transition-colors ${config.writeback_enabled ? "bg-accent" : "bg-surface-3"}`}
           >
-            <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${config.writeback_enabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+            <span className={`absolute top-0.5 left-0 w-5 h-5 rounded-full shadow-sm transition-transform ${config.writeback_enabled ? "bg-on-accent translate-x-[22px]" : "bg-faint translate-x-0.5"}`} />
           </button>
         </div>
 

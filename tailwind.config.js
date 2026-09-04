@@ -79,10 +79,6 @@ export default {
           "0%, 100%": { opacity: "1" },
           "50%":      { opacity: "0.7" },
         },
-        "pulse-expand": {
-          "0%":   { transform: "scale(1)", opacity: "0.5" },
-          "100%": { transform: "scale(2.4)", opacity: "0" },
-        },
         "page-slide-in": {
           "0%":   { opacity: "0", transform: "translateY(6px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
@@ -108,7 +104,6 @@ export default {
         "scale-in":       "scale-in 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
         "shimmer":        "shimmer 1.8s linear infinite",
         "count-pulse":    "count-pulse 0.6s ease-in-out",
-        "pulse-expand":   "pulse-expand 2s ease-out infinite",
         "page-slide-in":  "page-slide-in 0.24s cubic-bezier(0.16,1,0.3,1) both",
         "number-pop":     "number-pop 0.4s cubic-bezier(0.16,1,0.3,1) both",
         "glow-pulse":     "glow-pulse 2.5s ease-in-out infinite",

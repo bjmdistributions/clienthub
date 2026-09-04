@@ -7,6 +7,7 @@ import ClientDetailView from "./ClientDetailView";
 import PendingReviewModal from "./PendingReviewModal";
 import TierBadge from "./TierBadge";
 import ReliabilityBadge from "./ReliabilityBadge";
+import StatusPill from "./StatusPill";
 
 // What the client's most-recent touch was — icon + label + accent per kind, so
 // Invoice / Quote / Newsletter read distinctly in the list. (api.clientLastActivity)
@@ -846,6 +847,20 @@ export default function ClientsView() {
           <tbody>
             {displayed.map((c) => {
               const bt = tierOf.get(c.id);
+              // Status flags as data, so the row can cap how many it renders. The name cell is
+              // only ~118px wide at a 900px window; letting these wrap tripled the row height.
+              const flags: { tone: "accent" | "danger" | "neutral"; label: string; title: string }[] = [];
+              if (c.is_blacklisted) {
+                flags.push({ tone: "danger", label: "Blacklisted", title: "Blacklisted — excluded from all sends" });
+              } else {
+                if (c.metadata?.high_value) flags.push({ tone: "accent", label: "High value", title: "High-Value — one of your best buyers (label only)" });
+                if (c.metadata?.unsubscribed) flags.push({ tone: "neutral", label: "Unsubscribed", title: "Unsubscribed — opted out via an email link; kept off all sends" });
+                if (c.metadata?.exclusive && !c.metadata?.unsubscribed) flags.push({ tone: "accent", label: "No bulk", title: "No bulk-email — kept off mass newsletters & auto-add" });
+                if (c.first_contact) flags.push({ tone: "accent", label: "No contact yet", title: "Never been sent an email — introduce yourself" });
+              }
+              if (c.approval_status === "pending") flags.push({ tone: "accent", label: "Pending", title: "Pending approval" });
+              if (c.approval_status === "rejected") flags.push({ tone: "neutral", label: "Rejected", title: "Rejected — kept for the record, and left out of the headline counts" });
+              const missingInfo = !c.email || !c.phone || !c.street_address || !c.category;
               return (
                 <tr
                   key={c.id}
@@ -860,17 +875,18 @@ export default function ClientsView() {
                       {c.needs_review && <AlertCircle size={13} className="text-warning-ink flex-shrink-0" />}
                       <span className="truncate">{c.name}</span>
                     </div>
-                    {(c.is_blacklisted || c.metadata?.high_value || c.metadata?.exclusive || c.metadata?.unsubscribed || c.first_contact || c.approval_status === "pending" || c.approval_status === "rejected" || !c.email || !c.phone || !c.street_address || !c.category) && (
-                      <div className="flex flex-wrap items-center gap-1 mt-1">
-                        {c.is_blacklisted && <span className="text-[9px] font-bold text-danger-ink bg-danger-bg border border-danger-ink/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Blacklisted — excluded from all sends">Blacklisted</span>}
-                        {!c.is_blacklisted && c.metadata?.high_value && <span className="text-[9px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide" title="High-Value — one of your best buyers (label only)">High value</span>}
-                        {!c.is_blacklisted && c.metadata?.unsubscribed && <span className="text-[9px] font-bold text-ink-2 bg-surface-3 border border-line px-1.5 py-0.5 rounded uppercase tracking-wide" title="Unsubscribed — opted out via an email link; kept off all sends">Unsubscribed</span>}
-                        {!c.is_blacklisted && c.metadata?.exclusive && !c.metadata?.unsubscribed && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded uppercase tracking-wide" title="No bulk-email — kept off mass newsletters & auto-add">No bulk</span>}
-                        {!c.is_blacklisted && c.first_contact && <span className="text-[9px] font-bold text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded uppercase tracking-wide" title="Never been sent an email — introduce yourself">No contact yet</span>}
-                        {c.approval_status === "pending" && <span className="text-[8px] font-bold text-accent-hover bg-accent/10 border border-accent/25 px-1.5 py-0.5 rounded uppercase tracking-wide">Pending</span>}
-                        {c.approval_status === "rejected" && <span className="text-[8px] font-bold text-muted bg-surface-3 border border-line px-1.5 py-0.5 rounded uppercase tracking-wide" title="Rejected — kept for the record, and left out of the headline counts">Rejected</span>}
-                        {(!c.email || !c.phone || !c.street_address || !c.category) && (
-                          <span className="inline-flex items-center gap-0.5 text-faint" title="Missing profile info (email / phone / address / category)">
+                    {(flags.length > 0 || missingInfo) && (
+                      <div className="flex items-center gap-1 mt-1 flex-nowrap overflow-hidden">
+                        {flags.slice(0, 2).map((f) => (
+                          <StatusPill key={f.label} tone={f.tone} title={f.title}>{f.label}</StatusPill>
+                        ))}
+                        {flags.length > 2 && (
+                          <StatusPill tone="neutral" title={flags.slice(2).map((f) => f.label).join(" · ")}>
+                            +{flags.length - 2}
+                          </StatusPill>
+                        )}
+                        {missingInfo && (
+                          <span className="inline-flex items-center gap-0.5 text-faint flex-shrink-0" title="Missing profile info (email / phone / address / category)">
                             {!c.email && <Mail size={10} />}
                             {!c.phone && <Phone size={10} />}
                             {!c.street_address && <MapPin size={10} />}

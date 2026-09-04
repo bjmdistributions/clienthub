@@ -11,6 +11,7 @@ import RefundWorkspace from "./RefundWorkspace";
 import InvoiceCostSection from "./InvoiceCostSection";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
+import StatusPill from "./StatusPill";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
@@ -31,7 +32,8 @@ const statusLabel = (inv: Invoice): string => {
   if (lo === "paid" && inv.is_complete) return "Completed";
   if (lo === "paid") return "Paid";
   if (lo === "deposit_pending") return "Sent";
-  return inv.status.replace(/_/g, " ");
+  const s = inv.status.replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
 const FLOW_STAGES = ["invoiced", "payment_received", "supplier_paid", "complete"];
@@ -426,15 +428,13 @@ export default function InvoicesView() {
                     {profit != null ? (
                       <span className="inline-flex items-baseline gap-1" title={projected ? "Projected profit — revenue minus costs entered so far" : undefined}>
                         {fmtAmount(profit)}
-                        {projected && <span className="text-[9px] font-semibold text-muted uppercase tracking-wide">proj</span>}
+                        {projected && <span className="text-[9px] font-semibold text-muted">Proj</span>}
                       </span>
                     ) : "—"}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-0 flex-wrap gap-y-1">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide ${statusColor(inv)}`}>
-                        {statusLabel(inv)}
-                      </span>
+                      <StatusPill className={statusColor(inv)}>{statusLabel(inv)}</StatusPill>
                       {/* Deal flow progress dots — a completed invoice always shows all stages filled. */}
                       <FlowDots stage={inv.is_complete ? "complete" : inv.deal_flow_stage} />
                       {inv.deal_flow_id && refundMap[inv.deal_flow_id] && (
@@ -1136,9 +1136,7 @@ function InvoiceDetailPanel({ invoice, clientName, onClose, onPdf, onResend, onD
         </div>
 
         <div className="px-6 py-5 space-y-5">
-          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statCol(invoice.status.toLowerCase())}`}>
-            {statusLabel(invoice)}
-          </span>
+          <StatusPill className={statCol(invoice.status.toLowerCase())}>{statusLabel(invoice)}</StatusPill>
 
           {voided && (
             <div className="flex items-center gap-2 bg-surface-2 border border-line rounded-xl px-4 py-3 text-[12.5px] text-ink-2">

@@ -3,6 +3,7 @@ import { api, ArchiveItem } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, RotateCcw, Archive as ArchiveIcon, FileText, GitBranch, Briefcase } from "lucide-react";
 import { toast } from "./Toast";
+import StatusPill from "./StatusPill";
 
 const KIND_META: Record<ArchiveItem["kind"], { label: string; icon: typeof FileText }> = {
   invoice:   { label: "Invoice",   icon: FileText },
@@ -12,8 +13,8 @@ const KIND_META: Record<ArchiveItem["kind"], { label: string; icon: typeof FileT
 
 function reasonPill(reason: ArchiveItem["reason"]) {
   return reason === "fell_through"
-    ? <span className="text-[10px] font-semibold uppercase tracking-wide text-warning-ink bg-warning-bg border border-warning/30 px-1.5 py-0.5 rounded">Fell through</span>
-    : <span className="text-[10px] font-semibold uppercase tracking-wide text-muted bg-surface-2 border border-line px-1.5 py-0.5 rounded">Deleted</span>;
+    ? <StatusPill tone="warning">Fell through</StatusPill>
+    : <StatusPill tone="neutral">Deleted</StatusPill>;
 }
 
 function whenWords(iso: string | null): string {
@@ -145,7 +146,7 @@ export default function ArchiveView() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-[13px] font-semibold text-ink truncate">{it.title || "(untitled)"}</span>
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-muted bg-surface-2 border border-line px-1.5 py-0.5 rounded flex-shrink-0">{meta.label}</span>
+                    <StatusPill tone="neutral">{meta.label}</StatusPill>
                   </div>
                   <div className="text-[11px] text-muted truncate mt-0.5">
                     {it.client_name || "—"}{it.archived_at && <span className="text-faint"> · archived {whenWords(it.archived_at)}</span>}

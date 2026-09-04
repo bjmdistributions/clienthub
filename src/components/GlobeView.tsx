@@ -3,6 +3,7 @@ import Globe from "globe.gl";
 import { api, Client } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import TierBadge from "./TierBadge";
+import StatusPill from "./StatusPill";
 import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw, Search } from "lucide-react";
 
 const STAR_COUNT  = 450;
@@ -459,10 +460,7 @@ export default function GlobeView() {
                 <div className="flex items-center gap-1.5">
                   <TierBadge tier={selected.tier} size="sm" />
                   {selected.highValue && (
-                    <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded"
-                      style={{ color: "#FFA45C", background: "rgba(255,101,32,0.14)", border: "1px solid rgba(255,101,32,0.3)" }}>
-                      High value
-                    </span>
+                    <StatusPill tone="accent">High value</StatusPill>
                   )}
                 </div>
               </div>

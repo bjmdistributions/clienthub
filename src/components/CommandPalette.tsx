@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api, GlobalSearchResults } from "../lib/api";
+import { User, FileText, Briefcase, Package, Search } from "lucide-react";
 
 interface Props {
   onClose: () => void;
@@ -21,12 +22,12 @@ export default function CommandPalette({ onClose }: Props) {
     return () => clearTimeout(t);
   }, [query]);
 
-  const allItems: { type: string; id: string; label: string; sub: string; icon: string }[] = [];
+  const allItems: { type: string; id: string; label: string; sub: string; icon: typeof User }[] = [];
   if (results) {
-    for (const c of results.clients) allItems.push({ type: "Client", id: c.id, label: c.name, sub: c.company || c.email || "", icon: "\ud83d\udc64" });
-    for (const i of results.invoices) allItems.push({ type: "Invoice", id: i.id, label: i.number, sub: i.client_name, icon: "\ud83d\udcc4" });
-    for (const d of results.deals) allItems.push({ type: "Deal", id: d.id, label: d.title, sub: d.client_name, icon: "\ud83d\udcbc" });
-    for (const s of results.suppliers) allItems.push({ type: "Supplier", id: s.id, label: s.name, sub: "", icon: "\ud83d\udce6" });
+    for (const c of results.clients) allItems.push({ type: "Client", id: c.id, label: c.name, sub: c.company || c.email || "", icon: User });
+    for (const i of results.invoices) allItems.push({ type: "Invoice", id: i.id, label: i.number, sub: i.client_name, icon: FileText });
+    for (const d of results.deals) allItems.push({ type: "Deal", id: d.id, label: d.title, sub: d.client_name, icon: Briefcase });
+    for (const s of results.suppliers) allItems.push({ type: "Supplier", id: s.id, label: s.name, sub: "", icon: Package });
   }
 
   const navigate = (item: typeof allItems[0]) => {
@@ -53,7 +54,7 @@ export default function CommandPalette({ onClose }: Props) {
     <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[15vh] bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
       <div className="bg-surface rounded-2xl shadow-2xl w-[560px] max-w-[92vw] max-h-[60vh] overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line">
-          <span className="text-muted text-[16px]">\ud83d\udd0d</span>
+          <Search size={16} className="text-muted flex-shrink-0" />
           <input ref={inputRef} value={query} onChange={e => { setQuery(e.target.value); setSelectedIdx(0); }}
             onKeyDown={handleKey}
             placeholder="Search clients, invoices, deals, suppliers..."
@@ -66,12 +67,12 @@ export default function CommandPalette({ onClose }: Props) {
               <button key={`${item.type}-${item.id}`}
                 onClick={() => navigate(item)}
                 className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors ${i === selectedIdx ? "bg-accent/10" : "hover:bg-surface-2"}`}>
-                <span className="text-[16px] w-6 text-center">{item.icon}</span>
+                <span className="w-6 flex items-center justify-center text-muted flex-shrink-0"><item.icon size={15} /></span>
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-medium text-ink truncate">{item.label}</div>
                   <div className="text-[11px] text-muted truncate">{item.sub}</div>
                 </div>
-                <span className="text-[10px] text-faint font-medium uppercase">{item.type}</span>
+                <span className="text-[10px] text-faint font-medium">{item.type}</span>
               </button>
             ))}
           </div>

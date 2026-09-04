@@ -9,6 +9,7 @@ import {
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import PendingReviewModal from "./PendingReviewModal";
 import { can } from "../lib/permissions";
+import StatusPill from "./StatusPill";
 
 interface Props {
   onNavigate: (t: any) => void;
@@ -21,6 +22,11 @@ const invStatusCls = (s: string): string => {
   if (lo === "sent" || lo === "deposit_pending") return "bg-info-bg text-info-ink";
   if (lo === "overdue") return "bg-danger-bg text-danger-ink";
   return "bg-surface-3 text-ink-2";
+};
+
+const invStatusLabel = (s: string): string => {
+  const t = s.replace(/_/g, " ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
 };
 
 function CompactAmount({ value }: { value: number }) {
@@ -483,9 +489,7 @@ export default function DashboardView({ onNavigate, me }: Props) {
                         <span className="text-faint"> · due {inv.due_date.slice(0, 10)}</span>
                       </div>
                     </div>
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide flex-shrink-0 ${invStatusCls(inv.status)}`}>
-                      {inv.status.replace(/_/g, " ")}
-                    </span>
+                    <StatusPill className={invStatusCls(inv.status)}>{invStatusLabel(inv.status)}</StatusPill>
                     <span className="text-[13px] font-bold text-ink tabular-nums flex-shrink-0 w-20 text-right">
                       <CompactAmount value={inv.total} />
                     </span>

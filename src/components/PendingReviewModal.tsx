@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, Client } from "../lib/api";
 import { X, Check, Ban, Mail, Phone, Building2, User, FileText, MapPin, BadgeCheck, UserCog, Tag } from "lucide-react";
+import StatusPill from "./StatusPill";
 
 // Metadata keys that are system bookkeeping, or that we surface as their own
 // labeled fields below — so they don't also appear in the raw "extra" list.
@@ -102,7 +103,7 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-[16px] font-semibold text-ink">New customer to review</h2>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{sourceLabel(meta0)}</span>
+              <StatusPill tone="accent">{sourceLabel(meta0)}</StatusPill>
             </div>
             <p className="text-[12px] text-muted mt-0.5">Check the parsed details, edit anything, then approve or reject.</p>
           </div>
@@ -164,7 +165,10 @@ export default function PendingReviewModal({ client, onClose, onResolved }: {
             <input value={tags} onChange={(e) => setTags(e.target.value)} className={inputCls} placeholder="Comma-separated, e.g. Wholesale, VIP" />
             {tagList.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {tagList.map((t) => <span key={t} className="text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{t}</span>)}
+                {tagList.slice(0, 3).map((t) => <span key={t} className="whitespace-nowrap flex-shrink-0 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">{t}</span>)}
+                {tagList.length > 3 && (
+                  <span title={tagList.slice(3).join(" · ")} className="whitespace-nowrap flex-shrink-0 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">+{tagList.length - 3}</span>
+                )}
               </div>
             )}
           </div>

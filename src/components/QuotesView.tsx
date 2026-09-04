@@ -4,6 +4,7 @@ import { fmtAmount, localDay } from "../lib/format";
 import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edit2, Ban, Search } from "lucide-react";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
+import StatusPill from "./StatusPill";
 
 interface Props { onNavigate?: (t: any) => void; }
 
@@ -19,6 +20,8 @@ const statusStyle = (s: string): string => {
     default:         return "bg-surface-3 text-ink-2";
   }
 };
+
+const statusLabel = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
 const inp = "border border-line bg-surface text-ink placeholder-muted px-3 h-10 rounded-lg text-[14px] w-full focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 // Narrow variant (no w-full) for the line-item editor columns.
@@ -171,7 +174,7 @@ export default function QuotesView({ onNavigate }: Props) {
                   <td className="px-4 py-3 text-[12px] text-muted tabular-nums">{q.valid_until.slice(0, 10)}</td>
                   <td className="px-4 py-3 text-right text-[13px] font-bold text-ink tabular-nums">{fmtAmount(q.total)}</td>
                   <td className="px-4 py-3 text-right">
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusStyle(ds)}`}>{ds}</span>
+                    <StatusPill className={statusStyle(ds)}>{statusLabel(ds)}</StatusPill>
                   </td>
                   <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                     {/* One segmented pill per row — consistent hit targets, quiet by default. */}
@@ -301,7 +304,7 @@ function QuoteDetailPanel({ quote, clientName, displayStatus, onClose, onPdf, on
         </div>
 
         <div className="px-6 py-5 space-y-5">
-          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${statusStyle(displayStatus)}`}>{displayStatus}</span>
+          <StatusPill className={statusStyle(displayStatus)}>{statusLabel(displayStatus)}</StatusPill>
 
           <div>
             <div className="text-[12.5px] font-medium text-muted mb-0.5">Client</div>

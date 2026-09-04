@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, ReceivablesAging, ARItem, ARClient, Client, PaymentMethod } from "../lib/api";
 import { fmtAmount, localDay } from "../lib/format";
 import { RefreshCw, ArrowUpRight, CalendarClock, Inbox, X, Check } from "lucide-react";
+import StatusPill from "./StatusPill";
 
 // Aging buckets, oldest-money on the right; a calm → alarming ramp.
 const BUCKETS = [
@@ -230,7 +231,7 @@ export default function ReceivablesView() {
             <span className="text-[12px] text-ink-2">Show speculative</span>
             <button onClick={() => setShowSpec((v) => !v)} role="switch" aria-checked={showSpec}
               className={`w-9 h-5 rounded-full relative transition-colors ${showSpec ? "bg-accent" : "bg-surface-3"}`}>
-              <span className={`absolute top-0.5 left-0 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showSpec ? "translate-x-[18px]" : "translate-x-0.5"}`} />
+              <span className={`absolute top-0.5 left-0 w-4 h-4 rounded-full shadow-sm transition-transform ${showSpec ? "bg-on-accent translate-x-[18px]" : "bg-faint translate-x-0.5"}`} />
             </button>
           </label>
         </div>
@@ -306,7 +307,7 @@ function ChaseList({ items, lastContact, onRecord }: {
               <div className="flex items-center gap-2">
                 <span className="text-[13px] font-semibold text-ink truncate">{it.client_name}</span>
                 {!it.committed && (
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-muted bg-surface-2 border border-line px-1.5 py-0.5 rounded flex-shrink-0" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</span>
+                  <StatusPill tone="neutral" title="Speculative early-stage deal — not yet counted toward owed totals">Speculative</StatusPill>
                 )}
                 <span className={`text-[10.5px] font-semibold tabular-nums px-1.5 py-0.5 rounded flex-shrink-0 ${due.overdue ? "text-danger-ink bg-danger-bg" : "text-muted bg-surface-2"}`}>
                   {due.text}
@@ -349,7 +350,7 @@ function ByClient({ clients }: { clients: ARClient[] }) {
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-[13px] font-semibold text-ink truncate">{c.client_name}</span>
               {c.oldest_days > 90 && (
-                <span className="text-[9px] font-bold uppercase text-danger-ink bg-danger-bg px-1.5 py-0.5 rounded flex-shrink-0">{c.oldest_days}d overdue</span>
+                <StatusPill tone="danger">{c.oldest_days}d overdue</StatusPill>
               )}
             </div>
             <span className="text-[15px] font-bold text-ink tabular-nums flex-shrink-0">{fmtAmount(c.total)}</span>
