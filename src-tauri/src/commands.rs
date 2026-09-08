@@ -1746,6 +1746,9 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
 #[tauri::command]
 pub async fn due_followups() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // BL-12b: `date('now')` is UTC, which is already tomorrow from 6/7pm Central —
+    // follow-ups showed as due up to six hours early. Anchor on Central like mark_overdue_invoices.
+    let today = central_today().format("%Y-%m-%d").to_string();
     let sql = format!(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
@@ -1754,13 +1757,13 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
                     ({fc}) AS first_contact
              FROM clients c
              WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
-             AND json_extract(c.metadata, '$.next_follow_up_date') <= date('now')
+             AND json_extract(c.metadata, '$.next_follow_up_date') <= ?1
              ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([&today], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = meta_flag(&meta, "high_value");
@@ -3132,11 +3135,14 @@ pub async fn delete_recurring_invoice(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn generate_recurring_invoices() -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // BL-12b: `date('now')` is UTC, which is already tomorrow from 6/7pm Central —
+    // invoices generated up to six hours early. Anchor on Central like mark_overdue_invoices.
+    let today = central_today().format("%Y-%m-%d").to_string();
     let mut stmt = conn.prepare(
         "SELECT id, client_id, line_items_json, tax_rate, frequency FROM recurring_invoices
-         WHERE is_active=1 AND next_due_date <= date('now')"
+         WHERE is_active=1 AND next_due_date <= ?1"
     ).map_err(|e| e.to_string())?;
-    let ids: Vec<(String, String, String, f64, String)> = stmt.query_map([], |r| {
+    let ids: Vec<(String, String, String, f64, String)> = stmt.query_map([&today], |r| {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     drop(stmt);
