@@ -136,6 +136,7 @@ const SILHOUETTES: &[(&str, &str)] = &[
     ("CHUCK TAYLOR", "Converse"),
     ("ALL STAR", "Converse"),
     ("RUN STAR", "Converse"),
+    ("STAR PLAYER", "Converse"),
     // Vans
     ("OLD SKOOL", "Vans"),
     ("SK8-HI", "Vans"),
@@ -145,6 +146,8 @@ const SILHOUETTES: &[(&str, &str)] = &[
     ("JIBBITZ", "Crocs"),
     ("CROCBAND", "Crocs"),
     ("BAYA CLOG", "Crocs"),
+    // HOKA
+    ("CLIFTON", "HOKA"),
     // Bare model numbers last — a naked number is the weakest signal in a title.
     ("9060", "New Balance"),
     ("2002R", "New Balance"),
@@ -395,7 +398,7 @@ fn segment_of(up: &str) -> Option<String> {
 const SIZE_MIN: f64 = 0.5;
 const SIZE_MAX: f64 = 20.0;
 
-/// Five ordered patterns. Range-checked rather than bounded by lookahead, because the regex
+/// Six ordered patterns. Range-checked rather than bounded by lookahead, because the regex
 /// dialects this has to compile in do not all support lookaround — and the range check is
 /// what rejects EU sizes and style numbers anyway.
 fn size_pats() -> &'static Vec<Regex> {
@@ -412,6 +415,9 @@ fn size_pats() -> &'static Vec<Regex> {
             Regex::new(r"(^|[^A-Z0-9.])([0-9]+(?:\.[0-9])?)\s*[MW]([^A-Z0-9]|$)").unwrap(),
             // "7Y"
             Regex::new(r"(^|[^A-Z0-9.])([0-9]+(?:\.[0-9])?)Y([^A-Z0-9]|$)").unwrap(),
+            // "M8.5", "W9.5" — combined letter-prefix notation, the letter glued ahead of
+            // the number instead of trailing it.
+            Regex::new(r"(^|[^A-Z0-9])[MW]([0-9]+(?:\.[0-9])?)([^A-Z0-9]|$)").unwrap(),
         ]
     })
 }
@@ -419,7 +425,7 @@ fn size_pats() -> &'static Vec<Regex> {
 fn size_of(up: &str) -> Option<f64> {
     for (i, re) in size_pats().iter().enumerate() {
         if let Some(c) = re.captures(up) {
-            // Patterns 4 and 5 open with a boundary group, so their number is capture 2.
+            // Patterns 4, 5 and 6 open with a boundary group, so their number is capture 2.
             let g = if i >= 3 { 2 } else { 1 };
             if let Some(m) = c.get(g) {
                 if let Ok(v) = m.as_str().parse::<f64>() {
@@ -500,6 +506,13 @@ mod tests {
         assert_eq!(c("Classic Clog 550 Lagoon").brand.as_deref(), Some("Crocs"));
     }
 
+    /// R-217/BL-42: two silhouette words missing from the original build.
+    #[test]
+    fn clifton_and_star_player_carry_a_brand() {
+        assert_eq!(c("Clifton 9 Running Shoe Black").brand.as_deref(), Some("HOKA"));
+        assert_eq!(c("Star Player 76 Low Top").brand.as_deref(), Some("Converse"));
+    }
+
     #[test]
     fn brand_written_first_wins_when_several_appear() {
         assert_eq!(c("Nike vs adidas comparison pack").brand.as_deref(), Some("Nike"));
@@ -565,6 +578,13 @@ mod tests {
         assert_eq!(c("Kids Runner 7Y").size_us, Some(7.0));
         // The regression: lowercase, with a width letter glued to the number.
         assert_eq!(c("Some Shoe size 6w").size_us, Some(6.0));
+    }
+
+    /// R-217/BL-42: letter-prefix combined notation, the letter glued ahead of the number.
+    #[test]
+    fn letter_prefix_combined_size_notation() {
+        assert_eq!(c("Runner M8.5 Black").size_us, Some(8.5));
+        assert_eq!(c("Runner W9.5 Black").size_us, Some(9.5));
     }
 
     #[test]
