@@ -4433,6 +4433,7 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     p.unit_price = input.unit_price;
     p.method = input.method;
     p.notes = input.notes;
+    p.category = input.category;
 
     p.amount = new_amount;
     if (old_amount - new_amount).abs() > 0.001 {
