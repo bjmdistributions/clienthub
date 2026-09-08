@@ -38,8 +38,7 @@ const EMPTY_OK = new Set([
   "list_newsletters", "list_scheduled_sends", "buyer_tiers", "list_drafts",
 ]);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__FIXTURE = (cmd: string) => {
+(window as unknown as { __FIXTURE: (cmd: string) => unknown }).__FIXTURE = (cmd: string) => {
   switch (cmd) {
     case "list_clients": return CLIENTS;
     case "list_categories": return CATEGORIES;
