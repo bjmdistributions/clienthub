@@ -49,7 +49,6 @@ import ReceivablesView from "./components/ReceivablesView";
 import PayablesView from "./components/PayablesView";
 import QuotesView from "./components/QuotesView";
 import EmailView from "./components/EmailView";
-import DashboardView from "./components/DashboardView";
 import DealFlowView from "./components/DealFlowView";
 import SuppliersView from "./components/SuppliersView";
 import InventoryView from "./components/InventoryView";
@@ -86,11 +85,13 @@ import { can, canViewTab, isAdmin } from "./lib/permissions";
 // never opens them. Globe is the expensive one — it is the only importer of
 // globe.gl, which carries three.js with it, together the largest thing in the
 // build. Analytics pulls the chart families the dashboard does not use, and
-// Settings is the largest screen by code. Each becomes its own chunk, read from
-// local disk the first time its tab is opened.
+// Settings is the largest screen by code. Dashboard is the first screen every
+// session opens but only needs recharts for its trend line, so it is lazy too.
+// Each becomes its own chunk, read from local disk the first time its tab is opened.
 const GlobeView     = lazy(() => import("./components/GlobeView"));
 const AnalyticsView = lazy(() => import("./components/AnalyticsView"));
 const SettingsView  = lazy(() => import("./components/SettingsView"));
+const DashboardView = lazy(() => import("./components/DashboardView"));
 
 // Shown while a lazy chunk is read off local disk. It repeats the overlay the
 // globe draws over its own dark ground while it initialises, in the same place,
@@ -981,7 +982,7 @@ export default function App() {
   // can be dropped into either the single main area or a split pane.
   const paneContent = (t: Tab) => {
     if (!visible(t)) return null;
-    if (t === "dashboard") return <DashboardView onNavigate={setTab} me={me} />;
+    if (t === "dashboard") return <Suspense fallback={paneFallback}><DashboardView onNavigate={setTab} me={me} /></Suspense>;
     if (t === "globe") return <Suspense fallback={globeFallback}><GlobeView /></Suspense>;
     if (t === "notes") return <NotesView me={me?.display_name || ""} />;
     if (t === "approvals") return <ApprovalsView />;

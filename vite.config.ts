@@ -10,25 +10,29 @@ import react from "@vitejs/plugin-react";
 // This moves recharts OUT of the entry chunk, it does not make it lazy: the
 // entry still statically imports the new chunk, so the bytes are still fetched
 // on first load. What it buys is a parallel fetch and a cache boundary — an app
-// change no longer invalidates the recharts bytes, and vice versa. Making the
-// charts genuinely deferred needs a lazy() around DashboardView in App.tsx,
-// which is a separate change in a file this config does not own.
+// change no longer invalidates the recharts bytes, and vice versa.
 //
-// Only packages recharts alone uses are listed. Deliberately EXCLUDED:
-//   - d3-* — recharts reaches them through victory-vendor, but three-globe (the
-//     lazily loaded GlobeView) needs the same d3 packages, so rollup parks them
-//     in the recharts chunk and GlobeView imports it for them. That is free
-//     today because the entry loads the recharts chunk anyway. THE DAY
-//     DashboardView BECOMES lazy(), give d3-*/internmap a chunk of their own
-//     here, or opening the globe will drag the whole charting library with it.
-//   - use-sync-external-store — shared with zustand, which the entry needs.
-// Before adding a package to this list, check nothing outside recharts uses it.
+// R-134-lazy. DashboardView is now lazy() in App.tsx, so recharts is genuinely
+// deferred. That means d3-*/internmap (which recharts reaches through
+// victory-vendor, and which three-globe also needs) can no longer be left to
+// fall into the recharts chunk by default — the lazily loaded GlobeView would
+// then drag the whole charting library in just to get its d3 pieces. They get
+// their own chunk below instead.
+//
+// Only packages recharts alone uses are listed. Before adding a package to
+// this list, check nothing outside recharts uses it.
 //
 // React is pinned to a chunk of its own below. Without that, rollup treats a
 // manual chunk as an entry point and hoists everything shared between it and
 // the real entry into it — which put all of React inside the chunk named
 // "recharts", and made the lazy GlobeView chunk import it just to get React.
-const REACT_PACKAGES = ["react", "react-dom", "scheduler"];
+// use-sync-external-store rides along here too: react-redux (pulled in by
+// recharts) and zustand (needed by the entry) share one instance of it, and
+// with DashboardView now lazy, leaving that shared instance to fall into the
+// recharts chunk by default made the eager entry import one binding from the
+// lazy recharts chunk just to get it — pinning it here keeps the entry chunk
+// from ever touching recharts.
+const REACT_PACKAGES = ["react", "react-dom", "scheduler", "use-sync-external-store"];
 
 const RECHARTS_PACKAGES = [
   "recharts",
@@ -59,6 +63,7 @@ export default defineConfig({
           const inside = (pkgs: string[]) =>
             pkgs.some((pkg) => after === pkg || after.startsWith(pkg + "/"));
           if (inside(REACT_PACKAGES)) return "react";
+          if (after === "internmap" || after.startsWith("internmap/") || after.startsWith("d3-")) return "d3";
           if (inside(RECHARTS_PACKAGES)) return "recharts";
         },
       },
