@@ -90,11 +90,10 @@ function Contact({ it }: { it: CheckupItem }) {
   );
 }
 
-function Column({ accent, label, count, children }: { accent: string; label: string; count: number; children: React.ReactNode }) {
+function Column({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
   return (
     <div className="bg-surface-2/50 border border-line rounded-2xl p-3 flex flex-col min-h-[120px]">
       <div className="flex items-center gap-2 px-1 pb-2.5 mb-1 border-b border-line">
-        <span className="w-2 h-2 rounded-full" style={{ background: accent }} />
         <span className="text-[12px] font-semibold text-ink">{label}</span>
         <span className="ml-auto text-[11px] font-medium text-muted tabular-nums bg-surface border border-line rounded-full px-2 py-0.5">{count}</span>
       </div>
@@ -144,7 +143,7 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         {/* 1 — To reach out */}
-        <Column accent="rgb(var(--c-faint))" label="To reach out" count={todo.length}>
+        <Column label="To reach out" count={todo.length}>
           {todo.length === 0 ? <Empty text="Everyone's been contacted." /> : todo.map((it) => (
             <div key={it.id} className="bg-surface border border-line rounded-xl p-3.5 shadow-sm">
               <div className="text-[14px] font-semibold text-ink">{it.name}</div>
@@ -157,7 +156,7 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
         </Column>
 
         {/* 2 — Reached out (notes live here) */}
-        <Column accent="rgb(var(--c-warning))" label="Reached out" count={reached.length}>
+        <Column label="Reached out" count={reached.length}>
           {reached.length === 0 ? <Empty text="Nobody in progress yet." /> : reached.map((it) => (
             <div key={it.id} className="bg-surface border border-warning/60 rounded-xl p-3.5 shadow-sm">
               <div className="text-[14px] font-semibold text-ink">{it.name}</div>
@@ -174,7 +173,7 @@ function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
         </Column>
 
         {/* 3 — Done */}
-        <Column accent="rgb(var(--c-success))" label="Done" count={done.length}>
+        <Column label="Done" count={done.length}>
           {done.length === 0 ? <Empty text="Submitted clients land here." /> : done.map((it) => (
             <div key={it.id} className="bg-surface/70 border border-line rounded-xl p-3.5">
               <div className="text-[14px] font-medium text-ink-2 flex items-center gap-1.5"><Check size={14} className="text-success-ink flex-shrink-0" />{it.name}</div>
