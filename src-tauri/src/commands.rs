@@ -10404,6 +10404,12 @@ pub async fn dashboard_stats() -> Result<Value, String> {
 }
 
 /// List all deal flows that include a given supplier (matched by supplier_id in JSON).
+///
+/// `df_total`/`deal_refunded` (R-181) let the caller apportion a client refund onto
+/// this supplier's share of the deal, the same rule SUPPLIER_STATS_SQL already uses
+/// for the aggregate total_profit/total_revenue figures above: each refund counted
+/// once (hand-entered `refunds` plus bank-linked `refund_out`, guarded by
+/// EXISTS(bank_txn)) and split by `supplier_amount / df_total`.
 #[tauri::command]
 pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -10412,7 +10418,16 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
                 i.number as invoice_number, c.name as client_name,
                 (SELECT COALESCE(SUM(CAST(json_extract(sp.value, '$.amount') AS REAL)), 0)
                  FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp
-                 WHERE json_extract(sp.value, '$.supplier_id') = ?1) as supplier_amount
+                 WHERE json_extract(sp.value, '$.supplier_id') = ?1) as supplier_amount,
+                (SELECT COALESCE(SUM(CAST(json_extract(sp3.value, '$.amount') AS REAL)), 0)
+                 FROM json_each(COALESCE(NULLIF(df.supplier_payments_json,''), '[]')) sp3
+                 WHERE json_extract(sp3.value, '$.supplier_id') IS NOT NULL) as df_total,
+                COALESCE((SELECT SUM(x.amt2) FROM (
+                        SELECT r.amount AS amt2, r.deal_flow_id AS dfid FROM refunds r WHERE COALESCE(r.bank_txn_id,'')=''
+                        UNION ALL
+                        SELECT a.amount, a.deal_flow_id FROM bank_allocation a WHERE a.role='refund_out'
+                          AND EXISTS (SELECT 1 FROM bank_txn bt WHERE bt.id=a.bank_txn_id)
+                      ) x WHERE x.dfid = df.id),0) as deal_refunded
          FROM deal_flows df
          JOIN invoices i ON i.id = df.invoice_id
          LEFT JOIN clients c ON c.id = i.client_id
@@ -10436,6 +10451,8 @@ pub async fn list_deals_for_supplier(supplier_id: String) -> Result<Vec<Value>, 
             "invoice_number": r.get::<_,Option<String>>(5)?,
             "client_name":    r.get::<_,Option<String>>(6)?,
             "supplier_amount": r.get::<_,f64>(7)?,
+            "df_total":       r.get::<_,f64>(8)?,
+            "deal_refunded":  r.get::<_,f64>(9)?,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
