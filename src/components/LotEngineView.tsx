@@ -712,6 +712,68 @@ function Chip({
   );
 }
 
+const SHOE_CATEGORIES = ["Footwear", "Boots", "Sandals", "Clogs", "Slippers", "Cleats"];
+
+/** Categories a location may hold, plus two pinned shortcuts ahead of the per-category list:
+ *  one to grab every shoe-shaped category at once, one for stock nothing was recognized in. */
+function AllowCategoryChips({
+  facets,
+  allow,
+  setAllow,
+}: {
+  facets: LotFacets;
+  allow: LotAllow;
+  setAllow: (a: LotAllow) => void;
+}) {
+  const shoePresent = facets.categories.filter((c) => SHOE_CATEGORIES.includes(c.name));
+  const shoeOn = shoePresent.length > 0 && shoePresent.every((c) => allow.categories.includes(c.name));
+  const uncategorized = facets.categories.find((c) => c.name === "Uncategorized");
+  const rest = facets.categories.filter((c) => c.name !== "Uncategorized");
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <Chip
+        label="All shoes"
+        count={shoePresent.reduce((sum, c) => sum + c.units, 0)}
+        on={shoeOn}
+        onClick={() =>
+          setAllow({
+            ...allow,
+            categories: shoeOn
+              ? allow.categories.filter((c) => !SHOE_CATEGORIES.includes(c))
+              : Array.from(new Set([...allow.categories, ...shoePresent.map((c) => c.name)])),
+          })
+        }
+      />
+      <Chip
+        label="None / uncategorized"
+        count={uncategorized?.units}
+        on={allow.categories.includes("Uncategorized")}
+        onClick={() =>
+          setAllow({
+            ...allow,
+            categories: allow.categories.includes("Uncategorized")
+              ? allow.categories.filter((c) => c !== "Uncategorized")
+              : [...allow.categories, "Uncategorized"],
+          })
+        }
+      />
+      {rest.map((c) => (
+        <Chip
+          key={c.name}
+          label={c.name}
+          count={c.units}
+          on={allow.categories.includes(c.name)}
+          onClick={() => setAllow({ ...allow, categories: toggleInList(allow.categories, c.name) })}
+        />
+      ))}
+    </div>
+  );
+}
+
+function toggleInList(list: string[], v: string) {
+  return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+}
+
 /** One side of an either/or. A radio in everything but the input type — the two options are
  *  mutually exclusive and both are always on screen, because the choice between them is the
  *  thing people get wrong. */
@@ -888,17 +950,7 @@ function Filters(p: {
         title="What a slot may contain"
         hint="Decides which slots qualify at all. Because the take is all or nothing, this is about the whole slot — not the lines in it."
       >
-        <div className="flex flex-wrap gap-1.5">
-          {p.facets.categories.map((c) => (
-            <Chip
-              key={c.name}
-              label={c.name}
-              count={c.units}
-              on={p.allow.categories.includes(c.name)}
-              onClick={() => p.setAllow({ ...p.allow, categories: toggle(p.allow.categories, c.name) })}
-            />
-          ))}
-        </div>
+        <AllowCategoryChips facets={p.facets} allow={p.allow} setAllow={p.setAllow} />
         {p.facets.segments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-2">
             {p.facets.segments.map((s) => (
@@ -2842,17 +2894,7 @@ function AutoLotsTab({
         </div>
 
         <p className="text-[12px] font-semibold text-ink mt-3 mb-2">Categories a location may hold</p>
-        <div className="flex flex-wrap gap-1.5">
-          {facets.categories.map((c) => (
-            <Chip
-              key={c.name}
-              label={c.name}
-              count={c.units}
-              on={allow.categories.includes(c.name)}
-              onClick={() => setAllow({ ...allow, categories: toggle(allow.categories, c.name) })}
-            />
-          ))}
-        </div>
+        <AllowCategoryChips facets={facets} allow={allow} setAllow={setAllow} />
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3">
           <label className="text-[11px] text-muted">
