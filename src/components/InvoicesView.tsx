@@ -12,6 +12,7 @@ import InvoiceCostSection from "./InvoiceCostSection";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
+import { FromPicker, useSendFromOptions } from "./FromPicker";
 
 const isVoided = (inv: Invoice): boolean => !!inv.voided;
 
@@ -89,6 +90,9 @@ export default function InvoicesView() {
   const [payMethod, setPayMethod]       = useState("");
   const [payRef, setPayRef]             = useState("");
   const [payMethods, setPayMethods]     = useState<PaymentMethod[]>([]);
+  const [sendModal, setSendModal]       = useState<string | null>(null);
+  const [sendFrom, setSendFrom]         = useState<string | undefined>(undefined);
+  const fromOptions = useSendFromOptions();
   const [detailId, setDetailId]         = useState<string | null>(null);
   const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null);
 
@@ -133,10 +137,16 @@ export default function InvoicesView() {
     finally { setBusy(null); }
   };
 
-  const handleSend = async (id: string) => {
-    if (!confirm("Send invoice via email?")) return;
+  const handleSend = (id: string) => {
+    setSendModal(id);
+    setSendFrom(undefined);
+  };
+
+  const confirmSend = async () => {
+    if (!sendModal) return;
+    const id = sendModal;
     setBusy(id);
-    try { await api.sendInvoice(id); load(); }
+    try { await api.sendInvoice(id, sendFrom); setSendModal(null); load(); }
     catch (e: any) { toast(String(e), "error"); }
     finally { setBusy(null); }
   };
@@ -378,6 +388,33 @@ export default function InvoicesView() {
         </div>
       )}
 
+      {sendModal && (() => {
+        const inv = invoices.find((i) => i.id === sendModal);
+        return (
+          <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/25 backdrop-blur-[3px]" onClick={() => setSendModal(null)}>
+            <div className="bg-surface rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.14)] w-[420px] max-w-[92vw] animate-fade-up" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-4 border-b border-line-2">
+                <h3 className="text-[14px] font-semibold text-ink">Send invoice {inv?.number ?? ""}</h3>
+                <button onClick={() => setSendModal(null)} className="text-muted hover:text-ink-2 p-1 rounded-lg hover:bg-surface-3 transition-colors">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="px-5 py-4 space-y-3.5">
+                <div className="text-[13px] text-ink-2">To <span className="font-medium text-ink">{inv ? clientName(inv.client_id) : ""}</span></div>
+                <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} forInvoice />
+                <div className="flex justify-end gap-2 pt-1">
+                  <button onClick={() => setSendModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
+                  <button onClick={confirmSend} disabled={busy === sendModal}
+                    className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-lg text-[13px] font-medium disabled:opacity-40 transition-colors">
+                    {busy === sendModal ? "Sending…" : "Send"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Table */}
       <div className="bg-surface border border-line-2 rounded-xl overflow-x-auto">
         <table className="min-w-full text-sm">
@@ -535,7 +572,7 @@ export default function InvoicesView() {
           invoice={detailInvoice}
           onClose={() => { setDetailId(null); setDetailInvoice(null); }}
           onPdf={() => handlePdf(detailInvoice.id)}
-          onResend={() => { if (confirm("Re-send this invoice?")) handleSend(detailInvoice.id); }}
+          onResend={() => handleSend(detailInvoice.id)}
           onDelete={async () => {
             if (!confirm("Move to Archive? You can restore it anytime.")) return;
             try { await api.deleteInvoice(detailInvoice.id); toast("Moved to Archive"); } catch (e: any) { toast(String(e), "error"); }

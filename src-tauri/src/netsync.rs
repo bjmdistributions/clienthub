@@ -1729,36 +1729,6 @@ fn materialize_plaid_item(item_id: &str, payload: &str) -> bool {
     ).is_ok()
 }
 
-/// Best-effort: hand a freshly-linked Plaid item's token to the server so the org's
-/// hosted sync (and teammates) can use it. No-op offline / not signed in — the
-/// device-local `plaid_items` row remains the fallback either way.
-pub async fn push_plaid_item_to_server(
-    item_id: &str,
-    access_token: &str,
-    institution: &str,
-    accounts_json: &str,
-    env: &str,
-) -> Result<(), String> {
-    let cfg = match config() { Some(c) => c, None => return Ok(()) };
-    let resp = http()
-        .post(format!("{}/api/plaid/items", cfg.url.trim_end_matches('/')))
-        .bearer_auth(&cfg.token)
-        .json(&serde_json::json!({
-            "item_id": item_id,
-            "access_token": access_token,
-            "institution": institution,
-            "accounts_json": accounts_json,
-            "env": env,
-        }))
-        .send()
-        .await
-        .map_err(|_| "Couldn't reach the server.".to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("Server returned {}", resp.status()));
-    }
-    Ok(())
-}
-
 /// Upload the current company logo bytes to the server so the hosted invoice
 /// PDF renderer can draw it (the server never has the desktop's local logo
 /// path). Reads `<app_data>/company_logo.png` — the single PNG that

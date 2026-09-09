@@ -476,11 +476,52 @@ pub async fn send(to: &str, subject: &str, body: &str, attachment: Option<&str>)
 /// Like `send`, but stamps the invoice From address (`from_invoices`) when one is set, so
 /// a customer replying to an invoice reaches the billing mailbox rather than the sales one.
 /// Falls back to `from_email` and then the SMTP login, same as every other send.
+///
+/// `from_override` is the address a compose-time picker chose (R-194); when present it
+/// wins over the configured `from_invoices` default.
 pub async fn send_invoice_mail(
-    to: &str, subject: &str, body: &str, attachment: Option<&str>,
+    to: &str, subject: &str, body: &str, attachment: Option<&str>, from_override: Option<&str>,
 ) -> Result<()> {
-    let from = load_settings().map(|s| s.from_invoices).unwrap_or_default();
+    let from = match from_override.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(f) => f.to_string(),
+        None => load_settings().map(|s| s.from_invoices).unwrap_or_default(),
+    };
     send_threaded(to, subject, body, attachment, None, Some(&from)).await
+}
+
+/// One address a compose-time "from" picker can offer, labeled for the dropdown. `kind`
+/// identifies which setting it came from, so the frontend can work out which option is
+/// the real default for a given send path without matching on the display label.
+#[derive(Serialize, Clone)]
+pub struct FromOption {
+    pub address: String,
+    pub label: String,
+    pub kind: &'static str,
+}
+
+/// The addresses this device is actually configured to send as (R-194): the SMTP login,
+/// plus the `from_email`/`from_invoices` overrides from Settings when they differ from it.
+/// Deduplicated case-insensitively; blank settings are omitted. Sending as anything not
+/// verified under Gmail's *Send mail as* still gets silently rewritten back to the login —
+/// this list only reflects what's configured, not what Gmail will honor.
+pub fn send_from_options() -> Vec<FromOption> {
+    let settings = match load_settings() {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |addr: &str, label: &str, kind: &'static str| {
+        let addr = addr.trim();
+        if addr.is_empty() || !seen.insert(addr.to_lowercase()) {
+            return;
+        }
+        out.push(FromOption { address: addr.to_string(), label: label.to_string(), kind });
+    };
+    push(&settings.user, "Default", "login");
+    push(&settings.from_email, "Sales", "sales");
+    push(&settings.from_invoices, "Invoices", "invoices");
+    out
 }
 
 /// Like `send`, but if `in_reply_to` is a message-id, sets the `In-Reply-To` and

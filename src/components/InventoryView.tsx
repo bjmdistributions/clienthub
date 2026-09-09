@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
+import { FromPicker, useSendFromOptions } from "./FromPicker";
 
 const STATUS_FILTERS = ["all", "available", "reserved", "sold", "archived"] as const;
 type StatusFilter = typeof STATUS_FILTERS[number] | "all";
@@ -1175,6 +1176,8 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [storeUrl, setStoreUrl] = useState<string | null>(null);
+  const [sendFrom, setSendFrom] = useState<string | undefined>(undefined);
+  const fromOptions = useSendFromOptions();
 
   useEffect(() => {
     Promise.all([
@@ -1265,7 +1268,7 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
     setSending(true);
     try {
       const nl = await api.saveNewsletter(null, subject.trim(), body);
-      await api.sendNewsletter(nl.id, recipients.map((c) => c.id), subject.trim(), body, null);
+      await api.sendNewsletter(nl.id, recipients.map((c) => c.id), subject.trim(), body, null, sendFrom);
       toast(`Blasting to ${recipients.length} buyers…`);
       onSent();
     } catch (e: any) { toast(String(e), "error"); setSending(false); }
@@ -1314,7 +1317,8 @@ function BlastLoadModal({ lot, onClose, onSent }: { lot: Lot; onClose: () => voi
               <p className="text-[11px] text-muted"><code>{"{{first_name}}"}</code> is personalized per buyer.</p>
             </div>
 
-            <div className="flex justify-end gap-2 mt-4">
+            <div className="flex items-center justify-end gap-3 mt-4">
+              <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} />
               <button onClick={onClose} className="text-[13px] text-muted hover:text-ink-2 px-3 h-9">Cancel</button>
               <button onClick={send} disabled={sending || !recipients.length}
                 className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium flex items-center gap-1.5 disabled:opacity-50">

@@ -5,6 +5,7 @@ import { Plus, X, FileText, Send, FileDown, Trash2, ArrowRightCircle, Check, Edi
 import { toast } from "./Toast";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
+import { FromPicker, useSendFromOptions } from "./FromPicker";
 
 interface Props { onNavigate?: (t: any) => void; }
 
@@ -42,6 +43,8 @@ export default function QuotesView({ onNavigate }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [sendModal, setSendModal] = useState<{ quote: Quote; thread: boolean } | null>(null);
+  const [sendFrom, setSendFrom] = useState<string | undefined>(undefined);
+  const fromOptions = useSendFromOptions();
 
   const load = async () => { setQuotes(await api.listQuotes()); };
   useEffect(() => { load(); api.listClients().then(setClients).catch(() => {}); }, []);
@@ -80,6 +83,7 @@ export default function QuotesView({ onNavigate }: Props) {
     const q = quotes.find((x) => x.id === id);
     if (!q) return;
     setSendModal({ quote: q, thread: !!clientThread(q.client_id) });
+    setSendFrom(undefined);
   };
   const confirmSend = async () => {
     if (!sendModal) return;
@@ -87,7 +91,7 @@ export default function QuotesView({ onNavigate }: Props) {
     const threaded = thread && !!clientThread(quote.client_id);
     setBusy(quote.id);
     try {
-      await api.sendQuote(quote.id, threaded);
+      await api.sendQuote(quote.id, threaded, sendFrom);
       toast(threaded ? "Quote sent into the email thread" : "Quote sent");
       setSendModal(null);
       load();
@@ -274,6 +278,7 @@ export default function QuotesView({ onNavigate }: Props) {
                 ) : (
                   <div className="text-[11.5px] text-muted rounded-lg border border-line bg-surface-2 px-3 py-2.5">No prior email from this customer to reply to — this sends as a new email.</div>
                 )}
+                <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} />
               </div>
               <div className="px-5 py-4 border-t border-line flex justify-end gap-2">
                 <button onClick={() => setSendModal(null)} className="px-4 h-9 rounded-lg border border-line text-[13px] text-ink-2 hover:bg-surface-2">Cancel</button>

@@ -1746,6 +1746,9 @@ pub async fn list_stale_clients(days: u32) -> Result<Vec<Client>, String> {
 #[tauri::command]
 pub async fn due_followups() -> Result<Vec<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // BL-12b: `date('now')` is UTC, which is already tomorrow from 6/7pm Central —
+    // follow-ups showed as due up to six hours early. Anchor on Central like mark_overdue_invoices.
+    let today = central_today().format("%Y-%m-%d").to_string();
     let sql = format!(
             "SELECT c.id,c.name,c.email,c.phone,c.company,c.notes,c.billing_status,({ls}) AS lead_status,c.created_at,c.updated_at,c.metadata,
                     (SELECT COUNT(*) FROM invoices WHERE client_id=c.id AND status='paid' AND COALESCE(archived,0)=0 AND COALESCE(voided,0)=0),
@@ -1754,13 +1757,13 @@ pub async fn due_followups() -> Result<Vec<Client>, String> {
                     ({fc}) AS first_contact
              FROM clients c
              WHERE json_extract(c.metadata, '$.next_follow_up_date') IS NOT NULL
-             AND json_extract(c.metadata, '$.next_follow_up_date') <= date('now')
+             AND json_extract(c.metadata, '$.next_follow_up_date') <= ?1
              ORDER BY json_extract(c.metadata, '$.next_follow_up_date') ASC", fc = FIRST_CONTACT_SQL, ls = LEAD_STATUS_SQL);
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([&today], |r| {
             let meta: Option<Value> = r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok());
             let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
             let high_value = meta_flag(&meta, "high_value");
@@ -2705,8 +2708,8 @@ pub async fn generate_quote_pdf(quote_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn send_quote(quote_id: String, thread: Option<bool>) -> Result<(), String> {
-    crate::invoice::send_quote(&quote_id, thread.unwrap_or(false)).await.map_err(|e| e.to_string())
+pub async fn send_quote(quote_id: String, thread: Option<bool>, from: Option<String>) -> Result<(), String> {
+    crate::invoice::send_quote(&quote_id, thread.unwrap_or(false), from.as_deref()).await.map_err(|e| e.to_string())
 }
 
 /// Mark a quote accepted and link it to the invoice it was converted into.
@@ -3132,11 +3135,14 @@ pub async fn delete_recurring_invoice(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn generate_recurring_invoices() -> Result<u32, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
+    // BL-12b: `date('now')` is UTC, which is already tomorrow from 6/7pm Central —
+    // invoices generated up to six hours early. Anchor on Central like mark_overdue_invoices.
+    let today = central_today().format("%Y-%m-%d").to_string();
     let mut stmt = conn.prepare(
         "SELECT id, client_id, line_items_json, tax_rate, frequency FROM recurring_invoices
-         WHERE is_active=1 AND next_due_date <= date('now')"
+         WHERE is_active=1 AND next_due_date <= ?1"
     ).map_err(|e| e.to_string())?;
-    let ids: Vec<(String, String, String, f64, String)> = stmt.query_map([], |r| {
+    let ids: Vec<(String, String, String, f64, String)> = stmt.query_map([&today], |r| {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
     }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     drop(stmt);
@@ -3305,8 +3311,8 @@ pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInp
 }
 
 #[tauri::command]
-pub async fn send_invoice(invoice_id: String) -> Result<(), String> {
-    crate::invoice::send_invoice(&invoice_id)
+pub async fn send_invoice(invoice_id: String, from: Option<String>) -> Result<(), String> {
+    crate::invoice::send_invoice(&invoice_id, from.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -4433,6 +4439,7 @@ pub async fn update_supplier_payment(id: String, payment_id: String, input: Supp
     p.unit_price = input.unit_price;
     p.method = input.method;
     p.notes = input.notes;
+    p.category = input.category;
 
     p.amount = new_amount;
     if (old_amount - new_amount).abs() > 0.001 {
@@ -7003,14 +7010,21 @@ pub async fn send_email(
     subject: String,
     body: String,
     attachment_path: Option<String>,
+    from: Option<String>,
 ) -> Result<(), String> {
-    crate::email::send(&to, &subject, &body, attachment_path.as_deref())
+    crate::email::send_threaded(&to, &subject, &body, attachment_path.as_deref(), None, from.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     // Outbound mail is contact too. Without this a reply sent from Ecliptr never moved the
     // client's last-contact date.
     crate::email::log_outbound(&to, &subject, &body);
     Ok(())
+}
+
+/// The addresses this device can send as, for a compose-time "from" picker (R-194).
+#[tauri::command]
+pub async fn get_send_from_options() -> Result<Vec<crate::email::FromOption>, String> {
+    Ok(crate::email::send_from_options())
 }
 
 #[tauri::command]
@@ -10325,9 +10339,10 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         [], |r| r.get(0)
     ).unwrap_or(0);
 
-    // All-time totals from completed deal flows — fell-through excluded, profit
-    // refund-aware and capped (revenue stays gross; refunds are surfaced as their
-    // own stat, by the same rule).
+    // All-time revenue for the analytics section, deliberately NOT the same formula
+    // as the hero's `revenue_all_time` above: this one sums deal_flows.gross_revenue
+    // (survivor-guarded, one row per invoice) instead of invoices.total, so it lines
+    // up with `profit_all_time` below on the same deal_flows/invoices join.
     let all_time_revenue: f64 = conn.query_row(
         &format!(
         "SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
@@ -10335,15 +10350,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
            AND {one}", one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
-    let all_time_profit: f64 = conn.query_row(
-        &format!(
-        "SELECT COALESCE(SUM({np}),0) \
-         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
-           AND {one}",
-        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL),
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
+    // UI-FLAW-Lane8: this used to also compute `all_time_profit` with the exact same
+    // query as `profit_all_time` above under a second JSON key. Collapsed to one.
     // Refund story for the analytics dashboard: total refunded (rule: non-bank-linked
     // refunds rows + every refund_out allocation, so bank-linked ones count once) and
     // what's still owed back to customers.
@@ -10395,7 +10403,6 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "deals_mtd": deals_mtd,
         "top_suppliers": top_suppliers,
         "all_time_revenue": all_time_revenue,
-        "all_time_profit": all_time_profit,
         "refunded_total": refunded_total,
         "refund_owed_remaining": refund_owed_remaining,
         "deals_won_all": deals_won_all,
@@ -13383,6 +13390,39 @@ fn canonical_bank_txn_id(account_key: &str, direction: &str, desc: &str) -> Opti
     Some(format!("bt1_{:016x}", fnv1a64(key.as_bytes())))
 }
 
+/// R-002/BL-22 hold-and-ask gate. `canonical_bank_txn_id` used purely as a DETECTION key:
+/// an incoming transaction whose bank-stated reference already resolves to the same id as
+/// another row on the same account+direction is a candidate collision. If none of those
+/// candidates is booked (reviewed, allocated, refunded, or loan-tagged), there is nothing to
+/// protect and the caller's ordinary duplicate handling applies as before. If ANY candidate
+/// IS booked, its id is returned so the caller can hold this transaction out of the ledger
+/// instead of letting it converge onto that id — a future merge there could silently rewrite
+/// already-reconciled data. Never mutates anything itself.
+fn canonical_id_booked_collisions(
+    conn: &rusqlite::Connection,
+    account: &str,
+    direction: &str,
+    desc: &str,
+    exclude_id: &str,
+) -> Vec<String> {
+    let Some(cid) = canonical_bank_txn_id(account, direction, desc) else { return Vec::new(); };
+    let candidates: Vec<(String, String)> = conn
+        .prepare("SELECT id, COALESCE(description,'') FROM bank_txn WHERE account_id=?1 AND direction=?2 AND id<>?3")
+        .and_then(|mut st| {
+            st.query_map(rusqlite::params![account, direction, exclude_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map(|rows| rows.filter_map(|x| x.ok()).collect())
+        })
+        .unwrap_or_default();
+    candidates
+        .into_iter()
+        .filter(|(_, d)| canonical_bank_txn_id(account, direction, d).as_deref() == Some(cid.as_str()))
+        .map(|(id, _)| id)
+        .filter(|id| bank_txn_is_referenced(conn, id))
+        .collect()
+}
+
 /// FNV-1a (64-bit) — same family the statement importer already uses for its stable ids.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -13941,8 +13981,19 @@ pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
         let env = crate::plaid::get_env();
         {
             let conn = pool().get().map_err(|e| e.to_string())?;
-            let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [&item_id], |_| Ok(())).is_ok();
-            if !exists {
+            // Guard against re-linking a bank already on this device: refresh the
+            // existing row's token/accounts instead of silently doing nothing (the
+            // old behavior left a stale token on a legitimate reconnect), and never
+            // insert a second row for the same item_id — symmetric with the dedup
+            // already used by plaid_exchange below.
+            let existing: Option<String> = conn.query_row(
+                "SELECT id FROM plaid_items WHERE item_id=?1", [&item_id], |r| r.get(0)).ok();
+            if let Some(eid) = existing {
+                conn.execute(
+                    "UPDATE plaid_items SET access_token=?1, accounts_json=?2, env=?3 WHERE id=?4",
+                    rusqlite::params![access, accounts_json, env, eid],
+                ).map_err(|e| e.to_string())?;
+            } else {
                 let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
                 conn.execute(
                     "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
@@ -13952,7 +14003,9 @@ pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
             }
         }
         // Best-effort: hand the token to the server so teammates + hosted sync can use it.
-        let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &inst, &accounts_json, &env).await;
+        // Routed through the org-secrets bridge — the dedicated /api/plaid/items push
+        // this used to call is feature-gated off in production and never arrives.
+        let _ = crate::netsync::push_all_secrets_to_server().await;
         return Ok(json!({ "status": "connected", "institution": inst }));
     }
     Ok(json!({ "status": "pending" }))
@@ -13989,7 +14042,9 @@ pub async fn plaid_exchange(public_token: String, institution: String) -> Result
         }
     }
     // Best-effort: hand the token to the server so teammates + hosted sync can use it.
-    let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &institution, &accounts_json, &env).await;
+    // Routed through the org-secrets bridge — the dedicated /api/plaid/items push
+    // this used to call is feature-gated off in production and never arrives.
+    let _ = crate::netsync::push_all_secrets_to_server().await;
     Ok(())
 }
 
@@ -14071,6 +14126,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let mut amend_unknown = 0i64;                         // amendment for a txn we do not hold
     let mut page_capped: Vec<String> = Vec::new();        // banks truncated by the page cap
     let mut possible_duplicates: Vec<Value> = Vec::new(); // same payment reference, different content
+    let mut held_reference_collision: Vec<Value> = Vec::new(); // same reference as a BOOKED row, held out
     let mut touched_deals: std::collections::HashSet<String> = Default::default();
     let mut preparing = false;  // at least one item still extracting after we waited
     let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
@@ -14357,6 +14413,31 @@ pub async fn plaid_sync() -> Result<Value, String> {
                             }));
                             continue;
                         }
+                    }
+                    // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
+                    // a DETECTION-ONLY key, never as an id this loop mints. It catches the
+                    // narrower and more dangerous gap the amount-scoped check below can't:
+                    // the SAME payment reference on the SAME account+direction turning up
+                    // against a row that is already reviewed, allocated, refunded or
+                    // loan-tagged — same amount or not. Silently proceeding there risks a
+                    // future merge onto that id rewriting booked data. So this one transaction
+                    // is held out of the ledger entirely and reported for review — nothing
+                    // booked is ever touched, and nothing here is imported as a guess.
+                    // Checked BEFORE R-019-E below and short-circuits it: a booked row already
+                    // matches the amount-scoped query too (it's a strict superset), so without
+                    // this ordering the same row would be reported in both lists at once with
+                    // contradictory claims ("imported anyway" vs "held, nothing imported").
+                    let booked_collisions = canonical_id_booked_collisions(&conn, &label, direction, &desc, &id);
+                    if !booked_collisions.is_empty() {
+                        held_reference_collision.push(json!({
+                            "date": date,
+                            "amount": amount,
+                            "direction": direction,
+                            "account": label,
+                            "description": desc,
+                            "existing": booked_collisions,
+                        }));
+                        continue;
                     }
                     // R-019-E. The content fingerprint above is the only duplicate signal
                     // this loop has, and it needs the memo to match character for character
@@ -14741,6 +14822,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
     if amend_unknown > 0 {
         tracing::warn!("plaid_sync: the bank amended {} transaction(s) this ledger has never held", amend_unknown);
     }
+    if !held_reference_collision.is_empty() {
+        tracing::warn!(
+            "plaid_sync: {} transaction(s) held out of the ledger — the payment reference collides with a row already booked, review before importing",
+            held_reference_collision.len()
+        );
+    }
     if imported > 0 || amended > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
@@ -14762,6 +14849,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "amend_unknown": amend_unknown,               // the bank amended a transaction we never held
         "page_capped": page_capped,                   // banks stopped at the page cap with history left
         "possible_duplicates": possible_duplicates,   // same payment reference, imported anyway
+        "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
         "preparing": preparing, "results": results,
     }))
 }
@@ -16031,6 +16119,247 @@ pub async fn linked_party_payments(ctype: String, id: String) -> Result<Value, S
     }))
 }
 
+// ── Party-link candidate suggestions (R-155c) ───────────────────────────────
+
+/// Token-overlap name matcher, ported from clienthub-api's `bank_suggest.rs`
+/// (`norm_tokens`/`name_key`/`key_similarity`) so a fuzzy score here means the
+/// same thing it means in the bank-suggestion engine. Reimplemented rather than
+/// shared — desktop and server are separate crates with no common dependency —
+/// but the stopword list and the overlap/containment formula are copied as-is.
+fn party_norm_tokens(s: &str) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "llc", "inc", "corp", "ltd", "co", "company", "dba", "and", "the", "of", "a", "an",
+        "pllc", "limited", "corporation",
+    ];
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty() && !STOP.contains(t))
+        .map(|t| t.to_string())
+        .collect()
+}
+
+struct PartyNameKey {
+    tokens: Vec<String>,
+    set: std::collections::HashSet<String>,
+    concat: String,
+}
+
+fn party_name_key(s: &str) -> PartyNameKey {
+    let tokens = party_norm_tokens(s);
+    let concat = tokens.join("");
+    let set = tokens.iter().cloned().collect();
+    PartyNameKey { tokens, set, concat }
+}
+
+/// 0..1 similarity of two names: token-overlap primary, a long containment
+/// (one normalized name inside the other) counts as a full match.
+fn party_key_similarity(a: &PartyNameKey, b: &PartyNameKey) -> f64 {
+    if a.tokens.is_empty() || b.tokens.is_empty() {
+        return 0.0;
+    }
+    let shared = a.tokens.iter().filter(|t| b.set.contains(*t)).count() as f64;
+    let overlap = 2.0 * shared / (a.tokens.len() + b.tokens.len()) as f64;
+    if (a.concat.len() >= 8 && b.concat.contains(&a.concat)) || (b.concat.len() >= 8 && a.concat.contains(&b.concat)) {
+        1.0
+    } else {
+        overlap
+    }
+}
+
+/// The best score any of one party's name fields gets against any of another's
+/// (a client's `name` and `company`, or a supplier's `name` and `contact_name`).
+fn party_best_name_score(a_names: &[PartyNameKey], b_names: &[PartyNameKey]) -> f64 {
+    let mut best = 0.0f64;
+    for a in a_names {
+        for b in b_names {
+            let s = party_key_similarity(a, b);
+            if s > best {
+                best = s;
+            }
+        }
+    }
+    best
+}
+
+fn party_normalize_phone(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// The identity fields a link candidate is scored on. `secondary_name` is the
+/// client's `company` or the supplier's `contact_name`.
+#[derive(Clone)]
+struct PartyIdentity {
+    id: String,
+    name: String,
+    secondary_name: String,
+    email: String,
+    phone: String,
+    linked_party_id: String,
+}
+
+fn read_party_identity(r: &rusqlite::Row) -> rusqlite::Result<PartyIdentity> {
+    Ok(PartyIdentity {
+        id: r.get(0)?, name: r.get(1)?, secondary_name: r.get(2)?,
+        email: r.get(3)?, phone: r.get(4)?, linked_party_id: r.get(5)?,
+    })
+}
+
+/// Score one candidate against the target, or `None` if it is not worth
+/// suggesting. Same email wins outright; failing that, same phone (normalized
+/// to digits, and only once there are enough of them to mean something); failing
+/// that, a fuzzy name match. A candidate already linked to some OTHER party is
+/// never suggested — confirming it would first require an unlink, which is not
+/// what a suggestion is for.
+fn score_party_candidate(target: &PartyIdentity, candidate: &PartyIdentity) -> Option<(f64, &'static str)> {
+    if !candidate.linked_party_id.is_empty() {
+        return None;
+    }
+    let t_email = target.email.trim().to_lowercase();
+    let c_email = candidate.email.trim().to_lowercase();
+    if !t_email.is_empty() && t_email == c_email {
+        return Some((1.0, "same email"));
+    }
+    let t_phone = party_normalize_phone(&target.phone);
+    let c_phone = party_normalize_phone(&candidate.phone);
+    if t_phone.len() >= 7 && t_phone == c_phone {
+        return Some((0.95, "same phone number"));
+    }
+    let t_names: Vec<PartyNameKey> = [&target.name, &target.secondary_name]
+        .into_iter().filter(|s| !s.is_empty()).map(|s| party_name_key(s)).collect();
+    let c_names: Vec<PartyNameKey> = [&candidate.name, &candidate.secondary_name]
+        .into_iter().filter(|s| !s.is_empty()).map(|s| party_name_key(s)).collect();
+    let name_score = party_best_name_score(&t_names, &c_names);
+    if name_score >= 0.5 {
+        Some((name_score, "similar name"))
+    } else {
+        None
+    }
+}
+
+/// Rank a candidate pool against one target, best score first. Pure and
+/// read-only — no query, no write — so it is exercised directly by tests.
+fn party_link_candidates(target: &PartyIdentity, pool: &[PartyIdentity]) -> Vec<(PartyIdentity, f64, &'static str)> {
+    let mut out: Vec<(PartyIdentity, f64, &'static str)> = pool.iter()
+        .filter(|c| c.id != target.id)
+        .filter_map(|c| score_party_candidate(target, c).map(|(score, reason)| (c.clone(), score, reason)))
+        .collect();
+    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// Suggest-and-confirm candidate matches for a party link (R-155c). Read-only:
+/// it never writes `linked_party_id` itself, so every suggestion still has to
+/// be confirmed through `link_party` by a human before anything changes.
+#[tauri::command]
+pub async fn suggest_party_links(ctype: String, id: String) -> Result<Value, String> {
+    let (table, other_table) = match ctype.as_str() {
+        "supplier" => ("suppliers", "clients"),
+        "client" => ("clients", "suppliers"),
+        _ => return Err("ctype must be supplier or client".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // `table`/`other_table` are always one of the two literals matched above,
+    // never caller text, so building SQL from them here is safe.
+    let secondary_col = if table == "clients" { "company" } else { "contact_name" };
+    let target = conn.query_row(
+        &format!(
+            "SELECT id, COALESCE(name,''), COALESCE({secondary_col},''), COALESCE(email,''), COALESCE(phone,''), COALESCE(linked_party_id,'') FROM {table} WHERE id=?1"
+        ),
+        [&id],
+        read_party_identity,
+    ).map_err(|_| "Party not found".to_string())?;
+
+    let other_secondary_col = if other_table == "clients" { "company" } else { "contact_name" };
+    // Suppliers carry an `archived` flag; clients do not, so the clause is only
+    // added on that side.
+    let archived_clause = if other_table == "suppliers" { " WHERE COALESCE(archived,0)=0" } else { "" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, COALESCE(name,''), COALESCE({other_secondary_col},''), COALESCE(email,''), COALESCE(phone,''), COALESCE(linked_party_id,'') FROM {other_table}{archived_clause}"
+    )).map_err(|e| e.to_string())?;
+    let candidates: Vec<PartyIdentity> = stmt.query_map([], read_party_identity)
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut ranked = party_link_candidates(&target, &candidates);
+    ranked.truncate(5);
+    Ok(json!({
+        "candidates": ranked.into_iter().map(|(c, score, reason)| json!({
+            "id": c.id, "name": c.name, "email": c.email, "phone": c.phone,
+            "score": score, "reason": reason,
+        })).collect::<Vec<_>>()
+    }))
+}
+
+#[cfg(test)]
+mod party_link_suggest_tests {
+    use super::{party_link_candidates, PartyIdentity};
+
+    fn party(id: &str, name: &str, secondary: &str, email: &str, phone: &str, linked: &str) -> PartyIdentity {
+        PartyIdentity {
+            id: id.into(), name: name.into(), secondary_name: secondary.into(),
+            email: email.into(), phone: phone.into(), linked_party_id: linked.into(),
+        }
+    }
+
+    #[test]
+    fn same_email_wins_outright() {
+        let target = party("cl_1", "Some Buyer", "", "Deals@Tytan.com", "", "");
+        let pool = vec![party("sup_1", "Totally Different Name", "", "deals@tytan.com", "", "")];
+        let ranked = party_link_candidates(&target, &pool);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].1, 1.0);
+        assert_eq!(ranked[0].2, "same email");
+    }
+
+    #[test]
+    fn phone_matches_across_formatting() {
+        let target = party("cl_1", "Buyer", "", "", "(555) 123-4567", "");
+        let pool = vec![party("sup_1", "Unrelated Co", "", "", "555-123-4567", "")];
+        let ranked = party_link_candidates(&target, &pool);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].2, "same phone number");
+    }
+
+    #[test]
+    fn fuzzy_name_match_survives_corporate_suffix_differences() {
+        let target = party("cl_1", "Tytan Market LLC", "", "", "", "");
+        let pool = vec![party("sup_1", "Tytan Market Inc", "", "", "", "")];
+        let ranked = party_link_candidates(&target, &pool);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].2, "similar name");
+        assert!(ranked[0].1 >= 0.99, "same tokens after stripping suffixes should score ~1.0, got {}", ranked[0].1);
+    }
+
+    #[test]
+    fn unrelated_names_are_not_suggested() {
+        let target = party("cl_1", "Tytan Market LLC", "", "", "", "");
+        let pool = vec![party("sup_1", "Riverside Produce Co", "", "", "", "")];
+        assert!(party_link_candidates(&target, &pool).is_empty());
+    }
+
+    #[test]
+    fn candidate_already_linked_elsewhere_is_never_suggested() {
+        // Same email, but the candidate already points at a different party —
+        // confirming this suggestion would require an unlink first, so it must
+        // not appear as a suggestion at all.
+        let target = party("cl_1", "Buyer", "", "deals@tytan.com", "", "");
+        let pool = vec![party("sup_1", "Tytan", "", "deals@tytan.com", "", "sup_someone_else")];
+        assert!(party_link_candidates(&target, &pool).is_empty());
+    }
+
+    #[test]
+    fn suggestion_never_writes_anything() {
+        // party_link_candidates takes only borrowed, in-memory data and returns a
+        // ranking — there is no connection, no statement, nothing to write. This
+        // test exists to keep that true: it would fail to compile the moment the
+        // signature grew a `&Connection` or a mutable target.
+        let target = party("cl_1", "Tytan Market LLC", "", "", "", "");
+        let pool = vec![party("sup_1", "Tytan Market Inc", "", "", "", "")];
+        let before = pool[0].linked_party_id.clone();
+        let _ = party_link_candidates(&target, &pool);
+        assert_eq!(pool[0].linked_party_id, before, "scoring must never mutate a candidate");
+    }
+}
+
 #[cfg(test)]
 mod month_window_tests {
     use super::central_month_window;
@@ -16673,7 +17002,7 @@ pub async fn update_draft(id: String, body: String, subject: String) -> Result<(
 }
 
 #[tauri::command]
-pub async fn send_draft(id: String) -> Result<(), String> {
+pub async fn send_draft(id: String, from: Option<String>) -> Result<(), String> {
     let (to_addr, subject, body) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let result: rusqlite::Result<(String, String, String)> = conn.query_row(
@@ -16684,7 +17013,7 @@ pub async fn send_draft(id: String) -> Result<(), String> {
         result.map_err(|e| e.to_string())?
     };
 
-    crate::email::send(&to_addr, &subject, &body, None)
+    crate::email::send_threaded(&to_addr, &subject, &body, None, None, from.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     crate::email::log_outbound(&to_addr, &subject, &body);
@@ -16852,6 +17181,7 @@ pub async fn send_newsletter(
     subject_template: String,
     body_template: String,
     attachment_path: Option<String>,
+    from: Option<String>,
 ) -> Result<NewsletterSendResult, String> {
     use tauri::Emitter;
     crate::email::test_smtp().await.map_err(|e| format!("SMTP connection failed: {}", e))?;
@@ -16941,7 +17271,7 @@ pub async fn send_newsletter(
                 } else {
                     body.clone()
                 };
-                match crate::email::send(addr, &subj, &body_out, attachment_path.as_deref()).await {
+                match crate::email::send_threaded(addr, &subj, &body_out, attachment_path.as_deref(), None, from.as_deref()).await {
                     Ok(()) => {
                         sent += 1;
                         let _ = conn.execute(
@@ -19653,6 +19983,132 @@ mod settle_twin_tests {
         // The v0.15.116 guard: empty raw_json must not throw.
         assert!(found("btpl_legacy", "CONN1", "Amex ··1004"),
             "a row with raw_json='' must resolve by account_id without throwing");
+    }
+}
+
+// R-002/BL-22: canonical_bank_txn_id wired as a hold-and-ask detection key.
+#[cfg(test)]
+mod canonical_id_collision_tests {
+    use super::{canonical_id_booked_collisions, bank_txn_is_referenced};
+
+    fn conn_with(rows: &[(&str, i64, &str, &str, &str)]) -> rusqlite::Connection {
+        // rows: (id, reviewed, direction, description, account_id)
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
+               direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+               account_id TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '');
+             CREATE TABLE bank_allocation (bank_txn_id TEXT);
+             CREATE TABLE refunds (bank_txn_id TEXT);
+             CREATE TABLE loan (bank_txn_id TEXT);
+             CREATE TABLE cash_purchase (withdrawal_txn_id TEXT);
+             CREATE TABLE business_expense (bank_txn_id TEXT);",
+        ).unwrap();
+        for (id, reviewed, direction, desc, account) in rows {
+            conn.execute(
+                "INSERT INTO bank_txn (id, reviewed, direction, description, account_id) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![id, reviewed, direction, desc, account],
+            ).unwrap();
+        }
+        conn
+    }
+
+    // Same account/direction, same wire reference, already reviewed (booked): the
+    // incoming transaction must be held, not silently allowed to converge onto it.
+    #[test]
+    fn booked_reference_collision_is_held() {
+        let conn = conn_with(&[("btpl_old", 1, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Amex ··1004")]);
+        assert!(bank_txn_is_referenced(&conn, "btpl_old"));
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert_eq!(hits, vec!["btpl_old".to_string()]);
+    }
+
+    // Same reference, but the existing row was never reviewed or linked to anything —
+    // nothing booked is at risk, so this is not a hold case.
+    #[test]
+    fn unreviewed_reference_collision_is_not_held() {
+        let conn = conn_with(&[("btpl_old", 0, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Amex ··1004")]);
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert!(hits.is_empty());
+    }
+
+    // No extractable payment reference at all: canonical_bank_txn_id returns None, so
+    // there is nothing to key a collision on regardless of what else is booked.
+    #[test]
+    fn no_reference_never_collides() {
+        let conn = conn_with(&[("btpl_old", 1, "out", "DEBIT CARD PURCHASE STARBUCKS", "Amex ··1004")]);
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "DEBIT CARD PURCHASE STARBUCKS", "btpl_new",
+        );
+        assert!(hits.is_empty(), "no reference means no canonical id, so no collision to detect");
+    }
+
+    // The same reference on a DIFFERENT account or DIFFERENT direction is a different
+    // real-world payment (or the two legs of one transfer) and must never collide.
+    #[test]
+    fn different_account_or_direction_never_collides() {
+        let conn = conn_with(&[("btpl_old", 1, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Chase ··9999")]);
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert!(hits.is_empty(), "different account must not collide");
+
+        let conn2 = conn_with(&[("btpl_old", 1, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Amex ··1004")]);
+        let hits2 = canonical_id_booked_collisions(
+            &conn2, "Amex ··1004", "in", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert!(hits2.is_empty(), "opposite direction must not collide (two legs of one transfer)");
+    }
+
+    // A same-reference/same-amount match against a BOOKED row is exactly the case
+    // R-019-E's possible_duplicates query also matches (its account+direction+reference
+    // +amount clause is a subset of this function's account+direction+reference clause).
+    // In plaid_sync the booked-collision check runs FIRST and `continue`s, so this row
+    // must never also reach the possible_duplicates list. This asserts the overlap this
+    // function alone is responsible for closing off: it still reports the row (nothing
+    // here silently drops the booked case) so the caller has something to hold on.
+    #[test]
+    fn booked_collision_holds_even_when_amount_also_matches() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
+               direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+               account_id TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0,
+               counterparty_type TEXT NOT NULL DEFAULT '');
+             CREATE TABLE bank_allocation (bank_txn_id TEXT);
+             CREATE TABLE refunds (bank_txn_id TEXT);
+             CREATE TABLE loan (bank_txn_id TEXT);
+             CREATE TABLE cash_purchase (withdrawal_txn_id TEXT);
+             CREATE TABLE business_expense (bank_txn_id TEXT);",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO bank_txn (id, reviewed, direction, description, account_id, amount) VALUES \
+             ('btpl_old', 1, 'out', 'ONLINE DOMESTIC WIRE TRANSFER TRN:99887766', 'Amex ··1004', 500.00)",
+            [],
+        ).unwrap();
+        // R-019-E's own amount-scoped query (account+direction+amount, filtered to same
+        // reference in Rust below it) — reproduced here to show it matches this same row.
+        let mut st = conn.prepare(
+            "SELECT id, COALESCE(description,'') FROM bank_txn WHERE account_id=?1 AND direction=?2 \
+               AND ABS(amount-?3)<0.005 AND id<>?4",
+        ).unwrap();
+        let amount_scoped: Vec<String> = st.query_map(
+            rusqlite::params!["Amex ··1004", "out", 500.00, "btpl_new"],
+            |r| r.get::<_, String>(0),
+        ).unwrap().filter_map(|x| x.ok()).collect();
+        assert_eq!(amount_scoped, vec!["btpl_old".to_string()],
+            "the amount-scoped query alone would also have matched this booked row");
+
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert_eq!(hits, vec!["btpl_old".to_string()],
+            "the booked-collision check must still catch it so plaid_sync can hold it \
+             instead of also reporting it via possible_duplicates");
     }
 }
 

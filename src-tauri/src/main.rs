@@ -797,6 +797,7 @@ fn main() {
             apply_location_normalization,
             // Email
             send_email,
+            get_send_from_options,
             scan_inbox,
             get_email_inboxes,
             save_email_inbox,
@@ -1037,6 +1038,7 @@ fn main() {
             link_party,
             unlink_party,
             linked_party_payments,
+            suggest_party_links,
             loan_ledger,
             apply_loan_repayments_to_set_aside,
             create_txn_rule,

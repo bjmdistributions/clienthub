@@ -1235,6 +1235,13 @@ export interface EmailSettings {
   from_invoices?: string;
 }
 
+/** One address a compose-time "from" picker can offer (R-194). */
+export interface FromOption {
+  address: string;
+  label: string;
+  kind: "login" | "sales" | "invoices";
+}
+
 export interface CompanyInfo {
   name: string;
   address: string;
@@ -1349,7 +1356,6 @@ export interface DashboardStats {
   deals_mtd: number;
   top_suppliers: { name: string; contact_name: string; deal_count: number; total_paid: number }[];
   all_time_revenue: number;
-  all_time_profit: number;
   refunded_total: number;
   refund_owed_remaining: number;
   deals_won_all: number;
@@ -2304,7 +2310,7 @@ export const api = {
   openInvoicePdf: (invoiceId: string) => invoke<string>("open_invoice_pdf", { invoiceId }),
   previewInvoicePdf: (input: InvoiceInput) =>
     invoke<string>("preview_invoice_pdf", { input }),
-  sendInvoice: (invoiceId: string) => invoke<void>("send_invoice", { invoiceId }),
+  sendInvoice: (invoiceId: string, from?: string) => invoke<void>("send_invoice", { invoiceId, from }),
 
   // Quotes
   listQuotes: () => invoke<Quote[]>("list_quotes"),
@@ -2315,7 +2321,7 @@ export const api = {
   deleteQuote: (id: string) => invoke<void>("delete_quote", { id }),
   setQuoteStatus: (id: string, status: string) => invoke<void>("set_quote_status", { id, status }),
   generateQuotePdf: (quoteId: string) => invoke<string>("generate_quote_pdf", { quoteId }),
-  sendQuote: (quoteId: string, thread?: boolean) => invoke<void>("send_quote", { quoteId, thread: thread ?? false }),
+  sendQuote: (quoteId: string, thread?: boolean, from?: string) => invoke<void>("send_quote", { quoteId, thread: thread ?? false, from }),
   markQuoteConverted: (quoteId: string, invoiceId: string) => invoke<void>("mark_quote_converted", { quoteId, invoiceId }),
   getQuoteNumberingConfig: () => invoke<InvoiceNumberingConfig>("get_quote_numbering_config"),
   saveQuoteNumberingConfig: (prefix: string, nextNumber: number, padding: number) =>
@@ -2627,8 +2633,10 @@ export const api = {
   cleanupClients: () => invoke<{ duplicates_merged: number; ghosts_removed: number; remaining_clients: number }>("cleanup_clients"),
 
   // Email
-  sendEmail: (to: string, subject: string, body: string, attachmentPath?: string) =>
-    invoke<void>("send_email", { to, subject, body, attachmentPath }),
+  sendEmail: (to: string, subject: string, body: string, attachmentPath?: string, from?: string) =>
+    invoke<void>("send_email", { to, subject, body, attachmentPath, from }),
+  /** Addresses this device can send as, for a compose-time "from" picker (R-194). */
+  getSendFromOptions: () => invoke<FromOption[]>("get_send_from_options"),
   scanInbox: () => invoke<ParsedEmail[]>("scan_inbox"),
   getEmailInboxes: () => invoke<EmailInbox[]>("get_email_inboxes"),
   /** `readFromNow` (default true) starts a NEW mailbox at its current head instead
@@ -2663,7 +2671,7 @@ export const api = {
   listDrafts: (status?: string) => invoke<EmailDraft[]>("list_drafts", { status }),
   updateDraft: (id: string, body: string, subject: string) =>
     invoke<void>("update_draft", { id, body, subject }),
-  sendDraft: (id: string) => invoke<void>("send_draft", { id }),
+  sendDraft: (id: string, from?: string) => invoke<void>("send_draft", { id, from }),
   discardDraft: (id: string) => invoke<void>("discard_draft", { id }),
 
   // AI
@@ -3001,9 +3009,9 @@ export const api = {
   saveNewsletter: (id: string | null, subject: string, body: string) =>
     invoke<Newsletter>("save_newsletter", { id, subject, body }),
   deleteNewsletter: (id: string) => invoke<void>("delete_newsletter", { id }),
-  sendNewsletter: (newsletterId: string, clientIds: string[], subjectTemplate: string, bodyTemplate: string, attachmentPath?: string | null) =>
+  sendNewsletter: (newsletterId: string, clientIds: string[], subjectTemplate: string, bodyTemplate: string, attachmentPath?: string | null, from?: string) =>
     invoke<NewsletterSendResult>("send_newsletter", {
-      newsletterId, clientIds, subjectTemplate, bodyTemplate, attachmentPath,
+      newsletterId, clientIds, subjectTemplate, bodyTemplate, attachmentPath, from,
     }),
   aiDraftNewsletter: (prompt: string, tone: string) =>
     invoke<string>("ai_draft_newsletter", { prompt, tone }),

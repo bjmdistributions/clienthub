@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import VariablePicker, { VariableReference } from "./VariablePicker";
 import NumberInput from "./NumberInput";
 import StatusPill from "./StatusPill";
+import { FromPicker, useSendFromOptions } from "./FromPicker";
 import { NewsletterSchedule } from "../lib/api";
 import {
   Sparkles, RefreshCw, Mail, Send, Inbox, AlertCircle, FileEdit, Trash2,
@@ -169,6 +170,8 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [tone, setTone] = useState<string>(() => localStorage.getItem("clienthub_draft_tone") || "neutral");
+  const [replyFrom, setReplyFrom] = useState<string | undefined>(undefined);
+  const fromOptions = useSendFromOptions();
 
   const handleDraft = async () => {
     setLoading("draft");
@@ -194,7 +197,9 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
       await api.sendEmail(
         email.from,
         email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
-        draft
+        draft,
+        undefined,
+        replyFrom
       );
       setSent(true);
       setTimeout(() => setSent(false), 2000);
@@ -266,14 +271,17 @@ function EmailDetail({ email }: { email: ParsedEmail }) {
             rows={8}
             className="w-full border border-line-3 rounded-lg px-3 py-2.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
           />
-          <button
-            onClick={handleSend}
-            disabled={sending}
-            className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5 mt-2"
-          >
-            <Send size={12} />
-            {sending ? "Sending…" : sent ? "Sent" : "Send reply"}
-          </button>
+          <div className="flex items-center gap-3 mt-2">
+            <button
+              onClick={handleSend}
+              disabled={sending}
+              className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-md text-[14px] font-medium flex items-center gap-1.5"
+            >
+              <Send size={12} />
+              {sending ? "Sending…" : sent ? "Sent" : "Send reply"}
+            </button>
+            <FromPicker options={fromOptions} value={replyFrom} onChange={setReplyFrom} />
+          </div>
         </div>
       )}
 
@@ -297,6 +305,8 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
   const [editSubject, setEditSubject] = useState("");
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sendFrom, setSendFrom] = useState<Record<string, string | undefined>>({});
+  const fromOptions = useSendFromOptions();
 
   const load = async () => {
     try {
@@ -326,7 +336,7 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
     setLoading(id);
     setError(null);
     try {
-      await api.sendDraft(id);
+      await api.sendDraft(id, sendFrom[id]);
       onAction();
       await load();
     } catch (e: any) { setError(e.toString()); }
@@ -419,6 +429,7 @@ function DraftsTab({ onAction }: { onAction: () => void }) {
                     >
                       <Trash2 size={12} /> Discard
                     </button>
+                    <FromPicker options={fromOptions} value={sendFrom[d.id]} onChange={(a) => setSendFrom((s) => ({ ...s, [d.id]: a }))} />
                   </div>
                 </div>
               )}
@@ -436,11 +447,13 @@ function ComposeView() {
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [from, setFrom] = useState<string | undefined>(undefined);
+  const fromOptions = useSendFromOptions();
 
   const send = async () => {
     setSending(true);
     try {
-      await api.sendEmail(to, subject, body);
+      await api.sendEmail(to, subject, body, undefined, from);
       setSent(true);
       setTo(""); setSubject(""); setBody("");
       setTimeout(() => setSent(false), 2000);
@@ -479,14 +492,17 @@ function ComposeView() {
             onChange={(e) => setBody(e.target.value)}
           />
         </div>
-        <button
-          onClick={send}
-          disabled={sending || !to || !subject}
-          className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
-        >
-          <Send size={14} />
-          {sending ? "Sending…" : sent ? "Sent" : "Send"}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={send}
+            disabled={sending || !to || !subject}
+            className="bg-accent hover:bg-accent-hover text-on-accent px-5 h-9 rounded-md text-[14px] font-medium flex items-center gap-2 disabled:opacity-50"
+          >
+            <Send size={14} />
+            {sending ? "Sending…" : sent ? "Sent" : "Send"}
+          </button>
+          <FromPicker options={fromOptions} value={from} onChange={setFrom} />
+        </div>
       </div>
     </div>
   );
@@ -528,6 +544,8 @@ function NewsletterTab() {
   // What {sender_name} resolves to. The send path resolves it from the same company
   // name, so the preview shows the words that actually go out.
   const [senderName, setSenderName] = useState("");
+  const [newsletterFrom, setNewsletterFrom] = useState<string | undefined>(undefined);
+  const fromOptions = useSendFromOptions();
   useEffect(() => {
     api.buyerTiers().then(setTiers).catch(() => {});
     api.getNewsletterIncludeRanked().then(setIncludeRanked).catch(() => {});
@@ -735,7 +753,7 @@ function NewsletterTab() {
     });
     try {
       const nl = await api.saveNewsletter(null, subject, body);
-      const result = await api.sendNewsletter(nl.id, selected.map((c) => c.id), subject, body, attachmentPath);
+      const result = await api.sendNewsletter(nl.id, selected.map((c) => c.id), subject, body, attachmentPath, newsletterFrom);
       setSendResult(result);
       setSendProgress("");
       api.listNewsletters().then(setTemplates);
@@ -1187,7 +1205,7 @@ function NewsletterTab() {
 
             <div className="border border-line rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
               <div className="bg-surface-2 px-3 py-2 border-b border-line space-y-0.5 text-[12px]">
-                <div className="flex"><span className="text-muted w-10">From:</span><span className="text-ink-2">Your Business</span></div>
+                <div className="flex"><span className="text-muted w-10">From:</span><span className="text-ink-2">{newsletterFrom || "Your Business"}</span></div>
                 <div className="flex"><span className="text-muted w-10">To:</span><span className="text-ink-2 truncate">{previewClient ? `${previewClient.name} <${previewClient.email}>` : "Recipient"}</span></div>
                 <div className="flex"><span className="text-muted w-10">Subj:</span><span className="text-ink font-medium">{previewSubject || "No subject"}</span></div>
               </div>
@@ -1204,6 +1222,8 @@ function NewsletterTab() {
               {noEmailCount} recipient{noEmailCount !== 1 ? "s" : ""} will be skipped (no email)
             </div>
           )}
+
+          <FromPicker options={fromOptions} value={newsletterFrom} onChange={setNewsletterFrom} className="mb-3" />
 
           <button
             onClick={isScheduledSend ? handleSchedule : handleSend}
