@@ -22,14 +22,17 @@
  * a solid inset ring, and the symbols are hand-drawn SVG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, Info } from "lucide-react";
+import { X, Info, Volume2, VolumeX } from "lucide-react";
+import { api } from "../lib/api";
 import StatusPill from "./StatusPill";
-import { laneY, laneV, stopAt } from "../lib/crossdock-motion";
+import { laneY, laneV, stopAt, VMAX } from "../lib/crossdock-motion";
 import {
-  REELS, PAYLINES, SYMBOLS, SYMBOL_BY_ID, JACKPOTS, LINE_BETS, LINE_COUNT,
-  evaluate, meterGain, rollJackpot,
-  type Grid, type LineWin, type SymbolId,
+  REELS, PAYLINES, SYMBOLS, SYMBOL_BY_ID, JACKPOTS, LINE_COUNT,
+  DENOMS, CREDITS_PER_LINE, MIN_BET, MAX_BET,
+  evaluate, advanceJackpots, drawTarget, totalBet,
+  type Grid, type LineWin, type SymbolId, type MeterState, type Rng,
 } from "../lib/crossdock";
+import { Arcade } from "../lib/crossdock-audio";
 
 /* ── geometry ─────────────────────────────────────────────────────────────────
    The drum: one cell of travel turns it by ARC degrees, so its radius follows from
@@ -65,33 +68,93 @@ const cx = (g: Geo, reel: number) => reel * (g.cell + g.gutter) + g.cell / 2;
 const LEAD = 44;
 const LANE = LEAD + 4;
 
-const OPENING_FLOAT = 10_000;
+/** The float you open with, and what a Reload puts back. */
+const OPENING_FLOAT = 2_000;
 
-/* ── persistence ──────────────────────────────────────────────────────────── */
+/** What the ear should hear while the drums cruise — the real rate, so the ticking
+ *  matches the symbols going past rather than approximating them. */
+const SYMBOLS_PER_SECOND = (VMAX * 1000) / (FULL.cell + FULL.gap);
+
+/* ── persistence ──────────────────────────────────────────────────────────────
+   Balance and stakes are held in whole CENTS, never dollars: thousands of spins of
+   floating-point addition on a balance will drift, and a balance that drifts is the
+   one thing in a money-shaped toy that would look like a bug.                    */
 
 interface Saved {
+  /** Cents. */
+  balance: number;
+  denom: number;
   credits: number;
-  lineBet: number;
-  meters: Record<string, number>;
+  meters: Record<string, MeterState>;
+  /** Cents, except `spins`. */
   stats: { spins: number; wagered: number; won: number; best: number; jackpots: number; floats: number };
 }
-const seeded = () => Object.fromEntries(JACKPOTS.map((t) => [t.id, t.seed]));
+
+const seedMeters = (rng: Rng): Record<string, MeterState> =>
+  Object.fromEntries(JACKPOTS.map((t) => [t.id, { meter: t.seed, target: drawTarget(t, rng) }]));
+
 const fresh = (): Saved => ({
-  credits: OPENING_FLOAT, lineBet: 1, meters: seeded(),
+  balance: OPENING_FLOAT * 100,
+  denom: DENOMS[0],
+  credits: CREDITS_PER_LINE[0],
+  meters: seedMeters(Math.random),
   stats: { spins: 0, wagered: 0, won: 0, best: 0, jackpots: 0, floats: 1 },
 });
-const KEY = (id: string) => `clienthub_crossdock_v1_${id}`;
+
+const KEY = (id: string) => `clienthub_crossdock_v2_${id}`;
+const KEY_V1 = (id: string) => `clienthub_crossdock_v1_${id}`;
+
+/** v1 held credits and a flat meter per tier. One credit was a cent, so the carry-over
+ *  is exact; the meters restart because they now hold a hidden target as well. */
+function migrateV1(id: string): Saved | null {
+  try {
+    const raw = localStorage.getItem(KEY_V1(id));
+    if (!raw) return null;
+    const old = JSON.parse(raw) as { credits?: number; stats?: Record<string, number> };
+    const f = fresh();
+    const st = old.stats || {};
+    return {
+      ...f,
+      balance: Math.round((old.credits ?? OPENING_FLOAT * 100)),
+      stats: {
+        spins: st.spins ?? 0,
+        wagered: Math.round(st.wagered ?? 0),
+        won: Math.round(st.won ?? 0),
+        best: Math.round(st.best ?? 0),
+        jackpots: st.jackpots ?? 0,
+        floats: st.floats ?? 1,
+      },
+    };
+  } catch { return null; }
+}
 
 function load(id: string): Saved {
   try {
     const raw = localStorage.getItem(KEY(id));
-    if (!raw) return fresh();
+    if (!raw) return migrateV1(id) ?? fresh();
     const s = JSON.parse(raw) as Partial<Saved>;
-    return { ...fresh(), ...s, meters: { ...seeded(), ...(s.meters || {}) }, stats: { ...fresh().stats, ...(s.stats || {}) } };
+    const f = fresh();
+    const meters = { ...f.meters };
+    for (const t of JACKPOTS) {
+      const m = s.meters?.[t.id];
+      if (m && Number.isFinite(m.meter) && Number.isFinite(m.target) && m.target > t.seed) meters[t.id] = m;
+    }
+    return { ...f, ...s, meters, stats: { ...f.stats, ...(s.stats || {}) } };
   } catch { return fresh(); }
 }
 const store = (id: string, s: Saved) => {
   try { localStorage.setItem(KEY(id), JSON.stringify(s)); } catch { /* private window */ }
+};
+
+/* ── money ───────────────────────────────────────────────────────────────────── */
+
+const usd = (c: number, always = false) => {
+  const v = c / 100;
+  return v.toLocaleString(undefined, {
+    style: "currency", currency: "USD",
+    minimumFractionDigits: !always && Math.abs(v) >= 1000 && Number.isInteger(v) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
 };
 
 /* ── symbols ──────────────────────────────────────────────────────────────────
@@ -223,9 +286,9 @@ function LineGlyph({ line }: { line: number[] }) {
   );
 }
 
-function Paytable({ lineBet, onClose }: { lineBet: number; onClose: () => void }) {
+function Paytable({ perLine, onClose }: { perLine: number; onClose: () => void }) {
   const paying = SYMBOLS.filter((sym) => sym.kind === "normal" && sym.pays[2] > 0);
-  const c = (n: number) => (n * lineBet).toLocaleString();
+  const c = (n: number) => usd(Math.round(n * perLine * 100), true);
   const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
     <div className="pt-4 mt-4 border-t border-line">
       <h4 className="text-[13px] font-semibold text-ink mb-2">{title}</h4>
@@ -242,8 +305,8 @@ function Paytable({ lineBet, onClose }: { lineBet: number; onClose: () => void }
         </div>
         <div className="px-5 py-4">
           <p className="text-[12px] text-muted mb-3">
-            Left to right from reel 1, on {LINE_COUNT} fixed lines. Shown at a line bet of{" "}
-            {lineBet} {lineBet === 1 ? "credit" : "credits"}.
+            Left to right from reel 1, on {LINE_COUNT} fixed lines. Shown at your current
+            stake of {usd(Math.round(perLine * 100), true)} a line.
           </p>
           <table className="w-full text-[12px] tabular-nums">
             <thead><tr className="text-[11px] text-muted">
@@ -285,10 +348,11 @@ function Paytable({ lineBet, onClose }: { lineBet: number; onClose: () => void }
 
           <Section title="Jackpots">
             <p>
-              Mini, Minor, Major and Grand are funded by 1.2% of every bet and can land on any paid
-              spin, independent of the reels and on top of whatever they pay. They reset to{" "}
-              {JACKPOTS.map((t) => t.seed.toLocaleString()).reverse().join(", ")} credits. Longer odds at
-              a bigger stake are matched by a faster-climbing meter, so no bet size is better value.
+              Mini, Minor, Major and Grand each take 0.3% of every dollar wagered, 1.2% in all,
+              and each pays out when its meter reaches a hidden mark somewhere between where it
+              reseeds and its ceiling — {JACKPOTS.map((t) => `${t.name} ${usd(t.seed * 100)} to ${usd(t.cap * 100)}`).reverse().join(", ")}.
+              Betting more fills them faster rather than making them pay more, so no stake is
+              better value than another.
             </p>
           </Section>
 
@@ -305,8 +369,8 @@ function Paytable({ lineBet, onClose }: { lineBet: number; onClose: () => void }
 
           <p className="text-[11px] text-faint mt-5 leading-relaxed">
             Return to player 95.82% — 92.27% from the reels, 2.35% from free spins, 1.20% from the
-            progressives. Something pays on 25.95% of spins. Five BJM on a line, the grand prize,
-            lands about once in 105,600.
+            progressives — the same at every denomination. Something pays on 25.95% of spins.
+            Five BJM on a line, the grand prize, lands about once in 105,600.
           </p>
         </div>
       </div>
@@ -374,10 +438,18 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
   const [modal, setModal] = useState<{ tier: string; amount: number } | null>(null);
   const [flashTier, setFlashTier] = useState<string | null>(null);
   const [free, setFree] = useState({ left: 0, total: 0, won: 0 });
+  /** A one-off stake that ignores the denomination ladder — "Bet the month" only. */
+  const [betOverride, setBetOverride] = useState<number | null>(null);
+  /** This month's real profit, read once, never written. Null until it arrives, and
+   *  null forever if the call fails — the game must not care. */
+  const [monthProfit, setMonthProfit] = useState<number | null>(null);
+  const arcade = useRef<Arcade>(null as unknown as Arcade);
+  if (!arcade.current) arcade.current = new Arcade();
+  const [muted, setMuted] = useState(() => arcade.current.muted);
 
   const [countMs, setCountMs] = useState(0);
   const [countSegs, setCountSegs] = useState(1);
-  const credits = useCountUp(saved.credits, reduced ? 0 : countMs, countSegs);
+  const shownBalance = useCountUp(saved.balance, reduced ? 0 : countMs, countSegs);
 
   const cellRefs = useRef<(HTMLDivElement | null)[][]>(REELS.map(() => []));
   const colRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -389,8 +461,15 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
   const afterModal = useRef<(() => void) | null>(null);
   const busyRef = useRef(false);
 
-  const totalBet = saved.lineBet * LINE_COUNT;
+  /** Dollars. `override` is the one-off stake used by "Bet the month". */
+  const stake = betOverride ?? totalBet(saved.denom, saved.credits);
+  const perLine = stake / LINE_COUNT;
   const H = windowH(geo), W = frameW(geo), R = radius(geo), P = pitch(geo);
+  const GLASS_PAD = geo === FULL ? 14 : 12;
+  /** Border-box width that leaves the five reels exactly W of content: the padding on
+   *  both sides plus the 1px border on each. Everything in the cabinet shares it, which
+   *  is what keeps the meters, the glass and the rail on one edge. */
+  const COLUMN = W + GLASS_PAD * 2 + 2;
   // Landed offset: the middle row (lane index LEAD + 1) sits at the front of the drum.
   const restY = H / 2 - ((LEAD + 1) * P + geo.cell / 2);
   const inFree = free.left > 0 || free.total > 0;
@@ -418,7 +497,21 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
     }
   }, [H, P, R, geo.cell]);
 
-  useEffect(() => () => { clearTimers(); cancelAnimationFrame(raf.current); }, []);
+  useEffect(() => {
+    const a = arcade.current;
+    return () => { clearTimers(); cancelAnimationFrame(raf.current); a.dispose(); };
+  }, []);
+
+  // The month's profit, read once. This is the only business figure the game ever
+  // touches, it is read-only, and it is the same number the Dashboard shows — never a
+  // second opinion computed here. If the call fails the button simply never appears.
+  useEffect(() => {
+    let live = true;
+    api.dashboardStats()
+      .then((d) => { if (live) setMonthProfit(Number(d?.profit_mtd) || 0); })
+      .catch(() => { /* offline, or no deals yet — the game does not care */ });
+    return () => { live = false; };
+  }, []);
   useEffect(() => { store(accountId, saved); }, [accountId, saved]);
 
   useEffect(() => {
@@ -434,7 +527,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
     REELS.forEach((_, i) => paint(i, restY, false));
   }, [phase, restY, lanes, paint]);
 
-  const reveal = useCallback((out: ReturnType<typeof evaluate>, bet: number, isFree: boolean) => {
+  const reveal = useCallback((out: ReturnType<typeof evaluate>, bet: number, isFree: boolean, winC: number) => {
     setPhase("revealing");
     const ranked = [...out.lineWins].sort((a, b) => b.pay - a.pay);
     const first = ranked.slice(0, 5), rest = ranked.slice(5);
@@ -444,7 +537,11 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
       setLit(new Set(marks));
     };
 
-    first.forEach((w, i) => at(200 * i, () => { setDrawn((d) => [...d, w.line]); mark(w.cells); }));
+    first.forEach((w, i) => at(200 * i, () => {
+      setDrawn((d) => [...d, w.line]);
+      mark(w.cells);
+      arcade.current.lineHit(i);
+    }));
     if (rest.length) at(200 * first.length, () => {
       setDrawn((d) => [...d, ...rest.map((w) => w.line)]);
       rest.forEach((w) => mark(w.cells));
@@ -454,29 +551,35 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
     const beats = 200 * (first.length + (rest.length ? 1 : 0)) + 260;
     at(beats, () => {
       const grand = ranked.some((w) => w.symbol === "bjm" && w.count === 5);
-      if (out.win > 0) {
+      const big = out.win >= bet * 20;
+      if (winC > 0) {
         const top = ranked[0];
+        const amount = usd(winC, true);
         setMsg(
           grand
-            ? { primary: "Grand prize — five BJM", secondary: `${out.win.toLocaleString()} credits`, accent: true }
-            : out.win >= bet * 20
-              ? { primary: "Big win", secondary: `${out.win.toLocaleString()} credits`, accent: true }
+            ? { primary: "Grand prize — five BJM", secondary: amount, accent: true }
+            : big
+              ? { primary: "Big win", secondary: amount, accent: true }
               : ranked.length > 5
-                ? { primary: `${ranked.length} lines — ${out.win.toLocaleString()} credits` }
+                ? { primary: `${ranked.length} lines — ${amount}` }
                 : top
-                  ? { primary: `${top.count} x ${SYMBOL_BY_ID[top.symbol].name} — ${out.win.toLocaleString()} credits` }
-                  : { primary: `${out.beacons.length} harbour beacons — ${out.win.toLocaleString()} credits` },
+                  ? { primary: `${top.count} x ${SYMBOL_BY_ID[top.symbol].name} — ${amount}` }
+                  : { primary: `${out.beacons.length} harbour beacons — ${amount}` },
         );
+        if (grand) arcade.current.fanfare("grand");
+        else if (big) arcade.current.fanfare("big");
+        else arcade.current.coins(Math.max(2, Math.round(out.win / Math.max(bet / LINE_COUNT, 0.01))));
       }
       setCountSegs(grand ? 3 : 1);
-      setCountMs(grand ? 2000 : out.win >= bet * 20 ? 1400 : Math.min(900, 320 + out.win * 1.5));
+      setCountMs(grand ? 2000 : big ? 1400 : Math.min(900, 320 + (winC / Math.max(1, Math.round(bet * 100))) * 90));
       setSaved((sv) => ({
-        ...sv, credits: sv.credits + out.win,
-        stats: { ...sv.stats, won: sv.stats.won + out.win, best: Math.max(sv.stats.best, out.win) },
+        ...sv, balance: sv.balance + winC,
+        stats: { ...sv.stats, won: sv.stats.won + winC, best: Math.max(sv.stats.best, winC) },
       }));
-      if (isFree) setFree((fr) => ({ ...fr, won: fr.won + out.win }));
+      if (isFree) setFree((fr) => ({ ...fr, won: fr.won + winC }));
 
       if (out.freeSpinsAwarded > 0) at(320, () => {
+        arcade.current.fanfare("bonus");
         setMsg({ primary: "Free spins", secondary: `${out.freeSpinsAwarded} spins, every win doubled` });
         setFree((fr) => ({ left: fr.left + out.freeSpinsAwarded, total: fr.total + out.freeSpinsAwarded, won: fr.won }));
       });
@@ -486,7 +589,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
 
   const doSpin = useCallback((isFree: boolean) => {
     if (phase !== "idle" || modal) return;
-    if (!isFree && saved.credits < totalBet) return;
+    if (!isFree && saved.balance < Math.round(stake * 100)) return;
 
     clearTimers();
     cancelAnimationFrame(raf.current);
@@ -495,50 +598,58 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
     setPhase("spinning");
     setLanded(0);
 
-    const bet = totalBet;
+    const bet = stake;
+    const betC = Math.round(bet * 100);
     // The whole result — window, lines, scatter, jackpot — is decided right here.
     const stops = REELS.map((strip) => Math.floor(Math.random() * strip.length));
     const grid: Grid = REELS.map((strip, r) => [0, 1, 2].map((k) => strip[(stops[r] + k) % strip.length]));
-    const out = evaluate(grid, saved.lineBet, isFree);
-    const jackpot = isFree ? null : rollJackpot(Math.random, bet);
-    const jackpotAmount = jackpot ? Math.round(saved.meters[jackpot.id] ?? jackpot.seed) : 0;
+    const out = evaluate(grid, bet / LINE_COUNT, isFree);
+    const winC = Math.round(out.win * 100);
+    // Free spins are unwagered: they move no meter and can win no progressive.
+    const jp = isFree
+      ? { state: saved.meters, won: null, amount: 0 }
+      : advanceJackpots(saved.meters, bet, Math.random);
+    const jackpotC = jp.won ? Math.round(jp.amount * 100) : 0;
 
     setLanes(REELS.map((strip, r) => Array.from({ length: LANE }, (_, k) =>
       strip[(stops[r] - LEAD + k + 2 * strip.length) % strip.length])));
     setLines(out.lineWins);
+    arcade.current.press();
+    arcade.current.startSpin(SYMBOLS_PER_SECOND);
 
-    setSaved((sv) => {
-      const meters = { ...sv.meters };
-      if (!isFree) JACKPOTS.forEach((t) => { meters[t.id] = (meters[t.id] ?? t.seed) + meterGain(t, bet); });
-      if (jackpot) meters[jackpot.id] = jackpot.seed;
-      return {
-        ...sv,
-        credits: sv.credits - (isFree ? 0 : bet) + jackpotAmount,
-        meters,
-        stats: {
-          ...sv.stats,
-          spins: sv.stats.spins + (isFree ? 0 : 1),
-          wagered: sv.stats.wagered + (isFree ? 0 : bet),
-          won: sv.stats.won + jackpotAmount,
-          best: Math.max(sv.stats.best, jackpotAmount),
-          jackpots: sv.stats.jackpots + (jackpot ? 1 : 0),
-        },
-      };
-    });
+    setSaved((sv) => ({
+      ...sv,
+      // A fronted month bet tops the balance up to the stake first, so the one place
+      // the balance could go negative cannot.
+      balance: Math.max(sv.balance, isFree ? 0 : betC) - (isFree ? 0 : betC) + jackpotC,
+      meters: jp.state,
+      stats: {
+        ...sv.stats,
+        spins: sv.stats.spins + (isFree ? 0 : 1),
+        wagered: sv.stats.wagered + (isFree ? 0 : betC),
+        won: sv.stats.won + jackpotC,
+        best: Math.max(sv.stats.best, jackpotC),
+        jackpots: sv.stats.jackpots + (jp.won ? 1 : 0),
+      },
+    }));
+    setBetOverride(null);
     if (isFree) setFree((fr) => ({ ...fr, left: fr.left - 1 }));
 
     const finish = () => {
-      if (jackpot) {
-        setFlashTier(jackpot.id);
+      const won = jp.won;
+      if (won) {
+        setFlashTier(won.id);
         at(1200, () => setFlashTier(null));
-        if (jackpot.id === "major" || jackpot.id === "grand") {
-          afterModal.current = () => reveal(out, bet, isFree);
-          setModal({ tier: jackpot.name, amount: jackpotAmount });
+        if (won.id === "major" || won.id === "grand") {
+          afterModal.current = () => reveal(out, bet, isFree, winC);
+          arcade.current.fanfare("grand");
+          setModal({ tier: won.name, amount: jackpotC });
           return; // Collect resumes the reveal
         }
-        setMsg({ primary: `${jackpot.name} jackpot — ${jackpotAmount.toLocaleString()} credits`, accent: true });
+        arcade.current.fanfare("bonus");
+        setMsg({ primary: `${won.name} jackpot — ${usd(jackpotC)}`, accent: true });
       }
-      reveal(out, bet, isFree);
+      reveal(out, bet, isFree, winC);
     };
 
     if (reduced) { setLanded(REELS.length); at(60, finish); return; }
@@ -554,6 +665,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
       if (resolved) return;
       resolved = true;
       cancelAnimationFrame(raf.current);
+      arcade.current.stopSpin();
       REELS.forEach((_, i) => paint(i, restY, false));
       setLanded(REELS.length);
       at(pause, finish);
@@ -589,15 +701,16 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
         for (let i = seen; i < done; i++) {
           const col = colRefs.current[i];
           if (col) { col.classList.add("cd-thud"); window.setTimeout(() => col.classList.remove("cd-thud"), 200); }
+          arcade.current.reelStop(Math.min(4, i) as 0 | 1 | 2 | 3 | 4);
         }
         seen = done;
         setLanded(done);
       }
       if (done < REELS.length) raf.current = requestAnimationFrame(frame);
-      else land(110);
+      else { arcade.current.stopSpin(); land(110); }
     };
     raf.current = requestAnimationFrame(frame);
-  }, [phase, modal, saved.credits, saved.lineBet, saved.meters, totalBet, restY, reduced, at, reveal, paint]);
+  }, [phase, modal, saved.balance, saved.meters, stake, restY, reduced, at, reveal, paint]);
 
   /** Spin, or — pressed again mid-spin — bring every unlanded reel to rest early. The
    *  outcome was decided at the first press, so skipping cannot change it. */
@@ -618,7 +731,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
       return () => clearTimeout(t);
     }
     if (free.total > 0) {
-      setMsg({ primary: "Free spins complete", secondary: `${free.won.toLocaleString()} credits` });
+      setMsg({ primary: "Free spins complete", secondary: `${usd(free.won)} credits` });
       const t = window.setTimeout(() => setFree({ left: 0, total: 0, won: 0 }), 2000);
       return () => clearTimeout(t);
     }
@@ -640,12 +753,28 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
     if (resume) resume(); else setPhase("idle");
   };
 
-  const broke = saved.credits < totalBet && !inFree;
-  const betIndex = LINE_BETS.indexOf(saved.lineBet as typeof LINE_BETS[number]);
-  const stepBet = (d: number) => {
-    const i = Math.max(0, Math.min(LINE_BETS.length - 1, betIndex + d));
-    setSaved((sv) => ({ ...sv, lineBet: LINE_BETS[i] }));
-  };
+  const stakeC = Math.round(stake * 100);
+  const broke = saved.balance < stakeC && !inFree;
+  const denomIndex = DENOMS.indexOf(saved.denom as typeof DENOMS[number]);
+  const creditIndex = CREDITS_PER_LINE.indexOf(saved.credits as typeof CREDITS_PER_LINE[number]);
+  const setDenom = (i: number) =>
+    setSaved((sv) => ({ ...sv, denom: DENOMS[Math.max(0, Math.min(DENOMS.length - 1, i))] }));
+  const setCredits = (i: number) =>
+    setSaved((sv) => ({ ...sv, credits: CREDITS_PER_LINE[Math.max(0, Math.min(CREDITS_PER_LINE.length - 1, i))] }));
+  const maxBet = () => setSaved((sv) => ({
+    ...sv, denom: DENOMS[DENOMS.length - 1], credits: CREDITS_PER_LINE[CREDITS_PER_LINE.length - 1],
+  }));
+
+  /** The month's real profit, put on one spin. The figure is READ and never written:
+   *  the wager is imaginary and no outcome here can move it by a cent.
+   *
+   *  The house fronts the stake if the balance will not cover it. There is no economy
+   *  to protect — Reload hands out a fresh float for nothing — and requiring you to
+   *  already hold a month's profit would mean the button could essentially never be
+   *  pressed, which is the opposite of the point. */
+  const canBetMonth = monthProfit != null && monthProfit >= MIN_BET;
+  const fronted = canBetMonth && saved.balance < Math.round(monthProfit! * 100);
+  const betTheMonth = () => { if (canBetMonth && !busy) setBetOverride(monthProfit!); };
 
   return (
     <div className="cd fixed inset-0 z-[90] flex items-center justify-center bg-black/45 p-6 overflow-auto"
@@ -702,7 +831,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
       <div className="bg-surface-3 border border-line-3 rounded-2xl p-2 animate-scale-in"
         style={{ boxShadow: "var(--shadow-panel)" }} onClick={(e) => e.stopPropagation()}>
         <div className="bg-surface border border-line rounded-xl" style={{ padding: geo === FULL ? 26 : 20 }}>
-          <div style={{ width: W }}>
+          <div style={{ width: COLUMN }}>
 
             {/* Header */}
             <div className="flex items-start justify-between" style={{ height: 36 }}>
@@ -717,6 +846,12 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
                     Free spin {Math.min(free.total, free.total - free.left + (phase === "idle" ? 0 : 1))} of {free.total}
                   </StatusPill>
                 )}
+                <button
+                  onClick={() => { const m = !muted; arcade.current.setMuted(m); setMuted(m); if (!m) arcade.current.press(); }}
+                  title={muted ? "Sound off" : "Sound on"}
+                  className="w-7 h-7 rounded-md border border-line text-muted hover:text-ink hover:bg-surface-2 flex items-center justify-center transition-colors">
+                  {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                </button>
                 <button onClick={() => setPaytable(true)} title="Paytable"
                   className="w-7 h-7 rounded-md border border-line text-muted hover:text-ink hover:bg-surface-2 flex items-center justify-center transition-colors">
                   <Info size={14} />
@@ -736,7 +871,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
                   style={flashTier === t.id ? { boxShadow: "inset 0 0 0 1px rgb(var(--c-accent))" } : undefined}>
                   <div className="text-[11px] text-muted leading-none">{t.name}</div>
                   <div className="text-[16px] font-semibold text-ink tabular-nums leading-none mt-1.5">
-                    {Math.floor(saved.meters[t.id] ?? t.seed).toLocaleString()}
+                    {usd(Math.round((saved.meters[t.id]?.meter ?? t.seed) * 100))}
                   </div>
                 </div>
               ))}
@@ -744,14 +879,14 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
 
             {/* The glass, and behind it five drums */}
             <div className={`cd-glass mt-4 bg-surface-2 rounded-lg border transition-colors ${inFree ? "border-accent" : "border-line-2"}`}
-              style={{ padding: geo === FULL ? 14 : 12 }}>
+              style={{ padding: GLASS_PAD, width: COLUMN }}>
               <div className="relative" style={{ width: W, height: H }}>
                 <div className="absolute inset-0 flex" style={{ gap: geo.gutter }}>
                   {lanes.map((lane, r) => (
                     <div key={r} ref={(el) => { colRefs.current[r] = el; }}
                       className="relative overflow-hidden"
                       style={{ width: geo.cell, height: H, perspective: PERSP, perspectiveOrigin: "50% 50%" }}>
-                      <div className="cd-drum absolute inset-0">
+                      <div className="cd-drum absolute inset-0" style={{ transform: `translateZ(${-R}px)` }}>
                         {lane.map((id, k) => (
                           <div key={k} ref={(el) => { cellRefs.current[r][k] = el; }}
                             className="cd-face absolute left-0 flex items-center justify-center"
@@ -796,27 +931,39 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
 
             {/* Control rail */}
             <div className="flex items-center justify-between" style={{ height: 64 }}>
-              <div className="bg-surface-2 border border-line-2 rounded-lg px-3 py-2" style={{ width: geo === FULL ? 160 : 132 }}>
-                <div className="text-[11px] text-muted leading-none">Credits</div>
-                <div className="text-[20px] font-bold text-ink tabular-nums leading-none mt-1.5">{credits.toLocaleString()}</div>
+              <div className="bg-surface-2 border border-line-2 rounded-lg px-3 py-2" style={{ width: geo === FULL ? 158 : 132 }}>
+                <div className="text-[11px] text-muted leading-none">Balance</div>
+                <div className="text-[20px] font-bold text-ink tabular-nums leading-none mt-1.5">{usd(shownBalance)}</div>
               </div>
 
-              <div className={`flex flex-col items-center gap-1 transition-opacity ${inFree ? "opacity-50 pointer-events-none" : ""}`}>
-                <div className="flex items-center h-10 rounded-full border border-line bg-surface">
-                  <button onClick={() => stepBet(-1)} disabled={busy || betIndex === 0}
-                    className="w-8 h-8 ml-1 rounded-full text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[15px] leading-none">−</button>
-                  <span className="px-3 text-[13px] text-ink whitespace-nowrap tabular-nums">
-                    Line bet {saved.lineBet}<span className="text-muted"> · Total {totalBet}</span>
-                  </span>
-                  <button onClick={() => stepBet(1)} disabled={busy || betIndex === LINE_BETS.length - 1}
-                    className="w-8 h-8 mr-1 rounded-full text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[15px] leading-none">+</button>
+              {/* Denomination, then credits per line — the cabinet's own arithmetic.
+                  Total bet is what the player actually reads, so it is the bold half. */}
+              <div className={`flex flex-col items-center gap-1.5 transition-opacity ${inFree || betOverride ? "opacity-50 pointer-events-none" : ""}`}>
+                <div className="flex items-center h-7 rounded-full border border-line bg-surface overflow-hidden">
+                  {DENOMS.map((d, i) => (
+                    <button key={d} onClick={() => setDenom(i)} disabled={busy}
+                      className={`px-2 h-full text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed ${
+                        denomIndex === i ? "bg-accent text-on-accent" : "text-ink-2 hover:bg-surface-2"}`}>
+                      {d < 1 ? `${Math.round(d * 100)}¢` : `$${d}`}
+                    </button>
+                  ))}
                 </div>
-                <span className="text-[11px] text-faint">{LINE_COUNT} lines</span>
+                <div className="flex items-center h-9 rounded-full border border-line bg-surface">
+                  <button onClick={() => setCredits(creditIndex - 1)} disabled={busy || creditIndex === 0}
+                    className="w-8 h-8 ml-1 rounded-full text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[15px] leading-none">−</button>
+                  <span className="px-2.5 text-[12px] text-muted whitespace-nowrap tabular-nums">
+                    {saved.credits} a line · <span className="text-[13px] font-semibold text-ink">{usd(stakeC, true)}</span>
+                  </span>
+                  <button onClick={() => setCredits(creditIndex + 1)} disabled={busy || creditIndex === CREDITS_PER_LINE.length - 1}
+                    className="w-8 h-8 rounded-full text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[15px] leading-none">+</button>
+                  <button onClick={maxBet} disabled={busy || stake >= MAX_BET} title={`Max bet — ${usd(MAX_BET * 100)}`}
+                    className="px-2.5 h-8 mr-1 rounded-full text-[11px] font-medium text-ink-2 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Max</button>
+                </div>
               </div>
 
               {broke ? (
                 <button
-                  onClick={() => setSaved((sv) => ({ ...sv, credits: OPENING_FLOAT, stats: { ...sv.stats, floats: sv.stats.floats + 1 } }))}
+                  onClick={() => { arcade.current.press(); setSaved((sv) => ({ ...sv, balance: OPENING_FLOAT * 100, stats: { ...sv.stats, floats: sv.stats.floats + 1 } })); }}
                   className="h-10 px-4 rounded-full bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-semibold transition-colors">
                   Reload the float
                 </button>
@@ -834,14 +981,29 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
               )}
             </div>
 
+            {canBetMonth && !inFree && (
+              <div className="flex justify-center pb-1">
+                <button
+                  onClick={() => (betOverride ? setBetOverride(null) : betTheMonth())}
+                  disabled={busy}
+                  title="Stakes a sum equal to this month's profit. The money is imaginary; the figure is not."
+                  className={`h-8 px-3.5 rounded-full border text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    betOverride ? "border-accent text-accent bg-accent/10" : "border-line text-ink-2 hover:bg-surface-2"}`}>
+                  {betOverride
+                    ? `Staking the month — ${usd(Math.round(betOverride * 100))} · cancel`
+                    : `Bet the month — ${usd(Math.round(monthProfit! * 100))}${fronted ? ", fronted" : ""}`}
+                </button>
+              </div>
+            )}
+
             <div className="flex items-center justify-between text-[11px] text-faint tabular-nums pt-1">
               <span>
                 {saved.stats.spins.toLocaleString()} {saved.stats.spins === 1 ? "spin" : "spins"} · best{" "}
-                {saved.stats.best.toLocaleString()}
+                {usd(saved.stats.best)}
               </span>
               <span>
                 {saved.stats.wagered > 0
-                  ? `returned ${((saved.stats.won / saved.stats.wagered) * 100).toFixed(1)}% of ${saved.stats.wagered.toLocaleString()} staked`
+                  ? `returned ${((saved.stats.won / saved.stats.wagered) * 100).toFixed(1)}% of ${usd(saved.stats.wagered)} staked`
                   : "95.82% return to player"}
               </span>
             </div>
@@ -856,8 +1018,8 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
           <div className="bg-surface border border-accent rounded-2xl w-full max-w-md p-6 text-center animate-scale-in"
             style={{ boxShadow: "var(--shadow-modal)" }}>
             <h3 className="text-[20px] font-semibold text-ink">{modal.tier} jackpot</h3>
-            <div className="text-[34px] font-bold text-accent tabular-nums my-3">{modal.amount.toLocaleString()}</div>
-            <p className="text-[12px] text-muted mb-5">credits, straight off the meter</p>
+            <div className="text-[34px] font-bold text-accent tabular-nums my-3">{usd(modal.amount, true)}</div>
+            <p className="text-[12px] text-muted mb-5">straight off the meter</p>
             <button onClick={collect}
               className="h-10 px-6 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[13px] font-semibold transition-colors">
               Collect
@@ -866,7 +1028,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
         </div>
       )}
 
-      {paytable && <Paytable lineBet={saved.lineBet} onClose={() => setPaytable(false)} />}
+      {paytable && <Paytable perLine={perLine} onClose={() => setPaytable(false)} />}
     </div>
   );
 }

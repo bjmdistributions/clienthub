@@ -17,8 +17,10 @@
  *   free spins           1 in 481 spins
  *   grand prize          1 in 105,621 spins (five BJM on one line)
  *
- * Play money only — nothing here reads or writes business data. crossdock.test.ts
- * re-measures every figure above, so an edit to a strip cannot quietly move the RTP.
+ * Play money only. Stakes and wins are denominated in dollars the way a real cabinet
+ * is — denomination x lines x bet per line — but no amount here is ever a real one.
+ * crossdock.test.ts re-measures every figure above, so an edit to a strip cannot
+ * quietly move the RTP.
  */
 
 export type SymbolId =
@@ -86,9 +88,32 @@ export const PAYLINES: number[][] = [
 
 export const ROWS = 3;
 export const LINE_COUNT = PAYLINES.length;
-/** Line-bet steps. The total bet is always lineBet * 20. */
-export const LINE_BETS = [1, 2, 5, 10] as const;
-export const BASE_TOTAL_BET = 20;
+
+/* ── what a spin costs ────────────────────────────────────────────────────────
+   The cabinet's own arithmetic: a DENOMINATION is what one credit is worth, and
+   the player bets a whole number of credits on each of the 20 lines. So
+
+       total bet = denomination x 20 lines x credits per line
+
+   which runs from 1c x 20 x 1 = $0.20 up to $1 x 20 x 5 = $100.00 a spin. Every
+   payout in the table above is a multiple of the LINE stake, so the return is the
+   same at every denomination — betting bigger buys more of the same game, never a
+   better one.                                                                   */
+
+/** Dollars per credit, the standard multi-denomination ladder. */
+export const DENOMS = [0.01, 0.02, 0.05, 0.10, 0.25, 1.0] as const;
+/** Credits wagered on each line. */
+export const CREDITS_PER_LINE = [1, 2, 3, 4, 5] as const;
+
+export const lineStake = (denom: number, credits: number) => denom * credits;
+export const totalBet = (denom: number, credits: number) => lineStake(denom, credits) * LINE_COUNT;
+export const MIN_BET = totalBet(DENOMS[0], CREDITS_PER_LINE[0]);
+export const MAX_BET = totalBet(DENOMS[DENOMS.length - 1], CREDITS_PER_LINE[CREDITS_PER_LINE.length - 1]);
+
+/** Money is held in whole cents everywhere, so a run of thousands of spins cannot
+ *  drift the balance by float error. */
+export const cents = (dollars: number) => Math.round(dollars * 100);
+export const dollars = (c: number) => c / 100;
 
 /** Free spins for 3, 4 and 5 beacons. Every win during them doubles; no retrigger. */
 const FREE_SPINS_FOR: Record<number, number> = { 3: 6, 4: 10, 5: 16 };
@@ -97,25 +122,60 @@ export const FREE_SPIN_MULTIPLIER = 2;
 export interface JackpotTier {
   id: "mini" | "minor" | "major" | "grand";
   name: string;
-  /** Where the meter resets after it is won. */
+  /** Dollars the meter resets to after it is won. */
   seed: number;
-  /** Probability per spin at the 20-credit base bet; scales linearly with stake. */
-  pBase: number;
-  /** Credits onto the visible meter per spin at the base bet. The rest of the tier's
-   *  take is held back to re-seed it, which is why the meter climbs slower than the
-   *  contribution rate. */
-  meterRate: number;
+  /** The highest a hidden target may be. */
+  cap: number;
+  /** Share of this tier's take that shows on the meter; the remainder is held back to
+   *  re-seed the next cycle. Derived, not chosen — see jackpotVisible below. */
+  visible: number;
 }
 
-/** Mini / Minor / Major / Grand, funded by 1.20% of every bet split evenly four ways.
- *  Long-run average award = seed + meterRate / pBase, so contributions in equal awards
- *  out exactly. Ordered high to low: at most one tier is awarded per spin. */
+/** Each tier takes 0.30% of every dollar wagered; four tiers, 1.20% in total. */
+export const TIER_RATE = 0.003;
+
+/**
+ * A must-hit-by progressive, which is what a real mystery jackpot is.
+ *
+ * When a tier resets, a target is drawn uniformly between its seed and its cap and
+ * hidden. The meter climbs on every wagered dollar, and the instant it reaches that
+ * target it pays out whatever it is showing and reseeds.
+ *
+ * This replaced a fixed per-spin probability, which does not survive real money: a
+ * probability that scales with stake means a $100 spin wins the same small average
+ * award far more often, so the top tier stops meaning anything at the top of the bet
+ * range. A must-hit-by meter is bet-size independent by construction — bet more and
+ * you fill it faster, and what you win is what the meter says.
+ *
+ * The split between the visible meter and the reserve is forced, not tuned. Over one
+ * cycle the meter must climb (target - seed) and the reserve must accrue exactly the
+ * seed for the next one, so with an average target of (seed + cap) / 2:
+ *
+ *     visible = (mean target - seed) / mean target
+ *
+ * and every dollar taken comes back out. crossdock.test.ts checks that, by simulation
+ * as well as by arithmetic.
+ */
+export const jackpotVisible = (seed: number, cap: number) => {
+  const mean = (seed + cap) / 2;
+  return (mean - seed) / mean;
+};
+
+const tier = (id: JackpotTier["id"], name: string, seed: number, cap: number): JackpotTier =>
+  ({ id, name, seed, cap, visible: jackpotVisible(seed, cap) });
+
+/** Ordered high to low: at most one tier is awarded per spin. */
 export const JACKPOTS: JackpotTier[] = [
-  { id: "grand", name: "Grand", seed: 25000, pBase: 1 / 1000000, meterRate: 0.035 },
-  { id: "major", name: "Major", seed: 1200,  pBase: 1 / 50000,   meterRate: 0.036 },
-  { id: "minor", name: "Minor", seed: 120,   pBase: 1 / 5000,    meterRate: 0.036 },
-  { id: "mini",  name: "Mini",  seed: 25,    pBase: 1 / 1000,    meterRate: 0.035 },
+  tier("grand", "Grand", 5000, 50000),
+  tier("major", "Major", 500, 5000),
+  tier("minor", "Minor", 50, 500),
+  tier("mini", "Mini", 10, 50),
 ];
+
+/** Where a freshly reseeded tier will next pay out. Hidden from the player. */
+export function drawTarget(t: JackpotTier, rng: Rng): number {
+  return t.seed + rng() * (t.cap - t.seed);
+}
 
 export type Rng = () => number;
 
@@ -202,18 +262,38 @@ export function spin(rng: Rng, lineBet: number, freeSpin = false): SpinOutcome {
   return { stops, grid, ...evaluate(grid, lineBet, freeSpin) };
 }
 
-/** Credits a meter gains this spin. Scales with stake, so the average award — and with
- *  it the 1.20% contribution — is identical at every bet level. */
-export function meterGain(tier: JackpotTier, totalBet: number): number {
-  return tier.meterRate * (totalBet / BASE_TOTAL_BET);
+/** Dollars this tier's meter gains from one wagered spin. */
+export function meterGain(t: JackpotTier, bet: number): number {
+  return bet * TIER_RATE * t.visible;
 }
 
-/** One mystery roll per tier, highest first, at most one winner. Free spins are
- *  unwagered and must never call this. */
-export function rollJackpot(rng: Rng, totalBet: number): JackpotTier | null {
-  const scale = totalBet / BASE_TOTAL_BET;
-  for (const t of JACKPOTS) if (rng() < t.pBase * scale) return t;
-  return null;
+export interface MeterState { meter: number; target: number }
+
+/**
+ * Advance every meter for one wagered spin and award at most one tier, highest first.
+ * Returns the new state and the tier that paid, if any. Free spins are unwagered and
+ * must never call this.
+ */
+export function advanceJackpots(
+  state: Record<string, MeterState>,
+  bet: number,
+  rng: Rng,
+): { state: Record<string, MeterState>; won: JackpotTier | null; amount: number } {
+  const next: Record<string, MeterState> = { ...state };
+  let won: JackpotTier | null = null;
+  let amount = 0;
+  for (const t of JACKPOTS) {
+    const cur = next[t.id] ?? { meter: t.seed, target: drawTarget(t, rng) };
+    const meter = cur.meter + meterGain(t, bet);
+    if (!won && meter >= cur.target) {
+      won = t;
+      amount = meter;
+      next[t.id] = { meter: t.seed, target: drawTarget(t, rng) };
+    } else {
+      next[t.id] = { meter, target: cur.target };
+    }
+  }
+  return { state: next, won, amount };
 }
 
 /** Deterministic RNG for the tests. The game itself uses Math.random. */

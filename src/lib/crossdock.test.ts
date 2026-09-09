@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   REELS, PAYLINES, SYMBOLS, SYMBOL_BY_ID, JACKPOTS, LINE_COUNT, ROWS,
-  BASE_TOTAL_BET, mulberry32, spin, evaluate, meterGain, rollJackpot,
-  type SymbolId,
+  DENOMS, CREDITS_PER_LINE, MIN_BET, MAX_BET, TIER_RATE,
+  mulberry32, spin, evaluate, meterGain, advanceJackpots, jackpotVisible,
+  lineStake, totalBet, cents,
+  type SymbolId, type MeterState,
 } from "./crossdock";
 
 /** P(a given cell on a given reel shows `id`). One row of a reel is uniform over its strip. */
@@ -84,7 +86,7 @@ describe("cross-dock return to player", () => {
   it("pays back 92.2708% of the base game, exactly", () => {
     const dist = beaconCountDistribution();
     const scatter = [3, 4, 5].reduce((a, n) => a + dist[n] * SYMBOL_BY_ID.beacon.pays[n - 3], 0);
-    const rtp = (exactLinePayPerLine() * LINE_COUNT + scatter) / BASE_TOTAL_BET;
+    const rtp = (exactLinePayPerLine() * LINE_COUNT + scatter) / LINE_COUNT;
     expect(rtp).toBeCloseTo(0.922708, 5);
   });
 
@@ -99,18 +101,67 @@ describe("cross-dock return to player", () => {
   });
 
   it("funds the four progressives with exactly 1.20% of every bet", () => {
-    // Contributions in must equal awards out: average award = seed + meterRate / pBase.
-    const paidOut = JACKPOTS.reduce((a, t) => a + t.pBase * (t.seed + t.meterRate / t.pBase), 0);
-    expect(paidOut / BASE_TOTAL_BET).toBeCloseTo(0.012, 9);
+    expect(JACKPOTS).toHaveLength(4);
+    expect(JACKPOTS.length * TIER_RATE).toBeCloseTo(0.012, 12);
 
-    // ...and at any stake, because the meter and the odds scale together.
-    for (const totalBet of [20, 40, 100, 200]) {
-      const out = JACKPOTS.reduce((a, t) => {
-        const pr = t.pBase * (totalBet / BASE_TOTAL_BET);
-        return a + pr * (t.seed + meterGain(t, totalBet) / pr);
-      }, 0);
-      expect(out / totalBet, `at a ${totalBet} credit bet`).toBeCloseTo(0.012, 9);
+    // A must-hit-by tier balances when what the meter has to climb over one cycle,
+    // grossed back up by the reserve it also holds, equals what it pays out.
+    for (const t of JACKPOTS) {
+      const meanTarget = (t.seed + t.cap) / 2;
+      const volume = (meanTarget - t.seed) / (TIER_RATE * t.visible);
+      const takenIn = TIER_RATE * volume;
+      expect(takenIn, `${t.name} balance`).toBeCloseTo(meanTarget, 6);
+      expect(t.visible).toBe(jackpotVisible(t.seed, t.cap));
+      expect(t.cap).toBeGreaterThan(t.seed);
     }
+  });
+
+  it("pays the progressives back at 1.20%, whatever the stake, over a real run", () => {
+    // Mini and Minor cycle often enough to measure directly. Bet at the top of the
+    // range so a few thousand cycles fit in a unit test.
+    for (const id of ["mini", "minor"] as const) {
+      const t = JACKPOTS.find((j) => j.id === id)!;
+      const rng = mulberry32(4242);
+      let state: Record<string, MeterState> = { [t.id]: { meter: t.seed, target: t.seed + rng() * (t.cap - t.seed) } };
+      let paid = 0, volume = 0;
+      const bet = MAX_BET;
+      for (let i = 0; i < 300_000; i++) {
+        volume += bet;
+        const only = { [t.id]: state[t.id] };
+        const meter = only[t.id].meter + meterGain(t, bet);
+        if (meter >= only[t.id].target) {
+          paid += meter;
+          state = { [t.id]: { meter: t.seed, target: t.seed + rng() * (t.cap - t.seed) } };
+        } else {
+          state = { [t.id]: { meter, target: only[t.id].target } };
+        }
+      }
+      const rate = paid / volume;
+      expect(rate, `${t.name} returned ${(rate * 100).toFixed(3)}%`).toBeGreaterThan(TIER_RATE * 0.96);
+      expect(rate, `${t.name} returned ${(rate * 100).toFixed(3)}%`).toBeLessThan(TIER_RATE * 1.04);
+    }
+  });
+
+  it("never awards more than one tier on a spin, and never loses a meter", () => {
+    const rng = mulberry32(7);
+    let state: Record<string, MeterState> = {};
+    let wins = 0;
+    for (let i = 0; i < 20_000; i++) {
+      const r = advanceJackpots(state, MAX_BET, rng);
+      state = r.state;
+      if (r.won) {
+        wins++;
+        expect(r.amount).toBeGreaterThanOrEqual(r.won.seed);
+        expect(r.amount).toBeLessThanOrEqual(r.won.cap + meterGain(r.won, MAX_BET) + 1e-9);
+        expect(state[r.won.id].meter).toBe(r.won.seed);
+      }
+      // every tier is always present and never negative
+      for (const t of JACKPOTS) {
+        expect(state[t.id].meter).toBeGreaterThanOrEqual(t.seed - 1e-9);
+        expect(state[t.id].target).toBeGreaterThan(t.seed);
+      }
+    }
+    expect(wins).toBeGreaterThan(0);
   });
 
   it("lands the grand prize about once in 105,000 spins", () => {
@@ -162,9 +213,45 @@ describe("cross-dock spins", () => {
     }
   });
 
-  it("awards at most one jackpot tier per spin", () => {
-    // Forced: an rng that always returns 0 clears every tier's threshold.
-    expect(rollJackpot(() => 0, BASE_TOTAL_BET)?.id).toBe("grand");
-    expect(rollJackpot(() => 1, BASE_TOTAL_BET)).toBeNull();
+  it("scales a win with the line stake and nothing else", () => {
+    const rng = mulberry32(99);
+    for (let i = 0; i < 2_000; i++) {
+      const { grid } = spin(rng, 1);
+      const base = evaluate(grid, 1).win;
+      expect(evaluate(grid, 0.05).win).toBeCloseTo(base * 0.05, 9);
+      expect(evaluate(grid, 5).win).toBeCloseTo(base * 5, 9);
+    }
+  });
+});
+
+describe("cross-dock bet structure", () => {
+  it("runs from 20 cents to 100 dollars a spin", () => {
+    expect(MIN_BET).toBeCloseTo(0.2, 10);
+    expect(MAX_BET).toBeCloseTo(100, 10);
+  });
+
+  it("is always denomination x 20 lines x credits per line", () => {
+    for (const d of DENOMS) {
+      for (const c of CREDITS_PER_LINE) {
+        expect(totalBet(d, c)).toBeCloseTo(lineStake(d, c) * LINE_COUNT, 10);
+        // and every reachable stake is a whole number of cents, so nothing rounds away
+        expect(Math.abs(cents(totalBet(d, c)) - totalBet(d, c) * 100)).toBeLessThan(1e-6);
+      }
+    }
+  });
+
+  it("returns the same share at every denomination", () => {
+    // Pays are multiples of the LINE stake, so the return cannot vary with denom —
+    // betting bigger buys more of the same game, never a better one.
+    const rng = mulberry32(2026);
+    const grids = Array.from({ length: 3_000 }, () => spin(rng, 1).grid);
+    const at = (stake: number) =>
+      grids.reduce((a, g) => a + evaluate(g, stake).win, 0) / (grids.length * stake * LINE_COUNT);
+    const penny = at(lineStake(0.01, 1));
+    for (const d of DENOMS) {
+      for (const c of CREDITS_PER_LINE) {
+        expect(at(lineStake(d, c))).toBeCloseTo(penny, 9);
+      }
+    }
   });
 });
