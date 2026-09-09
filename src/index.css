@@ -452,6 +452,12 @@ button:not(:disabled):active { opacity: 0.78; transition: opacity 60ms; }
   transition: top 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
 }
+/* R-224 gap: the sidebar paints its own dark gradient in every theme (see App.tsx),
+   but light-mono's --accent-glow is black (rgba(0,0,0,.14)) - on that permanently
+   dark rail it reads as a shadow instead of a glow. Same escape hatch as
+   .rail-spine further down: force it back to a white glow in light-mono only;
+   dark-mono's glow is already white and needs no override. */
+html.matte:not(.dark) .nav-indicator { box-shadow: 0 0 8px rgba(255,255,255,0.18); }
 
 /* ── Page transition ──────────────────────────────────────── */
 .page-enter { animation: page-slide-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both; }

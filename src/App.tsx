@@ -415,6 +415,10 @@ export default function App() {
   const [plan, setPlan] = useState<string | null>(null);
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  // R-224 gap: the navigate-tab listener needs the current visible() gate, but it's
+  // registered once (see the [] effect below) while visible() is a fresh function
+  // every render - a ref kept in sync near visible's own declaration is the bridge.
+  const visibleRef = useRef<(id: Tab) => boolean>(() => false);
   const [orgName, setOrgName] = useState<string>("");
   const [apCount, setApCount] = useState<number>(0);
   // Sign out is two-step: the first click arms it, the second one goes. It sits in
@@ -610,7 +614,12 @@ export default function App() {
   useEffect(() => {
     const onNavigate = (e: Event) => {
       const detail = (e as CustomEvent<Tab>).detail;
-      if (detail) setTab(detail);
+      // R-224 gap: a navigate-tab event (command palette, or any of the in-app
+      // "jump to X" shortcuts) used to land on any id at all, including a screen
+      // this role's sidebar hides. Route it through the same visible() gate the
+      // sidebar itself uses - via a ref, since this effect mounts once and visible
+      // is a fresh function every render.
+      if (detail && visibleRef.current(detail)) setTab(detail);
     };
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
@@ -720,6 +729,9 @@ export default function App() {
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
     : canViewTab(me, id as any);
+  // Kept in step every render so the navigate-tab listener above (mounted once,
+  // deps []) always gates against the current role rather than the one at mount.
+  useEffect(() => { visibleRef.current = visible; });
 
   // Flat list of every visible destination (mains + sub-items + utility) — used by
   // the split-view picker, which needs one flat menu rather than the grouped tree.
