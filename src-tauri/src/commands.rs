@@ -13941,8 +13941,19 @@ pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
         let env = crate::plaid::get_env();
         {
             let conn = pool().get().map_err(|e| e.to_string())?;
-            let exists: bool = conn.query_row("SELECT 1 FROM plaid_items WHERE item_id=?1", [&item_id], |_| Ok(())).is_ok();
-            if !exists {
+            // Guard against re-linking a bank already on this device: refresh the
+            // existing row's token/accounts instead of silently doing nothing (the
+            // old behavior left a stale token on a legitimate reconnect), and never
+            // insert a second row for the same item_id — symmetric with the dedup
+            // already used by plaid_exchange below.
+            let existing: Option<String> = conn.query_row(
+                "SELECT id FROM plaid_items WHERE item_id=?1", [&item_id], |r| r.get(0)).ok();
+            if let Some(eid) = existing {
+                conn.execute(
+                    "UPDATE plaid_items SET access_token=?1, accounts_json=?2, env=?3 WHERE id=?4",
+                    rusqlite::params![access, accounts_json, env, eid],
+                ).map_err(|e| e.to_string())?;
+            } else {
                 let id = format!("pi_{}", uuid::Uuid::new_v4().simple());
                 conn.execute(
                     "INSERT INTO plaid_items (id, item_id, access_token, institution, cursor, accounts_json, created_at, env)
