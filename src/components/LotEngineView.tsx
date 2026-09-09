@@ -1165,6 +1165,20 @@ function SlotCard({ slot, picked, onAdd }: { slot: LotRankedSlot; picked: boolea
         {n(slot.total)} units · {n(slot.styles)} styles · {fmtAmount(slot.msrp)} retail ·{" "}
         <span className="text-ink-2 font-medium">{n(slot.want)} you want</span>
       </p>
+      {(slot.breaks > 0 || slot.boxes.length > 0) && (
+        <p className="text-[11px] text-muted mt-0.5">
+          {slot.breaks > 0 && (
+            <>{n(slot.allowed)} match your rules · {n(slot.breaks)} break them</>
+          )}
+          {slot.breaks > 0 && slot.boxes.length > 0 && " · "}
+          {slot.boxes.length > 0 && (
+            <>
+              Boxes: {slot.boxes.slice(0, 3).join(", ")}
+              {slot.boxes.length > 3 ? `, and ${slot.boxes.length - 3} more` : ""}
+            </>
+          )}
+        </p>
+      )}
 
       <div className="mt-2 space-y-1">
         {slot.brands.slice(0, 4).map((b) => (
