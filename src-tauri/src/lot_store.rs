@@ -2170,8 +2170,10 @@ pub struct ExportResult {
 /// reconciliation assertion can run — an export that does not agree with its siblings is
 /// reported rather than quietly handed to a buyer.
 ///
-/// `format` is `csv` (default) or `xlsx`. Both render the same `Doc`, so the two files carry
-/// the same columns and the same totals — see `lot_engine::export`.
+/// `format` is `csv` (default), `xlsx` or `pdf`. All three render the same `Doc`, so they
+/// carry the same columns and the same totals — see `lot_engine::export` and, for `pdf`,
+/// `lot_export_pdf` (kept out of `lot_engine` because that module is shared with the server
+/// and only this binary carries `printpdf`).
 ///
 /// `dest_path` is a complete destination path from the caller's own save dialog, and beats
 /// `dest_dir` when both are given: the point of asking a person where to put the file is to
@@ -2217,8 +2219,11 @@ pub async fn export_lot_build(
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect();
-    let xlsx = matches!(format.as_deref(), Some("xlsx"));
-    let ext = if xlsx { "xlsx" } else { "csv" };
+    let ext = match format.as_deref() {
+        Some("xlsx") => "xlsx",
+        Some("pdf") => "pdf",
+        _ => "csv",
+    };
     let path = match dest_path {
         Some(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => {
@@ -2232,11 +2237,18 @@ pub async fn export_lot_build(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    if xlsx {
-        let bytes = export::to_xlsx(doc).map_err(|e| e.to_string())?;
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    } else {
-        std::fs::write(&path, export::to_csv(doc)).map_err(|e| e.to_string())?;
+    match ext {
+        "xlsx" => {
+            let bytes = export::to_xlsx(doc).map_err(|e| e.to_string())?;
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        }
+        "pdf" => {
+            let bytes = crate::lot_export_pdf::to_pdf(doc).map_err(|e| e.to_string())?;
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        }
+        _ => {
+            std::fs::write(&path, export::to_csv(doc)).map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(ExportResult {

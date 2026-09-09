@@ -7,6 +7,9 @@ import StatusPill from "./StatusPill";
 import { X, MapPin, Clock, DollarSign, ExternalLink, RotateCcw, RefreshCw, Search } from "lucide-react";
 
 const STAR_COUNT  = 450;
+// How long the globe waits after a manual drag release before it starts
+// auto-rotating again.
+const AUTO_ROTATE_RESUME_MS = 3000;
 
 // Initial camera — slightly tilted view of Earth
 const HOME_POV = { lat: 25, lng: -30, altitude: 2.0 };
@@ -188,8 +191,8 @@ export default function GlobeView() {
       let globe: any;
       try {
         globe = Globe()
-          .globeImageUrl("https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg")
-          .bumpImageUrl("https://unpkg.com/three-globe/example/img/earth-topology.png")
+          .globeImageUrl("/globe/earth-blue-marble.jpg")
+          .bumpImageUrl("/globe/earth-topology.png")
           .backgroundColor("rgba(0,0,0,0)")
           .showAtmosphere(true)
           .atmosphereColor("#1a6dff")
@@ -225,6 +228,17 @@ export default function GlobeView() {
         if (isProgNavRef.current) return; // programmatic nav — don't interfere
         ctrl.autoRotate = false;
         if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
+      });
+
+      // Resume auto-rotate after the user releases the drag, once it's been
+      // idle for a bit — "start" above only ever turns it off.
+      ctrl.addEventListener("end", () => {
+        if (isProgNavRef.current) return; // programmatic nav — don't interfere
+        if (autoRotateTimerRef.current) clearTimeout(autoRotateTimerRef.current);
+        autoRotateTimerRef.current = setTimeout(() => {
+          ctrl.autoRotate      = true;
+          ctrl.autoRotateSpeed = 0.45;
+        }, AUTO_ROTATE_RESUME_MS);
       });
 
       // ── Resize ──────────────────────────────────────────────

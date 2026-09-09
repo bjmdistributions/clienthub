@@ -3341,11 +3341,12 @@ export const api = {
   removeLotFromMasterList: (buildId: string, removed: boolean) =>
     invoke<number>("remove_lot_from_master_list", { buildId, removed }),
   /** `destPath` is a complete path from a save dialog and beats `destDir`; `format` is
-   *  "csv" or "xlsx", both rendered from the same table by the shared engine. */
+   *  "csv", "xlsx" or "pdf", all rendered from the same table (csv/xlsx by the shared
+   *  engine, pdf by this app alone). */
   exportLotBuild: (
     buildId: string,
     kind: "manifest" | "brands" | "pull",
-    opts?: { includeSlots?: boolean; destDir?: string; format?: "csv" | "xlsx"; destPath?: string },
+    opts?: { includeSlots?: boolean; destDir?: string; format?: "csv" | "xlsx" | "pdf"; destPath?: string },
   ) =>
     invoke<LotExportResult>("export_lot_build", {
       buildId,
