@@ -108,6 +108,7 @@ import InvoicePreview from "./InvoicePreview";
 import NumberInput from "./NumberInput";
 import { FormsPanel } from "./FormsPanel";
 import { GoogleCloudGuide } from "./GoogleCloudGuide";
+import CrossDock from "./CrossDock";
 
 // Opens the matching section of the website setup guide in the browser.
 function GuideLink({ section }: { section: string }) {
@@ -401,10 +402,21 @@ function resizePhoto(file: File, max = 256): Promise<string> {
   });
 }
 
+/** The three accounts Cross-dock exists for. This is a frontend check and nothing more:
+ *  it guards no data and grants no permission, it just keeps a private toy out of
+ *  everyone else's Settings. Five taps on your own photo reveals it. */
+const CROSSDOCK_ACCOUNTS = ["jackjohnm7@gmail.com", "ben@bjmdistributions.com", "jackmildice@gmail.com"];
+const CROSSDOCK_KEY = "clienthub_crossdock_shown";
+
 function AccountTab() {
   const [me, setMe] = useState<Me | null>(null);
   const [form, setForm] = useState({ display_name: "", title: "", phone: "", avatar: "" });
   const [ready, setReady] = useState(false);
+  const [taps, setTaps] = useState<number[]>([]);
+  const [shown, setShown] = useState(() => {
+    try { return localStorage.getItem(CROSSDOCK_KEY) === "1"; } catch { return false; }
+  });
+  const [playing, setPlaying] = useState(false);
   useEffect(() => {
     api.employeeMe().then((m) => {
       if (m) { setMe(m); setForm({ display_name: m.display_name, title: m.title || "", phone: m.phone || "", avatar: m.avatar || "" }); }
@@ -419,13 +431,26 @@ function AccountTab() {
   };
   if (!me) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
   const initial = (form.display_name || me.email || "?").trim().charAt(0).toUpperCase();
+  const mayPlay = CROSSDOCK_ACCOUNTS.includes(me.email.trim().toLowerCase());
+  const tapPhoto = () => {
+    if (!mayPlay || shown) return;
+    const now = Date.now();
+    const recent = [...taps.filter((t) => now - t < 2000), now];
+    setTaps(recent);
+    if (recent.length >= 5) {
+      setShown(true);
+      try { localStorage.setItem(CROSSDOCK_KEY, "1"); } catch { /* private window */ }
+    }
+  };
   return (
     <div className="space-y-4 max-w-xl">
       <div className="bg-surface border border-line rounded-xl p-6">
       <div className="flex items-center gap-4 mb-6">
+        <div onClick={tapPhoto} className="select-none">
         {form.avatar
           ? <img src={form.avatar} alt="" className="w-20 h-20 rounded-full object-cover border border-line" />
           : <div className="w-20 h-20 rounded-full flex items-center justify-center text-[28px] font-bold text-on-accent" style={{ background: "var(--accent-600)" }}>{initial}</div>}
+        </div>
         <div>
           <label className="bg-surface-2 border border-line hover:bg-surface-3 text-ink-2 px-3 h-8 rounded-lg text-[12px] font-medium inline-flex items-center cursor-pointer">
             Upload photo<input type="file" accept="image/*" className="hidden" onChange={pick} />
@@ -443,6 +468,26 @@ function AccountTab() {
       </div>
       <MyPlanCard />
       <button onClick={() => window.dispatchEvent(new CustomEvent("replay-tour"))} className="text-[12px] text-muted hover:text-ink transition-colors">Replay the getting-started tour</button>
+
+      {mayPlay && shown && (
+        <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-center justify-between">
+          <div>
+            <div className="text-[13px] font-medium text-ink">Cross-dock</div>
+            <div className="text-[11px] text-muted mt-0.5">Play money, this device only. Nothing here touches the books.</div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => { setShown(false); setTaps([]); try { localStorage.removeItem(CROSSDOCK_KEY); } catch { /* private window */ } }}
+              className="text-[12px] text-muted hover:text-ink transition-colors"
+            >Hide</button>
+            <button
+              onClick={() => setPlaying(true)}
+              className="h-8 px-3 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors"
+            >Open</button>
+          </div>
+        </div>
+      )}
+      {playing && <CrossDock accountId={me.id} onClose={() => setPlaying(false)} />}
     </div>
   );
 }
