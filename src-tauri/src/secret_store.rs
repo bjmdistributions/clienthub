@@ -1,15 +1,18 @@
-//! App-local encrypted secret store — a TEMPORARY replacement for OS-keyring reads
-//! so an ad-hoc-signed build stops re-prompting for macOS keychain access on every
-//! update. Secrets are ChaCha20-Poly1305-encrypted (ring, same primitive as
-//! sync_crypto.rs) under a random 32-byte key kept in the app-data ROOT. Neither the
-//! key nor the store lives under the synced folder, so secrets never enter the oplog.
+//! App-local encrypted secret store — originally a TEMPORARY replacement for OS-keyring
+//! reads so an ad-hoc-signed build would stop re-prompting for macOS keychain access on
+//! every update. Now that Developer ID signing has shipped, the keychain is the primary
+//! store again (see email.rs `cred_opt`/`save_cred`); this store is kept as a
+//! non-destructive fallback read path so anything written here during the ad-hoc
+//! interim keeps authenticating. Secrets are ChaCha20-Poly1305-encrypted (ring, same
+//! primitive as sync_crypto.rs) under a random 32-byte key kept in the app-data ROOT.
+//! Neither the key nor the store lives under the synced folder, so secrets never enter
+//! the oplog.
 //!
 //! SECURITY TRADEOFF (deliberate, interim): this is weaker than the OS keychain — the
 //! key file sits on disk readable by any process running as the same user, with no
-//! login-session binding. It is an explicit stopgap to kill the ad-hoc-signing prompt
-//! storm; the permanent fix is Developer ID signing, after which the keyring path can
-//! be restored. Migration is non-destructive: on any file/key error, callers fall
-//! back to the still-intact keyring (see email.rs), so nothing is ever lost.
+//! login-session binding. It is never deleted or renamed here, so a credential that
+//! only ever reached this store keeps working; callers copy it up into the keychain
+//! the next time it's read (see email.rs `cred_opt`).
 
 use anyhow::{anyhow, Result};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};

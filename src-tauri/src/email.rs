@@ -20,41 +20,94 @@ use crate::db::pool;
 
 // ---------- Credentials ----------
 
-// Secrets now live in an app-local encrypted store (secret_store) instead of the OS
-// keychain, so an ad-hoc-signed build stops re-prompting for keychain access on every
-// macOS update. Existing installs are migrated on first read (one keychain prompt,
-// then never again). On any store error we fall back to the keyring so nothing breaks.
+// The OS keychain is the source of truth again now that Developer ID signing has
+// shipped: an ad-hoc-signed build re-signed on every run, which made macOS treat each
+// build as a new app and re-prompt for keychain access; a Developer ID build keeps a
+// stable signature, so that prompt storm is gone. The app-local encrypted store
+// (secret_store) added during the ad-hoc interim is kept as a non-destructive fallback
+// read path only — never deleted, never the write target on its own — so anything
+// written there during that period keeps authenticating and is copied up into the
+// keychain the first time it's read.
 pub fn cred(key: &str) -> Result<String> {
     cred_opt(key).ok_or_else(|| anyhow!("missing credential: {}", key))
 }
 
+/// Pure decision for `cred_opt`, kept free of keychain/file I/O so the non-destructive
+/// contract — an interim-period secret that only ever reached the file store keeps
+/// authenticating, and the keychain always wins when it already has a value — can be
+/// unit-tested without a real OS keychain. Returns (value to hand back, value to copy
+/// up into the keychain, if a one-time migration is needed).
+fn resolve_read(keychain: Option<String>, store: Option<String>) -> (Option<String>, Option<String>) {
+    match keychain {
+        Some(v) => (Some(v), None),
+        None => match store {
+            Some(v) => (Some(v.clone()), Some(v)),
+            None => (None, None),
+        }
+    }
+}
+
 pub fn cred_opt(key: &str) -> Option<String> {
-    // 1) app-local encrypted store — no keychain access, no prompt.
-    if let Some(v) = crate::secret_store::get(key) {
-        return Some(v);
+    let keychain = keyring::Entry::new("clienthub", key).ok().and_then(|e| e.get_password().ok());
+    let store = crate::secret_store::get(key);
+    let (value, migrate) = resolve_read(keychain, store);
+    if let Some(v) = migrate {
+        // One-time up-migration: leaves the file-store copy in place (never deleted),
+        // so a failed keychain write here still falls back to it next read.
+        if let Ok(entry) = keyring::Entry::new("clienthub", key) {
+            let _ = entry.set_password(&v);
+        }
     }
-    // 2) one-time migration: read the legacy OS keyring (prompts ONCE on macOS for a
-    //    still-present item), copy it into the store, then never touch the keyring
-    //    again for this key. A genuinely-absent entry returns None WITHOUT prompting.
-    if let Some(v) = keyring::Entry::new("clienthub", key).ok().and_then(|e| e.get_password().ok()) {
-        let _ = crate::secret_store::put(key, &v);
-        return Some(v);
-    }
-    None
+    value
 }
 
 pub fn save_cred(key: &str, value: &str) -> Result<()> {
-    // Store only — a keyring WRITE also re-prompts on macOS, which would defeat the fix.
-    crate::secret_store::put(key, value)
+    // Write to both stores: the keychain (primary again) and the app-local store (kept
+    // alive as the fallback read path above). Either succeeding is enough to report Ok.
+    let keyring_ok = keyring::Entry::new("clienthub", key)
+        .and_then(|entry| entry.set_password(value))
+        .is_ok();
+    let store_result = crate::secret_store::put(key, value);
+    if keyring_ok { Ok(()) } else { store_result }
 }
 
 pub fn delete_cred(key: &str) -> Result<()> {
-    let _ = crate::secret_store::remove(key);
-    // Best-effort clear the legacy keyring copy so it can't be silently re-migrated.
     if let Ok(entry) = keyring::Entry::new("clienthub", key) {
         let _ = entry.delete_password();
     }
+    // Best-effort: clear the file-store copy too so a deleted credential can't be
+    // silently re-migrated back into the keychain on a later read.
+    let _ = crate::secret_store::remove(key);
     Ok(())
+}
+
+#[cfg(test)]
+mod secret_migration_tests {
+    use super::resolve_read;
+
+    #[test]
+    fn keychain_value_wins_and_needs_no_migration() {
+        let (value, migrate) = resolve_read(Some("keychain-val".into()), Some("store-val".into()));
+        assert_eq!(value.as_deref(), Some("keychain-val"));
+        assert!(migrate.is_none(), "keychain already has it — store must be left untouched");
+    }
+
+    #[test]
+    fn store_only_value_still_authenticates_and_is_migrated_up() {
+        // This is the exact non-destructive contract the migration must hold: a
+        // credential that only ever reached the app-local store during the ad-hoc
+        // interim period keeps working after the priority flip.
+        let (value, migrate) = resolve_read(None, Some("interim-val".into()));
+        assert_eq!(value.as_deref(), Some("interim-val"));
+        assert_eq!(migrate.as_deref(), Some("interim-val"));
+    }
+
+    #[test]
+    fn missing_everywhere_stays_missing() {
+        let (value, migrate) = resolve_read(None, None);
+        assert!(value.is_none());
+        assert!(migrate.is_none());
+    }
 }
 
 // ---------- Types ----------
