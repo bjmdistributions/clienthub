@@ -113,12 +113,18 @@ pub fn get() -> Option<&'static CityLookup> {
 }
 
 /// Coordinates for international clients the US dataset can't cover.
-/// Currently Canada: major cities, with a province-centroid fallback so any
-/// Canadian client still gets a pin even if the city isn't listed.
+/// Canada gets major cities plus a province-centroid fallback so any Canadian
+/// client still gets a pin even if the city isn't listed. Every other country
+/// falls back to `country_centroid` below — a single pin per country rather
+/// than per city, which is enough to put the client on the right side of the
+/// globe instead of dropping them off the map entirely.
 pub fn lookup_international(city: &str, region: &str, country: &str) -> Option<(f64, f64)> {
     let c = country.trim().to_lowercase();
-    if !(c == "canada" || c == "ca" || c == "can") {
+    if c.is_empty() {
         return None;
+    }
+    if !(c == "canada" || c == "ca" || c == "can") {
+        return country_centroid(&c);
     }
     let city_l = city.trim().to_lowercase();
     let city_coord = match city_l.as_str() {
@@ -173,6 +179,89 @@ pub fn lookup_international(city: &str, region: &str, country: &str) -> Option<(
     }
 }
 
+/// One centroid per country, keyed by lowercased common name and ISO
+/// alpha-2/alpha-3 code (matches whatever the free-text country field on a
+/// client happens to hold). US and Canada are handled by the city-level
+/// lookups above and are deliberately absent here, so a US client with a
+/// typo'd city still falls through to "not found" instead of silently
+/// landing on a country-wide pin.
+fn country_centroid(country: &str) -> Option<(f64, f64)> {
+    match country {
+        // Europe
+        "united kingdom" | "uk" | "gb" | "gbr" | "great britain" | "england" | "scotland" | "wales" | "northern ireland" => Some((54.7, -3.4)),
+        "ireland" | "ie" | "irl" => Some((53.1, -8.2)),
+        "france" | "fr" | "fra" => Some((46.6, 2.2)),
+        "germany" | "de" | "deu" => Some((51.2, 10.4)),
+        "spain" | "es" | "esp" => Some((40.0, -3.7)),
+        "portugal" | "pt" | "prt" => Some((39.6, -8.0)),
+        "italy" | "it" | "ita" => Some((42.8, 12.8)),
+        "netherlands" | "nl" | "nld" | "holland" => Some((52.1, 5.3)),
+        "belgium" | "be" | "bel" => Some((50.6, 4.5)),
+        "switzerland" | "ch" | "che" => Some((46.8, 8.2)),
+        "austria" | "at" | "aut" => Some((47.6, 14.1)),
+        "sweden" | "se" | "swe" => Some((60.1, 18.6)),
+        "norway" | "no" | "nor" => Some((60.5, 8.5)),
+        "denmark" | "dk" | "dnk" => Some((56.3, 9.5)),
+        "finland" | "fi" | "fin" => Some((64.0, 26.0)),
+        "poland" | "pl" | "pol" => Some((51.9, 19.1)),
+        "czech republic" | "czechia" | "cz" | "cze" => Some((49.8, 15.5)),
+        "greece" | "gr" | "grc" => Some((39.1, 21.8)),
+        "romania" | "ro" | "rou" => Some((45.9, 24.9)),
+        "ukraine" | "ua" | "ukr" => Some((48.4, 31.2)),
+
+        // Latin America / Caribbean
+        "mexico" | "mx" | "mex" => Some((23.6, -102.6)),
+        "brazil" | "br" | "bra" => Some((-14.2, -51.9)),
+        "argentina" | "ar" | "arg" => Some((-38.4, -63.6)),
+        "chile" | "cl" | "chl" => Some((-35.7, -71.5)),
+        "colombia" | "co" | "col" => Some((4.6, -74.3)),
+        "peru" | "pe" | "per" => Some((-9.2, -75.0)),
+        "ecuador" | "ec" | "ecu" => Some((-1.8, -78.2)),
+        "panama" | "pa" | "pan" => Some((8.5, -80.8)),
+        "costa rica" | "cr" | "cri" => Some((9.7, -83.8)),
+        "guatemala" | "gt" | "gtm" => Some((15.8, -90.2)),
+        "dominican republic" | "do" | "dom" => Some((18.7, -70.2)),
+        "jamaica" | "jm" | "jam" => Some((18.1, -77.3)),
+        "bahamas" | "bs" | "bhs" => Some((25.0, -77.4)),
+        "trinidad and tobago" | "trinidad" | "tt" | "tto" => Some((10.7, -61.2)),
+        "puerto rico" | "pr" | "pri" => Some((18.2, -66.6)),
+
+        // Asia
+        "china" | "cn" | "chn" => Some((35.9, 104.2)),
+        "japan" | "jp" | "jpn" => Some((36.2, 138.3)),
+        "south korea" | "korea" | "kr" | "kor" => Some((35.9, 127.8)),
+        "india" | "in" | "ind" => Some((20.6, 79.0)),
+        "pakistan" | "pk" | "pak" => Some((30.4, 69.3)),
+        "bangladesh" | "bd" | "bgd" => Some((23.7, 90.4)),
+        "vietnam" | "viet nam" | "vn" | "vnm" => Some((14.1, 108.3)),
+        "thailand" | "th" | "tha" => Some((15.9, 101.0)),
+        "philippines" | "ph" | "phl" => Some((12.9, 121.8)),
+        "indonesia" | "id" | "idn" => Some((-0.8, 113.9)),
+        "malaysia" | "my" | "mys" => Some((4.2, 108.0)),
+        "singapore" | "sg" | "sgp" => Some((1.35, 103.8)),
+        "taiwan" | "tw" | "twn" => Some((23.7, 121.0)),
+        "hong kong" | "hk" | "hkg" => Some((22.3, 114.2)),
+        "united arab emirates" | "uae" | "ae" | "are" => Some((23.4, 53.8)),
+        "saudi arabia" | "sa" | "sau" => Some((23.9, 45.1)),
+        "israel" | "il" | "isr" => Some((31.0, 34.9)),
+        "turkey" | "türkiye" | "tr" | "tur" => Some((38.9, 35.2)),
+
+        // Oceania
+        "australia" | "au" | "aus" => Some((-25.3, 133.8)),
+        "new zealand" | "nz" | "nzl" => Some((-41.0, 174.9)),
+
+        // Africa
+        "south africa" | "za" | "zaf" => Some((-30.6, 22.9)),
+        "nigeria" | "ng" | "nga" => Some((9.1, 8.7)),
+        "kenya" | "ke" | "ken" => Some((-0.0, 37.9)),
+        "egypt" | "eg" | "egy" => Some((26.8, 30.8)),
+        "morocco" | "ma" | "mar" => Some((31.8, -7.1)),
+        "ghana" | "gh" | "gha" => Some((7.9, -1.0)),
+
+        _ => None,
+    }
+}
+
 impl CityLookup {
     pub fn lookup(&self, city: &str, state: &str) -> Option<(f64, f64)> {
         let city_lower = city.trim().to_lowercase();
@@ -223,5 +312,33 @@ impl CityLookup {
         let mut seen = std::collections::HashSet::new();
         hits.retain(|c| seen.insert(c.state.clone()));
         hits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_canada_country_plots_at_its_centroid() {
+        // A client outside the US/Canada dataset used to vanish silently —
+        // any recognized country should now still resolve to a pin.
+        assert!(lookup_international("Paris", "", "France").is_some());
+        assert!(lookup_international("", "NSW", "Australia").is_some());
+        assert!(lookup_international("", "", "mx").is_some()); // ISO code, not full name
+    }
+
+    #[test]
+    fn unrecognized_or_empty_country_still_not_found() {
+        // No regression for domestic clients: an empty country (the common
+        // case for US clients) or a country we don't have data for stays None.
+        assert_eq!(lookup_international("Chicago", "IL", ""), None);
+        assert_eq!(lookup_international("Nowhereville", "", "Narnia"), None);
+    }
+
+    #[test]
+    fn canada_city_and_province_fallback_unaffected() {
+        assert_eq!(lookup_international("Toronto", "", "Canada"), Some((43.6532, -79.3832)));
+        assert!(lookup_international("Some Small Town", "ON", "Canada").is_some());
     }
 }
