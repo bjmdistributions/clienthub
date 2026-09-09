@@ -14407,6 +14407,31 @@ pub async fn plaid_sync() -> Result<Value, String> {
                             continue;
                         }
                     }
+                    // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
+                    // a DETECTION-ONLY key, never as an id this loop mints. It catches the
+                    // narrower and more dangerous gap the amount-scoped check below can't:
+                    // the SAME payment reference on the SAME account+direction turning up
+                    // against a row that is already reviewed, allocated, refunded or
+                    // loan-tagged — same amount or not. Silently proceeding there risks a
+                    // future merge onto that id rewriting booked data. So this one transaction
+                    // is held out of the ledger entirely and reported for review — nothing
+                    // booked is ever touched, and nothing here is imported as a guess.
+                    // Checked BEFORE R-019-E below and short-circuits it: a booked row already
+                    // matches the amount-scoped query too (it's a strict superset), so without
+                    // this ordering the same row would be reported in both lists at once with
+                    // contradictory claims ("imported anyway" vs "held, nothing imported").
+                    let booked_collisions = canonical_id_booked_collisions(&conn, &label, direction, &desc, &id);
+                    if !booked_collisions.is_empty() {
+                        held_reference_collision.push(json!({
+                            "date": date,
+                            "amount": amount,
+                            "direction": direction,
+                            "account": label,
+                            "description": desc,
+                            "existing": booked_collisions,
+                        }));
+                        continue;
+                    }
                     // R-019-E. The content fingerprint above is the only duplicate signal
                     // this loop has, and it needs the memo to match character for character
                     // — a bank that rewrites a wire's descriptor between two connections
@@ -14445,28 +14470,6 @@ pub async fn plaid_sync() -> Result<Value, String> {
                                 "existing": same_ref,
                             }));
                         }
-                    }
-                    // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
-                    // a DETECTION-ONLY key, never as an id this loop mints, because the
-                    // amount-scoped check above already covers the safe "same reference, same
-                    // amount" case. What it alone catches is the narrower and more dangerous
-                    // gap: the SAME payment reference on the SAME account+direction turning up
-                    // with a DIFFERENT amount, against a row that is already reviewed,
-                    // allocated, refunded or loan-tagged. Silently proceeding there risks a
-                    // future merge onto that id rewriting booked data. So this one transaction
-                    // is held out of the ledger entirely and reported for review — nothing
-                    // booked is ever touched, and nothing here is imported as a guess.
-                    let booked_collisions = canonical_id_booked_collisions(&conn, &label, direction, &desc, &id);
-                    if !booked_collisions.is_empty() {
-                        held_reference_collision.push(json!({
-                            "date": date,
-                            "amount": amount,
-                            "direction": direction,
-                            "account": label,
-                            "description": desc,
-                            "existing": booked_collisions,
-                        }));
-                        continue;
                     }
                     let s = |v: &str| Value::String(v.to_string());
                     let mut cols = Map::new();
@@ -19810,6 +19813,53 @@ mod canonical_id_collision_tests {
             &conn2, "Amex ··1004", "in", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
         );
         assert!(hits2.is_empty(), "opposite direction must not collide (two legs of one transfer)");
+    }
+
+    // A same-reference/same-amount match against a BOOKED row is exactly the case
+    // R-019-E's possible_duplicates query also matches (its account+direction+reference
+    // +amount clause is a subset of this function's account+direction+reference clause).
+    // In plaid_sync the booked-collision check runs FIRST and `continue`s, so this row
+    // must never also reach the possible_duplicates list. This asserts the overlap this
+    // function alone is responsible for closing off: it still reports the row (nothing
+    // here silently drops the booked case) so the caller has something to hold on.
+    #[test]
+    fn booked_collision_holds_even_when_amount_also_matches() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
+               direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+               account_id TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0,
+               counterparty_type TEXT NOT NULL DEFAULT '');
+             CREATE TABLE bank_allocation (bank_txn_id TEXT);
+             CREATE TABLE refunds (bank_txn_id TEXT);
+             CREATE TABLE loan (bank_txn_id TEXT);
+             CREATE TABLE cash_purchase (withdrawal_txn_id TEXT);
+             CREATE TABLE business_expense (bank_txn_id TEXT);",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO bank_txn (id, reviewed, direction, description, account_id, amount) VALUES \
+             ('btpl_old', 1, 'out', 'ONLINE DOMESTIC WIRE TRANSFER TRN:99887766', 'Amex ··1004', 500.00)",
+            [],
+        ).unwrap();
+        // R-019-E's own amount-scoped query (account+direction+amount, filtered to same
+        // reference in Rust below it) — reproduced here to show it matches this same row.
+        let mut st = conn.prepare(
+            "SELECT id, COALESCE(description,'') FROM bank_txn WHERE account_id=?1 AND direction=?2 \
+               AND ABS(amount-?3)<0.005 AND id<>?4",
+        ).unwrap();
+        let amount_scoped: Vec<String> = st.query_map(
+            rusqlite::params!["Amex ··1004", "out", 500.00, "btpl_new"],
+            |r| r.get::<_, String>(0),
+        ).unwrap().filter_map(|x| x.ok()).collect();
+        assert_eq!(amount_scoped, vec!["btpl_old".to_string()],
+            "the amount-scoped query alone would also have matched this booked row");
+
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert_eq!(hits, vec!["btpl_old".to_string()],
+            "the booked-collision check must still catch it so plaid_sync can hold it \
+             instead of also reporting it via possible_duplicates");
     }
 }
 
