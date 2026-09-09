@@ -85,6 +85,45 @@
         "--strictPort"
       ],
       "port": 5197
+    },
+    {
+      "name": "www-harness",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8099",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/6f844b52-580a-436e-bae2-35508e732aff/scratchpad/h1"
+      ],
+      "port": 8099
+    },
+    {
+      "name": "r244-harness",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8791",
+        "--directory",
+        "C:/Users/Jack/AppData/Local/Temp/claude/C--Users-Jack-Desktop-BUSINESS-APP/5cd95990-d021-48d3-aae0-fe369ae5d627/scratchpad/harness"
+      ],
+      "port": 8791
+    },
+    {
+      "name": "desktop-harness-r245",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "C:/Users/Jack/Desktop/BUSINE~1/CLAUDE~1/WORKTR~1/R245-D~2",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5245",
+        "--strictPort"
+      ],
+      "port": 5245
     }
   ]
 }
