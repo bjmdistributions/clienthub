@@ -462,13 +462,26 @@ html.matte:not(.dark) .nav-indicator { box-shadow: 0 0 8px rgba(255,255,255,0.18
 /* ── Page transition ──────────────────────────────────────── */
 .page-enter { animation: page-slide-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
-/* ── Tier value swap (R-251: avg deal/profit + per-deal/monthly toggles) ── */
-@keyframes tierValueIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+/* ── Tier value odometer (R-252: money/frequency column toggle spins the digits) ──
+   Each digit is a 1em window over a 20-cell strip (0-9 twice). The transform/transition
+   are driven imperatively from TiersView.tsx (instant reset -> reflow -> transitioned
+   translateY), so this CSS only fixes the geometry, not the motion itself. */
+.odometer-window {
+  display: inline-block;
+  position: relative;
+  height: 1em;
+  overflow: hidden;
+  vertical-align: bottom;
 }
-.tier-value-in { animation: tierValueIn 130ms ease-out both; }
-@media (prefers-reduced-motion: reduce) { .tier-value-in { animation: none; } }
+.odometer-strip { display: block; }
+.odometer-strip span { display: block; height: 1em; line-height: 1; }
+/* The strips are aria-hidden (each holds 0-9 twice), so the real number lives here for
+   assistive tech and for anyone selecting the cell. Visually removed, not display:none,
+   which would take it out of the accessibility tree too. */
+.odometer-value {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
 
 /* ── Micro-interactions — app-wide life ───────────────────── */
 /* Tactile press feedback on every button */
