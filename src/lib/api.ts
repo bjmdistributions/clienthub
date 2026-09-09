@@ -1349,7 +1349,6 @@ export interface DashboardStats {
   deals_mtd: number;
   top_suppliers: { name: string; contact_name: string; deal_count: number; total_paid: number }[];
   all_time_revenue: number;
-  all_time_profit: number;
   refunded_total: number;
   refund_owed_remaining: number;
   deals_won_all: number;

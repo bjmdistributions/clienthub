@@ -10332,9 +10332,10 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         [], |r| r.get(0)
     ).unwrap_or(0);
 
-    // All-time totals from completed deal flows — fell-through excluded, profit
-    // refund-aware and capped (revenue stays gross; refunds are surfaced as their
-    // own stat, by the same rule).
+    // All-time revenue for the analytics section, deliberately NOT the same formula
+    // as the hero's `revenue_all_time` above: this one sums deal_flows.gross_revenue
+    // (survivor-guarded, one row per invoice) instead of invoices.total, so it lines
+    // up with `profit_all_time` below on the same deal_flows/invoices join.
     let all_time_revenue: f64 = conn.query_row(
         &format!(
         "SELECT COALESCE(SUM(df.gross_revenue),0) FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
@@ -10342,15 +10343,8 @@ pub async fn dashboard_stats() -> Result<Value, String> {
            AND {one}", one = DF_SURVIVOR_SQL),
         [], |r| r.get(0)
     ).unwrap_or(0.0);
-    let all_time_profit: f64 = conn.query_row(
-        &format!(
-        "SELECT COALESCE(SUM({np}),0) \
-         FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id \
-         WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0 \
-           AND {one}",
-        np = DF_EFF_PROFIT_SQL, one = DF_SURVIVOR_SQL),
-        [], |r| r.get(0)
-    ).unwrap_or(0.0);
+    // UI-FLAW-Lane8: this used to also compute `all_time_profit` with the exact same
+    // query as `profit_all_time` above under a second JSON key. Collapsed to one.
     // Refund story for the analytics dashboard: total refunded (rule: non-bank-linked
     // refunds rows + every refund_out allocation, so bank-linked ones count once) and
     // what's still owed back to customers.
@@ -10402,7 +10396,6 @@ pub async fn dashboard_stats() -> Result<Value, String> {
         "deals_mtd": deals_mtd,
         "top_suppliers": top_suppliers,
         "all_time_revenue": all_time_revenue,
-        "all_time_profit": all_time_profit,
         "refunded_total": refunded_total,
         "refund_owed_remaining": refund_owed_remaining,
         "deals_won_all": deals_won_all,
