@@ -13952,7 +13952,9 @@ pub async fn plaid_connect_poll(link_token: String) -> Result<Value, String> {
             }
         }
         // Best-effort: hand the token to the server so teammates + hosted sync can use it.
-        let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &inst, &accounts_json, &env).await;
+        // Routed through the org-secrets bridge — the dedicated /api/plaid/items push
+        // this used to call is feature-gated off in production and never arrives.
+        let _ = crate::netsync::push_all_secrets_to_server().await;
         return Ok(json!({ "status": "connected", "institution": inst }));
     }
     Ok(json!({ "status": "pending" }))
@@ -13989,7 +13991,9 @@ pub async fn plaid_exchange(public_token: String, institution: String) -> Result
         }
     }
     // Best-effort: hand the token to the server so teammates + hosted sync can use it.
-    let _ = crate::netsync::push_plaid_item_to_server(&item_id, &access, &institution, &accounts_json, &env).await;
+    // Routed through the org-secrets bridge — the dedicated /api/plaid/items push
+    // this used to call is feature-gated off in production and never arrives.
+    let _ = crate::netsync::push_all_secrets_to_server().await;
     Ok(())
 }
 
