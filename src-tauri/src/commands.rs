@@ -2242,14 +2242,19 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
 /// `build_client_tier_map()` (filter + automation) so the two can never drift.
 /// `net_paid` = paid invoices minus refunds; `invoices_sent` counts sent/overdue/paid;
 /// `deals_landed` = completed deals (a client can climb on closed-deal count alone).
+/// The threshold is money actually paid or deals actually landed — never a client's
+/// self-declared spend/frequency estimate. That estimate stays visible on the client
+/// detail screen and the intake form; it is deliberately not a tier input (R-249: the
+/// stored values never parsed to a number, so this disjunct had been dead for all 153
+/// clients anyway).
 /// Codes rank P > S > A > B > C > Prospect → Platinum/Diamond/Gold/Silver/Bronze/Prospect.
-fn tier_for(effective_annual: f64, net_paid: f64, invoices_sent: i64, quotes_sent: i64, deals_landed: i64) -> &'static str {
-    if net_paid > 150000.0 || effective_annual > 250000.0 || deals_landed >= 25 { "P" }
-    else if net_paid > 60000.0 || effective_annual > 120000.0 || deals_landed >= 12 { "S" }
-    else if net_paid > 25000.0 || effective_annual > 60000.0 || deals_landed >= 6 { "A" }
-    else if net_paid > 8000.0 || effective_annual > 20000.0 || deals_landed >= 3 { "B" }
+fn tier_for(net_paid: f64, invoices_sent: i64, quotes_sent: i64, deals_landed: i64) -> &'static str {
+    if net_paid > 150000.0 || deals_landed >= 25 { "P" }
+    else if net_paid > 60000.0 || deals_landed >= 12 { "S" }
+    else if net_paid > 25000.0 || deals_landed >= 6 { "A" }
+    else if net_paid > 8000.0 || deals_landed >= 3 { "B" }
     // Any real engagement — an invoice, a payment, or even just a quote — earns Bronze.
-    else if effective_annual > 0.0 || net_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
+    else if net_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
     else { "Prospect" }
 }
 
@@ -2317,8 +2322,8 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
     let refunded_map = refunded_by_client(conn);
 
-    let mut client_stmt = conn.prepare("SELECT id, metadata FROM clients").map_err(|e| e.to_string())?;
-    let clients: Vec<(String, Option<String>)> = client_stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    let mut client_stmt = conn.prepare("SELECT id FROM clients").map_err(|e| e.to_string())?;
+    let clients: Vec<String> = client_stmt.query_map([], |r| r.get(0))
         .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
 
     let invoice_map: std::collections::HashMap<String, (f64, i64)> = invoice_data.into_iter().map(|(id, p, s)| (id, (p, s))).collect();
@@ -2338,21 +2343,12 @@ fn build_client_tier_map(conn: &rusqlite::Connection) -> Result<std::collections
     // duplicate deal_flow rows (one invoice, two 'complete' rows) can't inflate a tier.
     let deals_map = completed_deals_by_client(conn);
 
-    for (client_id, meta_str) in &clients {
+    for client_id in &clients {
         let (actual_paid, invoices_sent) = invoice_map.get(client_id).copied().unwrap_or((0.0, 0));
         let net_paid = (actual_paid - refunded_map.get(client_id).copied().unwrap_or(0.0)).max(0.0);
         let quotes_sent = quotes_map.get(client_id).copied().unwrap_or(0);
         let deals_landed = deals_map.get(client_id).copied().unwrap_or(0);
-        let meta: Option<Value> = meta_str.as_deref().and_then(|s| serde_json::from_str(s).ok());
-        let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
-        let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
-        let annual_spend: f64 = spend_raw.parse().unwrap_or(0.0);
-        let freq_mult = match frequency.unwrap_or("").to_lowercase().as_str() {
-            "weekly" => 52.0, "bi-weekly" => 26.0, "monthly" => 12.0,
-            "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
-        };
-        let effective_annual = freq_mult * annual_spend;
-        let tier = tier_for(effective_annual, net_paid, invoices_sent, quotes_sent, deals_landed);
+        let tier = tier_for(net_paid, invoices_sent, quotes_sent, deals_landed);
         map.insert(client_id.clone(), tier.to_string());
     }
     Ok(map)
@@ -11046,13 +11042,12 @@ pub struct BuyerTier {
     pub client_id: String,
     pub client_name: String,
     pub tier: String,
-    pub effective_annual: f64,
-    pub spend_per_frequency: Option<String>,
+    pub avg_deal_value: f64,
     pub actual_paid: f64,
     pub total_profit: f64,
     pub invoices_sent: u32,
     pub last_invoice_date: Option<String>,
-    pub purchase_frequency: Option<String>,
+    pub purchase_cadence_days: Option<f64>,
     pub avg_commission_pct: f64,
     pub quotes_sent: u32,
     pub quotes_won: u32,
@@ -11100,10 +11095,10 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    let client_rows: Vec<(String, String, Option<String>)> = {
-        let mut stmt = conn.prepare("SELECT id, name, metadata FROM clients ORDER BY name")
+    let client_rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, name FROM clients ORDER BY name")
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_,Option<String>>(2)?)))
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
@@ -11156,17 +11151,44 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
     // Deals landed per client (completed deals, distinct by invoice) — a tier input + shown.
     let deals_map = completed_deals_by_client(&conn);
 
+    // Measured run-rate per client (R-249), replacing the self-declared spend/frequency
+    // intake answers that never fed the ladder: `estimated_annual_spend` is a free-text
+    // bucket ("Under $10,000") that parses to 0.0 for every client, so `effective_annual`
+    // had been dead since the day it shipped. `avg_deal_value` is mean booked revenue per
+    // completed deal; `purchase_cadence_days` (span between the first and last completed
+    // deal, divided by the gaps between them) needs >=2 deals to mean anything. Same
+    // `DF_SURVIVOR_SQL` one-row-per-invoice guard as `profit_map` above, and the same
+    // substr(...,1,10) as everywhere `completed_at` is compared: it mixes bare dates with
+    // "...T00:00:00Z" and julianday() must not see the trailing Z.
+    let deal_stats_map: std::collections::HashMap<String, (i64, f64, f64)> = {
+        let mut stmt = conn.prepare(
+            &format!(
+            "SELECT i.client_id,
+                    COUNT(*) AS deals,
+                    COALESCE(SUM(d.rev),0) AS rev,
+                    julianday(MAX(d.day)) - julianday(MIN(d.day)) AS span_days
+             FROM (
+                SELECT df.invoice_id AS invoice_id,
+                       COALESCE(df.gross_revenue,0) AS rev,
+                       substr(COALESCE(NULLIF(df.completed_at,''), df.updated_at),1,10) AS day
+                FROM deal_flows df
+                WHERE df.stage='complete' AND COALESCE(df.archived,0)=0 AND {one}
+             ) d
+             JOIN invoices i ON i.id = d.invoice_id
+             WHERE COALESCE(i.voided,0)=0 AND COALESCE(i.archived,0)=0
+             GROUP BY i.client_id",
+            one = DF_SURVIVOR_SQL)
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, (r.get::<_,i64>(1)?, r.get::<_,f64>(2)?, r.get::<_,f64>(3)?))))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     let mut results = Vec::new();
-    for (client_id, client_name, metadata_str) in &client_rows {
-        let meta: Option<Value> = metadata_str.as_ref().and_then(|s| serde_json::from_str(s).ok());
-        let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
-        let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
-        let annual_spend: f64 = spend_raw.parse().unwrap_or(0.0);
-        let freq_mult = match frequency.unwrap_or("").to_lowercase().as_str() {
-            "weekly" => 52.0, "bi-weekly" => 26.0, "monthly" => 12.0,
-            "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
-        };
-        let effective_annual = freq_mult * annual_spend;
+    for (client_id, client_name) in &client_rows {
+        let (deal_n, deal_rev, span_days) = deal_stats_map.get(client_id).copied().unwrap_or((0, 0.0, 0.0));
+        let avg_deal_value = if deal_n > 0 { deal_rev / deal_n as f64 } else { 0.0 };
+        let purchase_cadence_days = if deal_n >= 2 && span_days > 0.0 { Some(span_days / (deal_n - 1) as f64) } else { None };
 
         let (paid, invoices_sent, last_inv) = invoice_map.get(client_id)
             .map(|(p, s, d)| (*p, *s, d.clone())).unwrap_or((0.0, 0, None));
@@ -11185,14 +11207,14 @@ pub async fn buyer_tiers() -> Result<Vec<BuyerTier>, String> {
             else { "low" };
 
         let deals_landed = deals_map.get(client_id).copied().unwrap_or(0);
-        let tier = tier_for(effective_annual, actual_paid, invoices_sent as i64, quotes_sent as i64, deals_landed);
+        let tier = tier_for(actual_paid, invoices_sent as i64, quotes_sent as i64, deals_landed);
 
         let avg_commission_pct = commission_map.get(client_id).copied().unwrap_or(0.0);
         results.push(BuyerTier {
             client_id: client_id.clone(), client_name: client_name.clone(), tier: tier.into(),
-            effective_annual, spend_per_frequency: if spend_raw != "0" && !spend_raw.is_empty() { Some(spend_raw.to_string()) } else { None },
+            avg_deal_value,
             actual_paid, total_profit, invoices_sent, last_invoice_date: last_inv,
-            purchase_frequency: frequency.map(|s| s.to_string()),
+            purchase_cadence_days,
             avg_commission_pct,
             quotes_sent,
             quotes_won,

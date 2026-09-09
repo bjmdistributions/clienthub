@@ -36,7 +36,7 @@ fn tier_label(s: &str) -> &str {
     }
 }
 
-fn compute_tier(conn: &Connection, client_id: &str, metadata_str: Option<&str>) -> String {
+fn compute_tier(conn: &Connection, client_id: &str) -> String {
     // The invoice figures feeding the ladder, filtered exactly like `buyer_tiers` in
     // commands.rs — the comparator every screen already agrees with. Two guards, both
     // load-bearing, both missing here until 2026-08-31:
@@ -68,16 +68,6 @@ fn compute_tier(conn: &Connection, client_id: &str, metadata_str: Option<&str>) 
     ).unwrap_or(0.0);
     let actual_paid = (actual_paid - refunded).max(0.0);
 
-    let meta: Option<Value> = metadata_str.and_then(|s| serde_json::from_str(s).ok());
-    let frequency = meta.as_ref().and_then(|m| m.get("purchase_frequency")).and_then(|v| v.as_str());
-    let spend_raw = meta.as_ref().and_then(|m| m.get("estimated_annual_spend")).and_then(|v| v.as_str()).unwrap_or("0");
-    let annual_spend: f64 = spend_raw.parse().unwrap_or(0.0);
-    let freq_mult = match frequency.unwrap_or("").to_lowercase().as_str() {
-        "weekly" => 52.0, "bi-weekly" => 26.0, "monthly" => 12.0,
-        "quarterly" => 4.0, "annually" => 1.0, _ => 0.0,
-    };
-    let effective_annual = freq_mult * annual_spend;
-
     // Deals landed (completed deals, distinct by invoice) — a tier factor.
     let deals_landed: i64 = conn.query_row(
         "SELECT COUNT(DISTINCT df.invoice_id) FROM deal_flows df JOIN invoices iv ON iv.id=df.invoice_id \
@@ -94,11 +84,11 @@ fn compute_tier(conn: &Connection, client_id: &str, metadata_str: Option<&str>) 
     ).unwrap_or(0);
 
     // Keep in lockstep with commands.rs `tier_for` (Platinum > Diamond > Gold > Silver > Bronze).
-    let tier = if actual_paid > 150000.0 || effective_annual > 250000.0 || deals_landed >= 25 { "P" }
-    else if actual_paid > 60000.0 || effective_annual > 120000.0 || deals_landed >= 12 { "S" }
-    else if actual_paid > 25000.0 || effective_annual > 60000.0 || deals_landed >= 6 { "A" }
-    else if actual_paid > 8000.0 || effective_annual > 20000.0 || deals_landed >= 3 { "B" }
-    else if effective_annual > 0.0 || actual_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
+    let tier = if actual_paid > 150000.0 || deals_landed >= 25 { "P" }
+    else if actual_paid > 60000.0 || deals_landed >= 12 { "S" }
+    else if actual_paid > 25000.0 || deals_landed >= 6 { "A" }
+    else if actual_paid > 8000.0 || deals_landed >= 3 { "B" }
+    else if actual_paid > 0.0 || invoices_sent >= 1 || quotes_sent >= 1 { "C" }
     else { "Prospect" };
 
     tier_label(tier).to_string()
@@ -172,7 +162,7 @@ fn resolve_variable(token: &str, info: &ClientInfo, conn: &Connection, client_id
             ).ok()
         }
         "tier" => {
-            Some(compute_tier(conn, client_id, info.metadata.as_deref()))
+            Some(compute_tier(conn, client_id))
         }
         _ => None,
     }
@@ -237,10 +227,10 @@ mod tests {
         let conn = fixture();
         invoice(&conn, "i1", "paid", 6515.0, 1, 0);
         invoice(&conn, "i2", "paid", 5330.0, 0, 0);
-        assert_eq!(compute_tier(&conn, "c1", None), "Bronze");
+        assert_eq!(compute_tier(&conn, "c1"), "Bronze");
         // An archived invoice is out for the same reason.
         invoice(&conn, "i3", "paid", 40000.0, 0, 1);
-        assert_eq!(compute_tier(&conn, "c1", None), "Bronze");
+        assert_eq!(compute_tier(&conn, "c1"), "Bronze");
     }
 
     #[test]
@@ -249,7 +239,7 @@ mod tests {
         // sent/paid called a client with one live overdue invoice a Prospect.
         let conn = fixture();
         invoice(&conn, "i1", "overdue", 2.0, 0, 0);
-        assert_eq!(compute_tier(&conn, "c1", None), "Bronze");
+        assert_eq!(compute_tier(&conn, "c1"), "Bronze");
     }
 
     #[test]
@@ -258,10 +248,10 @@ mod tests {
         // field must too or the email contradicts the screen that sent it.
         let conn = fixture();
         conn.execute("INSERT INTO quotes VALUES ('q1','c1','sent')", []).unwrap();
-        assert_eq!(compute_tier(&conn, "c1", None), "Bronze");
+        assert_eq!(compute_tier(&conn, "c1"), "Bronze");
         // And a client with nothing at all is still a Prospect.
         conn.execute("DELETE FROM quotes", []).unwrap();
-        assert_eq!(compute_tier(&conn, "c1", None), "Prospect");
+        assert_eq!(compute_tier(&conn, "c1"), "Prospect");
     }
 
     #[test]
@@ -277,7 +267,7 @@ mod tests {
             .unwrap();
         }
         // Six archived invoices and three archived deals leave three landed, not twelve.
-        assert_eq!(compute_tier(&conn, "c1", None), "Silver");
+        assert_eq!(compute_tier(&conn, "c1"), "Silver");
     }
 
     #[test]

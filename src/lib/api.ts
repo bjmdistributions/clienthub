@@ -887,13 +887,12 @@ export interface BuyerTier {
   client_id: string;
   client_name: string;
   tier: string;
-  effective_annual: number;
-  spend_per_frequency: string | null;
+  avg_deal_value: number;
   actual_paid: number;
   total_profit: number;   // net profit earned from this client, after refunds
   invoices_sent: number;
   last_invoice_date: string | null;
-  purchase_frequency: string | null;
+  purchase_cadence_days: number | null;
   avg_commission_pct: number;
   quotes_sent: number;
   quotes_won: number;

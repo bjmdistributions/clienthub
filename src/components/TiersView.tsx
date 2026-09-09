@@ -32,6 +32,16 @@ const FREQUENCIES = ["weekly", "bi-weekly", "monthly", "quarterly", "annually"];
 
 const TIER_ORDER = ["P", "S", "A", "B", "C", "Prospect"];
 
+// Measured purchase cadence -> the same five buckets the frequency filter uses.
+function cadenceBucket(days: number | null): string | null {
+  if (days == null) return null;
+  if (days <= 10) return "weekly";
+  if (days <= 20) return "bi-weekly";
+  if (days <= 45) return "monthly";
+  if (days <= 135) return "quarterly";
+  return "annually";
+}
+
 const selectCls =
   "border border-line h-8 px-2.5 rounded-lg text-[12px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -67,10 +77,9 @@ export default function TiersView() {
     .filter((t) => {
       if (spendRange === 0) return true;
       const range = SPEND_RANGES[spendRange];
-      const spend = parseFloat((t.spend_per_frequency || "0").replace(/[^0-9.]/g, "")) || 0;
-      return spend >= range.min && spend <= range.max;
+      return t.avg_deal_value >= range.min && t.avg_deal_value <= range.max;
     })
-    .filter((t) => !freqFilter || (t.purchase_frequency || "").toLowerCase() === freqFilter);
+    .filter((t) => !freqFilter || cadenceBucket(t.purchase_cadence_days) === freqFilter);
 
   const anyFilter = filter !== "all" || paidRange > 0 || profitRange > 0 || spendRange > 0 || !!freqFilter;
   const clearFilters = () => {
@@ -88,7 +97,7 @@ export default function TiersView() {
         <div>
           <h2 className="text-[18px] font-semibold text-ink tracking-tight">Client tiers</h2>
           <p className="text-[12px] text-muted mt-0.5">
-            Ranked by spend potential and actual purchasing history.
+            Ranked by actual purchasing history.
           </p>
         </div>
         <button
@@ -148,7 +157,7 @@ export default function TiersView() {
 
         <select value={spendRange} onChange={(e) => setSpendRange(Number(e.target.value))} className={selectCls}>
           {SPEND_RANGES.map((r, i) => (
-            <option key={i} value={i}>{i === 0 ? "Any spend / freq." : `Spend / freq. ${r.label}`}</option>
+            <option key={i} value={i}>{i === 0 ? "Any avg deal" : `Avg deal ${r.label}`}</option>
           ))}
         </select>
 
@@ -182,7 +191,7 @@ export default function TiersView() {
               <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Quotes</th>
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Reliability</th>
               <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg margin</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Spend / Freq.</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg deal</th>
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Frequency</th>
             </tr>
           </thead>
@@ -224,9 +233,14 @@ export default function TiersView() {
                   )}
                 </td>
                 <td className="px-5 py-3 text-right text-[13px] text-ink-2 tabular-nums">
-                  {t.spend_per_frequency || "—"}
+                  {t.avg_deal_value > 0 ? fmtAmount(t.avg_deal_value) : "—"}
                 </td>
-                <td className="px-5 py-3 text-[12px] text-muted capitalize">{t.purchase_frequency || "—"}</td>
+                <td
+                  className="px-5 py-3 text-[12px] text-muted"
+                  title={`Measured from ${t.deals_landed} completed deal${t.deals_landed === 1 ? "" : "s"}`}
+                >
+                  {t.purchase_cadence_days != null ? `Every ${Math.round(t.purchase_cadence_days)} days` : "—"}
+                </td>
               </tr>
             ))}
             {filtered.length === 0 && (
