@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, Cloud, KeyRound, ShieldCheck, ListChecks, Copy } from "lucide-react";
+import { ArrowLeft, ExternalLink, Cloud, KeyRound, ShieldCheck, ListChecks, Copy, Search } from "lucide-react";
 import { api } from "../lib/api";
 
 // A visual, on-brand walkthrough for creating Google OAuth desktop credentials.
@@ -76,7 +76,7 @@ export function GoogleCloudGuide({ onBack }: { onBack: () => void }) {
         <Step n={2} icon={ListChecks} title="Enable the Gmail API"
           mock={
             <MockWindow title="APIs &amp; Services · Library">
-              <div className="h-5 rounded bg-surface border border-line mb-1.5 flex items-center px-1.5 text-[9px] text-faint">🔍 Gmail API</div>
+              <div className="h-5 rounded bg-surface border border-line mb-1.5 flex items-center gap-1 px-1.5 text-[9px] text-faint"><Search size={9} className="flex-shrink-0" /> Gmail API</div>
               <div className="h-6 rounded bg-accent/90 flex items-center justify-center text-[10px] text-on-accent font-semibold">Enable</div>
             </MockWindow>
           }>

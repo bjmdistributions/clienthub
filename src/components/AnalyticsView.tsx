@@ -455,7 +455,7 @@ export default function AnalyticsView() {
         {/* Client Mix — donut */}
         <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client mix</h3>
-          <p className="text-[11px] text-muted mb-5">Share of clients by tier</p>
+          <p className="text-[11px] text-muted mb-5">Share of clients by tier · all time</p>
           {totalCl > 0 ? (
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
@@ -480,7 +480,7 @@ export default function AnalyticsView() {
         {/* Invoice Status */}
         <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Invoice status</h3>
-          <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices</p>
+          <p className="text-[11px] text-muted mb-5">{stats.invoices} total invoices · all time</p>
 
           {stats.invoice_status_breakdown.length > 0 ? (
             <div className="space-y-4">
@@ -520,7 +520,7 @@ export default function AnalyticsView() {
         {/* Top Spenders */}
         <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Top spenders</h3>
-          <p className="text-[11px] text-muted mb-4">By total revenue collected</p>
+          <p className="text-[11px] text-muted mb-4">By total revenue collected · all time</p>
 
           {stats.top_spenders.length > 0 ? (
             <div className="space-y-1">
@@ -566,7 +566,7 @@ export default function AnalyticsView() {
         {/* Client Tiers */}
         <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Client tiers</h3>
-          <p className="text-[11px] text-muted mb-5">{totalCl} clients</p>
+          <p className="text-[11px] text-muted mb-5">{totalCl} clients · all time</p>
 
           {totalCl > 0 ? (
             <>
@@ -617,7 +617,7 @@ export default function AnalyticsView() {
         {/* Category breakdown */}
         <div className="bg-surface border border-line-2 rounded-xl p-5 min-w-0">
           <h3 className="text-[13px] font-semibold text-ink mb-0.5">Category breakdown</h3>
-          <p className="text-[11px] text-muted mb-5">Revenue by client category</p>
+          <p className="text-[11px] text-muted mb-5">Revenue by client category · all time</p>
 
           {cats.length > 0 ? (
             <div className="space-y-4 max-h-[280px] overflow-y-auto pr-1">
