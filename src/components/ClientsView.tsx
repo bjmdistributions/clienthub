@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, DuplicateGroup, BuyerTier } from "../lib/api";
+import { api, Client, ClientInput, ClientFilter, MissingInfoReport, Category, DuplicateGroup, BuyerTier, DealFlow } from "../lib/api";
 import { fmtAmount, fmtPhone } from "../lib/format";
 import { Plus, Trash2, Edit2, Search, Clock, Users, SlidersHorizontal, X, ChevronDown, AlertCircle, CheckCircle2, Mail, Phone, MapPin, Tag, MessageSquare, Download, Send, Ban, FileText, Calendar, StickyNote } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -63,7 +63,9 @@ const COLUMNS = [
   ["tier",    "Tier",          "left"],
   ["email",   "Email",         "left"],
   ["phone",   "Phone",         "left"],
+  ["address", "Address",       "left"],
   ["last",    "Last activity", "left"],
+  ["deals",   "Current deals", "right"],
   ["profit",  "Profit",        "right"],
   ["revenue", "Revenue",       "right"],
 ] as const;
@@ -90,6 +92,7 @@ export default function ClientsView() {
   const [showHealth, setShowHealth]         = useState(false);
   const [allCategories, setAllCategories]   = useState<Category[]>([]);
   const [buyerTiers, setBuyerTiers]         = useState<BuyerTier[]>([]);
+  const [dealFlows, setDealFlows]           = useState<DealFlow[]>([]);
   const [duplicates, setDuplicates]         = useState<DuplicateGroup[]>([]);
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
   // Inline "type DELETE to confirm" for bulk-deleting >10 clients — window.prompt()
@@ -151,6 +154,7 @@ export default function ClientsView() {
     api.listCategories().then(setAllCategories).catch(() => {});
     api.listClientReps().then(setReps).catch(() => {});
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
+    api.listDealFlows().then(setDealFlows).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
     loadMissingInfo();
 
@@ -220,6 +224,18 @@ export default function ClientsView() {
     return m;
   }, [buyerTiers]);
 
+  // Current deals = still in deal flow, same definition ClientDetailView uses for
+  // its "in progress" band (stage !== "complete"). list_deal_flows already excludes
+  // voided invoices, so a fell-through deal never counts here.
+  const openDealsOf = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const f of dealFlows) {
+      if (f.stage === "complete" || !f.client_id) continue;
+      m.set(f.client_id, (m.get(f.client_id) ?? 0) + 1);
+    }
+    return m;
+  }, [dealFlows]);
+
   // Client-side sort by any column. Profit comes off the tier row (buyerTiers) —
   // it is net of refunds, and it can be negative.
   const TIER_RANK: Record<string, number> = { P: 6, S: 5, A: 4, B: 3, C: 2, New: 1, Prospect: 0 };
@@ -232,6 +248,8 @@ export default function ClientsView() {
       case "revenue": return c.total_revenue || 0;
       case "last": return activity[c.id]?.at || c.last_contact_at || "";
       case "tier": return TIER_RANK[tierOf.get(c.id)?.tier || "New"] ?? 0;
+      case "address": return [c.city, c.state].filter(Boolean).join(", ").toLowerCase() || (c.street_address || "").toLowerCase();
+      case "deals": return openDealsOf.get(c.id) ?? 0;
       default: return (c.name || "").toLowerCase();
     }
   };
@@ -905,6 +923,9 @@ export default function ClientsView() {
                   </td>
                   <td className="px-4 py-3 text-[12px] text-muted">{c.email || "—"}</td>
                   <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">{c.phone ? fmtPhone(c.phone) : "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-muted whitespace-nowrap">
+                    {[c.city, c.state].filter(Boolean).join(", ") || c.street_address || <span className="text-faint">—</span>}
+                  </td>
                   <td className="px-4 py-3">
                     {(() => {
                       const a = activity[c.id];
@@ -920,6 +941,9 @@ export default function ClientsView() {
                         </span>
                       );
                     })()}
+                  </td>
+                  <td className="px-4 py-3 text-right text-[13px] text-muted tabular-nums">
+                    {openDealsOf.get(c.id) ?? 0}
                   </td>
                   <td className={`px-4 py-3 text-right text-[13px] font-semibold tabular-nums ${
                     (bt?.total_profit ?? 0) < 0 ? "text-danger-ink" : "text-ink"
@@ -955,7 +979,7 @@ export default function ClientsView() {
             })}
             {loadError && (
               <tr>
-                <td colSpan={9} className="px-4 py-16 text-center">
+                <td colSpan={11} className="px-4 py-16 text-center">
                   <p className="text-[13px] text-danger-ink mb-3">Couldn't load clients. {loadError}</p>
                   <button onClick={() => applyFilter(filter)}
                     className="border border-line px-3 h-9 rounded-lg text-[13px] hover:bg-surface-2 transition-colors">
@@ -966,14 +990,14 @@ export default function ClientsView() {
             )}
             {loading && displayed.length === 0 && !loadError && (
               <tr>
-                <td colSpan={9} className="px-4 py-16 text-center text-[13px] text-muted">
+                <td colSpan={11} className="px-4 py-16 text-center text-[13px] text-muted">
                   Loading clients...
                 </td>
               </tr>
             )}
             {!loading && !loadError && displayed.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-16 text-center">
+                <td colSpan={11} className="px-4 py-16 text-center">
                   {hasAnyFilter || fcOnly ? (
                     <p className="text-[13px] text-muted">No clients match the current filters</p>
                   ) : (
