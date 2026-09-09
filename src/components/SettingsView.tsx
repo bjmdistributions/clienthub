@@ -5075,6 +5075,11 @@ function PeoplePanel() {
     api.employeeMe().then((m) => setMe(m?.id || "")).catch(() => {});
   };
   useEffect(() => { load(); }, []);
+  // Green-dot connection status for the "Share connections" card below — reflects
+  // THIS device's local plaid_items (linked here or materialized from a teammate's
+  // share), so an admin can see at a glance whether there's anything to share.
+  const [plaidBankCount, setPlaidBankCount] = useState<number | null>(null);
+  useEffect(() => { api.plaidListItems().then((items) => setPlaidBankCount(items.length)).catch(() => setPlaidBankCount(null)); }, []);
   const [rp, setRp] = useState<any>(null);
   useEffect(() => { api.getRepPayoutSettings().then(setRp).catch(() => {}); }, []);
   const saveRp = (fields: any) => { setRp((p: any) => ({ ...(p || {}), ...fields })); api.setRepPayoutSettings(fields).catch(() => {}); };
@@ -5130,7 +5135,14 @@ function PeoplePanel() {
     <div className="space-y-4">
       <div className="bg-surface border border-line rounded-xl px-4 py-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="font-medium text-ink text-[13px]">Share my connections with my team</div>
+          <div className="font-medium text-ink text-[13px] flex items-center gap-2">
+            Share my connections with my team
+            {plaidBankCount !== null && (
+              <StatusPill tone={plaidBankCount > 0 ? "success" : "neutral"}>
+                {plaidBankCount > 0 ? `Connected · ${plaidBankCount} ${plaidBankCount === 1 ? "bank" : "banks"}` : "No banks connected"}
+              </StatusPill>
+            )}
+          </div>
           <div className="text-[11.5px] text-muted">Upload the email, Stripe, Google, Shopify, Plaid and bank logins saved on this device so other admins inherit them without re-typing.</div>
         </div>
         <button onClick={shareConnections} disabled={sharing}
