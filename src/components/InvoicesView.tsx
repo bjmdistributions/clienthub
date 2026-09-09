@@ -401,7 +401,7 @@ export default function InvoicesView() {
               </div>
               <div className="px-5 py-4 space-y-3.5">
                 <div className="text-[13px] text-ink-2">To <span className="font-medium text-ink">{inv ? clientName(inv.client_id) : ""}</span></div>
-                <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} />
+                <FromPicker options={fromOptions} value={sendFrom} onChange={setSendFrom} forInvoice />
                 <div className="flex justify-end gap-2 pt-1">
                   <button onClick={() => setSendModal(null)} className="px-4 h-9 text-[13px] text-muted border border-line rounded-lg hover:bg-surface-2 transition-colors">Cancel</button>
                   <button onClick={confirmSend} disabled={busy === sendModal}

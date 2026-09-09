@@ -1239,6 +1239,7 @@ export interface EmailSettings {
 export interface FromOption {
   address: string;
   label: string;
+  kind: "login" | "sales" | "invoices";
 }
 
 export interface CompanyInfo {

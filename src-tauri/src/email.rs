@@ -489,11 +489,14 @@ pub async fn send_invoice_mail(
     send_threaded(to, subject, body, attachment, None, Some(&from)).await
 }
 
-/// One address a compose-time "from" picker can offer, labeled for the dropdown.
+/// One address a compose-time "from" picker can offer, labeled for the dropdown. `kind`
+/// identifies which setting it came from, so the frontend can work out which option is
+/// the real default for a given send path without matching on the display label.
 #[derive(Serialize, Clone)]
 pub struct FromOption {
     pub address: String,
     pub label: String,
+    pub kind: &'static str,
 }
 
 /// The addresses this device is actually configured to send as (R-194): the SMTP login,
@@ -508,16 +511,16 @@ pub fn send_from_options() -> Vec<FromOption> {
     };
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    let mut push = |addr: &str, label: &str| {
+    let mut push = |addr: &str, label: &str, kind: &'static str| {
         let addr = addr.trim();
         if addr.is_empty() || !seen.insert(addr.to_lowercase()) {
             return;
         }
-        out.push(FromOption { address: addr.to_string(), label: label.to_string() });
+        out.push(FromOption { address: addr.to_string(), label: label.to_string(), kind });
     };
-    push(&settings.user, "Default");
-    push(&settings.from_email, "Sales");
-    push(&settings.from_invoices, "Invoices");
+    push(&settings.user, "Default", "login");
+    push(&settings.from_email, "Sales", "sales");
+    push(&settings.from_invoices, "Invoices", "invoices");
     out
 }
 

@@ -20,23 +20,40 @@ export function useSendFromOptions(): FromOption[] {
   return options;
 }
 
+/**
+ * The address a send actually goes out as when the picker is left untouched, mirroring
+ * email.rs's precedence chains: invoice sends (send_invoice_mail) prefer from_invoices,
+ * then from_email, then the SMTP login; every other send (send_threaded directly — quotes,
+ * replies, drafts, newsletters) skips from_invoices and prefers from_email, then the login.
+ */
+export function defaultSendFrom(options: FromOption[], forInvoice?: boolean): string | undefined {
+  if (options.length === 0) return undefined;
+  const byKind = (kind: FromOption["kind"]) => options.find((o) => o.kind === kind)?.address;
+  const address = forInvoice
+    ? byKind("invoices") ?? byKind("sales") ?? byKind("login")
+    : byKind("sales") ?? byKind("login");
+  return address ?? options[0].address;
+}
+
 export function FromPicker({
   options,
   value,
   onChange,
   className,
+  forInvoice,
 }: {
   options: FromOption[];
   value: string | undefined;
   onChange: (address: string) => void;
   className?: string;
+  forInvoice?: boolean;
 }) {
   if (options.length < 2) return null;
   return (
     <label className={`flex items-center gap-2 text-[12.5px] text-ink-2 ${className ?? ""}`}>
       <span className="text-muted">Send from</span>
       <select
-        value={value ?? options[0].address}
+        value={value ?? defaultSendFrom(options, forInvoice)}
         onChange={(e) => onChange(e.target.value)}
         className="border border-line px-2.5 h-8 rounded-md text-[12.5px] bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors"
       >

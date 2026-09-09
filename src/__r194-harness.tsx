@@ -9,9 +9,9 @@ import "./index.css";
 
 const n = Number(new URLSearchParams(location.search).get("n") || "2");
 const ALL = [
-  { address: "jack@bjmdistributions.com", label: "Default" },
-  { address: "sales@bjmdistributions.com", label: "Sales" },
-  { address: "invoices@bjmdistributions.com", label: "Invoices" },
+  { address: "jack@bjmdistributions.com", label: "Default", kind: "login" },
+  { address: "sales@bjmdistributions.com", label: "Sales", kind: "sales" },
+  { address: "invoices@bjmdistributions.com", label: "Invoices", kind: "invoices" },
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
