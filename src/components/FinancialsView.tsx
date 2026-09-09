@@ -550,6 +550,7 @@ type SyncSkips = {
   amend_unknown: number;
   page_capped: string[];
   possible_duplicates: SyncSkip[];
+  held_reference_collision: SyncSkip[];
 };
 const readSkips = (r: PlaidSyncSummary): SyncSkips => {
   const x = r as PlaidSyncSummary & Partial<SyncSkips>;
@@ -561,12 +562,14 @@ const readSkips = (r: PlaidSyncSummary): SyncSkips => {
     amend_unknown: x.amend_unknown ?? 0,
     page_capped: x.page_capped ?? [],
     possible_duplicates: x.possible_duplicates ?? [],
+    held_reference_collision: x.held_reference_collision ?? [],
   };
 };
 // Anything worth showing at all. `already_held` alone is an ordinary replay, not a miss.
 const anySkips = (s: SyncSkips): boolean =>
   s.skipped_duplicate.length > 0 || s.skipped_no_id.length > 0 || s.skipped_unsaved.length > 0 ||
-  s.amend_unknown > 0 || s.page_capped.length > 0 || s.possible_duplicates.length > 0;
+  s.amend_unknown > 0 || s.page_capped.length > 0 || s.possible_duplicates.length > 0 ||
+  s.held_reference_collision.length > 0;
 const skipLine = (s: SyncSkip): string =>
   [s.date, s.amount === undefined ? "" : fmtAmount(s.amount), s.description, s.account]
     .filter(Boolean).join(" · ");
@@ -3537,6 +3540,18 @@ export default function FinancialsView() {
                         <div>
                           <span className="text-ink">Your bank changed {syncSkips.amend_unknown} transaction{syncSkips.amend_unknown === 1 ? "" : "s"} this ledger has never held.</span>{" "}
                           Re-pull all history to bring {syncSkips.amend_unknown === 1 ? "it" : "them"} in.
+                        </div>
+                      )}
+                      {syncSkips.held_reference_collision.length > 0 && (
+                        <div>
+                          <span className="text-ink">{syncSkips.held_reference_collision.length} transaction{syncSkips.held_reference_collision.length === 1 ? "" : "s"} held back — {syncSkips.held_reference_collision.length === 1 ? "it shares" : "they share"} a payment reference with money you've already reviewed or booked.</span>{" "}
+                          Nothing was imported or changed — check by hand, then sync again.
+                          <div className="mt-0.5 flex flex-col text-muted">
+                            {syncSkips.held_reference_collision.slice(0, 8).map((s, i) => (
+                              <span key={i} className="truncate">{skipLine(s)}</span>
+                            ))}
+                            {syncSkips.held_reference_collision.length > 8 && <span>and {syncSkips.held_reference_collision.length - 8} more</span>}
+                          </div>
                         </div>
                       )}
                       {syncSkips.possible_duplicates.length > 0 && (

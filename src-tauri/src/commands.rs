@@ -13383,6 +13383,39 @@ fn canonical_bank_txn_id(account_key: &str, direction: &str, desc: &str) -> Opti
     Some(format!("bt1_{:016x}", fnv1a64(key.as_bytes())))
 }
 
+/// R-002/BL-22 hold-and-ask gate. `canonical_bank_txn_id` used purely as a DETECTION key:
+/// an incoming transaction whose bank-stated reference already resolves to the same id as
+/// another row on the same account+direction is a candidate collision. If none of those
+/// candidates is booked (reviewed, allocated, refunded, or loan-tagged), there is nothing to
+/// protect and the caller's ordinary duplicate handling applies as before. If ANY candidate
+/// IS booked, its id is returned so the caller can hold this transaction out of the ledger
+/// instead of letting it converge onto that id — a future merge there could silently rewrite
+/// already-reconciled data. Never mutates anything itself.
+fn canonical_id_booked_collisions(
+    conn: &rusqlite::Connection,
+    account: &str,
+    direction: &str,
+    desc: &str,
+    exclude_id: &str,
+) -> Vec<String> {
+    let Some(cid) = canonical_bank_txn_id(account, direction, desc) else { return Vec::new(); };
+    let candidates: Vec<(String, String)> = conn
+        .prepare("SELECT id, COALESCE(description,'') FROM bank_txn WHERE account_id=?1 AND direction=?2 AND id<>?3")
+        .and_then(|mut st| {
+            st.query_map(rusqlite::params![account, direction, exclude_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map(|rows| rows.filter_map(|x| x.ok()).collect())
+        })
+        .unwrap_or_default();
+    candidates
+        .into_iter()
+        .filter(|(_, d)| canonical_bank_txn_id(account, direction, d).as_deref() == Some(cid.as_str()))
+        .map(|(id, _)| id)
+        .filter(|id| bank_txn_is_referenced(conn, id))
+        .collect()
+}
+
 /// FNV-1a (64-bit) — same family the statement importer already uses for its stable ids.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -14086,6 +14119,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     let mut amend_unknown = 0i64;                         // amendment for a txn we do not hold
     let mut page_capped: Vec<String> = Vec::new();        // banks truncated by the page cap
     let mut possible_duplicates: Vec<Value> = Vec::new(); // same payment reference, different content
+    let mut held_reference_collision: Vec<Value> = Vec::new(); // same reference as a BOOKED row, held out
     let mut touched_deals: std::collections::HashSet<String> = Default::default();
     let mut preparing = false;  // at least one item still extracting after we waited
     let mut results: Vec<Value> = Vec::new(); // per-bank outcome, surfaced in the UI
@@ -14411,6 +14445,28 @@ pub async fn plaid_sync() -> Result<Value, String> {
                                 "existing": same_ref,
                             }));
                         }
+                    }
+                    // R-002/BL-22. `canonical_bank_txn_id` wired as a live dedup key — but as
+                    // a DETECTION-ONLY key, never as an id this loop mints, because the
+                    // amount-scoped check above already covers the safe "same reference, same
+                    // amount" case. What it alone catches is the narrower and more dangerous
+                    // gap: the SAME payment reference on the SAME account+direction turning up
+                    // with a DIFFERENT amount, against a row that is already reviewed,
+                    // allocated, refunded or loan-tagged. Silently proceeding there risks a
+                    // future merge onto that id rewriting booked data. So this one transaction
+                    // is held out of the ledger entirely and reported for review — nothing
+                    // booked is ever touched, and nothing here is imported as a guess.
+                    let booked_collisions = canonical_id_booked_collisions(&conn, &label, direction, &desc, &id);
+                    if !booked_collisions.is_empty() {
+                        held_reference_collision.push(json!({
+                            "date": date,
+                            "amount": amount,
+                            "direction": direction,
+                            "account": label,
+                            "description": desc,
+                            "existing": booked_collisions,
+                        }));
+                        continue;
                     }
                     let s = |v: &str| Value::String(v.to_string());
                     let mut cols = Map::new();
@@ -14756,6 +14812,12 @@ pub async fn plaid_sync() -> Result<Value, String> {
     if amend_unknown > 0 {
         tracing::warn!("plaid_sync: the bank amended {} transaction(s) this ledger has never held", amend_unknown);
     }
+    if !held_reference_collision.is_empty() {
+        tracing::warn!(
+            "plaid_sync: {} transaction(s) held out of the ledger — the payment reference collides with a row already booked, review before importing",
+            held_reference_collision.len()
+        );
+    }
     if imported > 0 || amended > 0 { crate::bank_backup::spawn_auto_backup(); } // mirror new activity to the safety-log sheet
     Ok(json!({
         "imported": imported, "removed": removed, "amended": amended,
@@ -14777,6 +14839,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
         "amend_unknown": amend_unknown,               // the bank amended a transaction we never held
         "page_capped": page_capped,                   // banks stopped at the page cap with history left
         "possible_duplicates": possible_duplicates,   // same payment reference, imported anyway
+        "held_reference_collision": held_reference_collision, // same reference as a BOOKED row — held, not imported
         "preparing": preparing, "results": results,
     }))
 }
@@ -19668,6 +19731,85 @@ mod settle_twin_tests {
         // The v0.15.116 guard: empty raw_json must not throw.
         assert!(found("btpl_legacy", "CONN1", "Amex ··1004"),
             "a row with raw_json='' must resolve by account_id without throwing");
+    }
+}
+
+// R-002/BL-22: canonical_bank_txn_id wired as a hold-and-ask detection key.
+#[cfg(test)]
+mod canonical_id_collision_tests {
+    use super::{canonical_id_booked_collisions, bank_txn_is_referenced};
+
+    fn conn_with(rows: &[(&str, i64, &str, &str, &str)]) -> rusqlite::Connection {
+        // rows: (id, reviewed, direction, description, account_id)
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, reviewed INTEGER NOT NULL DEFAULT 0,
+               direction TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+               account_id TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '');
+             CREATE TABLE bank_allocation (bank_txn_id TEXT);
+             CREATE TABLE refunds (bank_txn_id TEXT);
+             CREATE TABLE loan (bank_txn_id TEXT);
+             CREATE TABLE cash_purchase (withdrawal_txn_id TEXT);
+             CREATE TABLE business_expense (bank_txn_id TEXT);",
+        ).unwrap();
+        for (id, reviewed, direction, desc, account) in rows {
+            conn.execute(
+                "INSERT INTO bank_txn (id, reviewed, direction, description, account_id) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![id, reviewed, direction, desc, account],
+            ).unwrap();
+        }
+        conn
+    }
+
+    // Same account/direction, same wire reference, already reviewed (booked): the
+    // incoming transaction must be held, not silently allowed to converge onto it.
+    #[test]
+    fn booked_reference_collision_is_held() {
+        let conn = conn_with(&[("btpl_old", 1, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Amex ··1004")]);
+        assert!(bank_txn_is_referenced(&conn, "btpl_old"));
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert_eq!(hits, vec!["btpl_old".to_string()]);
+    }
+
+    // Same reference, but the existing row was never reviewed or linked to anything —
+    // nothing booked is at risk, so this is not a hold case.
+    #[test]
+    fn unreviewed_reference_collision_is_not_held() {
+        let conn = conn_with(&[("btpl_old", 0, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Amex ··1004")]);
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert!(hits.is_empty());
+    }
+
+    // No extractable payment reference at all: canonical_bank_txn_id returns None, so
+    // there is nothing to key a collision on regardless of what else is booked.
+    #[test]
+    fn no_reference_never_collides() {
+        let conn = conn_with(&[("btpl_old", 1, "out", "DEBIT CARD PURCHASE STARBUCKS", "Amex ··1004")]);
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "DEBIT CARD PURCHASE STARBUCKS", "btpl_new",
+        );
+        assert!(hits.is_empty(), "no reference means no canonical id, so no collision to detect");
+    }
+
+    // The same reference on a DIFFERENT account or DIFFERENT direction is a different
+    // real-world payment (or the two legs of one transfer) and must never collide.
+    #[test]
+    fn different_account_or_direction_never_collides() {
+        let conn = conn_with(&[("btpl_old", 1, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Chase ··9999")]);
+        let hits = canonical_id_booked_collisions(
+            &conn, "Amex ··1004", "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert!(hits.is_empty(), "different account must not collide");
+
+        let conn2 = conn_with(&[("btpl_old", 1, "out", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "Amex ··1004")]);
+        let hits2 = canonical_id_booked_collisions(
+            &conn2, "Amex ··1004", "in", "ONLINE DOMESTIC WIRE TRANSFER TRN:99887766", "btpl_new",
+        );
+        assert!(hits2.is_empty(), "opposite direction must not collide (two legs of one transfer)");
     }
 }
 
