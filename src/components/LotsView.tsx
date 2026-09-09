@@ -53,10 +53,16 @@ export default function LotsView({
   const [detail, setDetail] = useState<Record<string, LotBuildDetail>>({});
   const [lines, setLines] = useState<Record<string, LotLines>>({});
   const [busy, setBusy] = useState<string | null>(null);
-  const [format, setFormat] = useState<"csv" | "xlsx">("xlsx");
+  const [format, setFormat] = useState<"csv" | "xlsx" | "pdf">("xlsx");
   const [confirmRemove, setConfirmRemove] = useState<LotBuild | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // Emailing a lot export (BL-27): only the expanded row's compose panel can be open, so a
+  // single flag (reset whenever a different row expands) is enough — same shape as
+  // `renaming`/`draft` above.
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailKind, setEmailKind] = useState<"manifest" | "brands" | "pull">("manifest");
+  const [emailTo, setEmailTo] = useState("");
   const [pctDraft, setPctDraft] = useState<Record<string, string>>({});
   const [costDraft, setCostDraft] = useState<Record<string, string>>({});
   const [combineName, setCombineName] = useState("");
@@ -189,6 +195,7 @@ export default function LotsView({
       return;
     }
     setOpen(b.id);
+    setEmailOpen(false);
     if (!detail[b.id]) {
       try {
         const d = await api.lotBuildDetail(b.id);
@@ -214,7 +221,9 @@ export default function LotsView({
       filters: [
         format === "xlsx"
           ? { name: "Excel workbook", extensions: ["xlsx"] }
-          : { name: "CSV", extensions: ["csv"] },
+          : format === "pdf"
+            ? { name: "PDF", extensions: ["pdf"] }
+            : { name: "CSV", extensions: ["csv"] },
       ],
     });
     if (!dest) return;
@@ -222,6 +231,30 @@ export default function LotsView({
     try {
       const r = await api.exportLotBuild(b.id, kind, { format, destPath: dest });
       toast(`${n(r.rows)} rows written.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
+  };
+
+  // Email a lot export straight to a buyer (BL-27), through the same sender invoices and
+  // quotes already use — no dialog, no second mail path. Always sent as PDF: the mailer
+  // labels every attachment `application/pdf` (it was built for invoices, which are always
+  // PDFs), so a csv/xlsx attached through it would arrive mislabeled.
+  const sendExport = async (b: LotBuild) => {
+    const to = emailTo.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      toast("Enter a valid email address.", "error");
+      return;
+    }
+    const label = emailKind === "pull" ? "Pull sheet" : emailKind === "brands" ? "Brand counts" : "Manifest";
+    setBusy(b.id);
+    try {
+      const r = await api.exportLotBuild(b.id, emailKind, { format: "pdf" });
+      await api.sendEmail(to, `${b.name} — ${label}`, `${label} for ${b.name} is attached.`, r.path);
+      toast(`${label} emailed to ${to}.`);
+      setEmailOpen(false);
+      setEmailTo("");
     } catch (e: any) {
       toast(String(e), "error");
     }
@@ -456,6 +489,19 @@ export default function LotsView({
                           onExport={(k) => exportOne(b, k)}
                           onWorkbook={() => downloadLot(b)}
                           onCopyCodes={() => copyCodes(b)}
+                          emailOpen={emailOpen}
+                          onToggleEmail={() => {
+                            if (!emailOpen) {
+                              setEmailKind("manifest");
+                              setEmailTo("");
+                            }
+                            setEmailOpen((v) => !v);
+                          }}
+                          emailKind={emailKind}
+                          setEmailKind={setEmailKind}
+                          emailTo={emailTo}
+                          setEmailTo={setEmailTo}
+                          onSendEmail={() => sendExport(b)}
                           onSold={() => markSold(b, b.status !== "sold")}
                           onRemove={() => setConfirmRemove(b)}
                           onPutBack={() =>
@@ -821,8 +867,8 @@ function Workbench(p: {
   b: LotBuild;
   detail: LotBuildDetail;
   lines: LotLines | undefined;
-  format: "csv" | "xlsx";
-  setFormat: (v: "csv" | "xlsx") => void;
+  format: "csv" | "xlsx" | "pdf";
+  setFormat: (v: "csv" | "xlsx" | "pdf") => void;
   renaming: boolean;
   draft: string;
   setDraft: (v: string) => void;
@@ -836,6 +882,13 @@ function Workbench(p: {
   onExport: (kind: "manifest" | "brands" | "pull") => void;
   onWorkbook: () => void;
   onCopyCodes: () => void;
+  emailOpen: boolean;
+  onToggleEmail: () => void;
+  emailKind: "manifest" | "brands" | "pull";
+  setEmailKind: (v: "manifest" | "brands" | "pull") => void;
+  emailTo: string;
+  setEmailTo: (v: string) => void;
+  onSendEmail: () => void;
   onSold: () => void;
   onRemove: () => void;
   onPutBack: () => void;
@@ -872,7 +925,8 @@ function Workbench(p: {
               [
                 ["xlsx", "Excel"],
                 ["csv", "CSV"],
-              ] as ["csv" | "xlsx", string][]
+                ["pdf", "PDF"],
+              ] as ["csv" | "xlsx" | "pdf", string][]
             ).map(([id, label]) => (
               <button
                 key={id}
@@ -934,6 +988,7 @@ function Workbench(p: {
         <Btn onClick={p.onCopyCodes} busy={p.busy === b.id}>
           Copy codes
         </Btn>
+        <Btn onClick={p.onToggleEmail}>Email</Btn>
         <Btn onClick={p.startRename}>Rename</Btn>
         {p.onUngroup && <Btn onClick={p.onUngroup}>Take out of branch</Btn>}
         <div className="flex-1" />
@@ -945,6 +1000,46 @@ function Workbench(p: {
         </Btn>
         <Btn onClick={p.onArchive}>Archive</Btn>
       </div>
+
+      {p.emailOpen && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-surface-2 border border-line-2 px-2.5 py-2">
+          <div className="flex gap-1 bg-surface rounded-lg p-1 border border-line-2">
+            {(
+              [
+                ["manifest", "Manifest"],
+                ["brands", "Brand counts"],
+                ["pull", "Pull sheet"],
+              ] as ["manifest" | "brands" | "pull", string][]
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => p.setEmailKind(id)}
+                className={`text-[11px] px-2 h-6 rounded-md transition-colors ${
+                  p.emailKind === id ? "bg-accent text-on-accent" : "text-ink-2 hover:text-accent"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <input
+            autoFocus
+            type="email"
+            className={`${inp} w-[220px]`}
+            placeholder="buyer@example.com"
+            value={p.emailTo}
+            onChange={(e) => p.setEmailTo(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") p.onSendEmail();
+              if (e.key === "Escape") p.onToggleEmail();
+            }}
+          />
+          <Btn onClick={p.onSendEmail} busy={p.busy === b.id}>
+            Send as PDF
+          </Btn>
+          <Btn onClick={p.onToggleEmail}>Cancel</Btn>
+        </div>
+      )}
 
       <Lines lines={p.lines} />
       <Breakdown detail={p.detail} />

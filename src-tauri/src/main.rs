@@ -14,6 +14,7 @@ mod geocode;
 mod google_contacts;
 mod invoice;
 mod lot_engine;
+mod lot_export_pdf;
 mod lot_store;
 mod manifest;
 mod oauth_flow;
