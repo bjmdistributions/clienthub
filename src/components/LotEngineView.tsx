@@ -13,6 +13,7 @@ import {
   LotRankedSlot,
   LotSheet,
   LotSheetReport,
+  LotStack,
   LotTotals,
   LotUpcConflict,
   LotWant,
@@ -584,6 +585,7 @@ function Builder({
 
         <div className="min-w-0">
           <Results
+            sheetId={sheet.id}
             result={result}
             ranking={ranking}
             picked={picked}
@@ -1057,18 +1059,22 @@ function Filters(p: {
 // =========================================================================================
 
 function Results({
+  sheetId,
   result,
   ranking,
   picked,
   onAdd,
   onAddAll,
 }: {
+  sheetId: string;
   result: LotRankResult | null;
   ranking: boolean;
   picked: string[];
   onAdd: (loc: string) => void;
   onAddAll: () => void;
 }) {
+  const [openLocation, setOpenLocation] = useState<string | null>(null);
+
   if (!result) {
     return (
       <div className="space-y-2">
@@ -1132,7 +1138,13 @@ function Results({
 
       <div className={`space-y-2 transition-opacity ${ranking ? "opacity-60" : ""}`}>
         {result.slots.map((s) => (
-          <SlotCard key={s.location} slot={s} picked={picked.includes(s.location)} onAdd={() => onAdd(s.location)} />
+          <SlotCard
+            key={s.location}
+            slot={s}
+            picked={picked.includes(s.location)}
+            onAdd={() => onAdd(s.location)}
+            onOpen={() => setOpenLocation(s.location)}
+          />
         ))}
       </div>
 
@@ -1141,6 +1153,10 @@ function Results({
           Showing the top {n(result.slots.length)} of {n(result.matched_slots)}. The ranking ran over all of
           them — narrow the filters to see further down.
         </p>
+      )}
+
+      {openLocation && (
+        <SlotDetailModal sheetId={sheetId} location={openLocation} onClose={() => setOpenLocation(null)} />
       )}
     </div>
   );
@@ -1151,12 +1167,27 @@ function Results({
  * click — which is what the "comes with" line is for. It is the single most important
  * element on this screen.
  */
-function SlotCard({ slot, picked, onAdd }: { slot: LotRankedSlot; picked: boolean; onAdd: () => void }) {
+function SlotCard({
+  slot,
+  picked,
+  onAdd,
+  onOpen,
+}: {
+  slot: LotRankedSlot;
+  picked: boolean;
+  onAdd: () => void;
+  onOpen: () => void;
+}) {
   const top = slot.brands[0]?.units ?? 1;
   return (
     <div className="rounded-xl border border-line bg-surface px-3.5 py-3 hover:border-line-3 transition-colors">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-[13.5px] font-semibold text-ink tabular-nums truncate">{slot.location}</p>
+        <button
+          onClick={onOpen}
+          className="text-[13.5px] font-semibold text-ink tabular-nums truncate hover:text-accent transition-colors"
+        >
+          {slot.location}
+        </button>
         <p className="text-[12px] text-accent font-medium tabular-nums shrink-0">
           {Math.round(slot.pct * 100)}% of it
         </p>
@@ -1236,6 +1267,93 @@ function SlotCard({ slot, picked, onAdd }: { slot: LotRankedSlot; picked: boolea
             </>
           )}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Drill-in for one slot: every stack it holds, fetched fresh so it reflects the sheet as it
+ * stands right now rather than the ranked snapshot the card was built from.
+ */
+function SlotDetailModal({ sheetId, location, onClose }: { sheetId: string; location: string; onClose: () => void }) {
+  const [stacks, setStacks] = useState<LotStack[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setStacks(null);
+    setError(null);
+    api
+      .lotSlotContents(sheetId, location)
+      .then((s) => {
+        if (live) setStacks(s);
+      })
+      .catch((e) => {
+        if (live) setError(String(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [sheetId, location]);
+
+  const totalUnits = stacks?.reduce((sum, s) => sum + s.units, 0) ?? 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface rounded-2xl shadow-xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-line flex items-center justify-between shrink-0">
+          <div className="min-w-0">
+            <p className="text-[14px] font-semibold text-ink tabular-nums truncate">{location}</p>
+            {stacks && (
+              <p className="text-[11.5px] text-muted mt-0.5 tabular-nums">
+                {n(stacks.length)} lines · {n(totalUnits)} units
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-ink transition-colors shrink-0">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="overflow-y-auto p-2">
+          {error && <p className="text-[12.5px] text-danger px-3 py-4">{error}</p>}
+          {!error && !stacks && <p className="text-[12.5px] text-muted px-3 py-4">Loading…</p>}
+          {stacks?.length === 0 && <p className="text-[12.5px] text-muted px-3 py-4">Nothing in this slot.</p>}
+          {stacks?.map((s, i) => (
+            <div key={`${s.box}-${s.upc}-${s.title}-${i}`} className="px-3 py-2.5 rounded-lg hover:bg-surface-2">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-[12.5px] font-medium text-ink truncate">{s.title || "Untitled"}</p>
+                <p className="text-[11.5px] text-muted tabular-nums shrink-0">{n(s.units)} units</p>
+              </div>
+              <p className="text-[11px] text-muted mt-0.5 tabular-nums">
+                {[
+                  s.brand,
+                  s.category,
+                  s.segment,
+                  s.size_us != null ? `size ${s.size_us}` : null,
+                  s.box ? `box ${s.box}` : null,
+                  s.upc,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+                {" · "}
+                {fmtAmount(s.msrp)} retail
+              </p>
+              {s.title_risk >= 2 && (
+                <p className="text-[10.5px] text-warning-ink mt-0.5 flex items-center gap-1">
+                  <AlertTriangle size={10} />
+                  {s.title_risk === 3 ? "no description in the source" : "description needs checking"}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
