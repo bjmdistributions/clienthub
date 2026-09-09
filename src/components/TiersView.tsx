@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, BuyerTier } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { RefreshCw, Layers } from "lucide-react";
+import { RefreshCw, Layers, ArrowLeftRight } from "lucide-react";
 import TierBadge from "./TierBadge";
 import ReliabilityBadge from "./ReliabilityBadge";
 import ClientDetailView from "./ClientDetailView";
@@ -42,6 +42,28 @@ function cadenceBucket(days: number | null): string | null {
   return "annually";
 }
 
+// R-251: money/frequency column toggles (avg deal <-> avg profit, per-deal <-> per-month).
+const DAYS_PER_MONTH = 30.44; // mean calendar days per month
+
+function dealsPerMonth(cadenceDays: number | null): number | null {
+  return cadenceDays != null ? DAYS_PER_MONTH / cadenceDays : null;
+}
+
+function tierMoney(
+  t: BuyerTier,
+  moneyMode: "revenue" | "profit",
+  periodMode: "deal" | "month"
+): number | null {
+  const n = t.deals_landed;
+  const avgProfit = n > 0 ? t.total_profit / n : 0;
+  const money = moneyMode === "profit" ? avgProfit : t.avg_deal_value;
+  if (periodMode === "month") {
+    const dpm = dealsPerMonth(t.purchase_cadence_days);
+    return dpm != null ? money * dpm : null;
+  }
+  return n > 0 ? money : null;
+}
+
 const selectCls =
   "border border-line h-8 px-2.5 rounded-lg text-[12px] text-ink-2 bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition-colors";
 
@@ -54,6 +76,12 @@ export default function TiersView() {
   const [freqFilter, setFreqFilter]   = useState("");
   const [loading, setLoading] = useState(true);
   const [detailId, setDetailId] = useState<string | null>(null);
+
+  const [moneyMode, setMoneyMode] = useState<"revenue" | "profit">("revenue");
+  const [periodMode, setPeriodMode] = useState<"deal" | "month">("deal");
+  const [flipSeq, setFlipSeq] = useState(0);
+  const toggleMoney = () => { setMoneyMode((m) => (m === "revenue" ? "profit" : "revenue")); setFlipSeq((s) => s + 1); };
+  const togglePeriod = () => { setPeriodMode((p) => (p === "deal" ? "month" : "deal")); setFlipSeq((s) => s + 1); };
 
   const load = async () => {
     setLoading(true);
@@ -87,6 +115,11 @@ export default function TiersView() {
   };
 
   const tierCount = (t: string) => tiers.filter((x) => x.tier === t).length;
+
+  const moneyHeaderLabel =
+    periodMode === "month"
+      ? moneyMode === "profit" ? "Profit / mo" : "Revenue / mo"
+      : moneyMode === "profit" ? "Avg profit" : "Avg deal";
 
   if (detailId) return <ClientDetailView clientId={detailId} onBack={() => setDetailId(null)} />;
 
@@ -191,12 +224,42 @@ export default function TiersView() {
               <th className="text-center px-5 py-3 text-[12px] font-medium text-muted">Quotes</th>
               <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Reliability</th>
               <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg margin</th>
-              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">Avg deal</th>
-              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">Frequency</th>
+              <th className="text-right px-5 py-3 text-[12px] font-medium text-muted">
+                <button
+                  onClick={toggleMoney}
+                  title={moneyMode === "revenue" ? "Switch to profit" : "Switch to revenue"}
+                  className="group inline-flex items-center gap-1 justify-end w-full cursor-pointer hover:text-ink-2 transition-colors"
+                >
+                  {moneyHeaderLabel}
+                  <ArrowLeftRight
+                    size={11}
+                    className="text-faint group-hover:text-ink-2 transition-transform duration-[130ms] ease-out"
+                    style={{ transform: moneyMode === "profit" ? "rotate(180deg)" : "rotate(0deg)" }}
+                  />
+                </button>
+              </th>
+              <th className="text-left px-5 py-3 text-[12px] font-medium text-muted">
+                <button
+                  onClick={togglePeriod}
+                  title={periodMode === "deal" ? "Switch to monthly view" : "Switch to per-deal view"}
+                  className="group inline-flex items-center gap-1 cursor-pointer hover:text-ink-2 transition-colors"
+                >
+                  Frequency
+                  <ArrowLeftRight
+                    size={11}
+                    className="text-faint group-hover:text-ink-2 transition-transform duration-[130ms] ease-out"
+                    style={{ transform: periodMode === "month" ? "rotate(180deg)" : "rotate(0deg)" }}
+                  />
+                </button>
+              </th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((t, i) => (
+            {filtered.map((t, i) => {
+              const moneyValue = tierMoney(t, moneyMode, periodMode);
+              const dpm = dealsPerMonth(t.purchase_cadence_days);
+              const stagger = Math.min(i * 14, 220);
+              return (
               <tr
                 key={t.client_id}
                 onClick={() => setDetailId(t.client_id)}
@@ -232,17 +295,28 @@ export default function TiersView() {
                     <span className="text-[12px] text-faint">—</span>
                   )}
                 </td>
-                <td className="px-5 py-3 text-right text-[13px] text-ink-2 tabular-nums">
-                  {t.avg_deal_value > 0 ? fmtAmount(t.avg_deal_value) : "—"}
+                <td className="px-5 py-3 text-right text-[13px] tabular-nums">
+                  <span
+                    key={`money-${flipSeq}`}
+                    className={`tier-value-in ${moneyValue != null && moneyValue < 0 ? "text-danger-ink" : "text-ink-2"}`}
+                    style={{ animationDelay: `${stagger}ms` }}
+                  >
+                    {moneyValue == null ? "—" : <>{moneyValue < 0 ? "−" : ""}{fmtAmount(Math.abs(moneyValue))}</>}
+                  </span>
                 </td>
                 <td
                   className="px-5 py-3 text-[12px] text-muted"
                   title={`Measured from ${t.deals_landed} completed deal${t.deals_landed === 1 ? "" : "s"}`}
                 >
-                  {t.purchase_cadence_days != null ? `Every ${Math.round(t.purchase_cadence_days)} days` : "—"}
+                  <span key={`freq-${flipSeq}`} className="tier-value-in" style={{ animationDelay: `${stagger}ms` }}>
+                    {periodMode === "month"
+                      ? (dpm != null ? `${dpm.toFixed(1)} deals / mo` : "—")
+                      : (t.purchase_cadence_days != null ? `Every ${Math.round(t.purchase_cadence_days)} days` : "—")}
+                  </span>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={10} className="px-5 py-16 text-center">
