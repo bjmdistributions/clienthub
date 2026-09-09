@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
+import { api, Lot, Deal, ParsedLoad, Client, LotDetails, LotOption, LotPriceTier, LotVariant, CompanyInfo, StorefrontConfig, Offer, FbStatus, LotMatch } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { formatLocation, parseLocation, isCanonicalLocation } from "../lib/location";
 import LocationField from "./LocationField";
@@ -54,13 +54,15 @@ const palletPriceLine = (det: LotDetails) => {
     : `${fmtAmount(p.unitHigh)} / unit`;
   return [`${fmtAmount(p.perPallet)} per pallet`, unit].filter(Boolean).join(" · ");
 };
-// "9,000–10,000 units" when a per-pallet range was quoted, else the plain total.
+// "9,000–10,000 units" when a per-pallet range was quoted, "20,000+ units" when the count
+// is only a floor (R-247), else the plain total. A quoted range is the more specific
+// statement, so it wins over the "+".
 const unitsLabel = (lot: Lot, det: LotDetails) => {
   const lo = det.qty_per_pallet ?? 0, hi = det.qty_per_pallet_max ?? 0, pallets = det.pallets ?? 0;
   const ranged = det.qty_basis === "per_pallet" && hi > lo && pallets > 0;
   return ranged
     ? `${lot.quantity.toLocaleString()}–${(hi * pallets).toLocaleString()} units`
-    : `${lot.quantity.toLocaleString()} units`;
+    : `${lot.quantity.toLocaleString()}${det.qty_approx ? "+" : ""} units`;
 };
 
 const statusColor = (s: string) => {
@@ -94,14 +96,22 @@ const lotUnitPrice = (lot: Lot) =>
 const variantUnitPrice = (v: LotVariant, lot: Lot) =>
   v.price != null && v.price > 0 ? v.price : lotUnitPrice(lot);
 
-// The unit-price band the VARIANTS imply. A lot priced only through its sizes has no
-// asking_price of its own, and every headline used to print `fmtAmount(0)` — "$0.00 /
-// unit" on the card and the detail, which is the thing custom price text was written to
-// avoid. When the lot carries no price, its variants are the price.
-const variantPriceBand = (det: LotDetails): { low: number; high: number } | null => {
-  const ps = (det.variants ?? [])
-    .map((v) => v.price)
-    .filter((x): x is number => x != null && x > 0);
+// Volume price breaks (R-247), ascending and per unit. The rows are open-ended by
+// construction — each runs until the next begins — so the last one is the fixed rate and
+// needs no upper bound stored. The first row's quantity is the lot's MOQ.
+const priceTiers = (det: LotDetails): LotPriceTier[] =>
+  (det.price_tiers ?? [])
+    .filter((t) => t && t.min_qty > 0 && t.price > 0)
+    .sort((a, b) => a.min_qty - b.min_qty);
+// The unit-price band the VARIANTS and the volume BREAKS imply. A lot priced only through
+// its sizes or its ladder has no asking_price of its own, and every headline used to print
+// `fmtAmount(0)` — "$0.00 / unit" on the card and the detail, which is the thing custom
+// price text was written to avoid. When the lot carries no price, these are the price.
+const impliedPriceBand = (det: LotDetails): { low: number; high: number } | null => {
+  const ps = [
+    ...(det.variants ?? []).map((v) => v.price),
+    ...priceTiers(det).map((t) => t.price),
+  ].filter((x): x is number => x != null && x > 0);
   if (ps.length === 0) return null;
   return { low: Math.min(...ps), high: Math.max(...ps) };
 };
@@ -109,7 +119,7 @@ const variantPriceBand = (det: LotDetails): { low: number; high: number } | null
 const unitPriceLine = (lot: Lot, det: LotDetails): string | null => {
   const own = lotUnitPrice(lot);
   if (own > 0) return `${fmtAmount(own)} / unit`;
-  const band = variantPriceBand(det);
+  const band = impliedPriceBand(det);
   if (!band) return null;
   return band.low < band.high
     ? `${fmtAmount(band.low)}–${fmtAmount(band.high)} / unit`
@@ -119,7 +129,7 @@ const unitPriceLine = (lot: Lot, det: LotDetails): string | null => {
 // same language the storefront already uses for it; one with no price at all says so.
 const headlinePrice = (lot: Lot, det: LotDetails, total: number): string => {
   if (total > 0) return fmtAmount(total);
-  const band = variantPriceBand(det);
+  const band = impliedPriceBand(det);
   return band ? `From ${fmtAmount(band.low)}` : "No price set";
 };
 
@@ -134,7 +144,8 @@ function lotWarnings(lot: Lot, issue?: MediaIssue): string[] {
   try { details = JSON.parse(lot.details_json || "{}") ?? {}; } catch { details = {}; }
   if (photos.length === 0) w.push("No photos");
   const hasPrice = lot.asking_price > 0 || (lot.price_type === "custom" && !!details.price_text)
-    || (Array.isArray(details.variants) && details.variants.some((v: any) => v && v.price > 0));
+    || (Array.isArray(details.variants) && details.variants.some((v: any) => v && v.price > 0))
+    || (Array.isArray(details.price_tiers) && details.price_tiers.some((t: any) => t && t.price > 0));
   if (!hasPrice) w.push("No price set");
   if (!(lot.category || "").trim()) w.push("No category");
   if (issue?.missing_local) w.push("Photos haven’t synced to this device");
@@ -1512,7 +1523,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const [newManifestFile, setNewManifestFile] = useState<string | null>(null); // picked file for a not-yet-created lot
   const [saving, setSaving] = useState(false);
 
-  // Structured extras (details_json). Public: pallets/msrp/sizeRun. Internal: moq.
+  // Structured extras (details_json). Public: pallets/msrp/sizeRun/moq + the volume
+  // ladder. Internal: your cost and the supplier.
   // Seed from the edited lot, or from a pasted-load prefill.
   const seedDetails = (): LotDetails => {
     try { return JSON.parse((initial?.details_json ?? (prefill as any)?.details_json) || "{}") ?? {}; }
@@ -1547,7 +1559,22 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   // Optional upper end of a quoted range ("450-500 per pallet"). 0 means a flat count.
   const [perPalletMax, setPerPalletMax] = useState<number>(details0.qty_per_pallet_max ?? 0);
   const [msrp, setMsrp] = useState<number>(details0.msrp ?? 0);
-  const [moq, setMoq] = useState<number>(details0.moq ?? 0);
+  // Volume pricing (R-247). ONE list, so nothing can disagree: row 0 is the MINIMUM ORDER
+  // and `moq` is written from its quantity; every row after it is a break — "this many and
+  // up, at this price per unit" — and the last row is the fixed rate by construction,
+  // since each row runs until the next begins. A price is optional on any row, because
+  // stating a minimum with no ladder is what `moq` alone has always meant.
+  const [tiers, setTiers] = useState<LotPriceTier[]>(() => {
+    const stored = (details0.price_tiers ?? []).filter((t) => t && t.min_qty > 0).sort((a, b) => a.min_qty - b.min_qty);
+    const moq0 = details0.moq ?? 0;
+    if (stored.length === 0) return moq0 > 0 ? [{ min_qty: moq0, price: 0 }] : [];
+    // A stored MOQ below the cheapest break is still the minimum: keep it as row 0.
+    return moq0 > 0 && moq0 < stored[0].min_qty ? [{ min_qty: moq0, price: 0 }, ...stored] : stored;
+  });
+  const setTier = (i: number, patch: Partial<LotPriceTier>) =>
+    setTiers(tiers.map((t, n) => (n === i ? { ...t, ...patch } : t)));
+  // "At least this many" — the count is a floor, so every surface reads it as "20,000+".
+  const [qtyApprox, setQtyApprox] = useState<boolean>(!!details0.qty_approx);
   // Legacy size_run is preserved on old lots (read-only now — the variant splitter below
   // supersedes it), so editing a pre-existing lot never drops its sizes.
   const [sizeRun] = useState<any[]>(() => (details0.size_run ?? []).map((r: any) => ({ ...r, _key: r._key || crypto.randomUUID() })));
@@ -1570,6 +1597,13 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   // with no pallet count there is nothing to multiply, so it falls back to what was typed.
   const perPalletTotal = pallets > 0 ? perPallet * pallets : perPallet;
   const totalUnits = qtyBasis === "per_pallet" ? perPalletTotal : qty;
+  // "5,000+ at $6.00 / unit · 20,000+ at $5.00 / unit" — the ladder read back before it
+  // is saved. A row with no price yet contributes nothing but its minimum.
+  const tierPreview = tiers
+    .filter((t) => t.min_qty > 0)
+    .sort((a, b) => a.min_qty - b.min_qty)
+    .map((t) => `${t.min_qty.toLocaleString()}+${t.price > 0 ? ` at ${fmtAmount(t.price)} / unit` : ""}`)
+    .join(" · ");
   // A quoted range ("450-500 per pallet") stores its LOW end, so the lot never claims
   // stock the supplier did not promise; the upper end is shown, not stored as quantity.
   const perPalletTotalMax = perPalletMax > perPallet && pallets > 0 ? perPalletMax * pallets : 0;
@@ -1660,7 +1694,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
   const initialSnapshot = useRef({
     name, desc, category, qty, cost, ask, priceMode, priceText, openToOffers,
     supplier, location, notes, sentWa, sentEmail,
-    photos: photos.length, pallets, msrp, moq, sizeRun: JSON.stringify(sizeRun),
+    photos: photos.length, pallets, msrp, qtyApprox, tiers: JSON.stringify(tiers), sizeRun: JSON.stringify(sizeRun),
     variants: JSON.stringify({ options, variants }),
     cats: JSON.stringify(cats), condition, qtyBasis, perPallet,
   }).current;
@@ -1672,7 +1706,8 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
     sentWa !== initialSnapshot.sentWa || sentEmail !== initialSnapshot.sentEmail ||
     qtyBasis !== initialSnapshot.qtyBasis || perPallet !== initialSnapshot.perPallet ||
     photos.length !== initialSnapshot.photos || pallets !== initialSnapshot.pallets || msrp !== initialSnapshot.msrp ||
-    moq !== initialSnapshot.moq || JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile ||
+    qtyApprox !== initialSnapshot.qtyApprox || JSON.stringify(tiers) !== initialSnapshot.tiers ||
+    JSON.stringify(sizeRun) !== initialSnapshot.sizeRun || !!newManifestFile ||
     JSON.stringify({ options, variants }) !== initialSnapshot.variants ||
     JSON.stringify(cats) !== initialSnapshot.cats || condition !== initialSnapshot.condition;
   const requestClose = () => {
@@ -1729,7 +1764,17 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       const cleanCats = Array.from(new Set(cats.map((c) => c.trim()).filter(Boolean)));
       const primaryCat = cleanCats[0] || category.trim() || "";
       const conditionClean = condition.trim();
-      const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moq || null, size_run: cleanRun };
+      // The ladder, cleaned: rows need a quantity, a price is optional, and the MOQ is
+      // simply the lowest quantity on it. Only priced rows become breaks — a bare row 0
+      // is the "minimum order, ask for a price" case and stores nothing but `moq`.
+      const cleanTierRows = tiers.filter((t) => t && t.min_qty > 0).sort((a, b) => a.min_qty - b.min_qty);
+      const moqOut = cleanTierRows.length ? cleanTierRows[0].min_qty : 0;
+      const cleanTiers: LotPriceTier[] = cleanTierRows.filter((t) => t.price > 0).map((t) => ({ min_qty: t.min_qty, price: t.price }));
+      const detailsObj: LotDetails = { pallets: pallets || null, msrp: msrp || null, avg_msrp: avgMsrp, moq: moqOut || null, size_run: cleanRun };
+      if (cleanTiers.length) detailsObj.price_tiers = cleanTiers;
+      // A floor, not a count. `quantity` still holds the figure typed — this only says
+      // how to read it, so nothing that sums stock moves.
+      if (qtyApprox) detailsObj.qty_approx = true;
       // Remember how the quantity was entered so re-opening the form shows the same
       // figure back, instead of a total the supplier never quoted.
       if (!hasVariants && qtyBasis === "per_pallet" && perPallet > 0) {
@@ -1766,7 +1811,7 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
       // Preserve a manifest summary seeded from the analyzer (or a prior save) — the save
       // rebuilds detailsObj from fields, so it would otherwise be dropped.
       if (details0.manifest) detailsObj.manifest = details0.manifest;
-      const hasDetails = !!pallets || !!msrp || !!moq || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev || perPalletPriced;
+      const hasDetails = !!pallets || !!msrp || !!moqOut || cleanTiers.length > 0 || qtyApprox || avgMsrp != null || cleanRun.length > 0 || !!priceTextClean || hasVariants || openToOffers || !!details0.manifest || cleanCats.length > 0 || !!conditionClean || showPrev || perPalletPriced;
       const detailsJson = hasDetails ? JSON.stringify(detailsObj) : undefined;
       // Canonicalise on the way out. LocationField already emits the right shape,
       // but a PREFILLED lot (paste-a-load) can reach save without the field ever
@@ -1918,6 +1963,18 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 )}
               </div>
             )}
+            {variantTotal === 0 && (
+              <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
+                <input type="checkbox" className="accent-accent mt-0.5 flex-shrink-0" checked={qtyApprox} onChange={(e) => setQtyApprox(e.target.checked)} />
+                <span className="min-w-0">
+                  <span className="text-[12.5px] font-medium text-ink">At least this many</span>
+                  <span className="block text-[11px] text-muted mt-0.5">
+                    For a load you can&rsquo;t count exactly. Shows as{" "}
+                    <span className="tabular-nums font-medium text-ink-2">{(totalUnits || 20000).toLocaleString()}+ units</span> everywhere.
+                  </span>
+                </span>
+              </label>
+            )}
             <div>
               <label className="block text-[12.5px] font-medium text-ink-2 mb-1">Split into variants <span className="font-normal text-muted">— optional (e.g. 2 brands in one deal)</span></label>
               <VariantSplitEditor options={options} variants={variants} onOptions={setOptions} onVariants={setVariants} />
@@ -1969,6 +2026,50 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 )}
               </p>
             )}
+            </div>
+            {/* Volume pricing (R-247). Row 0 is the minimum order — its quantity is what
+                `moq` is saved from — and each row below it is a break that runs until the
+                next one starts, so the bottom row is the fixed rate for anything above it.
+                Jack's own example: 5,000 MOQ at $6, 20,000+ at $5. */}
+            <div>
+              <label className="block text-[12.5px] font-medium text-ink-2 mb-1">
+                Minimum order &amp; volume pricing <span className="font-normal text-muted">&mdash; optional</span>
+              </label>
+              {tiers.length === 0 ? (
+                <button type="button" onClick={() => setTiers([{ min_qty: 0, price: 0 }])}
+                  className="w-full h-9 rounded-lg border border-dashed border-line text-[12.5px] text-muted hover:text-ink-2 hover:border-accent/50 transition-colors">
+                  Set a minimum order
+                </button>
+              ) : (
+                <div className="space-y-1.5">
+                  {tiers.map((t, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="text-[11.5px] text-muted w-[86px] flex-shrink-0">{i === 0 ? "Minimum order" : "Then from"}</span>
+                      <NumberInput className={cellInp + " tabular-nums w-[92px] flex-shrink-0"} integer value={t.min_qty || ""}
+                        onValue={(n) => setTier(i, { min_qty: n })} placeholder={i === 0 ? "5000" : "20000"} />
+                      <span className="text-[11.5px] text-muted flex-shrink-0">units</span>
+                      <div className="relative flex-1 min-w-0 max-w-[124px]">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                        <NumberInput className={cellInp + " pl-5 tabular-nums w-full"} value={t.price || ""}
+                          onValue={(n) => setTier(i, { price: n })} placeholder="0.00" />
+                      </div>
+                      <span className="text-[11.5px] text-muted flex-shrink-0">/ unit</span>
+                      <button type="button" onClick={() => setTiers(tiers.filter((_, n) => n !== i))}
+                        className="text-muted hover:text-danger-ink p-1 flex-shrink-0" title="Remove"><X size={14} /></button>
+                    </div>
+                  ))}
+                  <button type="button"
+                    onClick={() => setTiers([...tiers, { min_qty: 0, price: 0 }])}
+                    className="text-[12px] text-accent hover:text-accent-hover font-medium inline-flex items-center gap-1">
+                    <Plus size={13} /> Add a price break
+                  </button>
+                  <p className="text-[11.5px] text-muted tabular-nums">
+                    {tierPreview
+                      ? <>{tierPreview}. The last break is the fixed rate above it.</>
+                      : <span className="text-warning-ink">Add a quantity, and a price per unit if you want to state one.</span>}
+                  </p>
+                </div>
+              )}
             </div>
             <label className="flex items-start gap-2.5 cursor-pointer mt-1 rounded-lg border border-line bg-surface-2/50 px-3 py-2.5">
               <input type="checkbox" className="accent-accent mt-0.5 flex-shrink-0" checked={openToOffers} onChange={(e) => setOpenToOffers(e.target.checked)} />
@@ -2045,7 +2146,10 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
             </div>
           </div>
 
-          {/* Internal — never shown to buyers. Supplier, your cost, and MOQ stay private. */}
+          {/* Internal — never shown to buyers. Supplier and your cost stay private. The
+              MOQ used to live here and did not belong: it is published on the storefront
+              and on the BJM site, and it is now part of Pricing where a buyer-facing
+              figure belongs. */}
           <div className="bg-surface-2 border border-line rounded-lg p-3 space-y-3">
             <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
               <Lock size={13} className="text-muted" /> Internal — never shown to buyers
@@ -2064,17 +2168,11 @@ function LotForm({ initial, prefill, onClose, suppliers, categories, mediaBase, 
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[12.5px] font-medium text-muted mb-1">Your cost</label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
-                  <NumberInput className={inp + " pl-6"} value={cost || ""} onValue={(n) => setCost(n)} placeholder="0.00" />
-                </div>
-              </div>
-              <div>
-                <label className="block text-[12.5px] font-medium text-muted mb-1">MOQ (min order qty)</label>
-                <NumberInput className={inp + " tabular-nums"} integer value={moq || ""} onValue={(n) => setMoq(n)} placeholder="0" />
+            <div>
+              <label className="block text-[12.5px] font-medium text-muted mb-1">Your cost</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-[12px]">$</span>
+                <NumberInput className={inp + " pl-6"} value={cost || ""} onValue={(n) => setCost(n)} placeholder="0.00" />
               </div>
             </div>
           </div>
@@ -2233,6 +2331,7 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
   const allCats = Array.from(new Set([...(det.categories ?? []), ...(lot.category ? [lot.category] : [])].map((c) => c.trim()).filter(Boolean)));
   const condition = (det.condition || "").trim();
   const variantRows = (det.variants ?? []).filter((v) => v && (v.qty > 0 || (v.price != null && v.price > 0)));
+  const tierRows = priceTiers(det);
   const prevTotalAll = det.prev_price != null && det.prev_price > lot.asking_price
     ? (lot.price_type === "per_unit" ? det.prev_price * lot.quantity : det.prev_price) : null;
   // Resolve the linked deal (if any) so the link is visible, not just stored.
@@ -2366,7 +2465,8 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
 
           {/* Details grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Row label="Quantity" value={`${lot.quantity} units`} />
+            <Row label="Quantity" value={unitsLabel(lot, det)} />
+            <Row label="Minimum order" value={(det.moq ?? 0) > 0 ? `${(det.moq as number).toLocaleString()} units` : "—"} />
             <Row label="Supplier" value={lot.supplier || "—"} />
             <Row label="Location" value={lot.location || "—"} />
             <Row label="Notes" value={lot.notes || "—"} />
@@ -2382,6 +2482,27 @@ function LotDetail({ lot, deals, mediaBase, warnings, offers, onOffersChanged, o
               that price is the variant's or inherited from the lot, so a size never needs
               prose to explain what its number means. A row with no qty simply omits the
               count instead of claiming "0 units". */}
+          {/* Volume pricing (R-247). Each break runs until the next begins, so the last
+              row is the fixed rate for anything above it and needs no upper bound. */}
+          {tierRows.length > 0 && (
+            <div>
+              <p className="text-[12.5px] font-medium text-muted mb-1.5">Volume pricing</p>
+              <div className="border border-line rounded-lg overflow-hidden divide-y divide-line-2">
+                {tierRows.map((t, i) => (
+                  <div key={i} className="flex items-center gap-3 px-3 py-2 min-w-0">
+                    <span className="flex-1 min-w-0 text-[13px] text-ink tabular-nums">
+                      {t.min_qty.toLocaleString()}+ units
+                      {i === 0 && <span className="text-[11px] text-muted ml-1.5">minimum order</span>}
+                    </span>
+                    <span className="text-[13px] font-medium text-ink tabular-nums flex-shrink-0">
+                      {fmtAmount(t.price)} <span className="text-[11px] font-normal text-muted">/ unit</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {variantRows.length > 0 && (
             <div>
               <p className="text-[12.5px] font-medium text-muted mb-1.5">Variants</p>

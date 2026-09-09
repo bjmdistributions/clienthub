@@ -1433,6 +1433,12 @@ export interface LotDetails {
   msrp?: number | null;
   avg_msrp?: number | null;
   moq?: number | null;
+  // The quantity is a FLOOR, not an exact count — "20,000+". `quantity` still holds the
+  // number typed, so nothing that sums stock changes; this only says how to read it.
+  qty_approx?: boolean | null;
+  // Volume price breaks, ascending, per-unit prices. Absent on a lot that sells at one
+  // price. See LotPriceTier for why the last row needs no upper bound.
+  price_tiers?: LotPriceTier[] | null;
   size_run?: { size: string; qty: number }[] | null;
   price_text?: string | null;   // free-text price shown verbatim when price_type === "custom"
   // How the PRICE was entered, mirroring `qty_basis`. `asking_price` is ALWAYS the
@@ -1511,6 +1517,13 @@ export interface LotVariant {
   qty: number;
   price?: number | null;         // per-variant price; null → falls back to the lot's asking price
 }
+
+/** One volume price break: "this many units and up, at this price PER UNIT". The rows are
+ *  kept ascending by `min_qty` and the LAST one is open-ended by construction — every row
+ *  runs until the next one starts, so the highest is the fixed rate. The first row's
+ *  `min_qty` IS the lot's MOQ (`LotDetails.moq` is written from it), so the two cannot
+ *  disagree. */
+export interface LotPriceTier { min_qty: number; price: number }
 
 export interface FollowUpRule {
   id: string;
