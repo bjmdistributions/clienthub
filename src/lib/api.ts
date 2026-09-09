@@ -2286,6 +2286,8 @@ export const api = {
     invoke<number>("export_deal_flows_csv", { outputPath }),
   exportInventoryCsv: (statusFilter: string | null, outputPath: string) =>
     invoke<number>("export_inventory_csv", { statusFilter, outputPath }),
+  exportTaxYearPnlCsv: (year: number, outputPath: string) =>
+    invoke<number>("export_tax_year_pnl_csv", { year, outputPath }),
   exportAnalyticsXlsx: (outputPath: string) =>
     invoke<void>("export_analytics_xlsx", { outputPath }),
 

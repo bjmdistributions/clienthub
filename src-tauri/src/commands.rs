@@ -1425,6 +1425,269 @@ pub async fn export_inventory_csv(status_filter: Option<String>, output_path: St
     Ok(count)
 }
 
+// R-188: category -> (label, group) mirror of FinancialsView.tsx's CATEGORIES/
+// CAT_GROUP_ORDER (also mirrored in www/app.js's BK_CAT_LIST/BK_CAT_GROUPS and
+// ai.rs). All copies move together — see architecture/financials.md "The chart
+// of accounts". Blank/unrecognised categories are deliberately NOT in this list;
+// they fall through to the "Uncategorized" bucket in export_tax_year_pnl_csv.
+const PNL_CATEGORY_GROUPS: &[(&str, &str, &str)] = &[
+    ("receipt",             "Sale / buyer payment",            "Income"),
+    ("service_income",      "Commission & service income",     "Income"),
+    ("shipping_income",     "Shipping billed to a customer",   "Income"),
+    ("interest_income",     "Interest earned",                 "Income"),
+    ("other_income",        "Other income",                    "Income"),
+
+    ("customer_refund",     "Refund to a customer",            "Sales reductions"),
+    ("sales_discount",      "Discount or allowance given",     "Sales reductions"),
+    ("chargeback",          "Chargeback or dispute lost",      "Sales reductions"),
+    ("bad_debt",            "Bad debt written off",            "Sales reductions"),
+
+    ("payment",             "Supplier payment",                "Cost of goods"),
+    ("merchandise",         "Inventory / merchandise",         "Cost of goods"),
+    ("shipping",            "Shipping & freight",              "Cost of goods"),
+    ("customs",             "Customs, duties & tariffs",       "Cost of goods"),
+    ("packaging",           "Packaging & shipping supplies",   "Cost of goods"),
+    ("storage",             "Storage, 3PL & pallet fees",      "Cost of goods"),
+
+    ("supplier_refund",     "Refund from a supplier",          "Cost reductions"),
+    ("purchase_discount",   "Supplier discount or rebate",     "Cost reductions"),
+
+    ("meals",               "Meals & food",                    "Operating expenses"),
+    ("auto",                "Fuel & auto",                     "Operating expenses"),
+    ("travel",              "Travel & lodging",                "Operating expenses"),
+    ("office",               "Office & supplies",              "Operating expenses"),
+    ("utilities",           "Utilities & phone",               "Operating expenses"),
+    ("rent",                "Rent & warehouse",                "Operating expenses"),
+    ("repairs",             "Repairs & maintenance",           "Operating expenses"),
+    ("equipment",           "Small equipment & tools",         "Operating expenses"),
+    ("software",            "Software & subscriptions",        "Operating expenses"),
+    ("advertising",         "Advertising & marketing",         "Operating expenses"),
+    ("insurance",           "Business insurance",              "Operating expenses"),
+    ("health_insurance",    "Health insurance premiums",       "Operating expenses"),
+    ("professional",        "Professional & legal fees",       "Operating expenses"),
+    ("payroll",             "Payroll & contractors",           "Operating expenses"),
+    ("commissions",         "Sales commissions & rep payouts", "Operating expenses"),
+    ("retirement",          "Retirement contributions",        "Operating expenses"),
+    ("education",           "Training & education",            "Operating expenses"),
+    ("gifts",               "Client gifts",                    "Operating expenses"),
+    ("charity",             "Charitable contributions",        "Operating expenses"),
+    ("fee",                 "Bank & wire fees",                "Operating expenses"),
+    ("merchant_fees",       "Card & processing fees",          "Operating expenses"),
+    ("interest_expense",    "Loan & credit card interest",     "Operating expenses"),
+    ("other_expense",       "Other expense",                   "Operating expenses"),
+
+    ("taxes",               "Business & franchise taxes",      "Taxes & licences"),
+    ("payroll_taxes",       "Payroll taxes",                   "Taxes & licences"),
+    ("sales_tax_collected", "Sales tax collected",             "Taxes & licences"),
+    ("sales_tax_remitted",  "Sales tax paid to the state",     "Taxes & licences"),
+    ("licenses",            "Licences, permits & filings",     "Taxes & licences"),
+    ("estimated_tax",       "Owner estimated tax (personal)",  "Taxes & licences"),
+
+    ("internal_transfer",   "Internal transfer",               "Transfers, owner & assets"),
+    ("card_payment",        "Credit card payment",             "Transfers, owner & assets"),
+    ("owner_draw",          "Owner draw",                      "Transfers, owner & assets"),
+    ("owner_contribution",  "Owner contribution",              "Transfers, owner & assets"),
+    ("asset_purchase",      "Equipment or vehicle bought",     "Transfers, owner & assets"),
+    ("cash_in",             "Cash deposit",                    "Transfers, owner & assets"),
+    ("cash_out",            "Cash withdrawal",                 "Transfers, owner & assets"),
+    ("loan_received",       "Loan received",                   "Transfers, owner & assets"),
+    ("loan_repayment",      "Loan repayment",                  "Transfers, owner & assets"),
+];
+
+const PNL_GROUP_ORDER: &[&str] = &["Income", "Sales reductions", "Cost of goods", "Cost reductions",
+                                    "Operating expenses", "Taxes & licences", "Transfers, owner & assets"];
+
+// R-188 rule 3: these three sit in the Taxes & licences group but are neither
+// income nor a deduction — sales tax held for the state, and the owner's own
+// personal tax. The rest of that group (business taxes, payroll taxes, licences)
+// IS a real deduction and stays in the P&L net.
+const PNL_TAX_PASSTHROUGH: &[&str] = &["estimated_tax", "sales_tax_collected", "sales_tax_remitted"];
+
+fn pnl_group_of(category: &str) -> Option<(&'static str, &'static str)> {
+    PNL_CATEGORY_GROUPS.iter().find(|(v, _, _)| *v == category).map(|(_, label, group)| (*label, *group))
+}
+
+/// One category's line in the rollup, in display order (grouped, then Uncategorized last).
+struct PnlCategoryLine { group: String, label: String, in_amt: f64, out_amt: f64 }
+impl PnlCategoryLine { fn net(&self) -> f64 { self.in_amt - self.out_amt } }
+
+/// The pure math behind R-188's year-end P&L — no DB, no I/O, so it can be unit
+/// tested directly rather than only through the Tauri command. `cat_dir_amt` is
+/// `(category, direction, amount)` triples, already SUMmed per (category, direction)
+/// — exactly the shape `export_tax_year_pnl_csv`'s SQL returns.
+///
+/// Grouped exactly the way the chart of accounts already groups the Ledger's
+/// category picker (`CAT_GROUP_ORDER` in FinancialsView.tsx) — no second grouping
+/// invented. Four rules from the request, all load-bearing:
+///  1. Sales/Cost reductions are contra accounts: netting `in - out` per category
+///     and summing every included group's net subtracts them automatically — a
+///     refund is never capped or floored, it comes off in full.
+///  2. "Transfers, owner & assets" is not profit and loss — excluded from the net,
+///     reported on its own line.
+///  3. `estimated_tax` / `sales_tax_collected` / `sales_tax_remitted` are neither
+///     income nor a deduction — excluded from the net, their own line.
+///  4. An uncategorised (or unrecognised) row is never dropped — its own line,
+///     loud, on both the CSV and the on-screen report.
+struct PnlRollup {
+    lines: Vec<PnlCategoryLine>, // grouped in PNL_GROUP_ORDER, then Uncategorized
+    group_totals: Vec<(String, f64)>, // (group, net), PNL_GROUP_ORDER order
+    net_income: f64,
+    transfers_net: f64,
+    tax_passthrough_net: f64,
+    uncategorized_net: f64,
+}
+
+fn pnl_rollup(cat_dir_amt: &[(String, String, f64)]) -> PnlRollup {
+    // category -> (label, group, in, out)
+    let mut by_cat: std::collections::BTreeMap<String, (String, String, f64, f64)> = std::collections::BTreeMap::new();
+    for (cat, dir, amt) in cat_dir_amt {
+        let (label, group) = pnl_group_of(cat)
+            .map(|(l, g)| (l.to_string(), g.to_string()))
+            .unwrap_or_else(|| (if cat.is_empty() { "Uncategorized".to_string() } else { cat.clone() }, "Uncategorized".to_string()));
+        let entry = by_cat.entry(cat.clone()).or_insert((label, group, 0.0, 0.0));
+        if dir == "in" { entry.2 += amt; } else { entry.3 += amt; }
+    }
+
+    let mut lines = Vec::new();
+    let mut group_totals = Vec::new();
+    let mut net_income = 0.0;
+    let mut transfers_net = 0.0;
+    let mut tax_passthrough_net = 0.0;
+    let mut uncategorized_net = 0.0;
+
+    for group in PNL_GROUP_ORDER {
+        let mut group_net = 0.0;
+        let mut group_tax_passthrough = 0.0;
+        for (cat, (label, g, cin, cout)) in &by_cat {
+            if g != group { continue; }
+            let line = PnlCategoryLine { group: (*group).to_string(), label: label.clone(), in_amt: *cin, out_amt: *cout };
+            group_net += line.net();
+            if *group == "Taxes & licences" && PNL_TAX_PASSTHROUGH.contains(&cat.as_str()) {
+                group_tax_passthrough += line.net();
+            }
+            lines.push(line);
+        }
+        group_totals.push(((*group).to_string(), group_net));
+        if *group == "Transfers, owner & assets" {
+            transfers_net += group_net;
+        } else if *group == "Taxes & licences" {
+            tax_passthrough_net += group_tax_passthrough;
+            net_income += group_net - group_tax_passthrough;
+        } else {
+            net_income += group_net;
+        }
+    }
+
+    // Uncategorized / unrecognised — surfaced loudly, never counted in the net.
+    for (_cat, (label, g, cin, cout)) in &by_cat {
+        if g != "Uncategorized" { continue; }
+        let line = PnlCategoryLine { group: "Uncategorized".to_string(), label: label.clone(), in_amt: *cin, out_amt: *cout };
+        uncategorized_net += line.net();
+        lines.push(line);
+    }
+
+    PnlRollup { lines, group_totals, net_income, transfers_net, tax_passthrough_net, uncategorized_net }
+}
+
+/// `posted_at` is a bank-supplied calendar date, not a UTC instant (same treatment
+/// as `deal_flows.completed_at` in `central_month_window`), so the year window is a
+/// plain half-open date range — no `date('now')`, no tz shift needed.
+#[tauri::command]
+pub async fn export_tax_year_pnl_csv(year: i32, output_path: String) -> Result<u32, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let lo = format!("{}-01-01", year);
+    let hi = format!("{}-01-01", year + 1);
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(category,''), direction, SUM(amount) FROM bank_txn \
+         WHERE posted_at >= ?1 AND posted_at < ?2 GROUP BY COALESCE(category,''), direction"
+    ).map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, f64)> = stmt.query_map([&lo, &hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let txn_count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM bank_txn WHERE posted_at >= ?1 AND posted_at < ?2",
+        [&lo, &hi], |r| r.get(0),
+    ).unwrap_or(0);
+
+    let r = pnl_rollup(&rows);
+
+    let mut wtr = csv::Writer::from_path(&output_path).map_err(|e| e.to_string())?;
+    wtr.write_record(["Group", "Category", "Money in", "Money out", "Net"]).map_err(|e| e.to_string())?;
+    for group in PNL_GROUP_ORDER.iter().map(|g| g.to_string()).chain(std::iter::once("Uncategorized".to_string())) {
+        for line in r.lines.iter().filter(|l| l.group == group) {
+            wtr.write_record(&[line.group.clone(), line.label.clone(), format!("{:.2}", line.in_amt), format!("{:.2}", line.out_amt), format!("{:.2}", line.net())]).map_err(|e| e.to_string())?;
+        }
+        if let Some((_, total)) = r.group_totals.iter().find(|(g, _)| g == &group) {
+            wtr.write_record(&[format!("{} — group total", group), String::new(), String::new(), String::new(), format!("{:.2}", total)]).map_err(|e| e.to_string())?;
+        }
+    }
+
+    wtr.write_record(["", "", "", "", ""]).map_err(|e| e.to_string())?;
+    wtr.write_record(&["Net income (P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.net_income)]).map_err(|e| e.to_string())?;
+    wtr.write_record(&["Sales tax & owner's personal tax (not P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.tax_passthrough_net)]).map_err(|e| e.to_string())?;
+    wtr.write_record(&["Transfers, owner draws & asset purchases (not P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.transfers_net)]).map_err(|e| e.to_string())?;
+    wtr.write_record(&["Uncategorized (not P&L)".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.uncategorized_net)]).map_err(|e| e.to_string())?;
+    wtr.write_record(&["Total — all bank activity this year".to_string(), String::new(), String::new(), String::new(), format!("{:.2}", r.net_income + r.tax_passthrough_net + r.transfers_net + r.uncategorized_net)]).map_err(|e| e.to_string())?;
+
+    wtr.flush().map_err(|e| e.to_string())?;
+    Ok(txn_count)
+}
+
+#[cfg(test)]
+mod pnl_tests {
+    use super::*;
+
+    fn amt(cat: &str, dir: &str, v: f64) -> (String, String, f64) { (cat.to_string(), dir.to_string(), v) }
+
+    // The acceptance test from the request: the report's grand total (net income +
+    // every excluded block) must equal a plain sum of the whole year's bank
+    // activity — i.e. what the bank list filtered to that year shows. True by
+    // construction (every row lands in exactly one bucket), but worth proving.
+    #[test]
+    fn grand_total_matches_whole_year_bank_activity() {
+        let rows = vec![
+            amt("receipt", "in", 10000.0),
+            amt("customer_refund", "out", 1000.0),   // Sales reductions — subtracts from income
+            amt("payment", "out", 6000.0),           // Cost of goods
+            amt("supplier_refund", "in", 500.0),     // Cost reductions — subtracts from cost
+            amt("software", "out", 200.0),           // Operating expenses
+            amt("taxes", "out", 300.0),               // Taxes & licences, deductible
+            amt("estimated_tax", "out", 900.0),       // Taxes & licences, NOT P&L
+            amt("owner_draw", "out", 2500.0),         // Transfers — NOT P&L
+            amt("", "in", 150.0),                     // Uncategorized — not counted, not dropped
+        ];
+        let whole_year_net: f64 = rows.iter().map(|(_, d, a)| if d == "in" { *a } else { -*a }).sum();
+
+        let r = pnl_rollup(&rows);
+        // 10000 - 1000 (sales reduction) - 6000 + 500 (cost reduction) - 200 - 300 (deductible tax) = 3000
+        assert_eq!(r.net_income, 3000.0, "sales/cost reductions must subtract in full, deductible taxes stay in the net");
+        assert_eq!(r.tax_passthrough_net, -900.0, "estimated_tax is excluded from net income, not dropped");
+        assert_eq!(r.transfers_net, -2500.0, "owner_draw is excluded from net income, not dropped");
+        assert_eq!(r.uncategorized_net, 150.0, "blank category is excluded from net income, not dropped");
+        let grand_total = r.net_income + r.tax_passthrough_net + r.transfers_net + r.uncategorized_net;
+        assert_eq!(grand_total, whole_year_net, "nothing may go missing quietly — the report must reconcile to the raw ledger");
+    }
+
+    // A refund that fully wipes out the year's income must zero, not floor negative
+    // income at zero and not leave the refund uncounted — R-188 rule 1 explicitly
+    // forbids capping (mirrors decisions/refunds-subtract-in-full.md at the deal level).
+    #[test]
+    fn a_refund_larger_than_income_is_not_capped() {
+        let rows = vec![amt("receipt", "in", 500.0), amt("customer_refund", "out", 800.0)];
+        let r = pnl_rollup(&rows);
+        assert_eq!(r.net_income, -300.0, "refunds subtract in full, uncapped — a loss must show as a loss");
+    }
+
+    // An unrecognised (legacy/typo) category value must still be counted somewhere
+    // visible, never silently merged into a real group's total.
+    #[test]
+    fn unrecognized_category_falls_into_uncategorized_not_a_real_group() {
+        let rows = vec![amt("not_a_real_category", "out", 42.0)];
+        let r = pnl_rollup(&rows);
+        assert_eq!(r.uncategorized_net, -42.0);
+        assert_eq!(r.net_income, 0.0, "an unrecognised category must never be silently folded into a real P&L group");
+    }
+}
+
 #[tauri::command]
 pub async fn export_analytics_xlsx(output_path: String) -> Result<(), String> {
     use rust_xlsxwriter::*;
