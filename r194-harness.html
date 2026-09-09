@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-194 harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it —
+      same trick as shell-harness.html / lot-harness.html / r003-harness.html.
+
+      Verifies the R-194 "send from" picker: renders with 1, 2 and 3 configured
+      addresses so the "hide when there's no real choice" rule and the dropdown's
+      label text are both visible. ?n=1 | n=2 (default) | n=3
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        unregisterListener: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r194-harness.tsx"></script>
+  </body>
+</html>

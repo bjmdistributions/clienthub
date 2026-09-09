@@ -1252,7 +1252,7 @@ pub fn render_sample_pdf() -> Result<String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-pub async fn send_invoice(invoice_id: &str) -> Result<()> {
+pub async fn send_invoice(invoice_id: &str, from_override: Option<&str>) -> Result<()> {
     let (number, total, pdf_path, cname, cemail) = {
         let conn = pool().get()?;
         let inv: (String, String, f64, Option<String>) = conn.query_row(
@@ -1287,7 +1287,7 @@ pub async fn send_invoice(invoice_id: &str) -> Result<()> {
         clause_email_block(&invoice_return_policy(invoice_id)),
     );
 
-    crate::email::send_invoice_mail(&to, &subject, &body, Some(&pdf)).await?;
+    crate::email::send_invoice_mail(&to, &subject, &body, Some(&pdf), from_override).await?;
 
     let now = Utc::now().to_rfc3339();
     // Only a draft is promoted to 'sent'. A paid-but-never-emailed invoice keeps
@@ -1359,7 +1359,7 @@ pub async fn generate_quote_pdf(quote_id: &str) -> Result<String> {
     Ok(pdf_path.to_string_lossy().to_string())
 }
 
-pub async fn send_quote(quote_id: &str, thread: bool) -> Result<()> {
+pub async fn send_quote(quote_id: &str, thread: bool, from_override: Option<&str>) -> Result<()> {
     let (number, total, pdf_path, cname, cemail, src_mid, src_subject, was_draft) = {
         let conn = pool().get()?;
         let q: (String, String, f64, Option<String>, String) = conn.query_row(
@@ -1413,7 +1413,7 @@ pub async fn send_quote(quote_id: &str, thread: bool) -> Result<()> {
         clause_email_block(""),
     );
 
-    crate::email::send_threaded(&to, &subject, &body, Some(&pdf), in_reply_to.as_deref(), None).await?;
+    crate::email::send_threaded(&to, &subject, &body, Some(&pdf), in_reply_to.as_deref(), from_override).await?;
 
     let now = Utc::now().to_rfc3339();
     let mut cols = serde_json::Map::new();

@@ -797,6 +797,7 @@ fn main() {
             apply_location_normalization,
             // Email
             send_email,
+            get_send_from_options,
             scan_inbox,
             get_email_inboxes,
             save_email_inbox,

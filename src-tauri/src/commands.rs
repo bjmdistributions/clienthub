@@ -2708,8 +2708,8 @@ pub async fn generate_quote_pdf(quote_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn send_quote(quote_id: String, thread: Option<bool>) -> Result<(), String> {
-    crate::invoice::send_quote(&quote_id, thread.unwrap_or(false)).await.map_err(|e| e.to_string())
+pub async fn send_quote(quote_id: String, thread: Option<bool>, from: Option<String>) -> Result<(), String> {
+    crate::invoice::send_quote(&quote_id, thread.unwrap_or(false), from.as_deref()).await.map_err(|e| e.to_string())
 }
 
 /// Mark a quote accepted and link it to the invoice it was converted into.
@@ -3311,8 +3311,8 @@ pub async fn preview_invoice_pdf(app_handle: tauri::AppHandle, input: InvoiceInp
 }
 
 #[tauri::command]
-pub async fn send_invoice(invoice_id: String) -> Result<(), String> {
-    crate::invoice::send_invoice(&invoice_id)
+pub async fn send_invoice(invoice_id: String, from: Option<String>) -> Result<(), String> {
+    crate::invoice::send_invoice(&invoice_id, from.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -7010,14 +7010,21 @@ pub async fn send_email(
     subject: String,
     body: String,
     attachment_path: Option<String>,
+    from: Option<String>,
 ) -> Result<(), String> {
-    crate::email::send(&to, &subject, &body, attachment_path.as_deref())
+    crate::email::send_threaded(&to, &subject, &body, attachment_path.as_deref(), None, from.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     // Outbound mail is contact too. Without this a reply sent from Ecliptr never moved the
     // client's last-contact date.
     crate::email::log_outbound(&to, &subject, &body);
     Ok(())
+}
+
+/// The addresses this device can send as, for a compose-time "from" picker (R-194).
+#[tauri::command]
+pub async fn get_send_from_options() -> Result<Vec<crate::email::FromOption>, String> {
+    Ok(crate::email::send_from_options())
 }
 
 #[tauri::command]
@@ -16995,7 +17002,7 @@ pub async fn update_draft(id: String, body: String, subject: String) -> Result<(
 }
 
 #[tauri::command]
-pub async fn send_draft(id: String) -> Result<(), String> {
+pub async fn send_draft(id: String, from: Option<String>) -> Result<(), String> {
     let (to_addr, subject, body) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         let result: rusqlite::Result<(String, String, String)> = conn.query_row(
@@ -17006,7 +17013,7 @@ pub async fn send_draft(id: String) -> Result<(), String> {
         result.map_err(|e| e.to_string())?
     };
 
-    crate::email::send(&to_addr, &subject, &body, None)
+    crate::email::send_threaded(&to_addr, &subject, &body, None, None, from.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     crate::email::log_outbound(&to_addr, &subject, &body);
@@ -17174,6 +17181,7 @@ pub async fn send_newsletter(
     subject_template: String,
     body_template: String,
     attachment_path: Option<String>,
+    from: Option<String>,
 ) -> Result<NewsletterSendResult, String> {
     use tauri::Emitter;
     crate::email::test_smtp().await.map_err(|e| format!("SMTP connection failed: {}", e))?;
@@ -17263,7 +17271,7 @@ pub async fn send_newsletter(
                 } else {
                     body.clone()
                 };
-                match crate::email::send(addr, &subj, &body_out, attachment_path.as_deref()).await {
+                match crate::email::send_threaded(addr, &subj, &body_out, attachment_path.as_deref(), None, from.as_deref()).await {
                     Ok(()) => {
                         sent += 1;
                         let _ = conn.execute(
