@@ -1,14 +1,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Landmark, Upload, Search, Check, X, Trash2, Loader2, Link2, ChevronRight, ChevronDown, Sparkles, Plus,
-  Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle,
+  Building2, RefreshCw, RotateCcw, Plug, Wand2, ArrowDownLeft, ArrowUpRight, Pencil, ShieldCheck, AlertTriangle, Download,
 } from "lucide-react";
 import {
   api, BankTxn, BankTxnReviewPatch, BankTxnSummary, BankPreview, BankAiPreview, BankAiImportResult, BankAllocation, DealFlow, PlaidItem,
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, BankPersonCandidate, ReconciliationMissingDeal,
 } from "../lib/api";
 import { fmtAmount, localDay, parseLocalDay } from "../lib/format";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "./Toast";
 import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
@@ -586,14 +586,17 @@ export default function FinancialsView() {
   // history; Cash holds Free cash + Loans; Setup is every once-in-a-while tool.
   // The chosen surface survives leaving and re-entering the page — losing your
   // place on every visit was one of the audit's standing complaints.
-  const [tab, setTabRaw] = useState<"tobook" | "ledger" | "cash" | "setup">(() => {
+  const [tab, setTabRaw] = useState<"tobook" | "ledger" | "cash" | "setup" | "report">(() => {
     const t = localStorage.getItem("fin_tab");
-    return t === "ledger" || t === "cash" || t === "setup" ? t : "tobook";
+    return t === "ledger" || t === "cash" || t === "setup" || t === "report" ? t : "tobook";
   });
-  const setTab = (v: "tobook" | "ledger" | "cash" | "setup") => {
+  const setTab = (v: "tobook" | "ledger" | "cash" | "setup" | "report") => {
     setTabRaw(v);
     localStorage.setItem("fin_tab", v);
   };
+  // R-188: which tax year the P&L report shows. Defaults to the current Central
+  // calendar year, same "today" helper the rest of this screen uses (R-159).
+  const [pnlYear, setPnlYear] = useState(() => Number(localDay().slice(0, 4)));
   const [cashTab, setCashTab] = useState<"freecash" | "loans">("freecash");
   const [aiBusy, setAiBusy]   = useState(false);
   const [newDealBusy, setNewDealBusy] = useState(false);
@@ -2191,6 +2194,68 @@ export default function FinancialsView() {
     setFromDate(`${v}-01-01`); setToDate(`${v}-12-31`);
   };
 
+  // R-188: the year-end P&L, grouped exactly the way the category picker above
+  // is grouped (CATEGORIES/CAT_GROUP_ORDER) — no second grouping invented. Four
+  // rules from the request, all load-bearing:
+  //  1. Sales/Cost reductions are contra accounts: summing `in - out` per category
+  //     across every included group subtracts them automatically — a refund is
+  //     never capped or floored, it comes off in full.
+  //  2. "Transfers, owner & assets" is not profit and loss — excluded from the
+  //     net, its own line.
+  //  3. estimated_tax / sales_tax_collected / sales_tax_remitted are neither
+  //     income nor a deduction — excluded from the net, their own line.
+  //  4. An uncategorised (or unrecognised) row is never dropped — its own line,
+  //     loud, never silently folded into a group it may not belong to.
+  //
+  // The CSV export (export_tax_year_pnl_csv, commands.rs) re-derives the same
+  // numbers from the same table independently, so the two totals agreeing is a
+  // real check, not a shared code path pretending to be two.
+  const TAX_PASSTHROUGH_CATS = ["estimated_tax", "sales_tax_collected", "sales_tax_remitted"];
+  const pnlReport = useMemo(() => {
+    const byCat = new Map<string, { label: string; group: string; in: number; out: number }>();
+    for (const t of txns) {
+      if ((t.posted_at || "").slice(0, 4) !== String(pnlYear)) continue;
+      const cat = t.category || "";
+      const def = CATEGORIES.find((c) => c.value === cat);
+      const entry = byCat.get(cat) ?? { label: def ? def.label : (cat || "Uncategorized"), group: def ? def.group : "", in: 0, out: 0 };
+      if (t.direction === "in") entry.in += t.amount; else entry.out += t.amount;
+      byCat.set(cat, entry);
+    }
+    const groups = CAT_GROUP_ORDER.map((g) => {
+      const categories = [...byCat.entries()]
+        .filter(([, v]) => v.group === g)
+        .map(([value, v]) => ({ value, label: v.label, in: v.in, out: v.out, net: v.in - v.out }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      return { group: g, categories, net: categories.reduce((s, c) => s + c.net, 0) };
+    });
+    const uncategorized = [...byCat.entries()]
+      .filter(([, v]) => v.group === "")
+      .map(([value, v]) => ({ value, label: v.label, in: v.in, out: v.out, net: v.in - v.out }));
+    const uncategorizedNet = uncategorized.reduce((s, c) => s + c.net, 0);
+    const transfersNet = groups.find((g) => g.group === "Transfers, owner & assets")?.net ?? 0;
+    const taxGroup = groups.find((g) => g.group === "Taxes & licences");
+    const taxPassthroughNet = (taxGroup?.categories ?? [])
+      .filter((c) => TAX_PASSTHROUGH_CATS.includes(c.value))
+      .reduce((s, c) => s + c.net, 0);
+    const netIncome = groups.reduce((s, g) => {
+      if (g.group === "Transfers, owner & assets") return s;
+      if (g.group === "Taxes & licences") return s + (g.net - taxPassthroughNet);
+      return s + g.net;
+    }, 0);
+    return { groups, uncategorized, uncategorizedNet, transfersNet, taxPassthroughNet, netIncome,
+      grandTotal: netIncome + taxPassthroughNet + transfersNet + uncategorizedNet };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txns, pnlYear]);
+
+  const handleExportPnl = async () => {
+    const path = await saveDialog({ filters: [{ name: "CSV", extensions: ["csv"] }], defaultPath: `pnl-${pnlYear}.csv` });
+    if (!path) return;
+    try {
+      const count = await api.exportTaxYearPnlCsv(pnlYear, path as string);
+      toast(`Exported ${count} transaction${count === 1 ? "" : "s"} to CSV`);
+    } catch (e: any) { toast(errText(e), "error"); }
+  };
+
   // The candidate pool, deduped to one row per invoice. Both pickers take it
   // whole and do their own sectioning — the old flat, pre-ranked, silently
   // truncated list is what R-204 replaced.
@@ -2810,6 +2875,7 @@ export default function FinancialsView() {
           ["tobook", "To book"],
           ["ledger", "Ledger"],
           ["cash", "Cash"],
+          ["report", "Tax report"],
           ["setup", "Setup"],
         ] as const).map(([v, label]) => (
           <button
@@ -2847,7 +2913,98 @@ export default function FinancialsView() {
         </div>
       )}
 
-      {tab !== "cash" && (
+      {/* Tax report — the year-end P&L (R-188). Grouped by the same chart of
+          accounts as the Ledger's category picker; nothing here reads any table
+          other than bank_txn, so this figure and the Ledger's totals can never
+          silently drift apart. */}
+      {tab === "report" && (
+        <div className="space-y-5">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5">
+              <span className="text-[13px] text-muted">Tax year</span>
+              <select
+                value={pnlYear}
+                onChange={(e) => setPnlYear(Number(e.target.value))}
+                className="h-8 px-2.5 rounded-lg text-[13px] border border-line bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+              >
+                {taxYears.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <button
+              onClick={handleExportPnl}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-line text-[12.5px] font-medium text-ink-2 hover:bg-surface-2 hover:border-line-3 transition-colors"
+            >
+              <Download size={13} /> Export CSV
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="border border-line rounded-xl p-4">
+              <div className="text-[12px] text-muted">Net income (P&L)</div>
+              <div className={`text-[22px] font-semibold tabular-nums ${pnlReport.netIncome >= 0 ? "text-success-ink" : "text-danger-ink"}`}>
+                {fmtAmount(pnlReport.netIncome)}
+              </div>
+              <div className="text-[11.5px] text-muted mt-0.5">Income, cost of goods and expenses — refunds and discounts subtracted in full</div>
+            </div>
+            <div className="border border-line rounded-xl p-4">
+              <div className="text-[12px] text-muted">All bank activity this year</div>
+              <div className="text-[22px] font-semibold tabular-nums text-ink">{fmtAmount(pnlReport.grandTotal)}</div>
+              <div className="text-[11.5px] text-muted mt-0.5">Every dollar in or out — same total as the Ledger for this year</div>
+            </div>
+          </div>
+
+          {pnlReport.uncategorized.length > 0 && (
+            <div className="flex items-start gap-2.5 border border-line-2 rounded-lg px-3.5 py-3 bg-surface-2/40 min-w-0">
+              <AlertTriangle size={15} className="text-warning-ink flex-shrink-0 mt-0.5" />
+              <p className="text-[12px] text-ink-2 flex-1 min-w-0 leading-relaxed">
+                <span className="font-medium text-ink tabular-nums">{fmtAmount(pnlReport.uncategorizedNet)}</span> across{" "}
+                {pnlReport.uncategorized.length} categor{pnlReport.uncategorized.length === 1 ? "y" : "ies"} in {pnlYear} has no
+                category and is <span className="font-medium">not counted</span> in net income above — categorize it in the
+                Ledger to include it. It is included in "All bank activity" so nothing goes missing quietly.
+              </p>
+            </div>
+          )}
+
+          {pnlReport.groups.map((g) => {
+            const excluded = g.group === "Transfers, owner & assets";
+            return (
+              <div key={g.group} className="border border-line rounded-xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-surface-2 border-b border-line">
+                  <div>
+                    <span className="text-[13px] font-semibold text-ink">{g.group}</span>
+                    {excluded && <span className="ml-2 text-[11px] text-muted">Not profit or loss — shown for the record</span>}
+                  </div>
+                  <span className={`text-[13px] font-semibold tabular-nums ${g.net >= 0 ? "text-success-ink" : "text-danger-ink"}`}>{fmtAmount(g.net)}</span>
+                </div>
+                {g.categories.length === 0 ? (
+                  <div className="px-4 py-3 text-[12.5px] text-muted">Nothing this year</div>
+                ) : (
+                  <table className="w-full text-[12.5px]">
+                    <tbody>
+                      {g.categories.map((c) => {
+                        const passthrough = g.group === "Taxes & licences" && TAX_PASSTHROUGH_CATS.includes(c.value);
+                        return (
+                          <tr key={c.value} className="border-b border-line last:border-0">
+                            <td className="px-4 py-2 text-ink-2">
+                              {c.label}
+                              {passthrough && <span className="ml-1.5 text-[11px] text-muted">Not profit or loss</span>}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums text-success-ink">{c.in > 0 ? fmtAmount(c.in) : ""}</td>
+                            <td className="px-4 py-2 text-right tabular-nums text-danger-ink">{c.out > 0 ? fmtAmount(c.out) : ""}</td>
+                            <td className="px-4 py-2 text-right tabular-nums text-ink font-medium">{fmtAmount(c.net)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {tab !== "cash" && tab !== "report" && (
       <div className="space-y-5">
       {/* To book — headline row: how much work waits, plus the daily controls. */}
       {tab === "tobook" && (
