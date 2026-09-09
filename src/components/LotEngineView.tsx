@@ -17,7 +17,9 @@ import {
   LotTotals,
   LotUpcConflict,
   LotWant,
+  Me,
 } from "../lib/api";
+import { isAdmin } from "../lib/permissions";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 // The NATIVE clipboard, not navigator.clipboard. The web API throws NotAllowedError inside
@@ -94,7 +96,8 @@ const emptyAllow = (): LotAllow => ({
 
 type Tab = "sheets" | "build" | "auto" | "retail" | "quality" | "barcodes" | "lots";
 
-export default function LotEngineView() {
+export default function LotEngineView({ me }: { me?: Me | null }) {
+  const admin = isAdmin(me);
   const [sheets, setSheets] = useState<LotSheet[]>([]);
   const [sheetId, setSheetId] = useState<string | null>(null);
   const [facets, setFacets] = useState<LotFacets | null>(null);
@@ -317,6 +320,7 @@ export default function LotEngineView() {
             <SheetsTab
               sheets={sheets}
               activeId={sheet.id}
+              admin={admin}
               onOpen={(id) => {
                 setSheetId(id);
                 setTab("build");
@@ -2723,12 +2727,14 @@ function RiskCell({ units, label, warn }: { units: number; label: string; warn?:
 function SheetsTab({
   sheets,
   activeId,
+  admin,
   onOpen,
   onChanged,
   onImport,
 }: {
   sheets: LotSheet[];
   activeId: string;
+  admin: boolean;
   onOpen: (id: string) => void;
   onChanged: () => void;
   onImport: () => void;
@@ -2736,8 +2742,25 @@ function SheetsTab({
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [resyncing, setResyncing] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<LotSheet[] | null>(null);
+
+  // BL-37b: the escape hatch for every sheet at once. `resend` below already covers one
+  // sheet whose push was rejected and dropped; this is for the rarer case where several —
+  // or a whole device newly caught up to a server that just learned the tables — need the
+  // same nudge. Admin-only: it re-queues real inventory rows across the org, not a per-user
+  // preference.
+  const resyncAll = async () => {
+    setResyncing(true);
+    try {
+      const rows = await api.resyncLotEngine();
+      toast(`${n(rows)} rows across every sheet queued for the server.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setResyncing(false);
+  };
 
   useEffect(() => {
     if (!showArchived) return;
@@ -2886,9 +2909,16 @@ function SheetsTab({
           Every sheet you have imported. Each keeps its own master list, so you can work a load
           today, put it away, and pick it up where you left it. Nothing is ever deleted.
         </p>
-        <ActBtn onClick={onImport} icon={<Upload size={12} />}>
-          Import a sheet
-        </ActBtn>
+        <div className="flex items-center gap-2 shrink-0">
+          {admin && (
+            <ActBtn onClick={resyncAll} busy={resyncing} icon={<RotateCcw size={12} />}>
+              Resync with the server
+            </ActBtn>
+          )}
+          <ActBtn onClick={onImport} icon={<Upload size={12} />}>
+            Import a sheet
+          </ActBtn>
+        </div>
       </div>
 
       <div className="space-y-2">{sheets.map((s) => card(s, false))}</div>
