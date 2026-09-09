@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-246 harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it — same
+      trick as shell-harness.html / lot-harness.html / r235-harness.html.
+
+      ?prefill=1 simulates arriving from Inventory → "Send to newsletter" with a lot
+      whose categories are already preselected via the real sessionStorage hand-off.
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        unregisterListener: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r246-harness.tsx"></script>
+  </body>
+</html>

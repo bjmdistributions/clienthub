@@ -6,10 +6,16 @@ import CompletedBreakdown from "./CompletedBreakdown";
 
 // Fixed columns, shared by the header row, every deal row and the totals row —
 // auto-width figures put each label and value at a different x on every line.
-const STAT_GRID = "grid grid-cols-[104px_104px_60px_104px] gap-x-6 flex-shrink-0 text-right items-baseline";
+const STAT_GRID = "grid grid-cols-[104px_104px_60px_92px_92px_92px] gap-x-6 flex-shrink-0 text-right items-baseline";
 
 /** −$4,300.00, not $-4,300.00 — the sign convention used on the suppliers table. */
 const signedAmount = (n: number) => `${n < 0 ? "−" : ""}${fmtAmount(Math.abs(n))}`;
+
+// R-181: a client refund is apportioned onto this supplier's share of the deal,
+// the same rule SUPPLIER_STATS_SQL uses for the aggregate total_profit/total_revenue
+// figures on the suppliers table — refunded/df_total * supplier_amount.
+const refundedShare = (d: any) =>
+  d.df_total > 0 ? (Number(d.deal_refunded) || 0) * (Number(d.supplier_amount) || 0) / d.df_total : 0;
 
 // Large-screen browser for a supplier's completed deals. Launched from the
 // suppliers drawer; stacks above it (z-60) so the narrow drawer stays mounted.
@@ -59,12 +65,13 @@ export default function SupplierDealsModal({
   // Footer totals. `supplier_amount` is what this supplier was paid; revenue and
   // profit are the whole deal's, so the blended margin here is the deal-side one.
   const totals = deals.reduce(
-    (a: { revenue: number; profit: number; paid: number }, d: any) => ({
-      revenue: a.revenue + (Number(d.gross_revenue)   || 0),
-      profit:  a.profit  + (Number(d.net_profit)      || 0),
-      paid:    a.paid    + (Number(d.supplier_amount) || 0),
+    (a: { revenue: number; profit: number; paid: number; refunded: number }, d: any) => ({
+      revenue:  a.revenue  + (Number(d.gross_revenue)   || 0),
+      profit:   a.profit   + (Number(d.net_profit)      || 0),
+      paid:     a.paid     + (Number(d.supplier_amount) || 0),
+      refunded: a.refunded + refundedShare(d),
     }),
-    { revenue: 0, profit: 0, paid: 0 },
+    { revenue: 0, profit: 0, paid: 0, refunded: 0 },
   );
   const totalMargin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : null;
 
@@ -81,7 +88,7 @@ export default function SupplierDealsModal({
               {deals.length} completed deal{deals.length !== 1 ? "s" : ""}
             </p>
             <p className="text-[11px] text-faint mt-0.5">
-              Revenue and profit are the whole deal's, before refunds. The last column is what this supplier was paid.
+              Revenue and profit are the whole deal's, before refunds. Paid/Refunded/Net are this supplier's own share — a refund is apportioned by their part of the deal's total supplier payments.
             </p>
           </div>
           <button
@@ -108,13 +115,17 @@ export default function SupplierDealsModal({
                   <div>Revenue</div>
                   <div>Profit</div>
                   <div>Margin</div>
-                  <div>Paid them</div>
+                  <div>Paid</div>
+                  <div>Refunded</div>
+                  <div>Net</div>
                 </div>
               </div>
               {deals.map((d: any) => {
                 const margin = d.gross_revenue > 0
                   ? (d.net_profit / d.gross_revenue) * 100
                   : null;
+                const refunded = refundedShare(d);
+                const netPaid = (Number(d.supplier_amount) || 0) - refunded;
                 const open = expandedDealId === d.id;
                 return (
                   <div key={d.id}>
@@ -161,6 +172,11 @@ export default function SupplierDealsModal({
                           }
                         />
                         <Stat value={fmtAmount(d.supplier_amount)} />
+                        <Stat
+                          value={refunded > 0 ? signedAmount(-refunded) : "—"}
+                          clr={refunded > 0 ? "text-danger-ink" : "text-faint"}
+                        />
+                        <Stat value={fmtAmount(netPaid)} />
                       </div>
                     </button>
 
@@ -197,6 +213,11 @@ export default function SupplierDealsModal({
                       clr={totalMargin === null ? "text-faint" : "text-ink-2"}
                     />
                     <Stat value={fmtAmount(totals.paid)} />
+                    <Stat
+                      value={totals.refunded > 0 ? signedAmount(-totals.refunded) : "—"}
+                      clr={totals.refunded > 0 ? "text-danger-ink" : "text-faint"}
+                    />
+                    <Stat value={fmtAmount(totals.paid - totals.refunded)} />
                   </div>
                 </div>
               )}

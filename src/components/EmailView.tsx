@@ -527,7 +527,6 @@ function NewsletterTab() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [previewIdx, setPreviewIdx] = useState(0);
   const [allCategories, setAllCategories] = useState<Category[]>([]);
-  const [recipientCategoryFilter, setRecipientCategoryFilter] = useState<string | null>(null);
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null);
   const [attachmentSearch, setAttachmentSearch] = useState("");
   const [manualEmail, setManualEmail] = useState("");
@@ -617,16 +616,28 @@ function NewsletterTab() {
   const categoryLabels = allCategories.map((c) => c.label);
   const validRecipients = selected.filter((c) => c.email);
 
-  const filteredClients = recipientCategoryFilter
-    ? clients.filter((c) => c.category?.toLowerCase().includes(recipientCategoryFilter.toLowerCase()))
-    : clients;
+  // Category chips: "eligible" mirrors the same excludes as the audience list — never
+  // blacklisted or No-bulk (column or metadata), and must have an email to send to.
+  const catMembers = (label: string) => clients.filter((c) =>
+    !c.is_blacklisted && !c.exclusive && !c.metadata?.exclusive && c.email &&
+    (c.category || "").trim().toLowerCase() === label.trim().toLowerCase()
+  );
+  const toggleCategory = (label: string) => {
+    const members = catMembers(label);
+    const memberIds = new Set(members.map((c) => c.id));
+    const selectedIds = new Set(selected.map((c) => c.id));
+    const allSelected = members.length > 0 && members.every((c) => selectedIds.has(c.id));
+    setSelected(allSelected
+      ? selected.filter((c) => !memberIds.has(c.id))
+      : [...selected, ...members.filter((c) => !selectedIds.has(c.id))]);
+  };
 
   const searchedClients = clientSearch.trim()
-    ? filteredClients.filter((c) =>
+    ? clients.filter((c) =>
         c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
         (c.email && c.email.toLowerCase().includes(clientSearch.toLowerCase()))
       )
-    : filteredClients;
+    : clients;
 
   const tierMap: Record<string, string> = {};
   for (const t of tiers) tierMap[t.client_id] = t.tier;
@@ -868,16 +879,34 @@ function NewsletterTab() {
           <span className="bg-accent/10 text-accent-hover text-[11px] font-semibold px-2 py-0.5 rounded-full tabular-nums">{metadataFilteredClients.filter((c) => c.email).length} will receive</span>
         </div>
 
-        <div className="px-3 py-2 border-b border-line">
-          <select
-            value={recipientCategoryFilter ?? ""}
-            onChange={(e) => setRecipientCategoryFilter(e.target.value || null)}
-            className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            <option value="">All categories</option>
-            {categoryLabels.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
+        {categoryLabels.length > 0 && (
+          <div className="px-3 py-2 border-b border-line">
+            <div className="flex flex-wrap gap-1.5">
+              {categoryLabels.map((label) => {
+                const members = catMembers(label);
+                const selectedIds = new Set(selected.map((c) => c.id));
+                const selectedCount = members.filter((c) => selectedIds.has(c.id)).length;
+                const full = members.length > 0 && selectedCount === members.length;
+                const partial = selectedCount > 0 && !full;
+                return (
+                  <button
+                    key={label}
+                    onClick={() => toggleCategory(label)}
+                    title={`${selectedCount} of ${members.length} selected`}
+                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1.5 ${
+                      full ? "bg-accent text-on-accent border-accent"
+                        : partial ? "bg-accent/10 text-accent border-accent"
+                        : "border-line text-ink-2 hover:bg-surface-2"
+                    }`}
+                  >
+                    {partial && <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />}
+                    {label} · {members.length}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="px-3 py-2 border-b border-line">
           <input

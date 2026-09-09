@@ -427,7 +427,14 @@ export default function InventoryView() {
       const body = buildNewsletterBody(tmpl, chosen.map(lotToBlockInput));
       const subject = `New inventory — ${chosen.length} lot${chosen.length !== 1 ? "s" : ""}`;
       // Recipients: eligible buyers whose category matches the selected lots' categories.
-      const catSet = new Set(chosen.map((l) => (l.category || "").trim().toLowerCase()).filter(Boolean));
+      // Use each lot's FULL category list (details_json.categories plus the legacy
+      // singular field), same as the allCats pattern used elsewhere in this file.
+      const catSet = new Set(
+        chosen.flatMap((l) => {
+          const det: LotDetails = (() => { try { return (JSON.parse(l.details_json || "{}") as LotDetails) ?? {}; } catch { return {} as LotDetails; } })();
+          return [...(det.categories ?? []), ...(l.category ? [l.category] : [])];
+        }).map((c) => c.trim().toLowerCase()).filter(Boolean)
+      );
       const recipientIds = clients
         .filter((c) => !c.is_blacklisted && !(c as any).exclusive && !(c.metadata as any)?.exclusive && (c.email || "").trim())
         .filter((c) => catSet.size === 0 || catSet.has((c.category || "").trim().toLowerCase()))
