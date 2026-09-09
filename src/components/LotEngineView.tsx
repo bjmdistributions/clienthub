@@ -13,10 +13,13 @@ import {
   LotRankedSlot,
   LotSheet,
   LotSheetReport,
+  LotStack,
   LotTotals,
   LotUpcConflict,
   LotWant,
+  Me,
 } from "../lib/api";
+import { isAdmin } from "../lib/permissions";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 // The NATIVE clipboard, not navigator.clipboard. The web API throws NotAllowedError inside
@@ -93,7 +96,8 @@ const emptyAllow = (): LotAllow => ({
 
 type Tab = "sheets" | "build" | "auto" | "retail" | "quality" | "barcodes" | "lots";
 
-export default function LotEngineView() {
+export default function LotEngineView({ me }: { me?: Me | null }) {
+  const admin = isAdmin(me);
   const [sheets, setSheets] = useState<LotSheet[]>([]);
   const [sheetId, setSheetId] = useState<string | null>(null);
   const [facets, setFacets] = useState<LotFacets | null>(null);
@@ -316,6 +320,7 @@ export default function LotEngineView() {
             <SheetsTab
               sheets={sheets}
               activeId={sheet.id}
+              admin={admin}
               onOpen={(id) => {
                 setSheetId(id);
                 setTab("build");
@@ -584,6 +589,7 @@ function Builder({
 
         <div className="min-w-0">
           <Results
+            sheetId={sheet.id}
             result={result}
             ranking={ranking}
             picked={picked}
@@ -710,6 +716,68 @@ function Chip({
       )}
     </button>
   );
+}
+
+const SHOE_CATEGORIES = ["Footwear", "Boots", "Sandals", "Clogs", "Slippers", "Cleats"];
+
+/** Categories a location may hold, plus two pinned shortcuts ahead of the per-category list:
+ *  one to grab every shoe-shaped category at once, one for stock nothing was recognized in. */
+function AllowCategoryChips({
+  facets,
+  allow,
+  setAllow,
+}: {
+  facets: LotFacets;
+  allow: LotAllow;
+  setAllow: (a: LotAllow) => void;
+}) {
+  const shoePresent = facets.categories.filter((c) => SHOE_CATEGORIES.includes(c.name));
+  const shoeOn = shoePresent.length > 0 && shoePresent.every((c) => allow.categories.includes(c.name));
+  const uncategorized = facets.categories.find((c) => c.name === "Uncategorized");
+  const rest = facets.categories.filter((c) => c.name !== "Uncategorized");
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <Chip
+        label="All shoes"
+        count={shoePresent.reduce((sum, c) => sum + c.units, 0)}
+        on={shoeOn}
+        onClick={() =>
+          setAllow({
+            ...allow,
+            categories: shoeOn
+              ? allow.categories.filter((c) => !SHOE_CATEGORIES.includes(c))
+              : Array.from(new Set([...allow.categories, ...shoePresent.map((c) => c.name)])),
+          })
+        }
+      />
+      <Chip
+        label="None / uncategorized"
+        count={uncategorized?.units}
+        on={allow.categories.includes("Uncategorized")}
+        onClick={() =>
+          setAllow({
+            ...allow,
+            categories: allow.categories.includes("Uncategorized")
+              ? allow.categories.filter((c) => c !== "Uncategorized")
+              : [...allow.categories, "Uncategorized"],
+          })
+        }
+      />
+      {rest.map((c) => (
+        <Chip
+          key={c.name}
+          label={c.name}
+          count={c.units}
+          on={allow.categories.includes(c.name)}
+          onClick={() => setAllow({ ...allow, categories: toggleInList(allow.categories, c.name) })}
+        />
+      ))}
+    </div>
+  );
+}
+
+function toggleInList(list: string[], v: string) {
+  return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 }
 
 /** One side of an either/or. A radio in everything but the input type — the two options are
@@ -888,17 +956,7 @@ function Filters(p: {
         title="What a slot may contain"
         hint="Decides which slots qualify at all. Because the take is all or nothing, this is about the whole slot — not the lines in it."
       >
-        <div className="flex flex-wrap gap-1.5">
-          {p.facets.categories.map((c) => (
-            <Chip
-              key={c.name}
-              label={c.name}
-              count={c.units}
-              on={p.allow.categories.includes(c.name)}
-              onClick={() => p.setAllow({ ...p.allow, categories: toggle(p.allow.categories, c.name) })}
-            />
-          ))}
-        </div>
+        <AllowCategoryChips facets={p.facets} allow={p.allow} setAllow={p.setAllow} />
         {p.facets.segments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-2">
             {p.facets.segments.map((s) => (
@@ -1005,18 +1063,22 @@ function Filters(p: {
 // =========================================================================================
 
 function Results({
+  sheetId,
   result,
   ranking,
   picked,
   onAdd,
   onAddAll,
 }: {
+  sheetId: string;
   result: LotRankResult | null;
   ranking: boolean;
   picked: string[];
   onAdd: (loc: string) => void;
   onAddAll: () => void;
 }) {
+  const [openLocation, setOpenLocation] = useState<string | null>(null);
+
   if (!result) {
     return (
       <div className="space-y-2">
@@ -1080,7 +1142,13 @@ function Results({
 
       <div className={`space-y-2 transition-opacity ${ranking ? "opacity-60" : ""}`}>
         {result.slots.map((s) => (
-          <SlotCard key={s.location} slot={s} picked={picked.includes(s.location)} onAdd={() => onAdd(s.location)} />
+          <SlotCard
+            key={s.location}
+            slot={s}
+            picked={picked.includes(s.location)}
+            onAdd={() => onAdd(s.location)}
+            onOpen={() => setOpenLocation(s.location)}
+          />
         ))}
       </div>
 
@@ -1089,6 +1157,10 @@ function Results({
           Showing the top {n(result.slots.length)} of {n(result.matched_slots)}. The ranking ran over all of
           them — narrow the filters to see further down.
         </p>
+      )}
+
+      {openLocation && (
+        <SlotDetailModal sheetId={sheetId} location={openLocation} onClose={() => setOpenLocation(null)} />
       )}
     </div>
   );
@@ -1099,12 +1171,27 @@ function Results({
  * click — which is what the "comes with" line is for. It is the single most important
  * element on this screen.
  */
-function SlotCard({ slot, picked, onAdd }: { slot: LotRankedSlot; picked: boolean; onAdd: () => void }) {
+function SlotCard({
+  slot,
+  picked,
+  onAdd,
+  onOpen,
+}: {
+  slot: LotRankedSlot;
+  picked: boolean;
+  onAdd: () => void;
+  onOpen: () => void;
+}) {
   const top = slot.brands[0]?.units ?? 1;
   return (
     <div className="rounded-xl border border-line bg-surface px-3.5 py-3 hover:border-line-3 transition-colors">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-[13.5px] font-semibold text-ink tabular-nums truncate">{slot.location}</p>
+        <button
+          onClick={onOpen}
+          className="text-[13.5px] font-semibold text-ink tabular-nums truncate hover:text-accent transition-colors"
+        >
+          {slot.location}
+        </button>
         <p className="text-[12px] text-accent font-medium tabular-nums shrink-0">
           {Math.round(slot.pct * 100)}% of it
         </p>
@@ -1113,6 +1200,20 @@ function SlotCard({ slot, picked, onAdd }: { slot: LotRankedSlot; picked: boolea
         {n(slot.total)} units · {n(slot.styles)} styles · {fmtAmount(slot.msrp)} retail ·{" "}
         <span className="text-ink-2 font-medium">{n(slot.want)} you want</span>
       </p>
+      {(slot.breaks > 0 || slot.boxes.length > 0) && (
+        <p className="text-[11px] text-muted mt-0.5">
+          {slot.breaks > 0 && (
+            <>{n(slot.allowed)} match your rules · {n(slot.breaks)} break them</>
+          )}
+          {slot.breaks > 0 && slot.boxes.length > 0 && " · "}
+          {slot.boxes.length > 0 && (
+            <>
+              Boxes: {slot.boxes.slice(0, 3).join(", ")}
+              {slot.boxes.length > 3 ? `, and ${slot.boxes.length - 3} more` : ""}
+            </>
+          )}
+        </p>
+      )}
 
       <div className="mt-2 space-y-1">
         {slot.brands.slice(0, 4).map((b) => (
@@ -1170,6 +1271,93 @@ function SlotCard({ slot, picked, onAdd }: { slot: LotRankedSlot; picked: boolea
             </>
           )}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Drill-in for one slot: every stack it holds, fetched fresh so it reflects the sheet as it
+ * stands right now rather than the ranked snapshot the card was built from.
+ */
+function SlotDetailModal({ sheetId, location, onClose }: { sheetId: string; location: string; onClose: () => void }) {
+  const [stacks, setStacks] = useState<LotStack[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setStacks(null);
+    setError(null);
+    api
+      .lotSlotContents(sheetId, location)
+      .then((s) => {
+        if (live) setStacks(s);
+      })
+      .catch((e) => {
+        if (live) setError(String(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [sheetId, location]);
+
+  const totalUnits = stacks?.reduce((sum, s) => sum + s.units, 0) ?? 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface rounded-2xl shadow-xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-line flex items-center justify-between shrink-0">
+          <div className="min-w-0">
+            <p className="text-[14px] font-semibold text-ink tabular-nums truncate">{location}</p>
+            {stacks && (
+              <p className="text-[11.5px] text-muted mt-0.5 tabular-nums">
+                {n(stacks.length)} lines · {n(totalUnits)} units
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-ink transition-colors shrink-0">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="overflow-y-auto p-2">
+          {error && <p className="text-[12.5px] text-danger px-3 py-4">{error}</p>}
+          {!error && !stacks && <p className="text-[12.5px] text-muted px-3 py-4">Loading…</p>}
+          {stacks?.length === 0 && <p className="text-[12.5px] text-muted px-3 py-4">Nothing in this slot.</p>}
+          {stacks?.map((s, i) => (
+            <div key={`${s.box}-${s.upc}-${s.title}-${i}`} className="px-3 py-2.5 rounded-lg hover:bg-surface-2">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-[12.5px] font-medium text-ink truncate">{s.title || "Untitled"}</p>
+                <p className="text-[11.5px] text-muted tabular-nums shrink-0">{n(s.units)} units</p>
+              </div>
+              <p className="text-[11px] text-muted mt-0.5 tabular-nums">
+                {[
+                  s.brand,
+                  s.category,
+                  s.segment,
+                  s.size_us != null ? `size ${s.size_us}` : null,
+                  s.box ? `box ${s.box}` : null,
+                  s.upc,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+                {" · "}
+                {fmtAmount(s.msrp)} retail
+              </p>
+              {s.title_risk >= 2 && (
+                <p className="text-[10.5px] text-warning-ink mt-0.5 flex items-center gap-1">
+                  <AlertTriangle size={10} />
+                  {s.title_risk === 3 ? "no description in the source" : "description needs checking"}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -2539,12 +2727,14 @@ function RiskCell({ units, label, warn }: { units: number; label: string; warn?:
 function SheetsTab({
   sheets,
   activeId,
+  admin,
   onOpen,
   onChanged,
   onImport,
 }: {
   sheets: LotSheet[];
   activeId: string;
+  admin: boolean;
   onOpen: (id: string) => void;
   onChanged: () => void;
   onImport: () => void;
@@ -2552,8 +2742,25 @@ function SheetsTab({
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [resyncing, setResyncing] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<LotSheet[] | null>(null);
+
+  // BL-37b: the escape hatch for every sheet at once. `resend` below already covers one
+  // sheet whose push was rejected and dropped; this is for the rarer case where several —
+  // or a whole device newly caught up to a server that just learned the tables — need the
+  // same nudge. Admin-only: it re-queues real inventory rows across the org, not a per-user
+  // preference.
+  const resyncAll = async () => {
+    setResyncing(true);
+    try {
+      const rows = await api.resyncLotEngine();
+      toast(`${n(rows)} rows across every sheet queued for the server.`);
+    } catch (e: any) {
+      toast(String(e), "error");
+    }
+    setResyncing(false);
+  };
 
   useEffect(() => {
     if (!showArchived) return;
@@ -2702,9 +2909,16 @@ function SheetsTab({
           Every sheet you have imported. Each keeps its own master list, so you can work a load
           today, put it away, and pick it up where you left it. Nothing is ever deleted.
         </p>
-        <ActBtn onClick={onImport} icon={<Upload size={12} />}>
-          Import a sheet
-        </ActBtn>
+        <div className="flex items-center gap-2 shrink-0">
+          {admin && (
+            <ActBtn onClick={resyncAll} busy={resyncing} icon={<RotateCcw size={12} />}>
+              Resync with the server
+            </ActBtn>
+          )}
+          <ActBtn onClick={onImport} icon={<Upload size={12} />}>
+            Import a sheet
+          </ActBtn>
+        </div>
       </div>
 
       <div className="space-y-2">{sheets.map((s) => card(s, false))}</div>
@@ -2842,17 +3056,7 @@ function AutoLotsTab({
         </div>
 
         <p className="text-[12px] font-semibold text-ink mt-3 mb-2">Categories a location may hold</p>
-        <div className="flex flex-wrap gap-1.5">
-          {facets.categories.map((c) => (
-            <Chip
-              key={c.name}
-              label={c.name}
-              count={c.units}
-              on={allow.categories.includes(c.name)}
-              onClick={() => setAllow({ ...allow, categories: toggle(allow.categories, c.name) })}
-            />
-          ))}
-        </div>
+        <AllowCategoryChips facets={facets} allow={allow} setAllow={setAllow} />
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3">
           <label className="text-[11px] text-muted">

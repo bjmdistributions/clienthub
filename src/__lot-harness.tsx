@@ -6,7 +6,15 @@
 // lies about a field's type hides the bug it was meant to catch.
 import ReactDOM from "react-dom/client";
 import LotEngineView from "./components/LotEngineView";
+import { Me } from "./lib/api";
 import "./index.css";
+
+// Admin, so the BL-37b "Resync with the server" button renders — the harness has no real
+// session, and isAdmin(undefined) is false.
+const ME: Me = {
+  id: "u1", email: "jack@example.com", display_name: "Jack", role_id: "owner",
+  role_name: "Owner", permissions: ["*"], is_admin: true,
+};
 
 const BRANDS = [
   "Nike", "adidas", "New Balance", "Crocs", "Under Armour", "Puma", "Reebok", "Converse",
@@ -127,6 +135,20 @@ const TREE: any[] = [
       return null;
     case "resync_lot_sheet":
       return 1140;
+    case "resync_lot_engine":
+      return 3184;
+    case "lot_slot_contents":
+      return [
+        { location: a?.location, box: "BOX3", upc: "884751234567", title: "Air Max 90 - White/Grey",
+          units: 24, msrp: 130, brand: "Nike", category: "Footwear", segment: "Men", size_us: 10.5,
+          title_risk: 0, upc_ambiguous: false },
+        { location: a?.location, box: "BOX3", upc: "884751234999", title: "574 Core",
+          units: 6, msrp: 90, brand: "New Balance", category: "Footwear", segment: "Unisex",
+          size_us: 9, title_risk: 2, upc_ambiguous: false },
+        { location: a?.location, box: "", upc: "", title: "",
+          units: 3, msrp: 110, brand: "adidas", category: "Footwear", segment: null,
+          size_us: null, title_risk: 3, upc_ambiguous: false },
+      ];
     case "lot_sheet_facets":
       return {
         brands: BRANDS.map(facet), categories: CATS.map(facet), segments: SEGS.map(facet),
@@ -302,7 +324,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <div className="h-full overflow-auto">
         <div className="p-7">
           <div className="max-w-[1280px] mx-auto">
-            <LotEngineView />
+            <LotEngineView me={ME} />
           </div>
         </div>
       </div>

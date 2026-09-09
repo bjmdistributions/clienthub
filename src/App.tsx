@@ -1018,7 +1018,7 @@ export default function App() {
             {t === "suppliers"  && <SuppliersView />}
             {t === "inventory"  && <InventoryView />}
             {t === "manifest"   && <ManifestView onNavigate={setTab} />}
-            {t === "lotengine"  && <LotEngineView />}
+            {t === "lotengine"  && <LotEngineView me={me} />}
             {t === "sheetcopy"  && <SheetCopyView />}
             {t === "financials" && <FinancialsView />}
             {t === "completed"  && <CloseoutView />}
