@@ -34,16 +34,19 @@ pub fn cred(key: &str) -> Result<String> {
 
 /// Pure decision for `cred_opt`, kept free of keychain/file I/O so the non-destructive
 /// contract — an interim-period secret that only ever reached the file store keeps
-/// authenticating, and the keychain always wins when it already has a value — can be
-/// unit-tested without a real OS keychain. Returns (value to hand back, value to copy
-/// up into the keychain, if a one-time migration is needed).
+/// authenticating — can be unit-tested without a real OS keychain. The keychain only
+/// wins once it's known to agree with the store (equal, or the store has nothing);
+/// when the two disagree, the store is the freshest value (it was the interim's only
+/// write target while the keychain sat untouched), so it wins and is copied up.
+/// Returns (value to hand back, value to copy up into the keychain, if a migration
+/// is needed).
 fn resolve_read(keychain: Option<String>, store: Option<String>) -> (Option<String>, Option<String>) {
-    match keychain {
-        Some(v) => (Some(v), None),
-        None => match store {
-            Some(v) => (Some(v.clone()), Some(v)),
-            None => (None, None),
-        }
+    match (keychain, store) {
+        (Some(k), Some(s)) if k == s => (Some(k), None),
+        (Some(_), Some(s)) => (Some(s.clone()), Some(s)),
+        (Some(k), None) => (Some(k), None),
+        (None, Some(s)) => (Some(s.clone()), Some(s)),
+        (None, None) => (None, None),
     }
 }
 
@@ -86,10 +89,27 @@ mod secret_migration_tests {
     use super::resolve_read;
 
     #[test]
-    fn keychain_value_wins_and_needs_no_migration() {
-        let (value, migrate) = resolve_read(Some("keychain-val".into()), Some("store-val".into()));
+    fn agreeing_values_win_from_keychain_and_need_no_migration() {
+        let (value, migrate) = resolve_read(Some("same-val".into()), Some("same-val".into()));
+        assert_eq!(value.as_deref(), Some("same-val"));
+        assert!(migrate.is_none(), "already in sync — no write needed");
+    }
+
+    #[test]
+    fn stale_keychain_loses_to_a_newer_store_value() {
+        // The interim's save_cred wrote ONLY to the store, so when the two disagree
+        // the store — not the keychain — holds the credential the interim was
+        // actually authenticating with (e.g. a rotated SMTP password).
+        let (value, migrate) = resolve_read(Some("pre-interim-old".into()), Some("rotated-during-interim".into()));
+        assert_eq!(value.as_deref(), Some("rotated-during-interim"));
+        assert_eq!(migrate.as_deref(), Some("rotated-during-interim"), "the newer store value must be copied up to resync the keychain");
+    }
+
+    #[test]
+    fn keychain_only_value_wins_and_needs_no_migration() {
+        let (value, migrate) = resolve_read(Some("keychain-val".into()), None);
         assert_eq!(value.as_deref(), Some("keychain-val"));
-        assert!(migrate.is_none(), "keychain already has it — store must be left untouched");
+        assert!(migrate.is_none());
     }
 
     #[test]
