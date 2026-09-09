@@ -1037,6 +1037,7 @@ fn main() {
             link_party,
             unlink_party,
             linked_party_payments,
+            suggest_party_links,
             loan_ledger,
             apply_loan_repayments_to_set_aside,
             create_txn_rule,

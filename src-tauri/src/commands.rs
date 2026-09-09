@@ -16112,6 +16112,247 @@ pub async fn linked_party_payments(ctype: String, id: String) -> Result<Value, S
     }))
 }
 
+// ── Party-link candidate suggestions (R-155c) ───────────────────────────────
+
+/// Token-overlap name matcher, ported from clienthub-api's `bank_suggest.rs`
+/// (`norm_tokens`/`name_key`/`key_similarity`) so a fuzzy score here means the
+/// same thing it means in the bank-suggestion engine. Reimplemented rather than
+/// shared — desktop and server are separate crates with no common dependency —
+/// but the stopword list and the overlap/containment formula are copied as-is.
+fn party_norm_tokens(s: &str) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "llc", "inc", "corp", "ltd", "co", "company", "dba", "and", "the", "of", "a", "an",
+        "pllc", "limited", "corporation",
+    ];
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty() && !STOP.contains(t))
+        .map(|t| t.to_string())
+        .collect()
+}
+
+struct PartyNameKey {
+    tokens: Vec<String>,
+    set: std::collections::HashSet<String>,
+    concat: String,
+}
+
+fn party_name_key(s: &str) -> PartyNameKey {
+    let tokens = party_norm_tokens(s);
+    let concat = tokens.join("");
+    let set = tokens.iter().cloned().collect();
+    PartyNameKey { tokens, set, concat }
+}
+
+/// 0..1 similarity of two names: token-overlap primary, a long containment
+/// (one normalized name inside the other) counts as a full match.
+fn party_key_similarity(a: &PartyNameKey, b: &PartyNameKey) -> f64 {
+    if a.tokens.is_empty() || b.tokens.is_empty() {
+        return 0.0;
+    }
+    let shared = a.tokens.iter().filter(|t| b.set.contains(*t)).count() as f64;
+    let overlap = 2.0 * shared / (a.tokens.len() + b.tokens.len()) as f64;
+    if (a.concat.len() >= 8 && b.concat.contains(&a.concat)) || (b.concat.len() >= 8 && a.concat.contains(&b.concat)) {
+        1.0
+    } else {
+        overlap
+    }
+}
+
+/// The best score any of one party's name fields gets against any of another's
+/// (a client's `name` and `company`, or a supplier's `name` and `contact_name`).
+fn party_best_name_score(a_names: &[PartyNameKey], b_names: &[PartyNameKey]) -> f64 {
+    let mut best = 0.0f64;
+    for a in a_names {
+        for b in b_names {
+            let s = party_key_similarity(a, b);
+            if s > best {
+                best = s;
+            }
+        }
+    }
+    best
+}
+
+fn party_normalize_phone(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// The identity fields a link candidate is scored on. `secondary_name` is the
+/// client's `company` or the supplier's `contact_name`.
+#[derive(Clone)]
+struct PartyIdentity {
+    id: String,
+    name: String,
+    secondary_name: String,
+    email: String,
+    phone: String,
+    linked_party_id: String,
+}
+
+fn read_party_identity(r: &rusqlite::Row) -> rusqlite::Result<PartyIdentity> {
+    Ok(PartyIdentity {
+        id: r.get(0)?, name: r.get(1)?, secondary_name: r.get(2)?,
+        email: r.get(3)?, phone: r.get(4)?, linked_party_id: r.get(5)?,
+    })
+}
+
+/// Score one candidate against the target, or `None` if it is not worth
+/// suggesting. Same email wins outright; failing that, same phone (normalized
+/// to digits, and only once there are enough of them to mean something); failing
+/// that, a fuzzy name match. A candidate already linked to some OTHER party is
+/// never suggested — confirming it would first require an unlink, which is not
+/// what a suggestion is for.
+fn score_party_candidate(target: &PartyIdentity, candidate: &PartyIdentity) -> Option<(f64, &'static str)> {
+    if !candidate.linked_party_id.is_empty() {
+        return None;
+    }
+    let t_email = target.email.trim().to_lowercase();
+    let c_email = candidate.email.trim().to_lowercase();
+    if !t_email.is_empty() && t_email == c_email {
+        return Some((1.0, "same email"));
+    }
+    let t_phone = party_normalize_phone(&target.phone);
+    let c_phone = party_normalize_phone(&candidate.phone);
+    if t_phone.len() >= 7 && t_phone == c_phone {
+        return Some((0.95, "same phone number"));
+    }
+    let t_names: Vec<PartyNameKey> = [&target.name, &target.secondary_name]
+        .into_iter().filter(|s| !s.is_empty()).map(|s| party_name_key(s)).collect();
+    let c_names: Vec<PartyNameKey> = [&candidate.name, &candidate.secondary_name]
+        .into_iter().filter(|s| !s.is_empty()).map(|s| party_name_key(s)).collect();
+    let name_score = party_best_name_score(&t_names, &c_names);
+    if name_score >= 0.5 {
+        Some((name_score, "similar name"))
+    } else {
+        None
+    }
+}
+
+/// Rank a candidate pool against one target, best score first. Pure and
+/// read-only — no query, no write — so it is exercised directly by tests.
+fn party_link_candidates(target: &PartyIdentity, pool: &[PartyIdentity]) -> Vec<(PartyIdentity, f64, &'static str)> {
+    let mut out: Vec<(PartyIdentity, f64, &'static str)> = pool.iter()
+        .filter(|c| c.id != target.id)
+        .filter_map(|c| score_party_candidate(target, c).map(|(score, reason)| (c.clone(), score, reason)))
+        .collect();
+    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// Suggest-and-confirm candidate matches for a party link (R-155c). Read-only:
+/// it never writes `linked_party_id` itself, so every suggestion still has to
+/// be confirmed through `link_party` by a human before anything changes.
+#[tauri::command]
+pub async fn suggest_party_links(ctype: String, id: String) -> Result<Value, String> {
+    let (table, other_table) = match ctype.as_str() {
+        "supplier" => ("suppliers", "clients"),
+        "client" => ("clients", "suppliers"),
+        _ => return Err("ctype must be supplier or client".into()),
+    };
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    // `table`/`other_table` are always one of the two literals matched above,
+    // never caller text, so building SQL from them here is safe.
+    let secondary_col = if table == "clients" { "company" } else { "contact_name" };
+    let target = conn.query_row(
+        &format!(
+            "SELECT id, COALESCE(name,''), COALESCE({secondary_col},''), COALESCE(email,''), COALESCE(phone,''), COALESCE(linked_party_id,'') FROM {table} WHERE id=?1"
+        ),
+        [&id],
+        read_party_identity,
+    ).map_err(|_| "Party not found".to_string())?;
+
+    let other_secondary_col = if other_table == "clients" { "company" } else { "contact_name" };
+    // Suppliers carry an `archived` flag; clients do not, so the clause is only
+    // added on that side.
+    let archived_clause = if other_table == "suppliers" { " WHERE COALESCE(archived,0)=0" } else { "" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, COALESCE(name,''), COALESCE({other_secondary_col},''), COALESCE(email,''), COALESCE(phone,''), COALESCE(linked_party_id,'') FROM {other_table}{archived_clause}"
+    )).map_err(|e| e.to_string())?;
+    let candidates: Vec<PartyIdentity> = stmt.query_map([], read_party_identity)
+        .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    let mut ranked = party_link_candidates(&target, &candidates);
+    ranked.truncate(5);
+    Ok(json!({
+        "candidates": ranked.into_iter().map(|(c, score, reason)| json!({
+            "id": c.id, "name": c.name, "email": c.email, "phone": c.phone,
+            "score": score, "reason": reason,
+        })).collect::<Vec<_>>()
+    }))
+}
+
+#[cfg(test)]
+mod party_link_suggest_tests {
+    use super::{party_link_candidates, PartyIdentity};
+
+    fn party(id: &str, name: &str, secondary: &str, email: &str, phone: &str, linked: &str) -> PartyIdentity {
+        PartyIdentity {
+            id: id.into(), name: name.into(), secondary_name: secondary.into(),
+            email: email.into(), phone: phone.into(), linked_party_id: linked.into(),
+        }
+    }
+
+    #[test]
+    fn same_email_wins_outright() {
+        let target = party("cl_1", "Some Buyer", "", "Deals@Tytan.com", "", "");
+        let pool = vec![party("sup_1", "Totally Different Name", "", "deals@tytan.com", "", "")];
+        let ranked = party_link_candidates(&target, &pool);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].1, 1.0);
+        assert_eq!(ranked[0].2, "same email");
+    }
+
+    #[test]
+    fn phone_matches_across_formatting() {
+        let target = party("cl_1", "Buyer", "", "", "(555) 123-4567", "");
+        let pool = vec![party("sup_1", "Unrelated Co", "", "", "555-123-4567", "")];
+        let ranked = party_link_candidates(&target, &pool);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].2, "same phone number");
+    }
+
+    #[test]
+    fn fuzzy_name_match_survives_corporate_suffix_differences() {
+        let target = party("cl_1", "Tytan Market LLC", "", "", "", "");
+        let pool = vec![party("sup_1", "Tytan Market Inc", "", "", "", "")];
+        let ranked = party_link_candidates(&target, &pool);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].2, "similar name");
+        assert!(ranked[0].1 >= 0.99, "same tokens after stripping suffixes should score ~1.0, got {}", ranked[0].1);
+    }
+
+    #[test]
+    fn unrelated_names_are_not_suggested() {
+        let target = party("cl_1", "Tytan Market LLC", "", "", "", "");
+        let pool = vec![party("sup_1", "Riverside Produce Co", "", "", "", "")];
+        assert!(party_link_candidates(&target, &pool).is_empty());
+    }
+
+    #[test]
+    fn candidate_already_linked_elsewhere_is_never_suggested() {
+        // Same email, but the candidate already points at a different party —
+        // confirming this suggestion would require an unlink first, so it must
+        // not appear as a suggestion at all.
+        let target = party("cl_1", "Buyer", "", "deals@tytan.com", "", "");
+        let pool = vec![party("sup_1", "Tytan", "", "deals@tytan.com", "", "sup_someone_else")];
+        assert!(party_link_candidates(&target, &pool).is_empty());
+    }
+
+    #[test]
+    fn suggestion_never_writes_anything() {
+        // party_link_candidates takes only borrowed, in-memory data and returns a
+        // ranking — there is no connection, no statement, nothing to write. This
+        // test exists to keep that true: it would fail to compile the moment the
+        // signature grew a `&Connection` or a mutable target.
+        let target = party("cl_1", "Tytan Market LLC", "", "", "", "");
+        let pool = vec![party("sup_1", "Tytan Market Inc", "", "", "", "")];
+        let before = pool[0].linked_party_id.clone();
+        let _ = party_link_candidates(&target, &pool);
+        assert_eq!(pool[0].linked_party_id, before, "scoring must never mutate a candidate");
+    }
+}
+
 #[cfg(test)]
 mod month_window_tests {
     use super::central_month_window;
