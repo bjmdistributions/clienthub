@@ -1799,6 +1799,9 @@ export interface BankTxn {
    *  institution) — read anyway so the method facet is field-first the day some
    *  institution starts supplying it. */
   bank_method?: string | null;
+  /** A free-text note on the transaction itself (R-256) — not the deal
+   *  allocation's note. `set_bank_txn_review` is its only writer. */
+  note: string;
 }
 /// The fields a review save may change. Every one is optional because a save
 /// sends only what the user actually edited (see setBankTxnReview).
@@ -1806,7 +1809,7 @@ export interface BankTxn {
 /// `rail` is deliberately NOT here: it is the importer's guess and no UI action
 /// may overwrite it, or a guess and an answer become indistinguishable again.
 export type BankTxnReviewPatch = Partial<
-  Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "confirmed_method" | "reviewed">
+  Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "confirmed_method" | "reviewed" | "note">
 >;
 export interface BankTxnSummary {
   total: number;
@@ -2864,6 +2867,7 @@ export const api = {
       counterpartyType: patch.counterparty_type,
       counterpartyId: patch.counterparty_id,
       confirmedMethod: patch.confirmed_method,
+      note: patch.note,
       reviewed: patch.reviewed,
     }),
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>

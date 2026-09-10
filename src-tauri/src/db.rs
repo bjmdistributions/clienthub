@@ -1963,4 +1963,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_supplier_interactions_msgid ON supplier_interactions(supplier_id, message_id);
         "#,
     ),
+    (
+        91,
+        // A note on the transaction itself (R-256). Until now the only note box in the
+        // booking sheet belonged to a deal ALLOCATION (`bank_allocation.note`): it was
+        // written only by Allocate and did not exist for a loan or an expense, so a note
+        // typed anywhere else was discarded when the sheet closed.
+        //
+        // Nullable with a default, never NOT NULL (sync-engine §10.1/§10.2). Mirrored in
+        // clienthub-api (schema.sql + sync.rs ensure_meta_tables); the server must be
+        // DEPLOYED FIRST or apply_upsert logs SCHEMA DRIFT and drops the note out of
+        // every bank_txn event.
+        r#"
+        ALTER TABLE bank_txn ADD COLUMN note TEXT DEFAULT '';
+        "#,
+    ),
 ];

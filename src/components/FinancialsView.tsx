@@ -458,7 +458,7 @@ const bankFieldMethod = (raw?: string | null): BankMethod | null => {
   return null;
 };
 
-// Payee + direction, the same key `suggestedGroups` clusters by: a Zelle TO
+// Payee + direction, the same key a remembered rule is scoped by: a Zelle TO
 // "Walmart Loads" must never be pooled with a purchase FROM "Walmart".
 const payeeKey = (t: BankTxn) => `${(t.counterparty_name || "").trim().toLowerCase()}|${t.direction}`;
 
@@ -704,11 +704,6 @@ export default function FinancialsView() {
   const [payeeDraft, setPayeeDraft]   = useState("");
   // Escape blurs the input, and blur commits — this flag tells the two apart.
   const payeeCancelRef = useRef(false);
-
-  // Smart grouping suggestions — dismissed groups (payee|dir keys) + per-group
-  // category overrides for the session.
-  const [dismissedGroups, setDismissedGroups]   = useState<Set<string>>(new Set());
-  const [groupCatOverride, setGroupCatOverride] = useState<Record<string, string>>({});
 
   // Bulk selection + actions (clean a year fast — loop existing commands).
   const [selected, setSelected]         = useState<Set<string>>(new Set());
@@ -1952,35 +1947,6 @@ export default function FinancialsView() {
     [txns],
   );
 
-  // Smart grouping — cluster un-booked rows by (payer, direction) so a whole
-  // backlog of look-alikes can be tagged in one click. Payer + direction keeps the
-  // same payer's money-in and money-out apart (a Zelle to "Walmart Loads" never
-  // merges with a "Walmart" store purchase). Surface the top 3 groups of 4+.
-  const suggestedGroups = useMemo(() => {
-    const map = new Map<
-      string,
-      { key: string; payee: string; direction: "in" | "out"; count: number; cats: Record<string, number>; defaultCat: string }
-    >();
-    for (const t of txns) {
-      if (t.reviewed) continue;
-      const payee = (t.counterparty_name || "").trim();
-      if (!payee) continue;
-      const key = `${payee.toLowerCase()}|${t.direction}`;
-      let g = map.get(key);
-      if (!g) { g = { key, payee, direction: t.direction, count: 0, cats: {}, defaultCat: "" }; map.set(key, g); }
-      g.count += 1;
-      if (t.category) g.cats[t.category] = (g.cats[t.category] || 0) + 1;
-    }
-    const groups = Array.from(map.values()).filter((g) => g.count >= 3 && !dismissedGroups.has(g.key));
-    for (const g of groups) {
-      let best = "", bestN = 0;
-      for (const [c, n] of Object.entries(g.cats)) if (n > bestN) { best = c; bestN = n; }
-      g.defaultCat = best; // most common existing category in the group (or blank)
-    }
-    return groups.sort((a, b) => b.count - a.count).slice(0, 10);
-  }, [txns, dismissedGroups]);
-
-  const dismissGroup = (key: string) => setDismissedGroups((prev) => new Set(prev).add(key));
 
   // Summary scoped to the active date range so the To-do/Booked counts (and the
   // figures strip) reflect only what's in view — pre-January rows you've excluded
@@ -4123,58 +4089,6 @@ export default function FinancialsView() {
         </div>
       )}
 
-      {/* Smart grouping suggestions — clear look-alike backlogs in one click */}
-      {tab === "tobook" && suggestedGroups.length > 0 && (
-        <div className="space-y-1">
-          {/* Show a rolling few so the suggestions never bury the transaction list;
-              clearing one surfaces the next. */}
-          {suggestedGroups.slice(0, 3).map((g) => {
-            const cat = groupCatOverride[g.key] ?? g.defaultCat;
-            return (
-              <div key={g.key} className="flex items-center gap-3 flex-wrap border border-line-2 rounded-lg px-2.5 py-1.5 text-[12px]">
-                <span className="text-ink-2 min-w-0">
-                  <span className="font-semibold text-ink tabular-nums">{g.count}</span> transactions from{" "}
-                  <span className="font-semibold text-ink">{g.payee}</span>{" "}
-                  <span className={g.direction === "in" ? "text-success-ink" : "text-danger-ink"}>
-                    ({g.direction === "in" ? "money in" : "money out"})
-                  </span>
-                </span>
-                <div className="ml-auto flex items-center gap-2.5">
-                  <select
-                    value={cat}
-                    onChange={(e) => setGroupCatOverride((prev) => ({ ...prev, [g.key]: e.target.value }))}
-                    className="h-7 px-2 rounded-md text-[12px] border border-line bg-surface text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40"
-                  >
-                    <option value="">Set category…</option>
-                    <CategoryOptions includeUncat={false} />
-                  </select>
-                  <button
-                    onClick={async () => {
-                      const c = groupCatOverride[g.key] ?? g.defaultCat;
-                      if (!c) return;
-                      // Only dismiss on success — otherwise a failed rule left the
-                      // rows untagged AND hid the group so they couldn't be found.
-                      if (await createRule(g.payee, c, "expense", "", g.direction)) dismissGroup(g.key);
-                    }}
-                    disabled={!cat}
-                    className="text-[12px] font-medium text-accent hover:text-accent-hover disabled:text-faint disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-                  >
-                    Tag all <span className="tabular-nums">{g.count}</span>
-                  </button>
-                  <button
-                    onClick={() => dismissGroup(g.key)}
-                    title="Dismiss"
-                    className="text-muted hover:text-ink-2 transition-colors flex-shrink-0"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Bulk bar — a plain full-width row of text actions once rows are selected */}
       {(tab === "tobook" || tab === "ledger") && selected.size > 0 && (
         <div className="flex items-center gap-x-3 gap-y-2 flex-wrap border-b border-line py-2.5 text-[12.5px]">
@@ -4323,6 +4237,7 @@ export default function FinancialsView() {
                             <div className="text-[11.5px] text-muted truncate">
                               {needsLine(t)}
                               {memo ? <span className="text-faint"> · {memo}</span> : null}
+                              {t.note ? <span className="text-ink-2"> · {t.note}</span> : null}
                             </div>
                             {(() => {
                               // Booking memory: this payee's own history, one tap to apply.
@@ -4763,6 +4678,27 @@ export default function FinancialsView() {
                 })()}
               </label>
             )}
+
+            {/* R-256 — a note on the transaction itself. Until this existed the only note
+                box in this sheet was the deal allocation's, which is saved only by Allocate
+                and does not exist for a loan or an expense. Uncontrolled and keyed by id so
+                a background refresh never overwrites what is being typed; saves on blur,
+                and Escape blurs first so closing the sheet does not drop the text. */}
+            <label className="block">
+              <span className="block text-[12px] font-medium text-ink-2 mb-1">Note</span>
+              <textarea
+                key={openTxn.id}
+                defaultValue={openTxn.note || ""}
+                rows={2}
+                placeholder="Add a note to this transaction"
+                onKeyDown={(e) => { if (e.key === "Escape") e.currentTarget.blur(); }}
+                onBlur={(e) => {
+                  const next = e.target.value.trim();
+                  if (next !== (openTxn.note || "").trim()) saveReview(openTxn, { note: next });
+                }}
+                className="border border-line px-2.5 py-2 rounded-lg text-[13px] w-full bg-surface text-ink-2 resize-y focus:outline-none focus:ring-2 focus:ring-accent/40"
+              />
+            </label>
 
             <AllocationPanel
               txn={openTxn}
@@ -5233,7 +5169,7 @@ function AllocationPanel(props: {
             <input
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Note (optional)"
+              placeholder="Note on this deal link (optional)"
               className={`${inp} flex-1 min-w-[180px]`}
             />
             {/* Backfills a deal from a RECEIVED payment — only valid for money-in.

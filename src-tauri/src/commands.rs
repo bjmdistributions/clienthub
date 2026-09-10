@@ -12051,8 +12051,9 @@ pub async fn bank_preview(path: String) -> Result<crate::bank_import::BankPrevie
 /// Import a Chase statement into the immutable bank_txn ledger (deduped, synced).
 #[tauri::command]
 pub async fn bank_import(path: String, account_id: String) -> Result<crate::bank_import::BankImportSummary, String> {
+    let since = Utc::now().to_rfc3339();
     let summary = crate::bank_import::import(&path, &account_id).map_err(|e| e.to_string())?;
-    let _ = apply_txn_rules_impl(false); // best-effort pre-tag of newly imported rows
+    let _ = apply_txn_rules_impl(false, Some(&since)); // best-effort pre-tag of newly imported rows
     Ok(summary)
 }
 
@@ -12128,8 +12129,9 @@ pub async fn bank_import_ai(path: String, account_id: String) -> Result<Value, S
     let out = crate::ai::extract_statement(&text, year).await.map_err(|e| e.to_string())?;
     let txns = out.get("transactions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let rows = ai_txns_to_rows(&txns, year);
+    let since = Utc::now().to_rfc3339();
     let summary = crate::bank_import::persist_rows(&rows, &account_id, "ai").map_err(|e| e.to_string())?;
-    let _ = apply_txn_rules_impl(false); // best-effort pre-tag of newly imported rows
+    let _ = apply_txn_rules_impl(false, Some(&since)); // best-effort pre-tag of newly imported rows
     Ok(json!({
         "imported": summary.imported,
         "skipped": summary.skipped,
@@ -12163,7 +12165,9 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
                 -- memo classifier when it doesn't. `json_valid` guard is mandatory —
                 -- a bare json_extract over empty raw_json threw and blanked the whole
                 -- financials screen in v0.15.116.
-                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pm.payment_method') END
+                CASE WHEN json_valid(bt.raw_json) THEN json_extract(bt.raw_json, '$.pm.payment_method') END,
+                -- The transaction's own note (R-256), flattened to '' like the method.
+                COALESCE(bt.note, '') AS note
          FROM bank_txn bt ORDER BY bt.posted_at DESC, bt.created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| {
@@ -12192,6 +12196,7 @@ pub async fn list_bank_txns() -> Result<Vec<Value>, String> {
             "posted_dt": r.get::<_, Option<String>>(16)?,
             "confirmed_method": r.get::<_, String>(17)?,
             "bank_method": r.get::<_, Option<String>>(18)?,
+            "note": r.get::<_, String>(19)?,
         }))
     }).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -12260,7 +12265,7 @@ pub async fn bank_txn_summary() -> Result<Value, String> {
 fn review_cols(
     category: &Option<String>, counterparty_name: &Option<String>,
     counterparty_type: &Option<String>, counterparty_id: &Option<String>,
-    confirmed_method: &Option<String>, flag: Option<i64>, now: &str,
+    confirmed_method: &Option<String>, note: &Option<String>, flag: Option<i64>, now: &str,
 ) -> Option<Map<String, Value>> {
     let mut cols = Map::new();
     if let Some(v) = category { cols.insert("category".into(), json!(v)); }
@@ -12271,6 +12276,7 @@ fn review_cols(
     // this map, so a column that exists on every device but is never named is stored
     // locally and never replicates.
     if let Some(v) = confirmed_method { cols.insert("confirmed_method".into(), json!(v)); }
+    if let Some(v) = note { cols.insert("note".into(), json!(v)); }
     if let Some(v) = flag { cols.insert("reviewed".into(), json!(v)); }
     if cols.is_empty() { return None; }
     cols.insert("updated_at".into(), json!(now));
@@ -12295,7 +12301,8 @@ fn valid_method(m: &str) -> bool { m.is_empty() || BANK_METHODS.contains(&m) }
 const REVIEW_UPDATE_SQL: &str =
     "UPDATE bank_txn SET category=COALESCE(?1,category), counterparty_name=COALESCE(?2,counterparty_name),
        counterparty_type=COALESCE(?3,counterparty_type), counterparty_id=COALESCE(?4,counterparty_id),
-       confirmed_method=COALESCE(?5,confirmed_method), reviewed=COALESCE(?6,reviewed), updated_at=?7 WHERE id=?8";
+       confirmed_method=COALESCE(?5,confirmed_method), note=COALESCE(?6,note), reviewed=COALESCE(?7,reviewed),
+       updated_at=?8 WHERE id=?9";
 
 /// Set a transaction's classification (category + counterparty + payment method)
 /// and/or reviewed flag. Every field is optional and only the ones supplied are
@@ -12318,20 +12325,22 @@ const REVIEW_UPDATE_SQL: &str =
 pub async fn set_bank_txn_review(
     id: String, category: Option<String>, counterparty_name: Option<String>,
     counterparty_type: Option<String>, counterparty_id: Option<String>,
-    confirmed_method: Option<String>, reviewed: Option<bool>,
+    confirmed_method: Option<String>, note: Option<String>, reviewed: Option<bool>,
 ) -> Result<(), String> {
     if let Some(m) = &confirmed_method {
         if !valid_method(m) { return Err(format!("\"{m}\" is not a payment method")); }
     }
+    // R-256: a note is free text; trimmed so a stray space is not a change.
+    let note = note.map(|n| n.trim().to_string());
     let now = Utc::now().to_rfc3339();
     let flag = reviewed.map(|r| if r { 1i64 } else { 0i64 });
-    let Some(cols) = review_cols(&category, &counterparty_name, &counterparty_type, &counterparty_id, &confirmed_method, flag, &now)
+    let Some(cols) = review_cols(&category, &counterparty_name, &counterparty_type, &counterparty_id, &confirmed_method, &note, flag, &now)
     else { return Ok(()); };
     sync::record_upsert("bank_txn", &id, cols).map_err(|e| e.to_string())?;
     let conn = pool().get().map_err(|e| e.to_string())?;
     conn.execute(
         REVIEW_UPDATE_SQL,
-        rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, confirmed_method, flag, now, id],
+        rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, confirmed_method, note, flag, now, id],
     ).map_err(|e| e.to_string())?;
     // Booking a transaction must reach the other admins immediately: waiting for the
     // 20s poll leaves a window where two people work the same queue and both see the
@@ -14384,6 +14393,9 @@ pub async fn plaid_remove_item(id: String) -> Result<(), String> {
 /// ledger (dedup on Plaid's transaction_id; cursor-based incremental sync).
 #[tauri::command]
 pub async fn plaid_sync() -> Result<Value, String> {
+    // R-256: every row this sync imports is stamped at or after this instant, which is
+    // how the rule pass at the end knows which rows it may re-tag.
+    let rules_since = Utc::now().to_rfc3339();
     // Confirmed same-account aliases (old mask -> surviving mask), applied to every imported row.
     let aliases = account_alias_map();
     let items: Vec<(String, String, String, String, String, String)> = {
@@ -15057,7 +15069,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
     for d in &touched_deals { let _ = resync_completed_deal(d); }
     // Best-effort: pre-tag freshly pulled activity with memorized rules. A rules
     // failure must not fail the sync.
-    let _ = apply_txn_rules_impl(false);
+    let _ = apply_txn_rules_impl(false, Some(&rules_since));
     crate::netsync::push_now(); // freshly imported bank activity reaches other devices now
     // Publish the refreshed balance for devices that have no Plaid link of their own.
     // This used to happen ONLY when a human opened Financials or Analytics on this
@@ -16969,7 +16981,13 @@ pub async fn delete_txn_rule(id: String) -> Result<(), String> {
 /// tag with a direction-derived loan_received/loan_repayment category) but LEAVES
 /// reviewed=0 so the row stays in the review queue. The resulting bank_txn edits
 /// are synced; the rules themselves are device-local. Returns the count updated.
-fn apply_txn_rules_impl(override_existing: bool) -> Result<(i64, i64), String> {
+///
+/// `imported_since` (R-256) is the moment the calling import pass began. A row
+/// imported at or after it arrived in THIS pass, so the importer's guess is the only
+/// category it can carry and a rule may overwrite it without auto-book. Before this,
+/// every import arrived with a category and a plain Remember never reached a single
+/// future transaction (53 on the live ledger, measured 2026-09-10).
+fn apply_txn_rules_impl(override_existing: bool, imported_since: Option<&str>) -> Result<(i64, i64), String> {
     let rules: Vec<(String, String, String, String, String, i64)> = {
         // (match_counterparty, category, target_type, target_id, direction, auto_book)
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -16983,8 +17001,8 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<(i64, i64), String> {
         rows.filter_map(|r| r.ok()).collect()
     };
     if rules.is_empty() { return Ok((0, 0)); }
-    let candidates: Vec<(String, String, String, String, String)> = {
-        // (id, counterparty_name, description, direction, category)
+    let candidates: Vec<(String, String, String, String, String, String)> = {
+        // (id, counterparty_name, description, direction, category, imported_at)
         // Manual apply (override_existing) re-tags ANY unbooked row so a rule can
         // overwrite Plaid's auto-guessed category — every import already has a
         // category, so blank-only matching found nothing. The automatic post-sync
@@ -16992,18 +17010,18 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<(i64, i64), String> {
         // for AUTO-BOOK rules (see below) so it can't clobber categories you've set.
         let conn = pool().get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, counterparty_name, description, direction, COALESCE(category,'') FROM bank_txn WHERE reviewed=0",
+            "SELECT id, counterparty_name, description, direction, COALESCE(category,''), COALESCE(imported_at,'') FROM bank_txn WHERE reviewed=0",
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((
             r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
+            r.get::<_, String>(4)?, r.get::<_, String>(5)?,
         ))).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
     let now = Utc::now().to_rfc3339();
     let mut updated = 0i64;
     let mut auto_booked = 0i64;
-    for (id, cp, desc, direction, existing_cat) in candidates {
+    for (id, cp, desc, direction, existing_cat, imported_at) in candidates {
         let cp_l = cp.to_lowercase();
         let desc_l = desc.to_lowercase();
         let rule = rules.iter().find(|(m, _, _, _, dir, _)| {
@@ -17019,7 +17037,10 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<(i64, i64), String> {
         // to overwrite the machine's guess on that payee. Every Plaid import arrives
         // with a machine category, so without this carve-out auto-book rules would
         // never fire on the live feed — the exact reason the old system felt dead.
-        if !override_existing && !auto && !existing_cat.trim().is_empty() { continue; }
+        // R-256: ...or when the row arrived in this very import pass, whose category
+        // can only be the importer's guess. Rows already waiting keep what they have.
+        let fresh = imported_in_pass(&imported_at, imported_since);
+        if !rule_may_retag(override_existing, auto, fresh, &existing_cat) { continue; }
         let is_loan = target_type == "loan" && !target_id.is_empty();
         // A category-less non-loan rule has nothing to apply — skipping it keeps a
         // blank rule from mass-clearing categories on every matching transaction.
@@ -17067,10 +17088,23 @@ fn apply_txn_rules_impl(override_existing: bool) -> Result<(i64, i64), String> {
     Ok((updated, auto_booked))
 }
 
+/// Whether a matched rule may write its category onto an unbooked row (R-018, R-256):
+/// a manual Apply, an auto-book rule, a row from the import running now, or a blank row.
+fn rule_may_retag(override_existing: bool, auto_book: bool, fresh: bool, existing_cat: &str) -> bool {
+    override_existing || auto_book || fresh || existing_cat.trim().is_empty()
+}
+
+/// True when `imported_at` falls in the import pass that began at `since`. Both are
+/// `Utc::now().to_rfc3339()` strings, which order correctly as text: the fraction is
+/// 0, 3, 6 or 9 digits, and `+` sorts below `.` and every digit.
+fn imported_in_pass(imported_at: &str, since: Option<&str>) -> bool {
+    matches!(since, Some(s) if !s.is_empty() && !imported_at.is_empty() && imported_at >= s)
+}
+
 /// Manually apply memorized auto-tag rules now. Returns { updated, auto_booked }.
 #[tauri::command]
 pub async fn apply_txn_rules() -> Result<Value, String> {
-    let (n, a) = apply_txn_rules_impl(true)?;
+    let (n, a) = apply_txn_rules_impl(true, None)?;
     Ok(json!({ "updated": n, "auto_booked": a }))
 }
 
@@ -20062,7 +20096,7 @@ mod review_cols_tests {
     // device would then win with reviewed=0 and un-book it.
     #[test]
     fn category_save_cannot_touch_reviewed() {
-        let cols = review_cols(&s("supplier_payment"), &NONE, &NONE, &NONE, &NONE, None, "T").unwrap();
+        let cols = review_cols(&s("supplier_payment"), &NONE, &NONE, &NONE, &NONE, &NONE, None, "T").unwrap();
         assert!(!cols.contains_key("reviewed"), "category save must never emit reviewed");
         let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
         keys.sort();
@@ -20072,20 +20106,20 @@ mod review_cols_tests {
     // Jack's requirement: un-booking / re-classifying by hand must still work.
     #[test]
     fn explicit_unbook_emits_reviewed_alone() {
-        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, Some(0), "T").unwrap();
+        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, &NONE, Some(0), "T").unwrap();
         let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
         keys.sort();
         assert_eq!(keys, vec!["reviewed", "updated_at"]);
         assert_eq!(cols["reviewed"], 0);
         // ...and booking it, which must not disturb the classification.
-        let booked = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, Some(1), "T").unwrap();
+        let booked = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, &NONE, Some(1), "T").unwrap();
         assert_eq!(booked["reviewed"], 1);
         assert!(!booked.contains_key("category"));
     }
 
     #[test]
     fn nothing_supplied_emits_nothing() {
-        assert!(review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, None, "T").is_none());
+        assert!(review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, &NONE, None, "T").is_none());
     }
 
     // R-157/W2-c. Setting the payment method is the same per-column discipline:
@@ -20100,7 +20134,7 @@ mod review_cols_tests {
     // makes it travel — an Upsert carries only the columns its caller names.
     #[test]
     fn method_save_emits_confirmed_method_alone() {
-        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &s("wire"), None, "T").unwrap();
+        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &s("wire"), &NONE, None, "T").unwrap();
         let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
         keys.sort();
         assert_eq!(keys, vec!["confirmed_method", "updated_at"]);
@@ -20108,8 +20142,19 @@ mod review_cols_tests {
         assert!(!cols.contains_key("rail"), "a human's answer must never be written into the machine's column");
         // Clearing it back to unclassified is an explicit empty string, which is a
         // real value — not an omission, which would mean "don't touch it".
-        let cleared = review_cols(&NONE, &NONE, &NONE, &NONE, &s(""), None, "T").unwrap();
+        let cleared = review_cols(&NONE, &NONE, &NONE, &NONE, &s(""), &NONE, None, "T").unwrap();
         assert_eq!(cleared["confirmed_method"], "");
+    }
+
+    // R-256: a note travels on its own, like the method, so saving one can never
+    // re-stamp `reviewed` or `category` and undo another device's booking.
+    #[test]
+    fn note_save_emits_note_alone() {
+        let cols = review_cols(&NONE, &NONE, &NONE, &NONE, &NONE, &s("deposit for the March load"), None, "T").unwrap();
+        let mut keys: Vec<&str> = cols.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["note", "updated_at"]);
+        assert_eq!(cols["note"], "deposit for the March load");
     }
 
     // `confirmed_method` is a synced free-text column: an unvalidated write puts a
@@ -20135,7 +20180,7 @@ mod review_cols_tests {
             "CREATE TABLE bank_txn (id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT '',
                counterparty_name TEXT NOT NULL DEFAULT '', counterparty_type TEXT NOT NULL DEFAULT '',
                counterparty_id TEXT NOT NULL DEFAULT '', rail TEXT NOT NULL DEFAULT '',
-               confirmed_method TEXT,
+               confirmed_method TEXT, note TEXT DEFAULT '',
                reviewed INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '');
              INSERT INTO bank_txn (id,category,counterparty_name,rail,confirmed_method,reviewed)
                VALUES ('t1','wire_fee','ACME','ach','wire',1);",
@@ -20145,7 +20190,7 @@ mod review_cols_tests {
         // must survive.
         conn.execute(
             REVIEW_UPDATE_SQL,
-            rusqlite::params![s("supplier_payment"), NONE, NONE, NONE, NONE, None::<i64>, "T2", "t1"],
+            rusqlite::params![s("supplier_payment"), NONE, NONE, NONE, NONE, NONE, None::<i64>, "T2", "t1"],
         ).unwrap();
         let (cat, name, confirmed, rail, rev): (String, String, String, String, i64) = conn
             .query_row("SELECT category,counterparty_name,confirmed_method,rail,reviewed FROM bank_txn WHERE id='t1'", [],
@@ -20159,7 +20204,7 @@ mod review_cols_tests {
         // Explicit un-book — clears the flag, keeps the new classification.
         conn.execute(
             REVIEW_UPDATE_SQL,
-            rusqlite::params![NONE, NONE, NONE, NONE, NONE, Some(0i64), "T3", "t1"],
+            rusqlite::params![NONE, NONE, NONE, NONE, NONE, NONE, Some(0i64), "T3", "t1"],
         ).unwrap();
         let (cat2, rev2): (String, i64) = conn
             .query_row("SELECT category,reviewed FROM bank_txn WHERE id='t1'", [],
@@ -20171,7 +20216,7 @@ mod review_cols_tests {
         // and leaves the importer's `rail` guess exactly where it was (R-157/F1).
         conn.execute(
             REVIEW_UPDATE_SQL,
-            rusqlite::params![NONE, NONE, NONE, NONE, s("zelle"), None::<i64>, "T4", "t1"],
+            rusqlite::params![NONE, NONE, NONE, NONE, s("zelle"), NONE, None::<i64>, "T4", "t1"],
         ).unwrap();
         let (confirmed2, rail3, cat3): (String, String, String) = conn
             .query_row("SELECT confirmed_method,rail,category FROM bank_txn WHERE id='t1'", [],
@@ -20179,6 +20224,57 @@ mod review_cols_tests {
         assert_eq!(confirmed2, "zelle");
         assert_eq!(rail3, "ach", "setting a method must not touch the importer's guess");
         assert_eq!(cat3, "supplier_payment", "setting a method must not touch the category");
+
+        // R-256: a note writes only `note`, and a later re-classify keeps it.
+        conn.execute(
+            REVIEW_UPDATE_SQL,
+            rusqlite::params![NONE, NONE, NONE, NONE, NONE, s("left a voicemail"), None::<i64>, "T5", "t1"],
+        ).unwrap();
+        conn.execute(
+            REVIEW_UPDATE_SQL,
+            rusqlite::params![s("wire_fee"), NONE, NONE, NONE, NONE, NONE, None::<i64>, "T6", "t1"],
+        ).unwrap();
+        let (note, cat4, rev4): (String, String, i64) = conn
+            .query_row("SELECT note,category,reviewed FROM bank_txn WHERE id='t1'", [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(note, "left a voicemail", "a re-classify must not blank the note");
+        assert_eq!(cat4, "wire_fee");
+        assert_eq!(rev4, 0, "saving a note must not re-book the transaction");
+    }
+}
+
+#[cfg(test)]
+mod txn_rule_retag_tests {
+    use super::{imported_in_pass, rule_may_retag};
+
+    // R-256, the regression: every import arrives with the bank's category, so a
+    // plain (non-auto-book) rule used to skip every future transaction.
+    #[test]
+    fn a_plain_rule_retags_a_row_from_this_import() {
+        assert!(rule_may_retag(false, false, true, "shipping"));
+    }
+
+    // ...but never a row already waiting in the queue, where a person may have set
+    // that category by hand.
+    #[test]
+    fn a_plain_rule_leaves_an_older_categorised_row_alone() {
+        assert!(!rule_may_retag(false, false, false, "shipping"));
+        assert!(rule_may_retag(false, false, false, "  "), "a blank row is always fair game");
+        assert!(rule_may_retag(false, true, false, "shipping"), "auto-book is explicit consent");
+        assert!(rule_may_retag(true, false, false, "shipping"), "a manual Apply overrides");
+    }
+
+    #[test]
+    fn imported_in_pass_orders_rfc3339_as_time() {
+        let since = "2026-09-10T15:04:05.123+00:00";
+        assert!(imported_in_pass("2026-09-10T15:04:05.123+00:00", Some(since)), "the same instant is in the pass");
+        assert!(imported_in_pass("2026-09-10T15:04:05.123456+00:00", Some(since)));
+        assert!(imported_in_pass("2026-09-10T15:04:06+00:00", Some(since)));
+        assert!(!imported_in_pass("2026-09-10T15:04:05+00:00", Some(since)), "a whole second sorts below its fractions");
+        assert!(!imported_in_pass("2026-09-10T15:04:05.122999+00:00", Some(since)));
+        assert!(!imported_in_pass("2026-09-09T23:59:59.999999999+00:00", Some(since)));
+        assert!(!imported_in_pass("", Some(since)), "no import stamp is not this pass");
+        assert!(!imported_in_pass("2026-09-10T15:04:06+00:00", None), "a manual Apply has no pass");
     }
 }
 
