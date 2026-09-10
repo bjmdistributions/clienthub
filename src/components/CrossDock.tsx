@@ -22,7 +22,7 @@
  * a solid inset ring, and the symbols are hand-drawn SVG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, Info, Volume2, VolumeX } from "lucide-react";
+import { X, Info, Volume2, VolumeX, Trophy, Check, Copy } from "lucide-react";
 import { api } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { laneY, laneV, stopAt, VMAX } from "../lib/crossdock-motion";
@@ -33,6 +33,10 @@ import {
   type Grid, type LineWin, type SymbolId, type MeterState, type Rng,
 } from "../lib/crossdock";
 import { Arcade } from "../lib/crossdock-audio";
+import {
+  encodeScore, decodeScore, localScores, loadRivals, saveRivals, addRival, board, net,
+  type Score,
+} from "../lib/crossdock-score";
 
 /* ── geometry ─────────────────────────────────────────────────────────────────
    The drum: one cell of travel turns it by ARC degrees, so its radius follows from
@@ -81,6 +85,8 @@ const SYMBOLS_PER_SECOND = (VMAX * 1000) / (FULL.cell + FULL.gap);
    one thing in a money-shaped toy that would look like a bug.                    */
 
 interface Saved {
+  /** Whose save this is, so the scoreboard can name them without a lookup. */
+  name: string;
   /** Cents. */
   balance: number;
   denom: number;
@@ -94,6 +100,7 @@ const seedMeters = (rng: Rng): Record<string, MeterState> =>
   Object.fromEntries(JACKPOTS.map((t) => [t.id, { meter: t.seed, target: drawTarget(t, rng) }]));
 
 const fresh = (): Saved => ({
+  name: "",
   balance: OPENING_FLOAT * 100,
   denom: DENOMS[0],
   credits: CREDITS_PER_LINE[0],
@@ -378,6 +385,130 @@ function Paytable({ perLine, onClose }: { perLine: number; onClose: () => void }
   );
 }
 
+
+/* -- leaderboard ------------------------------------------------------------
+   Everyone who has played on this machine, plus anyone whose code has been pasted
+   in. Nothing is uploaded and there is no endpoint: the code IS the transport, and
+   it goes wherever you choose to send it. See crossdock-score.ts for why. */
+
+function Leaderboard({ onClose }: { onClose: () => void }) {
+  const [rivals, setRivals] = useState<Score[]>(() => loadRivals(localStorage));
+  const [paste, setPaste] = useState("");
+  const [bad, setBad] = useState(false);
+  const [copied, setCopied] = useState("");
+
+  const mine = useMemo(() => localScores(localStorage), []);
+  const rows = board(mine, rivals);
+  const localNames = new Set(mine.map((m) => m.name.toLowerCase()));
+
+  const copy = (sc: Score) => {
+    navigator.clipboard?.writeText(encodeScore({ ...sc, at: Date.now() })).catch(() => { /* no clipboard */ });
+    setCopied(sc.name);
+    window.setTimeout(() => setCopied(""), 1600);
+  };
+
+  const add = () => {
+    const sc = decodeScore(paste);
+    if (!sc) { setBad(true); return; }
+    const next = addRival(rivals, sc);
+    setRivals(next);
+    saveRivals(localStorage, next);
+    setPaste("");
+    setBad(false);
+  };
+
+  const drop = (name: string) => {
+    const next = rivals.filter((r) => r.name.toLowerCase() !== name.toLowerCase());
+    setRivals(next);
+    saveRivals(localStorage, next);
+  };
+
+  return (
+    <div className="cd fixed inset-0 z-[96] flex justify-end bg-black/30" onClick={onClose}>
+      <div className="bg-surface border-l border-line w-full max-w-sm h-full overflow-y-auto animate-slide-in-right"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-surface border-b border-line px-5 py-3.5 flex items-center justify-between">
+          <h3 className="text-[16px] font-semibold text-ink">Leaderboard</h3>
+          <button onClick={onClose} className="text-muted hover:text-ink transition-colors"><X size={16} /></button>
+        </div>
+
+        <div className="px-5 py-4">
+          <p className="text-[12px] text-muted mb-3">Ranked on money made, which is what came back less what went in.</p>
+
+          {rows.length === 0 ? (
+            <p className="text-[12px] text-faint py-6 text-center">Nobody has played yet.</p>
+          ) : (
+            <table className="w-full text-[12px] tabular-nums">
+              <thead><tr className="text-[11px] text-muted">
+                <th className="text-left font-medium pb-1.5">Player</th>
+                <th className="text-right font-medium pb-1.5">Made</th>
+                <th className="text-right font-medium pb-1.5 w-20">Best</th>
+                <th className="w-8" />
+              </tr></thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const n = net(r);
+                  const here = localNames.has(r.name.toLowerCase());
+                  return (
+                    <tr key={r.name} className="border-t border-line align-top">
+                      <td className="py-1.5">
+                        <span className="flex items-center gap-1.5">
+                          {i === 0 && n > 0 && <Trophy size={12} className="text-accent shrink-0" />}
+                          <span className="text-ink-2">{r.name}</span>
+                        </span>
+                        <span className="block text-[10px] text-faint">
+                          {r.spins.toLocaleString()} {r.spins === 1 ? "spin" : "spins"}
+                          {here ? " on this machine" : r.at ? `, sent ${new Date(r.at).toLocaleDateString()}` : ""}
+                        </span>
+                      </td>
+                      <td className={`text-right font-medium py-1.5 ${n > 0 ? "text-success" : n < 0 ? "text-danger" : "text-muted"}`}>
+                        {n > 0 ? "+" : ""}{usd(n, true)}
+                      </td>
+                      <td className="text-right text-ink py-1.5">{usd(r.best)}</td>
+                      <td className="text-right py-1.5">
+                        {here
+                          ? <button onClick={() => copy(r)} title="Copy this score to send"
+                              className="text-muted hover:text-ink transition-colors">
+                              {copied === r.name ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+                            </button>
+                          : <button onClick={() => drop(r.name)} title="Remove"
+                              className="text-faint hover:text-danger-ink transition-colors"><X size={13} /></button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+
+          <div className="pt-4 mt-4 border-t border-line">
+            <h4 className="text-[13px] font-semibold text-ink mb-1.5">Add someone</h4>
+            <p className="text-[12px] text-muted leading-relaxed mb-2">
+              Scores never leave this machine on their own. Copy yours from the row above, send it
+              however you like, and paste theirs in here.
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={paste}
+                onChange={(e) => { setPaste(e.target.value); setBad(false); }}
+                onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+                placeholder="Paste a code"
+                spellCheck={false}
+                className={`flex-1 h-9 px-3 rounded-lg border bg-surface text-[12px] text-ink font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 ${bad ? "border-danger" : "border-line"}`}
+              />
+              <button onClick={add} disabled={!paste.trim()}
+                className="h-9 px-3.5 rounded-lg bg-accent hover:bg-accent-hover text-on-accent text-[12px] font-medium transition-colors disabled:opacity-40">
+                Add
+              </button>
+            </div>
+            {bad && <p className="text-[11px] text-danger-ink mt-1.5">That is not a Cross-dock code, or it arrived damaged.</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── numbers ──────────────────────────────────────────────────────────────── */
 
 /** Ease-out cubic, or a stepped odometer of `segments` eased legs with a pause between.
@@ -414,7 +545,8 @@ function useCountUp(target: number, duration: number, segments = 1) {
 type Phase = "idle" | "spinning" | "revealing";
 interface Msg { primary: string; secondary?: string; accent?: boolean }
 
-export default function ReelsGame({ accountId, onClose }: { accountId: string; onClose: () => void }) {
+export default function CrossDock({ accountId, accountName, onClose }:
+  { accountId: string; accountName?: string; onClose: () => void }) {
   const [saved, setSaved] = useState<Saved>(() => load(accountId));
   const [geo, setGeo] = useState<Geo>(() =>
     typeof window !== "undefined" && (window.innerWidth < 720 || window.innerHeight < 780) ? COMPACT : FULL);
@@ -435,6 +567,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
   const [lit, setLit] = useState<Set<string>>(new Set());
   const [msg, setMsg] = useState<Msg | null>(null);
   const [paytable, setPaytable] = useState(false);
+  const [ranks, setRanks] = useState(false);
   const [modal, setModal] = useState<{ tier: string; amount: number } | null>(null);
   const [flashTier, setFlashTier] = useState<string | null>(null);
   const [free, setFree] = useState({ left: 0, total: 0, won: 0 });
@@ -513,6 +646,12 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
     return () => { live = false; };
   }, []);
   useEffect(() => { store(accountId, saved); }, [accountId, saved]);
+
+  // Keep the name on the save current, so a rename shows on the board.
+  useEffect(() => {
+    const n = (accountName || "").trim();
+    if (n && n !== saved.name) setSaved((sv) => ({ ...sv, name: n }));
+  }, [accountName, saved.name]);
 
   useEffect(() => {
     const onResize = () => setGeo(window.innerWidth < 720 || window.innerHeight < 780 ? COMPACT : FULL);
@@ -739,12 +878,17 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { if (paytable) setPaytable(false); else if (!busyRef.current) onClose(); return; }
-      if (e.code === "Space" && !paytable && !modal) { e.preventDefault(); press(); }
+      if (e.key === "Escape") {
+        if (ranks) setRanks(false);
+        else if (paytable) setPaytable(false);
+        else if (!busyRef.current) onClose();
+        return;
+      }
+      if (e.code === "Space" && !paytable && !ranks && !modal) { e.preventDefault(); press(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paytable, modal, press, onClose]);
+  }, [paytable, ranks, modal, press, onClose]);
 
   const collect = () => {
     setModal(null);
@@ -851,6 +995,10 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
                   title={muted ? "Sound off" : "Sound on"}
                   className="w-7 h-7 rounded-md border border-line text-muted hover:text-ink hover:bg-surface-2 flex items-center justify-center transition-colors">
                   {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                </button>
+                <button onClick={() => setRanks(true)} title="Leaderboard"
+                  className="w-7 h-7 rounded-md border border-line text-muted hover:text-ink hover:bg-surface-2 flex items-center justify-center transition-colors">
+                  <Trophy size={14} />
                 </button>
                 <button onClick={() => setPaytable(true)} title="Paytable"
                   className="w-7 h-7 rounded-md border border-line text-muted hover:text-ink hover:bg-surface-2 flex items-center justify-center transition-colors">
@@ -1029,6 +1177,7 @@ export default function ReelsGame({ accountId, onClose }: { accountId: string; o
       )}
 
       {paytable && <Paytable perLine={perLine} onClose={() => setPaytable(false)} />}
+      {ranks && <Leaderboard onClose={() => setRanks(false)} />}
     </div>
   );
 }

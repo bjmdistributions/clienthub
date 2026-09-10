@@ -487,7 +487,7 @@ function AccountTab() {
           </div>
         </div>
       )}
-      {playing && <CrossDock accountId={me.id} onClose={() => setPlaying(false)} />}
+      {playing && <CrossDock accountId={me.id} accountName={form.display_name || me.display_name} onClose={() => setPlaying(false)} />}
     </div>
   );
 }
