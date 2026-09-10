@@ -186,6 +186,40 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
             </div>
           </div>
 
+          {/* Section 1b: What people bought — per-deal breakdown (R-255), directly under the at-a-glance hero (R-257) */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-[15px] font-semibold text-ink">
+                What people bought this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}
+              </h2>
+              <span className="text-[11px] font-medium text-muted px-2 py-0.5 rounded-full"
+                style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
+                {brief.completed_deals?.length ?? 0} deal{(brief.completed_deals?.length ?? 0) !== 1 ? "s" : ""}
+              </span>
+            </div>
+
+            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
+              {!brief.completed_deals || brief.completed_deals.length === 0 ? (
+                <div className="text-[13px] text-muted text-center py-6">No deals completed this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}.</div>
+              ) : (
+                <>
+                  <div className="hidden xl:flex items-center gap-3 px-5 pt-4 pb-2 text-[11px] text-muted">
+                    <span className="w-36 min-w-0">Buyer</span>
+                    <span className="flex-1 min-w-0">Products</span>
+                    <span className="w-32 min-w-0">Supplier</span>
+                    <span className="w-20 min-w-0 text-right">Revenue</span>
+                    <span className="w-20 min-w-0 text-right">Profit</span>
+                  </div>
+                  <div className="divide-y divide-line">
+                    {brief.completed_deals.map((d) => (
+                      <BoughtRow key={d.deal_flow_id} deal={d} />
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
           {/* Section 2: Profit from deal flows */}
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -332,40 +366,6 @@ export default function BriefView({ currentUser }: { currentUser?: any }) {
               <div className="text-[10px] text-muted italic">
                 Profit calculated from completed deal flows only
               </div>
-            </div>
-          </div>
-
-          {/* Section 2b: What people bought — per-deal breakdown (R-255) */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-[15px] font-semibold text-ink">
-                What people bought this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}
-              </h2>
-              <span className="text-[11px] font-medium text-muted px-2 py-0.5 rounded-full"
-                style={{ background: "var(--t-s3)", border: "1px solid var(--t-b1)" }}>
-                {brief.completed_deals?.length ?? 0} deal{(brief.completed_deals?.length ?? 0) !== 1 ? "s" : ""}
-              </span>
-            </div>
-
-            <div className="rounded-2xl overflow-hidden" style={{ background: "var(--t-s1)", border: "1px solid var(--t-b1)" }}>
-              {!brief.completed_deals || brief.completed_deals.length === 0 ? (
-                <div className="text-[13px] text-muted text-center py-6">No deals completed this {freq >= 28 ? "month" : freq === 7 ? "week" : "period"}.</div>
-              ) : (
-                <>
-                  <div className="hidden xl:flex items-center gap-3 px-5 pt-4 pb-2 text-[11px] text-muted">
-                    <span className="w-36 min-w-0">Buyer</span>
-                    <span className="flex-1 min-w-0">Products</span>
-                    <span className="w-32 min-w-0">Supplier</span>
-                    <span className="w-20 min-w-0 text-right">Revenue</span>
-                    <span className="w-20 min-w-0 text-right">Profit</span>
-                  </div>
-                  <div className="divide-y divide-line">
-                    {brief.completed_deals.map((d) => (
-                      <BoughtRow key={d.deal_flow_id} deal={d} />
-                    ))}
-                  </div>
-                </>
-              )}
             </div>
           </div>
 

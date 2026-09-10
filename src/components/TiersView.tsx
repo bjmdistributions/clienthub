@@ -197,8 +197,12 @@ function OdometerDigit({ digit, roll, delayMs }: { digit: number; roll: boolean;
 
   return (
     <span className="odometer-window" aria-hidden="true">
-      <span ref={stripRef} className="odometer-strip" style={{ transform: `translateY(-${digit}em)` }}>
-        {Array.from({ length: 20 }, (_, i) => <span key={i}>{i % 10}</span>)}
+      {/* R-257: the in-flow ghost gives the window this digit's real width and baseline. */}
+      <span className="odometer-ghost">{digit}</span>
+      <span className="odometer-clip">
+        <span ref={stripRef} className="odometer-strip" style={{ transform: `translateY(-${digit}em)` }}>
+          {Array.from({ length: 20 }, (_, i) => <span key={i}>{i % 10}</span>)}
+        </span>
       </span>
     </span>
   );

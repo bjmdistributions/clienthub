@@ -466,15 +466,23 @@ html.matte:not(.dark) .nav-indicator { box-shadow: 0 0 8px rgba(255,255,255,0.18
    Each digit is a 1em window over a 20-cell strip (0-9 twice). The transform/transition
    are driven imperatively from TiersView.tsx (instant reset -> reflow -> transitioned
    translateY), so this CSS only fixes the geometry, not the motion itself. */
+/* R-257: the window was a 1em box pinned to the BOTTOM of the line and as wide as the widest
+   digit, so the digits sat 3-4px below the $ , . and letters beside them and a 1 sat in a box
+   as wide as a 0 ("$31·493·99", "Every 1 5 days"). An invisible copy of the resting digit
+   (.odometer-ghost) now stays in flow: it gives the window that digit's real width and the
+   line's real baseline, so at rest the figure lays out exactly like plain text. The strip
+   rolls inside .odometer-clip, 1em tall and a little wider than the digit so a wider digit
+   passing through is not sliced at the sides. */
 .odometer-window {
   display: inline-block;
   position: relative;
-  height: 1em;
-  overflow: hidden;
-  vertical-align: bottom;
+  line-height: 1;
+  vertical-align: baseline;
 }
-.odometer-strip { display: block; }
-.odometer-strip span { display: block; height: 1em; line-height: 1; }
+.odometer-ghost { visibility: hidden; }
+.odometer-clip { position: absolute; top: 0; bottom: 0; left: -0.25em; right: -0.25em; overflow: hidden; }
+.odometer-strip { position: absolute; top: 0; left: 0; right: 0; }
+.odometer-strip span { display: block; height: 1em; line-height: 1; text-align: center; }
 /* The strips are aria-hidden (each holds 0-9 twice), so the real number lives here for
    assistive tech and for anyone selecting the cell. Visually removed, not display:none,
    which would take it out of the accessibility tree too. */
