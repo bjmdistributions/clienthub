@@ -1135,6 +1135,23 @@ export interface MonthStat {
   margin_pct: number;
 }
 
+export interface BriefProduct {
+  name: string;
+  qty: number;  // UI hides it when <= 1
+}
+
+export interface BriefDeal {
+  deal_flow_id: string;
+  invoice_id: string;
+  invoice_number: string;
+  client_name: string;
+  completed_on: string;  // bare YYYY-MM-DD — parse with parseLocalDay, never as a datetime
+  products: BriefProduct[];
+  suppliers: string[];
+  revenue: number;
+  net_profit: number;
+}
+
 export interface WeeklyBrief {
   generated_at: string;
   week_start: string;
@@ -1184,6 +1201,7 @@ export interface WeeklyBrief {
   rep_earnings_this_week: number;
   /** Config-driven payout split per recipient; empty when payouts aren't set up. */
   payout_totals: PayoutTotal[];
+  completed_deals: BriefDeal[];
 }
 
 

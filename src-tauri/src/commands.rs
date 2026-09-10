@@ -11281,6 +11281,32 @@ pub struct MonthStat {
     pub margin_pct: f64,
 }
 
+/// One line item bought on a completed deal's invoice (R-255). `qty` is shown
+/// beside `name` in the UI, which hides it when <= 1.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct BriefProduct {
+    pub name: String,
+    pub qty: f64,
+}
+
+/// One completed deal on the brief's "What people bought" section (R-255) — the
+/// same closed-deal population as `deals_closed_this_week`, so the two counts
+/// never disagree.
+#[derive(Serialize, Debug, Clone)]
+pub struct BriefDeal {
+    pub deal_flow_id: String,
+    pub invoice_id: String,
+    pub invoice_number: String,
+    pub client_name: String,
+    /// Bare YYYY-MM-DD — the first 10 chars of `completed_at`, never parsed as a
+    /// datetime (live rows carry both a bare date and a full UTC timestamp).
+    pub completed_on: String,
+    pub products: Vec<BriefProduct>,
+    pub suppliers: Vec<String>,
+    pub revenue: f64,
+    pub net_profit: f64,
+}
+
 #[derive(Serialize, Debug, Clone)]
 pub struct WeeklyBrief {
     pub generated_at: String,
@@ -11334,6 +11360,57 @@ pub struct WeeklyBrief {
     pub rep_earnings_this_week: f64,
     /// Config-driven payout split per recipient; empty when payouts aren't set up.
     pub payout_totals: Vec<PayoutTotal>,
+    /// Per-deal breakdown for "What people bought": buyer, products (shipping
+    /// lines stripped), goods supplier(s), revenue, profit (R-255).
+    pub completed_deals: Vec<BriefDeal>,
+}
+
+/// True when a line-item description is a shipping/freight charge, not a product
+/// (R-255) — dropped from the brief's per-deal product list. Extends the same
+/// judgment call `line_items_match` (:1904) already makes for search: freight is
+/// not something the buyer "bought".
+fn is_shipping_line(description: &str) -> bool {
+    let d = description.trim().to_lowercase();
+    if d.is_empty() { return true; }
+    matches!(d.as_str(), "shipping" | "freight" | "shipping & handling" | "shipping and handling" | "delivery")
+        || d.starts_with("shipping") || d.starts_with("freight")
+}
+
+/// Products bought on an invoice, shipping lines removed (R-255). A malformed
+/// blob is an empty invoice, never an error — same rule `line_items_match` uses.
+fn brief_products(line_items_json: &str) -> Vec<BriefProduct> {
+    let parsed: serde_json::Value = match serde_json::from_str(line_items_json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let items = match parsed.as_array() { Some(a) => a, None => return Vec::new() };
+    items.iter().filter_map(|it| {
+        let name = it.get("description").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        if is_shipping_line(&name) { return None; }
+        let qty = it.get("qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        Some(BriefProduct { name, qty })
+    }).collect()
+}
+
+/// Distinct goods-supplier names from a deal's supplier payments (R-255) — a
+/// freight/wire/other cost line is not who supplied the goods. Case-insensitive
+/// dedupe keeping the first spelling seen; unparseable JSON is an empty list.
+fn brief_suppliers(supplier_payments_json: &str) -> Vec<String> {
+    let parsed: serde_json::Value = match serde_json::from_str(supplier_payments_json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let items = match parsed.as_array() { Some(a) => a, None => return Vec::new() };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for it in items {
+        let category = it.get("category").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+        if !category.is_empty() && category != "supplier" { continue; }
+        let name = it.get("supplier_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        if name.is_empty() { continue; }
+        if seen.insert(name.to_lowercase()) { out.push(name); }
+    }
+    out
 }
 
 #[tauri::command]
@@ -11543,6 +11620,38 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
          WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter}"),
         [&week_start, &end_excl], |r| r.get::<_,i64>(0)
     ).unwrap_or(0) as u32;
+
+    // R-255: the per-deal breakdown behind "What people bought" — same closed-deal
+    // population as `deals_closed` above, but this query always joins invoices and
+    // clients (rep_join is conditional on `deals_closed`'s COUNT not needing them),
+    // so it uses `rep_filter` only.
+    let completed_deals: Vec<BriefDeal> = {
+        let mut stmt_bought = conn.prepare(
+            &format!("SELECT df.id, df.invoice_id, i.number, c.name, df.completed_at, \
+                      i.line_items_json, df.supplier_payments_json, df.gross_revenue, {np} \
+               FROM deal_flows df JOIN invoices i ON i.id=df.invoice_id JOIN clients c ON c.id=i.client_id \
+               WHERE df.stage='complete'{live} AND df.completed_at >= ?1 AND df.completed_at < ?2{rep_filter} \
+               ORDER BY df.completed_at DESC, c.name ASC")
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt_bought.query_map([&week_start, &end_excl], |r| {
+            let completed_at: String = r.get(4)?;
+            let line_items_json: String = r.get(5)?;
+            let supplier_payments_json: String = r.get(6)?;
+            Ok(BriefDeal {
+                deal_flow_id: r.get(0)?,
+                invoice_id: r.get(1)?,
+                invoice_number: r.get(2)?,
+                client_name: r.get(3)?,
+                completed_on: completed_at.chars().take(10).collect(),
+                products: brief_products(&line_items_json),
+                suppliers: brief_suppliers(&supplier_payments_json),
+                revenue: r.get(7)?,
+                net_profit: r.get(8)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     let lost_join = if rep_name.is_some() { "JOIN clients c ON c.id=i.client_id" } else { "" };
     let deals_lost: u32 = conn.query_row(
         &format!("SELECT COUNT(*) FROM invoices i {lost_join} \
@@ -11693,7 +11802,79 @@ pub async fn generate_weekly_brief(for_date: Option<String>, rep_name: Option<St
         refunded_total_this_week,
         rep_earnings_this_week,
         payout_totals,
+        completed_deals,
     })
+}
+
+#[cfg(test)]
+mod brief_deal_tests {
+    use super::{is_shipping_line, brief_products, brief_suppliers, BriefProduct};
+
+    // Live fixture (R-255 plan): the only shipping line ever written on an
+    // invoice is literally "Shipping" (20 invoices).
+    const SOLD_WITH_SHIPPING: &str = r#"[{"description":"Nike Clothing","qty":12689,"rate":1.5,"amount":19033.5},
+                                          {"description":"Shipping","qty":1,"rate":900,"amount":900}]"#;
+
+    #[test]
+    fn shipping_line_matches_equals_and_starts_with() {
+        assert!(is_shipping_line("Shipping"));
+        assert!(is_shipping_line("  shipping  "));
+        assert!(is_shipping_line("Freight"));
+        assert!(is_shipping_line("Shipping & Handling"));
+        assert!(is_shipping_line("Shipping and Handling"));
+        assert!(is_shipping_line("Delivery"));
+        assert!(is_shipping_line("Shipping to Chicago"));
+        assert!(is_shipping_line("Freight charge"));
+        assert!(is_shipping_line(""));
+        assert!(is_shipping_line("   "));
+        assert!(!is_shipping_line("Nike Clothing"));
+        // Contains "shipping" but doesn't equal or start with it — not dropped.
+        assert!(!is_shipping_line("Free shipping bags"));
+    }
+
+    #[test]
+    fn brief_products_strips_the_shipping_line_and_keeps_qty() {
+        let products = brief_products(SOLD_WITH_SHIPPING);
+        assert_eq!(products, vec![BriefProduct { name: "Nike Clothing".into(), qty: 12689.0 }]);
+    }
+
+    #[test]
+    fn brief_products_unparseable_json_is_empty_not_an_error() {
+        assert!(brief_products("not json").is_empty());
+        assert!(brief_products("").is_empty());
+    }
+
+    // Live fixture (R-255 plan): Todd Yohman appears twice on INV-0210 — goods
+    // $2,031.50 and the $550 freight, both booked with category: null.
+    const TODD_YOHMAN_INV_0210: &str = r#"[
+        {"supplier_name":"Todd Yohman","amount":2031.50,"category":null},
+        {"supplier_name":"Todd Yohman","amount":550,"category":null}
+    ]"#;
+
+    #[test]
+    fn brief_suppliers_dedupes_same_supplier_paid_twice() {
+        assert_eq!(brief_suppliers(TODD_YOHMAN_INV_0210), vec!["Todd Yohman".to_string()]);
+    }
+
+    #[test]
+    fn brief_suppliers_keeps_first_spelling_case_insensitively() {
+        let json = r#"[{"supplier_name":"todd yohman","amount":100,"category":""},
+                        {"supplier_name":"Todd Yohman","amount":50,"category":"supplier"}]"#;
+        assert_eq!(brief_suppliers(json), vec!["todd yohman".to_string()]);
+    }
+
+    #[test]
+    fn brief_suppliers_skips_non_goods_categories_and_blank_names() {
+        let json = r#"[{"supplier_name":"Todd Yohman","amount":2031.50,"category":null},
+                        {"supplier_name":"Wire Desk","amount":100,"category":"wire_out"},
+                        {"supplier_name":"","amount":10,"category":null}]"#;
+        assert_eq!(brief_suppliers(json), vec!["Todd Yohman".to_string()]);
+    }
+
+    #[test]
+    fn brief_suppliers_unparseable_json_is_empty_not_an_error() {
+        assert!(brief_suppliers("not json").is_empty());
+    }
 }
 
 #[derive(Serialize, Debug, Clone)]

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>R-255 harness</title>
+    <!--
+      DEV ONLY. Not referenced by index.html, so `npm run build` never sees it —
+      same trick as r194-harness.html.
+
+      Verifies the "What people bought" section on BriefView: six completed
+      deals (5-product chip overflow, no supplier, negative profit, an
+      already-shipping-stripped deal, qty<=1 hidden, multi-supplier join).
+      ?empty=1 renders completed_deals: [].
+    -->
+    <script>
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => Promise.resolve(window.__FIXTURE ? window.__FIXTURE(cmd, args) : null),
+        transformCallback: (cb) => { window.__cb = cb; return 1; },
+        unregisterListener: () => {},
+        convertFileSrc: (p) => p,
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        plugins: {},
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/__r255-harness.tsx"></script>
+  </body>
+</html>
