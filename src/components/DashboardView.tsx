@@ -10,6 +10,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import PendingReviewModal from "./PendingReviewModal";
 import { can } from "../lib/permissions";
 import StatusPill from "./StatusPill";
+import LeadBubbles from "./LeadBubbles";
 
 interface Props {
   onNavigate: (t: any) => void;
@@ -194,6 +195,13 @@ export default function DashboardView({ onNavigate, me }: Props) {
     window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
 
+  // Passed to LeadBubbles so its "New customer requests" sub-view stays in
+  // sync with the same pendingApprovals state the Today queue above reads.
+  const refreshApprovals = () => {
+    api.getPendingApprovals().then(setPending).catch(() => {});
+    window.dispatchEvent(new CustomEvent("approvals-changed"));
+  };
+
   return (
     <div className="min-h-full flex flex-col page-atmosphere dashboard-glow" style={{ background: "var(--t-bg)" }}>
 
@@ -286,6 +294,9 @@ export default function DashboardView({ onNavigate, me }: Props) {
             </div>
           </div>
         )}
+
+        {/* ── Lead programme bubbles (R-263) ──────────────── */}
+        <LeadBubbles pendingApprovals={pendingApprovals} onApprovalsChanged={refreshApprovals} />
 
         {/* ── Today: everything that needs a decision ────── */}
         <div className="bg-surface border border-line rounded-2xl overflow-hidden">

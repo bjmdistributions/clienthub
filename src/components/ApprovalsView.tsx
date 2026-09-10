@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, type ApprovalRequest, type Client, type ClientInput } from "../lib/api";
+import { api, isUnavailable, type ApprovalRequest, type Client, type ClientInput, type LeadNotification, type OrUnavailable } from "../lib/api";
 import PendingReviewModal from "./PendingReviewModal";
-import { UserPlus, Inbox, ChevronRight, X, Store } from "lucide-react";
+import { UserPlus, Inbox, ChevronRight, X, Store, Megaphone, Check } from "lucide-react";
 import StatusPill from "./StatusPill";
 
 const kindLabel = (k: string) =>
@@ -94,38 +94,166 @@ function ApprovalDetail({ a, onClose, onResolved }: { a: ApprovalRequest; onClos
   );
 }
 
+// A standardized supply-lead alert (decision 3 in the R-263 plan): "Add as supplier"
+// is a follow-up, not v1, so Acknowledge is the only action here. Server-backed
+// (Pass 2) — shows "Unavailable" rather than the section disappearing. Fetched by
+// the parent so its count can feed the page's empty-state check.
+function SupplyLeadsSection({ leads, onAck }: { leads: OrUnavailable<LeadNotification[]> | null; onAck: (id: string) => void }) {
+  if (leads === null) return null;
+  const unavailable = isUnavailable(leads);
+  const list = unavailable ? [] : leads;
+  if (!unavailable && list.length === 0) return null;
+
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-2.5">
+        <Megaphone size={15} className="text-muted" />
+        <h3 className="text-[13px] font-semibold text-ink">Supplier leads</h3>
+        {!unavailable && <span className="text-[11px] font-semibold text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full tabular-nums">{list.length}</span>}
+      </div>
+      {unavailable ? (
+        <div className="text-[12px] text-muted bg-surface border border-line rounded-xl p-4">Unavailable</div>
+      ) : (
+        <div className="space-y-2.5">
+          {list.map((n) => {
+            let fields: Record<string, any> = {};
+            try { fields = n.payload_json ? JSON.parse(n.payload_json) : {}; } catch { /* ignore */ }
+            const fieldEntries = Object.entries(fields).filter(([, v]) => v != null && v !== "");
+            return (
+              <div key={n.id} className="bg-surface border border-line rounded-xl p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-medium text-ink">{n.title}</div>
+                    <div className="text-[12px] text-muted mt-0.5">{n.body}</div>
+                  </div>
+                  <button onClick={() => onAck(n.id)}
+                    className="flex items-center gap-1.5 border border-line text-ink-2 hover:bg-surface-3 px-3 h-8 rounded-lg text-[12px] font-medium flex-shrink-0">
+                    <Check size={13} /> Acknowledge
+                  </button>
+                </div>
+                {fieldEntries.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-line-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
+                    {fieldEntries.map(([k, v]) => (
+                      <div key={k} className="text-[12px]">
+                        <span className="text-muted capitalize">{k.replace(/[_-]/g, " ")}: </span>
+                        <span className="text-ink-2">{String(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="text-[11px] text-faint mt-2">{new Date(n.created_at).toLocaleString()}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function ApprovalsView() {
   const [items, setItems] = useState<ApprovalRequest[]>([]);
   const [pending, setPending] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
+  const [supplyLeads, setSupplyLeads] = useState<OrUnavailable<LeadNotification[]> | null>(null);
+
+  // Archive toggle — swaps the whole page to resolved (approved/rejected)
+  // requests, read-only. Server-backed (Pass 2); loaded once, on first switch.
+  const [archived, setArchived] = useState(false);
+  const [resolvedList, setResolvedList] = useState<Client[] | null>(null);
+  const [resolvedUnavailable, setResolvedUnavailable] = useState(false);
+  const [loadingResolved, setLoadingResolved] = useState(false);
 
   const load = () =>
     Promise.all([
       api.listApprovalRequests().then(setItems).catch(() => {}),
       api.getPendingApprovals().then(setPending).catch(() => {}),
+      api.listLeadNotifications("supply_lead", "unread").then(setSupplyLeads),
     ]).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (!archived || resolvedList !== null) return;
+    setLoadingResolved(true);
+    api.listResolvedApprovalRequests().then((r) => {
+      if (isUnavailable(r)) { setResolvedUnavailable(true); setResolvedList([]); }
+      else setResolvedList(r);
+    }).finally(() => setLoadingResolved(false));
+  }, [archived, resolvedList]);
 
   const resolved = () => { setSelected(null); load(); window.dispatchEvent(new CustomEvent("approvals-changed")); };
   const quick = async (id: string, approve: boolean) => {
     await api.resolveApprovalRequest(id, approve).catch(() => {});
     await load(); window.dispatchEvent(new CustomEvent("approvals-changed"));
   };
+  const ackSupplyLead = async (id: string) => {
+    await api.ackLeadNotification(id);
+    setSupplyLeads((l) => (l && !isUnavailable(l) ? l.filter((n) => n.id !== id) : l));
+  };
 
   // Stale storefront listings (renew or mark sold) get their own section; other
   // non-client_add requests (e.g. deletions) are team requests.
   const staleListings = items.filter((a) => a.kind === "listing_stale");
   const teamRequests = items.filter((a) => a.kind !== "client_add" && a.kind !== "listing_stale");
-  const total = pending.length + staleListings.length + teamRequests.length;
+  const supplyLeadsCount = supplyLeads && !isUnavailable(supplyLeads) ? supplyLeads.length : 0;
+  const total = pending.length + staleListings.length + teamRequests.length + supplyLeadsCount;
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
-      <h2 className="text-[18px] font-semibold text-ink mb-1">Notifications</h2>
+      <div className="flex items-start justify-between gap-3 mb-1">
+        <h2 className="text-[18px] font-semibold text-ink">Notifications</h2>
+        <div className="inline-flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5 flex-shrink-0">
+          <button onClick={() => setArchived(false)}
+            className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${!archived ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+            Pending
+          </button>
+          <button onClick={() => setArchived(true)}
+            className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${archived ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+            Archive
+          </button>
+        </div>
+      </div>
       <p className="text-[12px] text-muted mb-5">Customers waiting on your review, and any requests from your team.</p>
 
-      {loading ? null : total === 0 ? (
+      {archived ? (
+        resolvedUnavailable ? (
+          <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
+            <div className="text-[13px] text-muted">Unavailable</div>
+          </div>
+        ) : loadingResolved ? (
+          <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
+            <div className="text-[13px] text-muted">Loading…</div>
+          </div>
+        ) : (resolvedList ?? []).length === 0 ? (
+          <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
+            <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3"><Inbox size={18} /></div>
+            <div className="text-[13px] text-muted">No resolved requests yet</div>
+          </div>
+        ) : (
+          <div className="bg-surface border border-line rounded-2xl divide-y divide-line-2 overflow-hidden">
+            {(resolvedList ?? []).map((c) => {
+              const src = sourceLabel(c.metadata);
+              const approved = c.approval_status === "approved";
+              const initials = (c.name || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
+              return (
+                <div key={c.id} className="flex items-center gap-3 px-4 py-3">
+                  <span className="w-9 h-9 rounded-full bg-surface-2 text-muted flex items-center justify-center text-[13px] font-bold flex-shrink-0">{initials}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13.5px] font-semibold text-ink truncate">{c.name}</span>
+                      {src && <StatusPill tone="neutral">{src}</StatusPill>}
+                    </div>
+                    <div className="text-[11.5px] text-muted truncate">{[c.email, c.company].filter(Boolean).join(" · ") || "—"}</div>
+                  </div>
+                  <StatusPill tone={approved ? "success" : "danger"}>{approved ? "Approved" : "Rejected"}</StatusPill>
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : loading ? null : total === 0 ? (
         <div className="bg-surface border border-line rounded-2xl py-14 flex flex-col items-center">
           <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center text-faint mb-3"><Inbox size={18} /></div>
           <div className="text-[13px] text-muted">Nothing waiting on you</div>
@@ -210,6 +338,8 @@ export function ApprovalsView() {
               </div>
             </section>
           )}
+
+          <SupplyLeadsSection leads={supplyLeads} onAck={ackSupplyLead} />
         </div>
       )}
 

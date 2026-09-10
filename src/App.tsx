@@ -78,7 +78,7 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import GettingStarted from "./components/GettingStarted";
 import AuthView from "./components/AuthView";
 import { useAppStore } from "./lib/store";
-import { api, Me } from "./lib/api";
+import { api, isUnavailable, Me } from "./lib/api";
 import { can, canViewTab, isAdmin } from "./lib/permissions";
 
 // Screens heavy enough that parsing them at launch is felt by every session that
@@ -455,9 +455,13 @@ export default function App() {
     const refresh = () => Promise.all([
       api.listApprovalRequests().catch(() => []),
       api.getPendingApprovals().catch(() => []),
-    ]).then(([reqs, pend]) => {
+      // R-263 supplier leads — server-proxied (Pass 2). Adds to the badge only
+      // once available; stays unchanged (never crashes) while unavailable.
+      api.listLeadNotifications("supply_lead", "unread"),
+    ]).then(([reqs, pend, leads]) => {
       const nonAdd = reqs.filter((a) => a.kind !== "client_add").length;
-      setApCount(pend.length + nonAdd);
+      const leadCount = isUnavailable(leads) ? 0 : leads.length;
+      setApCount(pend.length + nonAdd + leadCount);
     }).catch(() => {});
     refresh();
     const onChanged = () => refresh();

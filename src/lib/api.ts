@@ -1,5 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 
+// R-263: the lead-programme commands (call_requests, notifications, lead_clicks)
+// are server-proxied and don't exist until Pass 2. Every wrapper below routes
+// through this helper so a rejected invoke becomes an explicit unavailable
+// value instead of an unhandled promise — the bubbles render "Unavailable"
+// and the rest of the app keeps working.
+export interface Unavailable { unavailable: true }
+export type OrUnavailable<T> = T | Unavailable;
+export const isUnavailable = <T,>(v: OrUnavailable<T>): v is Unavailable =>
+  !!v && typeof v === "object" && (v as any).unavailable === true;
+function safe<T>(p: Promise<T>): Promise<OrUnavailable<T>> {
+  return p.catch(() => ({ unavailable: true }) as Unavailable);
+}
+
 // ===== Types =====
 export interface Note {
   id: string;
@@ -236,6 +249,56 @@ export interface ApprovalRequest {
   summary: string;
   requested_by_name: string | null;
   created_at: string;
+}
+// R-263 data contract (see R263-LEAD-PROGRAMME-PLAN-2026-09-10.md). Server is
+// the system of record; desktop commands proxy to it the way get_load_inbox does.
+export interface CallRequest {
+  id: string;
+  org_id: string;
+  client_id: string | null;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  best_time: string | null;
+  questions: string | null;
+  status: "pending" | "confirmed" | "cancelled" | "declined";
+  scheduled_at: string | null;
+  confirmed_at: string | null;
+  confirmation_sent_via: string | null;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+export interface LeadNotification {
+  id: string;
+  org_id: string;
+  kind: "supply_lead" | "call_request" | "system";
+  title: string;
+  body: string;
+  payload_json: string | null;
+  entity_id: string | null;
+  status: "unread" | "acknowledged";
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  created_at: string;
+}
+export interface LeadClick {
+  id: string;
+  org_id: string;
+  kind: "whatsapp";
+  lot_id: string | null;
+  lot_name: string | null;
+  source_host: string | null;
+  created_at: string;
+  day: string;
+}
+export interface LeadDashboardStats {
+  pending_requests: number;
+  next_call: { id: string; name: string; scheduled_at: string } | null;
+  pending_calls: number;
+  organic_leads: { total: number; last_30d: number; today: number };
+  unacknowledged: Record<string, number>;
 }
 export interface FormField {
   id: string;
@@ -2583,6 +2646,22 @@ export const api = {
   resolveApprovalRequest: (id: string, approve: boolean) => invoke<void>("resolve_approval_request", { id, approve }),
   getApprovalPolicy: () => invoke<{ require_client_add_approval: boolean; require_client_delete_approval: boolean }>("get_approval_policy"),
   setApprovalPolicy: (requireAdd: boolean, requireDelete: boolean) => invoke<void>("set_approval_policy", { requireAdd, requireDelete }),
+  // Resolved (approved/rejected) client_add requests — the Archive view. Server-backed
+  // (Pass 2); commands don't exist yet, so this resolves to { unavailable: true } until then.
+  listResolvedApprovalRequests: () => safe(invoke<Client[]>("list_resolved_approval_requests")),
+  // R-263 lead programme — server proxy, see the Unavailable note at the top of this file.
+  leadDashboardStats: () => safe(invoke<LeadDashboardStats>("lead_dashboard_stats")),
+  listCallRequests: (archived: boolean) => safe(invoke<CallRequest[]>("list_call_requests", { archived })),
+  confirmCallRequest: (id: string, scheduledAt: string, sendEmail: boolean) =>
+    safe(invoke<void>("confirm_call_request", { id, scheduledAt, sendEmail })),
+  cancelCallRequest: (id: string) => safe(invoke<void>("cancel_call_request", { id })),
+  rescheduleCallRequest: (id: string, scheduledAt: string) =>
+    safe(invoke<void>("reschedule_call_request", { id, scheduledAt })),
+  archiveCallRequest: (id: string) => safe(invoke<void>("archive_call_request", { id })),
+  listLeadNotifications: (kind?: string, status?: string) =>
+    safe(invoke<LeadNotification[]>("list_lead_notifications", { kind, status })),
+  ackLeadNotification: (id: string) => safe(invoke<void>("ack_lead_notification", { id })),
+  listLeadClicks: (since?: string) => safe(invoke<LeadClick[]>("list_lead_clicks", { since })),
   submitFeedback: (kind: string, title: string, body: string, name?: string, email?: string) =>
     invoke<void>("submit_feedback", { kind, title, body, name, email }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),
