@@ -7907,6 +7907,372 @@ pub async fn reject_inbound_load(id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- Leads (R-263): booked calls, lead notifications, WhatsApp clicks ----------
+// Same shape as the load-inbox section above: `call_requests`, `notifications` and
+// `lead_clicks` live on the SERVER only (see R263-LEAD-PROGRAMME-PLAN-2026-09-10.md,
+// decision 1) — no synced table, no desktop migration. These commands proxy straight
+// through, so an offline desktop surfaces "Connect this computer to your Ecliptr
+// server first" the same way the load inbox does. `list_resolved_approval_requests`
+// is the one exception: the Archive view it feeds reads the LOCAL synced
+// `pending_approvals` table, which already holds this device's full history.
+
+/// This device's connection to the server, or a message telling the user to connect.
+/// Identical to `inbox_server()`; kept separate so this section doesn't reach across
+/// into the load-inbox one.
+fn leads_server() -> Result<(String, String), String> {
+    let cfg = crate::netsync::config()
+        .ok_or_else(|| "Connect this computer to your Ecliptr server first (Settings → Sync).".to_string())?;
+    Ok((cfg.url.trim_end_matches('/').to_string(), cfg.token))
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CallRequest {
+    pub id: String,
+    pub org_id: String,
+    pub client_id: Option<String>,
+    pub name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub company: Option<String>,
+    pub best_time: Option<String>,
+    pub questions: Option<String>,
+    pub status: String,
+    pub scheduled_at: Option<String>,
+    pub confirmed_at: Option<String>,
+    pub confirmation_sent_via: Option<String>,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LeadNotification {
+    pub id: String,
+    pub org_id: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub payload_json: Option<String>,
+    pub entity_id: Option<String>,
+    pub status: String,
+    pub acknowledged_at: Option<String>,
+    pub acknowledged_by: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LeadClick {
+    pub id: String,
+    pub org_id: String,
+    pub kind: String,
+    pub lot_id: Option<String>,
+    pub lot_name: Option<String>,
+    pub source_host: Option<String>,
+    pub created_at: String,
+    pub day: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NextCall {
+    pub id: String,
+    pub name: String,
+    pub scheduled_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct OrganicLeads {
+    pub total: i64,
+    pub last_30d: i64,
+    pub today: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LeadDashboardStats {
+    pub pending_requests: i64,
+    pub next_call: Option<NextCall>,
+    pub pending_calls: i64,
+    pub organic_leads: OrganicLeads,
+    pub unacknowledged: std::collections::HashMap<String, i64>,
+}
+
+#[tauri::command]
+pub async fn lead_dashboard_stats() -> Result<LeadDashboardStats, String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .get(format!("{base}/api/dashboard/stats"))
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't load the dashboard stats ({}).", resp.status()));
+    }
+    resp.json::<LeadDashboardStats>().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_call_requests(archived: bool) -> Result<Vec<CallRequest>, String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .get(format!("{base}/api/calls"))
+        .query(&[("archived", if archived { "1" } else { "0" })])
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't load call requests ({}).", resp.status()));
+    }
+    resp.json::<Vec<CallRequest>>().await.map_err(|e| e.to_string())
+}
+
+/// The confirmation email's subject + body for a desktop-side SMTP send (plan
+/// decision 6). The scheduled time is always shown in America/Chicago — that's the
+/// timezone the business runs on, regardless of the recipient's own. `scheduled_at_utc`
+/// is the RFC3339 instant the UI posts (`new Date(...).toISOString()`); an unparseable
+/// value falls back to printing the raw string rather than failing the send.
+fn call_confirmation_email(name: &str, org_name: &str, scheduled_at_utc: &str) -> (String, String) {
+    let when = chrono::DateTime::parse_from_rfc3339(scheduled_at_utc)
+        .map(|dt| dt.with_timezone(&chrono_tz::America::Chicago).format("%A, %B %-d at %-I:%M %p %Z").to_string())
+        .unwrap_or_else(|_| scheduled_at_utc.to_string());
+    let who = if org_name.trim().is_empty() { "us".to_string() } else { org_name.trim().to_string() };
+    let first = name.trim().split_whitespace().next().unwrap_or("there");
+    let subject = format!("Your call with {who} is booked");
+    let body = format!(
+        "Hi {first},\n\nYour call with {who} is confirmed for {when}.\n\nNeed a different time? Just reply to this email and we'll get you rescheduled.\n\nTalk soon,\n{who}"
+    );
+    (subject, body)
+}
+
+/// Accept a pending call request. Where the confirmation email comes from depends on
+/// whether this device has a usable SMTP config (plan decision 6): when it does, the
+/// server flips status WITHOUT sending, this device sends the confirmation itself as
+/// the org's `from_email` (sales@) and reports back so the row remembers `desktop_smtp`;
+/// when it doesn't, the server sends via Resend (`send_email: true`) and stamps
+/// `server_resend` on its own. A `sendEmail=false` from the UI (admin already called
+/// the customer) always forwards as `send_email: false` — nobody sends anything.
+#[tauri::command]
+pub async fn confirm_call_request(id: String, scheduled_at: String, send_email: bool) -> Result<(), String> {
+    let (base, token) = leads_server()?;
+    let http = inbox_http()?;
+    let desktop_smtp = send_email && crate::email::load_settings().is_ok();
+
+    let resp = http.post(format!("{base}/api/calls/{id}/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({ "scheduled_at": scheduled_at, "send_email": send_email && !desktop_smtp }))
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't confirm the call ({}).", resp.status()));
+    }
+
+    if desktop_smtp {
+        // The confirm response's shape isn't part of the contract — look the row back
+        // up from the documented list route instead of trusting it. A row just
+        // confirmed is still unarchived, so it's in this same list.
+        let calls: Vec<CallRequest> = http.get(format!("{base}/api/calls"))
+            .query(&[("archived", "0")])
+            .bearer_auth(&token)
+            .send().await.map_err(|e| e.to_string())?
+            .json().await.unwrap_or_default();
+        let call = calls.into_iter().find(|c| c.id == id);
+        let to = call.as_ref()
+            .and_then(|c| c.email.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let caller = call.as_ref().map(|c| c.name.as_str()).unwrap_or("there");
+        if let Some(to) = to {
+            let org_name = {
+                let conn = pool().get().map_err(|e| e.to_string())?;
+                nl_business_name(&conn)
+            };
+            let (subject, body) = call_confirmation_email(caller, &org_name, &scheduled_at);
+            match crate::email::send(&to, &subject, &body, None).await {
+                Ok(()) => {
+                    let _ = http.post(format!("{base}/api/calls/{id}/confirmation-sent"))
+                        .bearer_auth(&token)
+                        .json(&json!({ "via": "desktop_smtp" }))
+                        .send().await;
+                }
+                // The booking itself already succeeded server-side; a failed send is
+                // logged, not surfaced as a command error — the UI would otherwise read
+                // a confirmed call as "Unavailable".
+                Err(e) => tracing::warn!("call confirmation SMTP send failed for {}: {}", id, e),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_call_request(id: String) -> Result<(), String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/calls/{id}/cancel"))
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't cancel the call ({}).", resp.status()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reschedule_call_request(id: String, scheduled_at: String) -> Result<(), String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/calls/{id}/reschedule"))
+        .bearer_auth(&token)
+        .json(&json!({ "scheduled_at": scheduled_at }))
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't reschedule the call ({}).", resp.status()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn archive_call_request(id: String) -> Result<(), String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/calls/{id}/archive"))
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't archive the call ({}).", resp.status()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_lead_notifications(kind: Option<String>, status: Option<String>) -> Result<Vec<LeadNotification>, String> {
+    let (base, token) = leads_server()?;
+    let mut q: Vec<(&str, String)> = Vec::new();
+    if let Some(k) = kind.filter(|s| !s.is_empty()) { q.push(("kind", k)); }
+    if let Some(s) = status.filter(|s| !s.is_empty()) { q.push(("status", s)); }
+    let resp = inbox_http()?
+        .get(format!("{base}/api/notifications"))
+        .query(&q)
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't load notifications ({}).", resp.status()));
+    }
+    resp.json::<Vec<LeadNotification>>().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn ack_lead_notification(id: String) -> Result<(), String> {
+    let (base, token) = leads_server()?;
+    let resp = inbox_http()?
+        .post(format!("{base}/api/notifications/{id}/ack"))
+        .bearer_auth(&token)
+        .send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't acknowledge that notification ({}).", resp.status()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_lead_clicks(since: Option<String>) -> Result<Vec<LeadClick>, String> {
+    let (base, token) = leads_server()?;
+    let mut req = inbox_http()?.get(format!("{base}/api/lead-clicks")).bearer_auth(&token);
+    if let Some(s) = since.filter(|s| !s.is_empty()) { req = req.query(&[("since", s)]); }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Couldn't load lead clicks ({}).", resp.status()));
+    }
+    resp.json::<Vec<LeadClick>>().await.map_err(|e| e.to_string())
+}
+
+/// The Archive view behind "New customer requests": every `pending_approvals` row of
+/// kind `client_add` whose status has moved off `pending`, newest first, capped at 200.
+/// LEFT JOIN because a *rejected* add hard-deletes the client row (`delete_client_row`,
+/// called from `resolve_approval_request`) — for those the client columns come back
+/// NULL and the name falls back to the summary text ("New client: <name>") captured
+/// when the request was queued. The returned `approval_status` is the QUEUE outcome
+/// ("approved"/"rejected"), not the client row's own column — an approved client's own
+/// `approval_status` moves to "active", not "approved", and CustomerRequestsModal reads
+/// this field to choose the badge.
+#[tauri::command]
+pub async fn list_resolved_approval_requests() -> Result<Vec<Client>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT pa.id, pa.summary, pa.status, pa.created_at, pa.resolved_at,
+                c.id, c.name, c.email, c.phone, c.company, c.notes, c.billing_status, ({ls}) AS lead_status,
+                c.created_at, c.updated_at, c.metadata,
+                COALESCE(c.is_blacklisted,0), COALESCE(c.high_value,0), COALESCE(c.exclusive,0)
+         FROM pending_approvals pa
+         LEFT JOIN clients c ON c.id = pa.entity_id
+         WHERE pa.kind='client_add' AND pa.status <> 'pending'
+         ORDER BY COALESCE(pa.resolved_at, pa.created_at) DESC
+         LIMIT 200", ls = LEAD_STATUS_SQL);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        let pa_id: String = r.get(0)?;
+        let pa_summary: String = r.get(1)?;
+        let pa_status: String = r.get(2)?;
+        let pa_created_at: String = r.get(3)?;
+        let pa_resolved_at: Option<String> = r.get(4)?;
+        let client_id: Option<String> = r.get(5)?;
+        let meta: Option<Value> = r.get::<_, Option<String>>(15)?.and_then(|s| serde_json::from_str(&s).ok());
+        let (category, tags, street_address, city, state, zip_code, country, next_follow_up_date, needs_review) = extract_client_fields(&meta);
+        let high_value = r.get::<_, i64>(17).unwrap_or(0) != 0 || meta_flag(&meta, "high_value");
+        let exclusive = r.get::<_, i64>(18).unwrap_or(0) != 0 || meta_flag(&meta, "exclusive");
+        let name: String = r.get::<_, Option<String>>(6)?
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| pa_summary.strip_prefix("New client: ").unwrap_or(&pa_summary).to_string());
+        Ok(Client {
+            id: client_id.unwrap_or_else(|| pa_id.clone()),
+            name,
+            email: r.get(7)?,
+            phone: r.get(8)?,
+            company: r.get(9)?,
+            notes: r.get(10)?,
+            billing_status: r.get::<_, Option<String>>(11)?.unwrap_or_else(|| "active".into()),
+            lead_status: r.get(12)?,
+            created_at: r.get::<_, Option<String>>(13)?.unwrap_or_else(|| pa_created_at.clone()),
+            updated_at: r.get::<_, Option<String>>(14)?.unwrap_or_else(|| pa_resolved_at.clone().unwrap_or_else(|| pa_created_at.clone())),
+            metadata: meta,
+            invoice_count: 0,
+            last_contact_at: None,
+            total_revenue: 0.0,
+            category, tags, street_address, city, state, zip_code, country, next_follow_up_date,
+            needs_review,
+            is_blacklisted: r.get::<_, i64>(16).unwrap_or(0) != 0,
+            approval_status: pa_status,
+            high_value,
+            exclusive,
+            first_contact: false,
+        })
+    }).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[cfg(test)]
+mod call_confirmation_tests {
+    use super::*;
+
+    // 2026-09-10T19:00:00Z is 2:00pm Central — America/Chicago is on daylight time
+    // (CDT, UTC-5) in September, not standard time.
+    #[test]
+    fn formats_scheduled_time_in_america_chicago() {
+        let (subject, body) = call_confirmation_email("Jane Doe", "BJM Distributions", "2026-09-10T19:00:00Z");
+        assert_eq!(subject, "Your call with BJM Distributions is booked");
+        assert!(body.starts_with("Hi Jane,"), "body: {body}");
+        assert!(body.contains("Thursday, September 10 at 2:00 PM CDT"), "body: {body}");
+    }
+
+    #[test]
+    fn falls_back_to_us_when_no_org_name_is_configured() {
+        let (subject, _) = call_confirmation_email("Sam", "", "2026-09-10T19:00:00Z");
+        assert_eq!(subject, "Your call with us is booked");
+    }
+
+    #[test]
+    fn falls_back_to_the_raw_string_on_an_unparseable_time() {
+        let (_, body) = call_confirmation_email("Sam", "Acme", "not-a-date");
+        assert!(body.contains("not-a-date"), "body: {body}");
+    }
+}
+
 // ---------- Public storefront config (synced settings, read by the server) ----------
 
 #[derive(Serialize)]
