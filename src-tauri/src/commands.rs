@@ -7979,20 +7979,59 @@ pub struct NextCall {
     pub scheduled_at: String,
 }
 
+/// The server's stats handler builds every count through a closure that tries the
+/// column as f64 first, so a COUNT(*) arrives as `2.0`, never `2`. Serde's i64 refuses
+/// that and the whole bubble read as "Unavailable" (v0.16.53). Accept any JSON number.
+fn de_whole<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    let v = Value::deserialize(d)?;
+    match v {
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f.round() as i64))
+            .ok_or_else(|| serde::de::Error::custom("not a whole number")),
+        Value::Null => Ok(0),
+        other => Err(serde::de::Error::custom(format!("expected a number, got {other}"))),
+    }
+}
+
+fn de_whole_map<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::collections::HashMap<String, i64>, D::Error> {
+    let raw: std::collections::HashMap<String, Value> = Deserialize::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| (k, v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)).unwrap_or(0)))
+        .collect())
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct OrganicLeads {
+    #[serde(deserialize_with = "de_whole")]
     pub total: i64,
+    #[serde(deserialize_with = "de_whole")]
     pub last_30d: i64,
+    #[serde(deserialize_with = "de_whole")]
     pub today: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LeadDashboardStats {
+    #[serde(deserialize_with = "de_whole")]
     pub pending_requests: i64,
     pub next_call: Option<NextCall>,
+    #[serde(deserialize_with = "de_whole")]
     pub pending_calls: i64,
     pub organic_leads: OrganicLeads,
+    #[serde(deserialize_with = "de_whole_map", default)]
     pub unacknowledged: std::collections::HashMap<String, i64>,
+}
+
+/// GET /api/calls answers `{ "pending": [...], "confirmed": [...] }` (the phone reads
+/// that shape); the UI wants one list, pending first.
+#[derive(Deserialize)]
+struct CallsResponse {
+    #[serde(default)]
+    pending: Vec<CallRequest>,
+    #[serde(default)]
+    confirmed: Vec<CallRequest>,
 }
 
 #[tauri::command]
@@ -8019,10 +8058,38 @@ pub async fn list_call_requests(archived: bool) -> Result<Vec<CallRequest>, Stri
     if !resp.status().is_success() {
         return Err(format!("Couldn't load call requests ({}).", resp.status()));
     }
-    resp.json::<Vec<CallRequest>>().await.map_err(|e| e.to_string())
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if body.is_array() {
+        return serde_json::from_value::<Vec<CallRequest>>(body).map_err(|e| e.to_string());
+    }
+    let r: CallsResponse = serde_json::from_value(body).map_err(|e| e.to_string())?;
+    Ok(r.pending.into_iter().chain(r.confirmed).collect())
 }
 
 /// The confirmation email's subject + body for a desktop-side SMTP send (plan
+#[cfg(test)]
+mod lead_shape_tests {
+    use super::*;
+    #[test]
+    fn stats_accept_float_counts() {
+        let v = json!({"pending_requests":0.0,"next_call":null,"pending_calls":1.0,
+            "organic_leads":{"total":2.0,"last_30d":2.0,"today":2.0},"unacknowledged":{"call_request":1.0}});
+        let s: LeadDashboardStats = serde_json::from_value(v).unwrap();
+        assert_eq!(s.pending_calls, 1);
+        assert_eq!(s.organic_leads.total, 2);
+        assert_eq!(s.unacknowledged["call_request"], 1);
+    }
+    #[test]
+    fn calls_object_shape_flattens_pending_first() {
+        let row = |id: &str, st: &str| json!({"id":id,"org_id":"o","client_id":null,"name":"n","email":null,"phone":null,
+            "company":null,"best_time":null,"questions":null,"status":st,"scheduled_at":null,"confirmed_at":null,
+            "confirmation_sent_via":null,"archived":false,"created_at":"t","updated_at":"t"});
+        let r: CallsResponse = serde_json::from_value(json!({"pending":[row("a","pending")],"confirmed":[row("b","confirmed")]})).unwrap();
+        let all: Vec<CallRequest> = r.pending.into_iter().chain(r.confirmed).collect();
+        assert_eq!(all.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+    }
+}
+
 /// decision 6). The scheduled time is always shown in America/Chicago — that's the
 /// timezone the business runs on, regardless of the recipient's own. `scheduled_at_utc`
 /// is the RFC3339 instant the UI posts (`new Date(...).toISOString()`); an unparseable
