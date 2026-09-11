@@ -7,6 +7,8 @@ import StatusPill from "./StatusPill";
 const kindLabel = (k: string) =>
   k === "client_add" ? "New client" : k === "client_delete" ? "Delete client" : k === "listing_stale" ? "Storefront listing" : k === "unsubscribe" ? "Unsubscribed" : k;
 
+const leadKindLabel = (k: string) => (k === "supplier_profile" ? "Supplier details" : "Supply lead");
+
 function sourceLabel(m: Record<string, any> | null | undefined): string {
   const s = String(m?.source || "");
   if (s === "shopify") return "Shopify";
@@ -123,7 +125,10 @@ function SupplyLeadsSection({ leads, onAck }: { leads: OrUnavailable<LeadNotific
               <div key={n.id} className="bg-surface border border-line rounded-xl p-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="text-[14px] font-medium text-ink">{n.title}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-[14px] font-medium text-ink">{n.title}</div>
+                      <StatusPill tone="neutral">{leadKindLabel(n.kind)}</StatusPill>
+                    </div>
                     <div className="text-[12px] text-muted mt-0.5">{n.body}</div>
                   </div>
                   <button onClick={() => onAck(n.id)}
@@ -170,7 +175,12 @@ export function ApprovalsView() {
     Promise.all([
       api.listApprovalRequests().then(setItems).catch(() => {}),
       api.getPendingApprovals().then(setPending).catch(() => {}),
-      api.listLeadNotifications("supply_lead", "unread").then(setSupplyLeads),
+      // Supplier leads section shows both a plain "I supply X" lead and a full
+      // supplier-details-form submission — fetch unread notifications and filter
+      // client-side rather than relying on the server to OR two kinds.
+      api.listLeadNotifications(undefined, "unread").then((r) =>
+        setSupplyLeads(isUnavailable(r) ? r : r.filter((n) => n.kind === "supply_lead" || n.kind === "supplier_profile"))
+      ),
     ]).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
 

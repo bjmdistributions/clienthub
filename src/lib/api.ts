@@ -273,7 +273,7 @@ export interface CallRequest {
 export interface LeadNotification {
   id: string;
   org_id: string;
-  kind: "supply_lead" | "call_request" | "system";
+  kind: "supply_lead" | "supplier_profile" | "call_request" | "system";
   title: string;
   body: string;
   payload_json: string | null;
@@ -318,6 +318,7 @@ export interface FormDef {
   active: boolean;
   created_at: string;
   updated_at: string;
+  collects: "clients" | "suppliers";
 }
 export interface CheckupSession {
   id: string;
@@ -2667,7 +2668,7 @@ export const api = {
   openExternal: (url: string) => invoke<void>("open_external", { url }),
   // Custom lead forms
   listForms: () => invoke<FormDef[]>("list_forms"),
-  saveForm: (f: { id?: string; name: string; title: string; intro: string; fields_json: string; active: boolean }) =>
+  saveForm: (f: { id?: string; name: string; title: string; intro: string; fields_json: string; active: boolean; collects: "clients" | "suppliers" }) =>
     invoke<string>("save_form", f),
   deleteForm: (id: string) => invoke<void>("delete_form", { id }),
   // Checkup sessions

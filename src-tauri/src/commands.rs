@@ -1086,7 +1086,7 @@ pub async fn submit_feedback(kind: String, title: String, body: String, name: Op
 pub async fn list_forms() -> Result<Vec<Value>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id,name,title,intro,fields_json,active,created_at,updated_at FROM forms ORDER BY created_at DESC",
+        "SELECT id,name,title,intro,fields_json,active,created_at,updated_at,collects FROM forms ORDER BY created_at DESC",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| Ok(json!({
         "id": r.get::<_, String>(0)?,
@@ -1097,23 +1097,25 @@ pub async fn list_forms() -> Result<Vec<Value>, String> {
         "active": r.get::<_, i64>(5)? != 0,
         "created_at": r.get::<_, String>(6)?,
         "updated_at": r.get::<_, String>(7)?,
+        "collects": r.get::<_, String>(8)?,
     }))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 #[tauri::command]
-pub async fn save_form(id: Option<String>, name: String, title: String, intro: String, fields_json: String, active: bool) -> Result<String, String> {
+pub async fn save_form(id: Option<String>, name: String, title: String, intro: String, fields_json: String, active: bool, collects: Option<String>) -> Result<String, String> {
     let now = Utc::now().to_rfc3339();
     let fid = id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let act: i64 = if active { 1 } else { 0 };
+    let collects = match collects.as_deref() { Some("suppliers") => "suppliers".to_string(), _ => "clients".to_string() };
     let created = {
         let conn = pool().get().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO forms (id,org_id,name,title,intro,fields_json,active,created_at,updated_at)
-             VALUES (?1,'org_default',?2,?3,?4,?5,?6,?7,?7)
+            "INSERT INTO forms (id,org_id,name,title,intro,fields_json,active,created_at,updated_at,collects)
+             VALUES (?1,'org_default',?2,?3,?4,?5,?6,?7,?7,?8)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, title=excluded.title, intro=excluded.intro,
-                fields_json=excluded.fields_json, active=excluded.active, updated_at=excluded.updated_at",
-            rusqlite::params![fid, name, title, intro, fields_json, act, now],
+                fields_json=excluded.fields_json, active=excluded.active, updated_at=excluded.updated_at, collects=excluded.collects",
+            rusqlite::params![fid, name, title, intro, fields_json, act, now, collects],
         ).map_err(|e| e.to_string())?;
         conn.query_row("SELECT created_at FROM forms WHERE id=?1", [&fid], |r| r.get::<_, String>(0)).unwrap_or_else(|_| now.clone())
     };
@@ -1126,6 +1128,7 @@ pub async fn save_form(id: Option<String>, name: String, title: String, intro: S
     cols.insert("active".into(), Value::from(act));
     cols.insert("created_at".into(), Value::String(created));
     cols.insert("updated_at".into(), Value::String(now));
+    cols.insert("collects".into(), Value::String(collects));
     sync::record_upsert("forms", &fid, cols).map_err(|e| e.to_string())?;
     Ok(fid)
 }
@@ -6371,9 +6374,11 @@ pub async fn get_intake_fields() -> Result<Vec<Value>, String> {
         json!({"value":"name","label":"Full name"}),
         json!({"value":"first_name","label":"First name"}),
         json!({"value":"last_name","label":"Last name"}),
+        json!({"value":"contact_name","label":"Contact name"}),
         json!({"value":"email","label":"Email"}),
         json!({"value":"phone","label":"Phone"}),
         json!({"value":"company","label":"Company"}),
+        json!({"value":"address","label":"Address"}),
         json!({"value":"category","label":"Category"}),
         json!({"value":"notes","label":"Notes"}),
     ];

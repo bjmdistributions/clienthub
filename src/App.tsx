@@ -457,10 +457,12 @@ export default function App() {
       api.getPendingApprovals().catch(() => []),
       // R-263 supplier leads — server-proxied (Pass 2). Adds to the badge only
       // once available; stays unchanged (never crashes) while unavailable.
-      api.listLeadNotifications("supply_lead", "unread"),
+      // Both supply_lead and supplier_profile count, matching the Notifications
+      // view's Supplier leads section.
+      api.listLeadNotifications(undefined, "unread"),
     ]).then(([reqs, pend, leads]) => {
       const nonAdd = reqs.filter((a) => a.kind !== "client_add").length;
-      const leadCount = isUnavailable(leads) ? 0 : leads.length;
+      const leadCount = isUnavailable(leads) ? 0 : leads.filter((n) => n.kind === "supply_lead" || n.kind === "supplier_profile").length;
       setApCount(pend.length + nonAdd + leadCount);
     }).catch(() => {});
     refresh();

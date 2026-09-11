@@ -15,7 +15,7 @@ const inp = "w-full bg-surface-2 border border-line rounded-lg h-9 px-3 text-[13
 function blankForm(): Draft {
   return {
     id: "", name: "", title: "Get in touch", intro: "", fields_json: "[]",
-    active: true, created_at: "", updated_at: "",
+    active: true, created_at: "", updated_at: "", collects: "clients",
     fields: [
       { id: uid(), type: "name", label: "Full name", required: true },
       { id: uid(), type: "email", label: "Email", required: true },
@@ -23,6 +23,14 @@ function blankForm(): Draft {
     ],
   };
 }
+
+const supplierPresetFields = (): FormField[] => [
+  { id: uid(), type: "name", label: "Your name", required: true, map: "contact_name" },
+  { id: uid(), type: "company", label: "Business name", required: true, map: "name" },
+  { id: uid(), type: "text", label: "Address", required: true, map: "address" },
+  { id: uid(), type: "phone", label: "Phone", required: true, map: "phone" },
+  { id: uid(), type: "email", label: "Email", required: true, map: "email" },
+];
 
 export function FormsPanel() {
   const [forms, setForms] = useState<FormDef[]>([]);
@@ -47,11 +55,18 @@ export function FormsPanel() {
       name: editing.name || editing.title || "Untitled form",
       title: editing.title, intro: editing.intro,
       fields_json: JSON.stringify(editing.fields), active: editing.active,
+      collects: editing.collects,
     }).catch(() => {});
     setEditing(null); load();
   };
   const remove = async (id: string) => { if (!confirm("Delete this form?")) return; await api.deleteForm(id).catch(() => {}); load(); };
   const copy = (id: string) => { navigator.clipboard.writeText(`https://ecliptr.app/f/${id}`).catch(() => {}); setCopied(id); setTimeout(() => setCopied(""), 1500); };
+  const usePreset = () =>
+    setEditing((e) => {
+      if (!e) return e;
+      if (e.fields.length > 0 && !confirm("Replace the current fields with the supplier details preset?")) return e;
+      return { ...e, fields: supplierPresetFields() };
+    });
 
   const setField = (i: number, patch: Partial<FormField>) =>
     setEditing((e) => e ? { ...e, fields: e.fields.map((f, idx) => idx === i ? { ...f, ...patch } : f) } : e);
@@ -76,12 +91,35 @@ export function FormsPanel() {
           </div>
         </div>
         <div className="space-y-3 bg-surface border border-line rounded-xl p-4">
+          <div>
+            <label className="block text-[12px] font-medium text-muted mb-1">This form collects</label>
+            <div className="inline-flex items-center gap-1 bg-surface-2 border border-line rounded-lg p-0.5">
+              <button onClick={() => setEditing({ ...editing, collects: "clients" })}
+                className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${editing.collects !== "suppliers" ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                Customers
+              </button>
+              <button onClick={() => setEditing({ ...editing, collects: "suppliers" })}
+                className={`px-3 h-7 rounded-md text-[12px] font-medium transition-colors ${editing.collects === "suppliers" ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink-2"}`}>
+                Suppliers
+              </button>
+            </div>
+            <p className="text-[11px] text-muted mt-1.5">
+              {editing.collects === "suppliers"
+                ? "Suppliers land in Suppliers and in Supplier leads on the dashboard."
+                : "Submissions become pending customers awaiting review."}
+            </p>
+          </div>
           <div><label className="block text-[12px] font-medium text-muted mb-1">Form name (internal)</label><input className={inp} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Website lead form" /></div>
           <div><label className="block text-[12px] font-medium text-muted mb-1">Public title</label><input className={inp} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} /></div>
           <div><label className="block text-[12px] font-medium text-muted mb-1">Intro (optional)</label><textarea className={inp + " h-auto py-2"} rows={2} value={editing.intro} onChange={(e) => setEditing({ ...editing, intro: e.target.value })} /></div>
         </div>
 
-        <div className="text-[12px] font-medium text-muted mt-5 mb-2">Fields — drag ⠿ to reorder</div>
+        <div className="flex items-center justify-between mt-5 mb-2">
+          <div className="text-[12px] font-medium text-muted">Fields — drag ⠿ to reorder</div>
+          {editing.collects === "suppliers" && (
+            <button onClick={usePreset} className="text-[12px] text-accent hover:underline">Use the supplier details preset</button>
+          )}
+        </div>
         <div className="space-y-2">
           {editing.fields.map((f, i) => (
             <div key={f.id} draggable onDragStart={() => setDragIdx(i)} onDragOver={(e) => e.preventDefault()}

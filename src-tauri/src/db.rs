@@ -1978,4 +1978,13 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE bank_txn ADD COLUMN note TEXT DEFAULT '';
         "#,
     ),
+    (
+        92,
+        // R-264: a form can collect supplier details instead of customer leads.
+        // 'clients' | 'suppliers'. Synced (forms is in ALLOWED_TABLES) -- the server
+        // schema and its best-effort ALTER list need the same column.
+        r#"
+        ALTER TABLE forms ADD COLUMN collects TEXT NOT NULL DEFAULT 'clients';
+        "#,
+    ),
 ];
