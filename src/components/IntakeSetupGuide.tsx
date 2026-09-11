@@ -238,6 +238,44 @@ export function SetupGuide({ source, baseUrl, onBack }: {
           </div>
         </div>
       )}
+
+      {/* Lead kinds (R-263) — applies to every method above, so it sits outside the tabs. */}
+      <div className="bg-surface border border-line rounded-xl p-5 mt-5">
+        <div className="text-[13px] font-semibold text-ink-2 mb-3">Lead kinds</div>
+        <p className="text-[12px] text-muted mb-3 leading-relaxed">
+          Add a field named <code className="text-ink-2 bg-surface-2 px-1 rounded">lead_kind</code> to tell Ecliptr what kind of submission this is. Leave it out and the submission is treated as a buyer lead — the original behavior.
+        </p>
+        <div className="space-y-2.5">
+          <div className="flex items-start gap-2.5">
+            <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">buyer</span>
+            <span className="text-[12px] text-muted leading-relaxed">A pending client in <span className="text-ink-2 font-medium">Approvals</span> — the default.</span>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">supplier</span>
+            <span className="text-[12px] text-muted leading-relaxed">An acknowledge-only <span className="text-ink-2 font-medium">supplier lead</span> notification. No client is created.</span>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <span className="text-[11px] font-mono text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded flex-shrink-0">call</span>
+            <span className="text-[12px] text-muted leading-relaxed">A <span className="text-ink-2 font-medium">booked call</span> request, even when the contact matches an existing client.</span>
+          </div>
+        </div>
+        <p className="text-[11.5px] text-muted mt-3 leading-relaxed">
+          Older forms that send free-text <code className="text-ink-2 bg-surface-2 px-1 rounded">inquiry_type</code> instead still work: a value containing "Selling a load" is read as supplier, "call request" is read as call.
+        </p>
+      </div>
+
+      {/* WhatsApp click counter (R-263) — storefront-only, so it's its own block. */}
+      <div className="bg-surface border border-line rounded-xl p-5 mt-4">
+        <div className="text-[13px] font-semibold text-ink-2 mb-2">Storefront WhatsApp clicks</div>
+        <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
+          If you run an Ecliptr storefront, track WhatsApp button clicks on your lot pages by posting to your storefront feed URL:
+        </p>
+        <pre className="bg-surface-2 border border-line rounded-lg p-3 text-[11.5px] text-ink-2 overflow-x-auto font-mono leading-relaxed">{`POST <your storefront feed URL>/lead-click
+{ "lot_id": "<lot id, optional>", "kind": "whatsapp" }`}</pre>
+        <p className="text-[11.5px] text-muted mt-2.5 leading-relaxed">
+          204 on success, 404 on an unknown token, 429 past 60 clicks/hour/IP. Clicks show on the dashboard as a count, not in the notification feed.
+        </p>
+      </div>
     </div>
   );
 }
