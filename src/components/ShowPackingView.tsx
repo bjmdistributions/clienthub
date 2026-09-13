@@ -786,7 +786,7 @@ function LiveTab({ detail, onChanged }: { detail: ShowDetail; onChanged: () => v
   const next = pending[1] ?? null;
 
   const [buyerInput, setBuyerInput] = useState("");
-  // Typed item number (#1–#200 on stream). Blank = the lowest pending item.
+  // Typed item number (1 to 200 on stream). Blank = the lowest pending item.
   const [itemNo, setItemNo] = useState("");
   const itemRef = useRef<HTMLInputElement>(null);
   const buyerRef = useRef<HTMLInputElement>(null);
