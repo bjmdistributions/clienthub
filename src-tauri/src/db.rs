@@ -1987,4 +1987,18 @@ const MIGRATIONS: &[(u32, &str)] = &[
         ALTER TABLE forms ADD COLUMN collects TEXT NOT NULL DEFAULT 'clients';
         "#,
     ),
+    (
+        93,
+        // R-274: a recurring newsletter pins a weekday (0 = Monday … 6 = Sunday, weekly only;
+        // -1 = not pinned) and a minute, both Central time, and a send can release
+        // batch_per_hour recipients an hour instead of the whole list at once (0).
+        // Nullable with a default (sync-engine §10.1/§10.2). Mirrored in clienthub-api
+        // (schema.sql + sync.rs ALTER list) — the server must be DEPLOYED FIRST.
+        r#"
+        ALTER TABLE newsletter_schedules ADD COLUMN send_weekday INTEGER DEFAULT -1;
+        ALTER TABLE newsletter_schedules ADD COLUMN send_minute INTEGER DEFAULT 0;
+        ALTER TABLE newsletter_schedules ADD COLUMN batch_per_hour INTEGER DEFAULT 0;
+        ALTER TABLE scheduled_sends ADD COLUMN batch_per_hour INTEGER DEFAULT 0;
+        "#,
+    ),
 ];

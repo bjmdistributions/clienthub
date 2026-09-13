@@ -18321,9 +18321,13 @@ pub async fn schedule_newsletter_send(
     interval_seconds: i64,
     scheduled_at: String,
     attachment_path: Option<String>,
+    batch_per_hour: Option<i64>,
 ) -> Result<ScheduledSend, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
+    // R-274: > 0 releases the list in hourly batches from scheduled_at (the server pump
+    // reads it); interval_seconds is ignored then.
+    let batch_per_hour = batch_per_hour.unwrap_or(0).clamp(0, 240);
 
     // The server's scheduler delivers this one, and nothing there resolves
     // {sender_name}, so bake it in while the value is at hand. The stored body is
@@ -18352,9 +18356,9 @@ pub async fn schedule_newsletter_send(
     ).map_err(|e| e.to_string())?;
 
     conn.execute(
-        "INSERT INTO scheduled_sends (id, newsletter_id, subject, body, attachment_path, scheduled_at, interval_seconds, total_recipients, recipients_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        rusqlite::params![id, nid, &subject, &body, &attachment_path, &effective_at, interval_seconds, total, &recipients_json, &now],
+        "INSERT INTO scheduled_sends (id, newsletter_id, subject, body, attachment_path, scheduled_at, interval_seconds, total_recipients, recipients_json, created_at, batch_per_hour)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![id, nid, &subject, &body, &attachment_path, &effective_at, interval_seconds, total, &recipients_json, &now, batch_per_hour],
     ).map_err(|e| e.to_string())?;
 
     let mut cols = serde_json::Map::new();
@@ -18363,6 +18367,7 @@ pub async fn schedule_newsletter_send(
     cols.insert("body".into(), serde_json::Value::String(body.clone()));
     cols.insert("scheduled_at".into(), serde_json::Value::String(effective_at.clone()));
     cols.insert("interval_seconds".into(), serde_json::json!(interval_seconds));
+    cols.insert("batch_per_hour".into(), serde_json::json!(batch_per_hour));
     cols.insert("total_recipients".into(), serde_json::json!(total));
     cols.insert("recipients_json".into(), serde_json::Value::String(recipients_json.clone()));
     cols.insert("status".into(), serde_json::Value::String("pending".into()));
@@ -18461,9 +18466,14 @@ pub struct NewsletterSchedule {
     pub last_run_at: Option<String>,
     pub active: i64,
     pub created_at: String,
+    // R-274. 0 = Monday … 6 = Sunday (weekly only), -1 = not pinned; the hour and minute
+    // are America/Chicago wall-clock time; batch_per_hour 0 = the whole list at once.
+    pub send_weekday: i64,
+    pub send_minute: i64,
+    pub batch_per_hour: i64,
 }
 
-const NL_SCHED_COLS: &str = "id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run_at, last_run_at, active, created_at";
+const NL_SCHED_COLS: &str = "id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run_at, last_run_at, active, created_at, send_weekday, send_minute, batch_per_hour";
 
 fn map_nl_schedule(r: &rusqlite::Row) -> rusqlite::Result<NewsletterSchedule> {
     Ok(NewsletterSchedule {
@@ -18471,21 +18481,41 @@ fn map_nl_schedule(r: &rusqlite::Row) -> rusqlite::Result<NewsletterSchedule> {
         recipient_filter: r.get(4)?, interval_type: r.get(5)?, interval_value: r.get(6)?,
         send_hour: r.get(7)?, next_run_at: r.get(8)?, last_run_at: r.get(9)?,
         active: r.get(10)?, created_at: r.get(11)?,
+        send_weekday: r.get::<_, Option<i64>>(12)?.unwrap_or(-1),
+        send_minute: r.get::<_, Option<i64>>(13)?.unwrap_or(0),
+        batch_per_hour: r.get::<_, Option<i64>>(14)?.unwrap_or(0),
     })
 }
 
-/// Next run timestamp after `from`, at the chosen hour, advanced by the cadence.
-fn nl_compute_next_run(from: chrono::DateTime<Utc>, interval_type: &str, interval_value: i64, send_hour: i64) -> String {
-    use chrono::Timelike;
-    let step = interval_value.max(1);
-    let mut next = match interval_type {
-        "daily" => from + chrono::Duration::days(step),
-        // R-159: calendar months (day clamped), not 30-day hops that drift.
-        "monthly" => from.checked_add_months(chrono::Months::new(step.min(120) as u32)).unwrap_or(from + chrono::Duration::days(30 * step)),
-        _ => from + chrono::Duration::weeks(step),
+/// The FIRST run of a new or re-timed schedule: the soonest matching slot after `now`, at
+/// the chosen Central-time hour and minute (R-274). The server delivers the runs and owns
+/// the advance after each one — this is a copy of `compute_next_run` in clienthub-api
+/// `scheduler.rs`, which carries the tests. Change both together.
+fn nl_compute_next_run(now: chrono::DateTime<Utc>, interval_type: &str, send_weekday: i64, send_hour: i64, send_minute: i64) -> String {
+    let tz = chrono_tz::America::Chicago;
+    let step_date = |date: chrono::NaiveDate| match interval_type {
+        "daily" => date + chrono::Duration::days(1),
+        "monthly" => date.checked_add_months(chrono::Months::new(1)).unwrap_or(date + chrono::Duration::days(30)),
+        _ => date + chrono::Duration::weeks(1),
     };
-    let hour = send_hour.clamp(0, 23) as u32;
-    next = next.with_hour(hour).and_then(|d| d.with_minute(0)).and_then(|d| d.with_second(0)).unwrap_or(next);
+    let align = |date: chrono::NaiveDate| {
+        if interval_type == "daily" || interval_type == "monthly" || !(0..=6).contains(&send_weekday) { return date; }
+        let cur = date.weekday().num_days_from_monday() as i64;
+        date + chrono::Duration::days((send_weekday - cur).rem_euclid(7))
+    };
+    let slot = |date: chrono::NaiveDate| {
+        let naive = date.and_hms_opt(send_hour.clamp(0, 23) as u32, send_minute.clamp(0, 59) as u32, 0).unwrap_or_default();
+        // A time the spring-forward gap skips goes out an hour later.
+        tz.from_local_datetime(&naive).earliest()
+            .or_else(|| tz.from_local_datetime(&(naive + chrono::Duration::hours(1))).earliest())
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|| Utc.from_utc_datetime(&naive))
+    };
+    let date = align(now.with_timezone(&tz).date_naive());
+    let mut next = slot(date);
+    if next <= now {
+        next = slot(align(step_date(date)));
+    }
     next.to_rfc3339()
 }
 
@@ -18507,6 +18537,9 @@ pub async fn create_newsletter_schedule(
     interval_type: String,
     interval_value: i64,
     send_hour: i64,
+    send_weekday: Option<i64>,
+    send_minute: Option<i64>,
+    batch_per_hour: Option<i64>,
 ) -> Result<NewsletterSchedule, String> {
     if name.trim().is_empty() || subject.trim().is_empty() {
         return Err("Name and subject are required.".into());
@@ -18515,13 +18548,19 @@ pub async fn create_newsletter_schedule(
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let now_str = now.to_rfc3339();
-    let next_run = nl_compute_next_run(now, &interval_type, interval_value, send_hour);
+    let send_weekday = send_weekday.filter(|d| (0..=6).contains(d)).unwrap_or(-1);
+    let send_hour = send_hour.clamp(0, 23);
+    let send_minute = send_minute.unwrap_or(0).clamp(0, 59);
+    let batch_per_hour = batch_per_hour.unwrap_or(0).clamp(0, 240);
+    let next_run = nl_compute_next_run(now, &interval_type, send_weekday, send_hour, send_minute);
 
     conn.execute(
         "INSERT INTO newsletter_schedules
-            (id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run_at, last_run_at, active, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, 1, ?10)",
-        rusqlite::params![id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run, now_str],
+            (id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run_at, last_run_at, active, created_at,
+             send_weekday, send_minute, batch_per_hour)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, 1, ?10, ?11, ?12, ?13)",
+        rusqlite::params![id, name, subject, body, recipient_filter, interval_type, interval_value, send_hour, next_run, now_str,
+            send_weekday, send_minute, batch_per_hour],
     ).map_err(|e| e.to_string())?;
 
     let mut cols = serde_json::Map::new();
@@ -18532,6 +18571,9 @@ pub async fn create_newsletter_schedule(
     cols.insert("interval_type".into(), serde_json::Value::String(interval_type.clone()));
     cols.insert("interval_value".into(), serde_json::json!(interval_value));
     cols.insert("send_hour".into(), serde_json::json!(send_hour));
+    cols.insert("send_weekday".into(), serde_json::json!(send_weekday));
+    cols.insert("send_minute".into(), serde_json::json!(send_minute));
+    cols.insert("batch_per_hour".into(), serde_json::json!(batch_per_hour));
     cols.insert("next_run_at".into(), serde_json::Value::String(next_run.clone()));
     cols.insert("active".into(), serde_json::json!(1));
     cols.insert("created_at".into(), serde_json::Value::String(now_str.clone()));
@@ -18540,6 +18582,7 @@ pub async fn create_newsletter_schedule(
     Ok(NewsletterSchedule {
         id, name, subject, body, recipient_filter, interval_type, interval_value,
         send_hour, next_run_at: next_run, last_run_at: None, active: 1, created_at: now_str,
+        send_weekday, send_minute, batch_per_hour,
     })
 }
 
@@ -18554,6 +18597,9 @@ pub async fn update_newsletter_schedule(
     interval_value: Option<i64>,
     send_hour: Option<i64>,
     active: Option<i64>,
+    send_weekday: Option<i64>,
+    send_minute: Option<i64>,
+    batch_per_hour: Option<i64>,
 ) -> Result<NewsletterSchedule, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
     let mut cols = serde_json::Map::new();
@@ -18563,19 +18609,33 @@ pub async fn update_newsletter_schedule(
     if let Some(v) = &recipient_filter { cols.insert("recipient_filter".into(), serde_json::Value::String(v.clone())); }
     if let Some(v) = &interval_type { cols.insert("interval_type".into(), serde_json::Value::String(v.clone())); }
     if let Some(v) = interval_value { cols.insert("interval_value".into(), serde_json::json!(v)); }
-    if let Some(v) = send_hour { cols.insert("send_hour".into(), serde_json::json!(v)); }
+    if let Some(v) = send_hour { cols.insert("send_hour".into(), serde_json::json!(v.clamp(0, 23))); }
     if let Some(v) = active { cols.insert("active".into(), serde_json::json!(v)); }
+    if let Some(v) = send_weekday { cols.insert("send_weekday".into(), serde_json::json!(if (0..=6).contains(&v) { v } else { -1 })); }
+    if let Some(v) = send_minute { cols.insert("send_minute".into(), serde_json::json!(v.clamp(0, 59))); }
+    if let Some(v) = batch_per_hour { cols.insert("batch_per_hour".into(), serde_json::json!(v.clamp(0, 240))); }
 
-    if interval_type.is_some() || interval_value.is_some() || send_hour.is_some() {
-        let (it, iv, sh): (String, i64, i64) = conn.query_row(
-            "SELECT interval_type, interval_value, send_hour FROM newsletter_schedules WHERE id=?1",
-            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    // Recompute next_run_at only when the timing really CHANGED (the form sends every field
+    // on save, so presence means nothing — a typo fix used to push the next run a whole
+    // interval out), or when a paused schedule is resumed with its run date already past,
+    // which would otherwise fire the moment it is switched back on. Mirrors the server.
+    {
+        let (it, iv, wd, sh, sm, act, nra): (String, i64, i64, i64, i64, i64, String) = conn.query_row(
+            "SELECT interval_type, interval_value, COALESCE(send_weekday,-1), send_hour, COALESCE(send_minute,0), active, next_run_at
+             FROM newsletter_schedules WHERE id=?1",
+            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         ).map_err(|e| e.to_string())?;
-        let it = interval_type.clone().unwrap_or(it);
-        let iv = interval_value.unwrap_or(iv);
-        let sh = send_hour.unwrap_or(sh);
-        let next = nl_compute_next_run(Utc::now(), &it, iv, sh);
-        cols.insert("next_run_at".into(), serde_json::Value::String(next));
+        let col = |k: &str, d: i64| cols.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
+        let n_it = interval_type.clone().unwrap_or_else(|| it.clone());
+        let (n_wd, n_sh, n_sm) = (col("send_weekday", wd), col("send_hour", sh), col("send_minute", sm));
+        let retimed = n_it != it || col("interval_value", iv) != iv || n_wd != wd || n_sh != sh || n_sm != sm;
+        let now = Utc::now();
+        let stale_resume = act == 0 && active == Some(1)
+            && chrono::DateTime::parse_from_rfc3339(&nra).map(|d| d <= now).unwrap_or(true);
+        if retimed || stale_resume {
+            let next = nl_compute_next_run(now, &n_it, n_wd, n_sh, n_sm);
+            cols.insert("next_run_at".into(), serde_json::Value::String(next));
+        }
     }
 
     if cols.is_empty() {
