@@ -555,6 +555,7 @@ function NewsletterTab() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [scheduleInterval, setScheduleInterval] = useState(0);
   const [scheduleCustomDate, setScheduleCustomDate] = useState("");
+  const [customBatch, setCustomBatch] = useState(50);
   const [scheduling, setScheduling] = useState(false);
   const [scheduledSends, setScheduledSends] = useState<ScheduledSend[]>([]);
   const [showScheduled, setShowScheduled] = useState(false);
@@ -782,6 +783,7 @@ function NewsletterTab() {
       const now = new Date();
       let intervalSeconds: number;
       let scheduledAt: string;
+      let batchPerHour = 0;
 
       if (scheduleInterval === 0) {
         intervalSeconds = 0;
@@ -790,7 +792,11 @@ function NewsletterTab() {
         const parsed = new Date(scheduleCustomDate);
         if (isNaN(parsed.getTime())) { setSendError("Invalid date"); setScheduling(false); return; }
         if (parsed <= new Date(now.getTime() + 60000)) { setSendError("Must be at least 1 minute in the future"); setScheduling(false); return; }
-        intervalSeconds = Math.max(3600, Math.floor((parsed.getTime() - now.getTime()) / 1000));
+        // R-274: the wait until the chosen time used to double as the spread, so a send set
+        // for next week trickled out over a further week. Now it starts at the chosen time
+        // and goes out all at once or in hourly batches.
+        intervalSeconds = 0;
+        batchPerHour = customBatch;
         scheduledAt = parsed.toISOString();
       } else {
         intervalSeconds = scheduleInterval;
@@ -799,7 +805,7 @@ function NewsletterTab() {
 
       await api.scheduleNewsletterSend(
         subject, body, validRecipients.map((c) => c.id),
-        intervalSeconds, scheduledAt, attachmentPath,
+        intervalSeconds, scheduledAt, attachmentPath, batchPerHour,
       );
       setShowSchedule(false);
       api.listScheduledSends().then(setScheduledSends);
@@ -847,7 +853,7 @@ function NewsletterTab() {
     scheduleInterval === 3600 ? "spread over 1 hour" :
     scheduleInterval === 7200 ? "spread over 2 hours" :
     scheduleInterval === 14400 ? "spread over 4 hours" :
-    scheduleInterval === -1 ? (scheduleCustomDate ? `for ${new Date(scheduleCustomDate).toLocaleString()}` : "for a custom time") :
+    scheduleInterval === -1 ? (scheduleCustomDate ? `for ${new Date(scheduleCustomDate).toLocaleString()}${customBatch ? `, ${customBatch} per hour` : ""}` : "for a custom time") :
     "";
   const composeIncomplete = validRecipients.length === 0 || !subject.trim() || !body.trim();
   const actionDisabled = sending || scheduling || composeIncomplete || (scheduleInterval === -1 && !scheduleCustomDate);
@@ -1301,8 +1307,15 @@ function NewsletterTab() {
                 Custom
               </label>
               {scheduleInterval === -1 && (
-                <input type="datetime-local" value={scheduleCustomDate} onChange={(e) => setScheduleCustomDate(e.target.value)}
-                  className="w-full border border-line-3 h-8 px-2 rounded-md text-[12px]" />
+                <div className="flex gap-2">
+                  <input type="datetime-local" value={scheduleCustomDate} onChange={(e) => setScheduleCustomDate(e.target.value)}
+                    className="flex-1 min-w-0 border border-line-3 h-8 px-2 rounded-md text-[12px]" />
+                  <select value={customBatch} onChange={(e) => setCustomBatch(parseInt(e.target.value))}
+                    title="How fast the list goes out from the chosen time"
+                    className="border border-line-3 h-8 px-2 rounded-md text-[12px] bg-surface text-ink">
+                    {BATCH_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
               )}
               <div className="text-[11px] text-muted pt-0.5">
                 {isScheduledSend
@@ -1435,6 +1448,12 @@ function NewsletterTab() {
   );
 }
 
+// R-274: send_weekday 0 = Monday … 6 = Sunday; the server applies the hour and minute in
+// Central time and releases batch_per_hour recipients an hour (0 = the whole list at once).
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const BATCH_OPTIONS: [number, string][] = [[0, "All at once"], [25, "25 per hour"], [50, "50 per hour"], [100, "100 per hour"], [200, "200 per hour"]];
+const timeLabel = (h: number, m: number) => `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+
 function RecurringTab() {
   const [schedules, setSchedules] = useState<NewsletterSchedule[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -1451,6 +1470,9 @@ function RecurringTab() {
   const [intervalType, setIntervalType] = useState("weekly");
   const [intervalValue, setIntervalValue] = useState(1);
   const [sendHour, setSendHour] = useState(9);
+  const [sendMinute, setSendMinute] = useState(0);
+  const [sendWeekday, setSendWeekday] = useState(0);
+  const [batchPerHour, setBatchPerHour] = useState(50);
   const [recipientMode, setRecipientMode] = useState<"all" | "category">("all");
   const [category, setCategory] = useState("");
 
@@ -1469,6 +1491,7 @@ function RecurringTab() {
   const resetForm = () => {
     setName(""); setSubject(""); setBody("Hi {first_name},\n\n");
     setIntervalType("weekly"); setIntervalValue(1); setSendHour(9);
+    setSendMinute(0); setSendWeekday(0); setBatchPerHour(50);
     setRecipientMode("all"); setCategory(""); setEditing(null); setError(null);
   };
 
@@ -1477,6 +1500,7 @@ function RecurringTab() {
     setEditing(s);
     setName(s.name); setSubject(s.subject); setBody(s.body);
     setIntervalType(s.interval_type); setIntervalValue(s.interval_value); setSendHour(s.send_hour);
+    setSendMinute(s.send_minute ?? 0); setSendWeekday(s.send_weekday ?? -1); setBatchPerHour(s.batch_per_hour ?? 0);
     try {
       const f = JSON.parse(s.recipient_filter || '{"mode":"all"}');
       if (f.mode === "ids" && f.category) { setRecipientMode("category"); setCategory(f.category); }
@@ -1504,10 +1528,10 @@ function RecurringTab() {
       if (editing) {
         await api.updateNewsletterSchedule(editing.id, {
           name, subject, body, recipientFilter: filter,
-          intervalType, intervalValue, sendHour,
+          intervalType, intervalValue, sendHour, sendMinute, sendWeekday, batchPerHour,
         });
       } else {
-        await api.createNewsletterSchedule(name, subject, body, filter, intervalType, intervalValue, sendHour);
+        await api.createNewsletterSchedule(name, subject, body, filter, intervalType, intervalValue, sendHour, sendWeekday, sendMinute, batchPerHour);
       }
       setShowForm(false);
       resetForm();
@@ -1530,9 +1554,11 @@ function RecurringTab() {
 
   const cadenceLabel = (s: NewsletterSchedule) => {
     const unit = s.interval_type === "daily" ? "day" : s.interval_type === "monthly" ? "month" : "week";
-    const every = s.interval_value > 1 ? `every ${s.interval_value} ${unit}s` : `every ${unit}`;
-    const hr = s.send_hour === 0 ? "12 AM" : s.send_hour < 12 ? `${s.send_hour} AM` : s.send_hour === 12 ? "12 PM" : `${s.send_hour - 12} PM`;
-    return `${every} at ${hr}`;
+    const day = s.interval_type === "weekly" && s.send_weekday >= 0 && s.send_weekday <= 6 ? WEEKDAYS[s.send_weekday] : null;
+    const every = s.interval_value > 1 ? `Every ${s.interval_value} ${unit}s` : `Every ${unit}`;
+    const when = day ? (s.interval_value > 1 ? `${every} on ${day}` : `Every ${day}`) : every;
+    const pace = s.batch_per_hour > 0 ? ` · ${s.batch_per_hour} per hour` : " · all at once";
+    return `${when} at ${timeLabel(s.send_hour, s.send_minute ?? 0)} CT${pace}`;
   };
 
   return (
@@ -1573,7 +1599,7 @@ function RecurringTab() {
                 </div>
                 <div className="text-[12px] text-muted truncate">{s.subject}</div>
                 <div className="text-[11px] text-faint mt-0.5">
-                  {cadenceLabel(s)} · next run {new Date(s.next_run_at).toLocaleString()}
+                  {cadenceLabel(s)} · next run {new Date(s.next_run_at).toLocaleString([], { timeZone: "America/Chicago", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} CT
                 </div>
               </div>
               <div className="flex items-center gap-1 flex-shrink-0">
@@ -1638,14 +1664,43 @@ function RecurringTab() {
                   <NumberInput integer className={inp} value={intervalValue}
                     onValue={(n) => setIntervalValue(Math.max(1, n || 1))} />
                 </div>
+                {intervalType === "weekly" && (
+                  <div>
+                    <label className={lbl}>On</label>
+                    <select className={inp} value={sendWeekday} onChange={(e) => setSendWeekday(parseInt(e.target.value))}>
+                      {sendWeekday === -1 && <option value={-1}>Same day as now</option>}
+                      {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className={lbl}>At hour</label>
+                  <label className={lbl}>At</label>
                   <select className={inp} value={sendHour} onChange={(e) => setSendHour(parseInt(e.target.value))}>
                     {Array.from({ length: 24 }, (_, h) => (
                       <option key={h} value={h}>{h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`}</option>
                     ))}
                   </select>
                 </div>
+                <div>
+                  <label className={lbl}>Minute</label>
+                  <select className={inp} value={sendMinute} onChange={(e) => setSendMinute(parseInt(e.target.value))}>
+                    {Array.from({ length: 12 }, (_, i) => i * 5).map((m) => (
+                      <option key={m} value={m}>:{String(m).padStart(2, "0")}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={lbl}>Release</label>
+                  <select className={inp} value={batchPerHour} onChange={(e) => setBatchPerHour(parseInt(e.target.value))}>
+                    {BATCH_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="text-[11px] text-faint -mt-1">
+                Times are Central time. Hourly batches keep a large list under the mail provider's sending limits; if a limit is still hit, sending pauses and picks up where it stopped.
               </div>
 
               <div>

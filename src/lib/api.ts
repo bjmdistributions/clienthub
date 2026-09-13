@@ -360,6 +360,11 @@ export interface NewsletterSchedule {
   last_run_at: string | null;
   active: number;
   created_at: string;
+  /** 0 = Monday … 6 = Sunday (weekly only), -1 = not pinned. Hour and minute are Central time. */
+  send_weekday: number;
+  send_minute: number;
+  /** 0 = the whole list at once; otherwise recipients released per hour. */
+  batch_per_hour: number;
 }
 
 export interface Category {
@@ -3133,8 +3138,8 @@ export const api = {
     invoke<string>("ai_draft_newsletter", { prompt, tone }),
 
   // Scheduled Sends
-  scheduleNewsletterSend: (subject: string, body: string, clientIds: string[], intervalSeconds: number, scheduledAt: string, attachmentPath?: string | null) =>
-    invoke<ScheduledSend>("schedule_newsletter_send", { subject, body, clientIds, intervalSeconds, scheduledAt, attachmentPath }),
+  scheduleNewsletterSend: (subject: string, body: string, clientIds: string[], intervalSeconds: number, scheduledAt: string, attachmentPath?: string | null, batchPerHour?: number) =>
+    invoke<ScheduledSend>("schedule_newsletter_send", { subject, body, clientIds, intervalSeconds, scheduledAt, attachmentPath, batchPerHour }),
   cancelScheduledSend: (id: string) =>
     invoke<void>("cancel_scheduled_send", { id }),
   listScheduledSends: () =>
@@ -3153,15 +3158,19 @@ export const api = {
     intervalType: string,
     intervalValue: number,
     sendHour: number,
+    sendWeekday: number,
+    sendMinute: number,
+    batchPerHour: number,
   ) =>
     invoke<NewsletterSchedule>("create_newsletter_schedule", {
-      name, subject, body, recipientFilter, intervalType, intervalValue, sendHour,
+      name, subject, body, recipientFilter, intervalType, intervalValue, sendHour, sendWeekday, sendMinute, batchPerHour,
     }),
   updateNewsletterSchedule: (
     id: string,
     fields: Partial<{
       name: string; subject: string; body: string; recipientFilter: string;
       intervalType: string; intervalValue: number; sendHour: number; active: number;
+      sendWeekday: number; sendMinute: number; batchPerHour: number;
     }>,
   ) =>
     invoke<NewsletterSchedule>("update_newsletter_schedule", { id, ...fields }),
