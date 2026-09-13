@@ -29,6 +29,7 @@ mod netsync;
 mod sync;
 mod sync_crypto;
 mod secret_store;
+mod show_packing;
 mod template;
 
 use commands::*;
@@ -1127,6 +1128,9 @@ fn main() {
             delete_custom_field,
             get_sheet_headers,
             sheet_category_column_values,
+            // Show packing (R-271/R-272)
+            show_packing::show_packing_request,
+            show_packing::show_packing_pdf,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

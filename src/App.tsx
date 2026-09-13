@@ -38,6 +38,7 @@ import {
   FileCheck2,
   Receipt,
   Boxes,
+  PackageCheck,
   Newspaper,
   Search,
   MoreHorizontal,
@@ -54,6 +55,7 @@ import SuppliersView from "./components/SuppliersView";
 import InventoryView from "./components/InventoryView";
 import ManifestView from "./components/ManifestView";
 import LotEngineView from "./components/LotEngineView";
+import ShowPackingView from "./components/ShowPackingView";
 import WhatsAppSharePanel from "./components/WhatsAppSharePanel";
 import CloseoutView from "./components/CloseoutView";
 import BriefView from "./components/BriefView";
@@ -122,7 +124,7 @@ const paneFallback = (
   </div>
 );
 
-type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
+type Tab = "dashboard" | "clients" | "tiers" | "completed" | "dealflow" | "suppliers" | "inventory" | "lotengine" | "showpacking" | "manifest" | "invoices" | "receivables" | "payables" | "quotes" | "releaseletter" | "clientreceipt" | "newsletter" | "analytics" | "brief" | "automation" | "globe" | "notes" | "approvals" | "checkup" | "archive" | "sheetcopy" | "financials" | "platform" | "datasafety" | "settings";
 
 /** Ids a persisted string can still carry from before the R-231 rename
  *  ("deals"→"completed", "health"→"tiers", "email"→"newsletter"). Consulted only
@@ -414,6 +416,10 @@ export default function App() {
   // Org plan id ("unlimited" = top tier). Drives the Sheet-copy tab gate. The UI
   // gate is convenience only — the Rust command is the authoritative check.
   const [plan, setPlan] = useState<string | null>(null);
+  // Additive per-feature entitlements from /api/org (R-271/R-272's show_packing key
+  // and whatever else lands later). Gates the Show packing tab; the server is the
+  // authoritative check on every route.
+  const [entitlements, setEntitlements] = useState<Record<string, boolean>>({});
   // me: undefined = loading, null = signed out, Me = signed in.
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   // R-224 gap: the navigate-tab listener needs the current visible() gate, but it's
@@ -439,7 +445,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (me) {
-      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); }).catch(() => { setSuperadmin(false); setPlan(null); });
+      api.getMyPlan().then((p) => { setSuperadmin(!!p.is_superadmin); setPlan(p.plan); setEntitlements(p.entitlements || {}); }).catch(() => { setSuperadmin(false); setPlan(null); setEntitlements({}); });
       api.localIsSuperadmin().then(setLocalSuper).catch(() => setLocalSuper(false));
     }
   }, [me]);
@@ -692,6 +698,7 @@ export default function App() {
     { id: "suppliers", label: "Suppliers", icon: Package },
     { id: "inventory", label: "Inventory", icon: Grid3X3, children: [
       { id: "lotengine", label: "Lot engine", icon: Boxes },
+      { id: "showpacking", label: "Show packing", icon: PackageCheck },
       { id: "sheetcopy", label: "Sheet copy", icon: CopyPlus },
     ] },
     { id: "manifest", label: "Manifest analyzer", icon: ClipboardList },
@@ -735,6 +742,10 @@ export default function App() {
     : id === "approvals" ? isAdmin(me)            // was the header bell; also a Clients sub-item
     : id === "manifest" ? canViewTab(me, "inventory" as any) // analyzer rides inventory access
     : id === "lotengine" ? canViewTab(me, "inventory" as any) // so does the lot engine
+    // Show packing (R-271/R-272): rides inventory access, plus the plan entitlement
+    // itself — whether the add-on is turned ON for this org is a state the view
+    // handles internally (setup screen), not a reason to hide the tab.
+    : id === "showpacking" ? (canViewTab(me, "inventory" as any) && !!entitlements.show_packing)
     : canViewTab(me, id as any);
   // Kept in step every render so the navigate-tab listener above (mounted once,
   // deps []) always gates against the current role rather than the one at mount.
@@ -1025,6 +1036,7 @@ export default function App() {
             {t === "inventory"  && <InventoryView />}
             {t === "manifest"   && <ManifestView onNavigate={setTab} />}
             {t === "lotengine"  && <LotEngineView me={me} />}
+            {t === "showpacking" && <ShowPackingView me={me} />}
             {t === "sheetcopy"  && <SheetCopyView />}
             {t === "financials" && <FinancialsView />}
             {t === "completed"  && <CloseoutView />}

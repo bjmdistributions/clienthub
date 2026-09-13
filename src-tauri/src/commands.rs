@@ -7826,7 +7826,9 @@ fn inbox_server() -> Result<(String, String), String> {
     Ok((cfg.url.trim_end_matches('/').to_string(), cfg.token))
 }
 
-fn inbox_http() -> Result<reqwest::Client, String> {
+// pub(crate): also the desktop-side HTTP client for `show_packing.rs`'s proxy
+// command (R-271/R-272) — same 30s timeout, no reason for a second builder.
+pub(crate) fn inbox_http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -7923,8 +7925,9 @@ pub async fn reject_inbound_load(id: String) -> Result<(), String> {
 
 /// This device's connection to the server, or a message telling the user to connect.
 /// Identical to `inbox_server()`; kept separate so this section doesn't reach across
-/// into the load-inbox one.
-fn leads_server() -> Result<(String, String), String> {
+/// into the load-inbox one. pub(crate): also used by `show_packing.rs` (R-271/R-272),
+/// whose server-only tables are proxied the same way.
+pub(crate) fn leads_server() -> Result<(String, String), String> {
     let cfg = crate::netsync::config()
         .ok_or_else(|| "Connect this computer to your Ecliptr server first (Settings → Sync).".to_string())?;
     Ok((cfg.url.trim_end_matches('/').to_string(), cfg.token))

@@ -300,6 +300,113 @@ export interface LeadDashboardStats {
   organic_leads: { total: number; last_30d: number; today: number };
   unacknowledged: Record<string, number>;
 }
+// ===== Show packing (R-271/R-272) =====
+// `shows`/`show_items`/`show_buyers`/`show_sales` live on the SERVER only (never
+// synced — see the Leads section above for the identical shape). Every call goes
+// through the one `show_packing_request` proxy command below.
+export interface Show {
+  id: string;
+  org_id: string;
+  name: string;
+  show_date: string;
+  status: "prep" | "live" | "done";
+  fee_pct: number;
+  processing_pct: number;
+  processing_fixed: number;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+/** A show list row: the show plus the counts the list view needs. */
+export interface ShowListRow extends Show {
+  items: number;
+  sold: number;
+  giveaways: number;
+  buyers: number;
+  gross: number;
+}
+export interface ShowItem {
+  id: string;
+  org_id: string;
+  show_id: string;
+  item_number: number;
+  title: string;
+  source_lot_id: string | null;
+  unit_cost: number;
+  start_price: number | null;
+  status: "pending" | "sold" | "giveaway" | "unsold" | "removed";
+  buyer: string | null;
+  bin_number: number | null;
+  sale_price: number | null;
+  sold_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface ShowBuyer {
+  id: string;
+  org_id: string;
+  show_id: string;
+  username: string;
+  display_name: string;
+  bin_number: number;
+  created_at: string;
+}
+export interface ShowSaleRow {
+  id: string;
+  org_id: string;
+  show_id: string;
+  order_id: string;
+  item_number: number | null;
+  listing_title: string;
+  buyer: string;
+  sale_price: number;
+  fees: number | null;
+  match_status: "matched" | "price_diff" | "buyer_diff" | "no_item" | "not_recorded";
+  imported_at: string;
+}
+export interface ShowPnl {
+  gross: number;
+  fees: number;
+  fees_source: "imported" | "estimated";
+  cost: number;
+  net: number;
+  sold: number;
+  giveaways: number;
+  // Server may name the not-yet-sold count either way — read defensively.
+  pending?: number;
+  unsold?: number;
+  buyers: number;
+  avg_sale: number;
+}
+export interface ShowDetail {
+  show: Show;
+  items: ShowItem[];
+  buyers: ShowBuyer[];
+  last_sale: ShowItem | null;
+  pnl: ShowPnl;
+  sales_imported: number;
+  mismatches: ShowSaleRow[];
+}
+export interface ShowAddonConfig {
+  fee_pct: number;
+  processing_pct: number;
+  processing_fixed: number;
+}
+export interface ShowAddonState {
+  entitled: boolean;
+  enabled: boolean;
+  config: ShowAddonConfig;
+}
+export interface ShowSellResult {
+  item: ShowItem;
+  buyer: { username: string; display_name: string; bin_number: number; is_new: boolean } | null;
+  next_item: ShowItem | null;
+}
+export interface ShowImportResult {
+  imported: number;
+  matched: number;
+  mismatches: ShowSaleRow[];
+}
 export interface FormField {
   id: string;
   type: string; // name | email | phone | company | text | textarea | select | checkbox | date
@@ -2328,6 +2435,14 @@ export interface EmailDraft {
   sent_at: string | null;
 }
 
+// Every show-packing route rides one Tauri command (`show_packing_request`) rather
+// than one command per route — the route surface is still R-271/R-272, and a single
+// proxy avoids a 1:1 command per endpoint. It rejects with the server's own error
+// string (see `commands.rs`), so callers can toast the real message.
+function showPackingRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return invoke<T>("show_packing_request", { method, path, body: body ?? null });
+}
+
 // ===== API =====
 export const api = {
   // Clients
@@ -2663,6 +2778,37 @@ export const api = {
     safe(invoke<LeadNotification[]>("list_lead_notifications", { kind, status })),
   ackLeadNotification: (id: string) => safe(invoke<void>("ack_lead_notification", { id })),
   listLeadClicks: (since?: string) => safe(invoke<LeadClick[]>("list_lead_clicks", { since })),
+  // Show packing (R-271/R-272) — buyer bins for Whatnot-style live shows.
+  showPacking: {
+    addon: () => showPackingRequest<ShowAddonState>("GET", "/api/shows/addon"),
+    setAddon: (enabled: boolean, config?: ShowAddonConfig) =>
+      showPackingRequest<ShowAddonState>("POST", "/api/shows/addon", { enabled, config }),
+    listShows: () => showPackingRequest<{ shows: ShowListRow[] }>("GET", "/api/shows"),
+    createShow: (name: string, showDate?: string) =>
+      showPackingRequest<Show>("POST", "/api/shows", { name, show_date: showDate }),
+    getShow: (id: string) => showPackingRequest<ShowDetail>("GET", `/api/shows/${id}`),
+    updateShow: (
+      id: string,
+      patch: Partial<{ name: string; show_date: string; status: string; fee_pct: number; processing_pct: number; processing_fixed: number; archived: boolean }>,
+    ) => showPackingRequest<Show>("POST", `/api/shows/${id}/update`, patch),
+    addItems: (id: string, items: { title: string; unit_cost?: number; start_price?: number; source_lot_id?: string }[]) =>
+      showPackingRequest<{ items: ShowItem[] }>("POST", `/api/shows/${id}/items`, { items }),
+    updateItem: (
+      showId: string,
+      itemId: string,
+      patch: Partial<{ title: string; unit_cost: number; start_price: number; status: string }>,
+    ) => showPackingRequest<ShowItem>("POST", `/api/shows/${showId}/items/${itemId}/update`, patch),
+    sell: (id: string, body: { item_id?: string; item_number?: number; buyer?: string; sale_price?: number; giveaway?: boolean }) =>
+      showPackingRequest<ShowSellResult>("POST", `/api/shows/${id}/sell`, body),
+    unsell: (id: string, itemId: string) =>
+      showPackingRequest<{ item: ShowItem }>("POST", `/api/shows/${id}/unsell`, { item_id: itemId }),
+    importRows: (
+      id: string,
+      rows: { order_id?: string; item_number?: number; listing_title?: string; buyer?: string; sale_price?: number; fees?: number }[],
+    ) => showPackingRequest<ShowImportResult>("POST", `/api/shows/${id}/import`, { rows }),
+  },
+  showPackingPdf: (kind: "bin_labels" | "run_sheet" | "packing_list", path: string, payload: unknown) =>
+    invoke<void>("show_packing_pdf", { kind, path, payload }),
   submitFeedback: (kind: string, title: string, body: string, name?: string, email?: string) =>
     invoke<void>("submit_feedback", { kind, title, body, name, email }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),
@@ -2878,7 +3024,7 @@ export const api = {
     pull_cursor: number; local_counts: Record<string, number>;
     server_counts: Record<string, number> | null;
   }>("netsync_diagnostics"),
-  getMyPlan: () => invoke<{ name: string; plan: string; members: number; member_limit: number | null; clients: number; client_limit: number | null; is_superadmin: boolean }>("get_my_plan"),
+  getMyPlan: () => invoke<{ name: string; plan: string; members: number; member_limit: number | null; clients: number; client_limit: number | null; is_superadmin: boolean; entitlements?: Record<string, boolean> }>("get_my_plan"),
   getPlatformSignups: () => invoke<{ orgs: any[] }>("get_platform_signups"),
   // Superadmin admin console
   adminWaitlistAll: () =>
