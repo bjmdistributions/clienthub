@@ -13296,6 +13296,20 @@ pub async fn set_bank_txn_review(
         REVIEW_UPDATE_SQL,
         rusqlite::params![category, counterparty_name, counterparty_type, counterparty_id, confirmed_method, note, flag, now, id],
     ).map_err(|e| e.to_string())?;
+    // R-288: reopening a row booked from history is its Undo — the category it had comes
+    // back (unless this save set one) and it is never booked from history again. The
+    // server's PATCH does the same for the phone and the accountant.
+    if reviewed == Some(false) {
+        let prev: Option<Option<String>> = conn.query_row(
+            "SELECT CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.abc') END FROM bank_txn WHERE id=?1 \
+               AND json_valid(raw_json) AND json_extract(raw_json,'$.ab') IS NOT NULL",
+            [&id], |r| r.get(0)).ok();
+        if let Some(prev) = prev {
+            let mut extra = Map::new();
+            if category.is_none() { extra.insert("category".into(), Value::String(prev.unwrap_or_default())); }
+            patch_raw_json(&conn, &id, &[("abx", json!(true))], &["ab", "abc"], extra, &now)?;
+        }
+    }
     // Booking a transaction must reach the other admins immediately: waiting for the
     // 20s poll leaves a window where two people work the same queue and both see the
     // row as unbooked, which is how one payment gets allocated twice.
