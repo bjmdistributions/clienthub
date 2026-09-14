@@ -103,6 +103,7 @@ export default function ClientsView() {
   const [sortKey, setSortKey]               = useState<string>("profit");
   const [sortDir, setSortDir]               = useState<1 | -1>(-1);
   const [reps, setReps]                     = useState<string[]>([]);
+  const [sources, setSources]               = useState<{ name: string; count: number }[]>([]);
   const [reviewId, setReviewId]             = useState<string | null>(null);
   // Client-side "never emailed" filter — reads the first_contact flag.
   const [fcOnly, setFcOnly]                 = useState(false);
@@ -153,6 +154,7 @@ export default function ClientsView() {
     }).catch((e) => setLoadError(String(e))).finally(() => setLoading(false));
     api.listCategories().then(setAllCategories).catch(() => {});
     api.listClientReps().then(setReps).catch(() => {});
+    api.listClientSources().then(setSources).catch(() => {});
     api.buyerTiers().then(setBuyerTiers).catch(() => {});
     api.listDealFlows().then(setDealFlows).catch(() => {});
     api.detectDuplicateClients().then(setDuplicates).catch(() => {});
@@ -214,7 +216,7 @@ export default function ClientsView() {
 
   const summaryStats = useMemo(() => statsOf(allClients), [allClients]);
 
-  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep || filter.sort_by || filter.lead_status;
+  const hasAnyFilter = filter.search || (filter.tiers && filter.tiers.length > 0) || filter.category || filter.tag || filter.state || filter.stale_days || filter.missing || filter.needs_review || filter.unsubscribed || filter.rep || filter.source || filter.sort_by || filter.lead_status;
 
   // Tier row per client, keyed — the sort reads it once per comparison, so the
   // repeated linear scan it replaced showed up on a 141-row list.
@@ -289,6 +291,7 @@ export default function ClientsView() {
   if (filter.needs_review) chips.push({ label: "Needs review", key: "needs_review" });
   if (filter.unsubscribed) chips.push({ label: "Unsubscribed", key: "unsubscribed" });
   if (filter.rep) chips.push({ label: `Rep: ${filter.rep}`, key: "rep" });
+  if (filter.source) chips.push({ label: `Source: ${filter.source}`, key: "source" });
   if (filter.lead_status) {
     const statusLabels: Record<string, string> = { active_not_dormant: "Active (not dormant)", prospect: "Prospect", hot_lead: "Hot Lead", active_customer: "Active Customer", inactive: "Dormant" };
     chips.push({ label: `Status: ${statusLabels[filter.lead_status] || filter.lead_status}`, key: "lead_status" });
@@ -653,6 +656,17 @@ export default function ClientsView() {
           >
             <option value="">All Reps</option>
             {reps.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        )}
+        {/* R-285: where each client signed up from, with how many came from each. */}
+        {sources.length > 0 && (
+          <select
+            value={filter.source ?? ""}
+            onChange={(e) => updateFilter({ source: e.target.value || undefined })}
+            className="border border-line h-10 px-3 rounded-lg text-[13px] text-ink-2 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent bg-surface min-w-[140px] transition-colors"
+          >
+            <option value="">All Sources</option>
+            {sources.map((s) => <option key={s.name} value={s.name}>{s.name} ({s.count})</option>)}
           </select>
         )}
         <div className="relative" ref={tierDropdownRef}>

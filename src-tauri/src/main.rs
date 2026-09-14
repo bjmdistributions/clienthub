@@ -557,6 +557,7 @@ fn main() {
             list_clients,
             client_last_activity,
             list_client_reps,
+            list_client_sources,
             get_client,
             create_client,
             update_client,

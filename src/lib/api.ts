@@ -128,6 +128,8 @@ export interface ClientFilter {
   lead_status?: string;
   /** Filter to clients whose lead_representative / source_rep matches this name. */
   rep?: string;
+  /** R-285: filter to clients whose metadata.lead_source matches this name. */
+  source?: string;
 }
 
 export interface MissingInfoReport {
@@ -2521,6 +2523,7 @@ export const api = {
   listStaleClients: (days: number) => invoke<Client[]>("list_stale_clients", { days }),
   listClientsFiltered: (filter: ClientFilter) => invoke<Client[]>("list_clients_filtered", { filter }),
   listClientReps: () => invoke<string[]>("list_client_reps"),
+  listClientSources: () => invoke<{ name: string; count: number }[]>("list_client_sources"),
   clientsMissingInfo: () => invoke<MissingInfoReport>("clients_missing_info"),
   updateClientStatus: (id: string, status: string) =>
     invoke<void>("update_client_status", { id, status }),

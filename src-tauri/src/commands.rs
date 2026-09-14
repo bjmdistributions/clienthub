@@ -329,6 +329,31 @@ pub async fn list_client_reps() -> Result<Vec<String>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[derive(Serialize)]
+pub struct ClientSourceCount {
+    pub name: String,
+    pub count: i64,
+}
+
+/// R-285: each lead source on clients (metadata.lead_source — a website signup link's
+/// source, "Organic", "Shopify") with how many clients carry it, for the clients Source
+/// filter. Rejected leads are left out of the count, as they are from every headline.
+#[tauri::command]
+pub async fn list_client_sources() -> Result<Vec<ClientSourceCount>, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT src, COUNT(*) FROM (
+           SELECT TRIM(json_extract(metadata,'$.lead_source')) AS src FROM clients
+            WHERE json_valid(metadata) AND COALESCE(approval_status,'active') != 'rejected'
+         ) WHERE src IS NOT NULL AND src != ''
+         GROUP BY src ORDER BY COUNT(*) DESC, src COLLATE NOCASE",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok(ClientSourceCount { name: r.get(0)?, count: r.get(1)? }))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 #[tauri::command]
 pub async fn get_client(id: String) -> Result<Option<Client>, String> {
     let conn = pool().get().map_err(|e| e.to_string())?;
@@ -2071,6 +2096,8 @@ pub struct ClientFilter {
     pub sort_by: Option<String>,
     /// Filter to clients whose lead_representative / source_rep matches this name.
     pub rep: Option<String>,
+    /// R-285: filter to clients whose metadata.lead_source matches this name.
+    pub source: Option<String>,
     /// Lead-status filter. Exact value (e.g. "inactive") matches that status;
     /// the special value "active_not_dormant" returns everyone who is NOT dormant.
     pub lead_status: Option<String>,
@@ -2168,6 +2195,13 @@ pub async fn list_clients_filtered(filter: ClientFilter) -> Result<Vec<Client>, 
                 "(json_extract(c.metadata,'$.lead_representative') = ?{p} OR json_extract(c.metadata,'$.source_rep') = ?{p})",
                 p = param_idx
             ));
+            params.push(Box::new(s.clone()));
+            param_idx += 1;
+        }
+    }
+    if let Some(ref s) = filter.source {
+        if !s.is_empty() {
+            conds.push(format!("TRIM(json_extract(c.metadata,'$.lead_source')) = ?{}", param_idx));
             params.push(Box::new(s.clone()));
             param_idx += 1;
         }
