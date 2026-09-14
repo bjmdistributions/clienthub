@@ -31,6 +31,7 @@ mod sync_crypto;
 mod secret_store;
 mod show_packing;
 mod shipments;
+mod books;
 mod template;
 
 use commands::*;
@@ -1141,6 +1142,8 @@ fn main() {
             shipments::dismiss_shipment,
             shipments::suggest_shipment_deals,
             shipments::scan_priority1_mail,
+            books::list_books_changes,
+            books::mark_books_changes_seen,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

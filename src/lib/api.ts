@@ -2039,6 +2039,30 @@ export interface BankTxn {
 export type BankTxnReviewPatch = Partial<
   Pick<BankTxn, "category" | "counterparty_name" | "counterparty_type" | "counterparty_id" | "confirmed_method" | "reviewed" | "note">
 >;
+// R-282 accountant portal — one row per edit the accountant made on the web (ecliptr.app/staff)
+// to a bank transaction. `field` is one of category|note|confirmed_method|reviewed; `old_value`/
+// `new_value` are always strings (raw category key, "true"/"false", etc.) for the UI to translate.
+export interface BooksChange {
+  id: string;
+  bank_txn_id: string;
+  user_id: string;
+  user_name: string;
+  field: "category" | "note" | "confirmed_method" | "reviewed";
+  old_value: string;
+  new_value: string;
+  created_at: string;
+  seen_at: string | null;
+  txn_posted_at: string;
+  txn_description: string;
+  txn_amount: number;
+  txn_direction: "in" | "out";
+  txn_account_id: string;
+}
+export interface BooksChangesResponse {
+  changes: BooksChange[];
+  total: number;
+  unseen: number;
+}
 export interface BankTxnSummary {
   total: number;
   reviewed: number;
@@ -3167,6 +3191,15 @@ export const api = {
       note: patch.note,
       reviewed: patch.reviewed,
     }),
+  // R-282 accountant portal — the change feed for edits the accountant makes on the
+  // web. Server-proxied like the leads section below; an old server answers 404,
+  // which the command turns into `{ unsupported: true }` rather than an error, and
+  // a disconnected desktop turns a rejected invoke into `{ unavailable: true }` —
+  // either way the panel hides itself instead of toasting.
+  listBooksChanges: (limit?: number) =>
+    safe(invoke<BooksChangesResponse | { unsupported: true }>("list_books_changes", { limit })),
+  markBooksChangesSeen: () =>
+    safe(invoke<{ ok: true; marked: number } | { unsupported: true }>("mark_books_changes_seen")),
   allocateBankTxn: (bankTxnId: string, dealFlowId: string, amount: number, role: string, note: string, allowSplit?: boolean) =>
     invoke<string>("allocate_bank_txn", { bankTxnId, dealFlowId, amount, role, note, allowSplit }),
   removeBankAllocation: (id: string) => invoke<void>("remove_bank_allocation", { id }),

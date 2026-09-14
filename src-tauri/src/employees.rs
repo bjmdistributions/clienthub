@@ -18,8 +18,8 @@ const ORG_ID: &str = "org_default";
 // (materialized on login and via sync). Jack's existing org_default row already
 // stores his real name and is NOT changed (the seed is INSERT OR IGNORE).
 const ORG_NAME: &str = "";
-pub const MODULES: [&str; 9] = [
-    "clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "settings", "admin",
+pub const MODULES: [&str; 10] = [
+    "clients", "inventory", "deal_flow", "quotes", "email", "manifests", "analytics", "financials", "settings", "admin",
 ];
 
 fn now_rfc3339() -> String { chrono::Utc::now().to_rfc3339() }
@@ -27,19 +27,21 @@ fn now_rfc3339() -> String { chrono::Utc::now().to_rfc3339() }
 fn seed_roles() -> Vec<(&'static str, &'static str, Vec<String>)> {
     let mut manager: Vec<String> = Vec::new();
     for m in MODULES {
-        if m == "admin" || m == "settings" { continue; }
+        if m == "admin" || m == "settings" || m == "financials" { continue; }
         for a in ["view", "edit", "export"] { manager.push(format!("{m}:{a}")); }
     }
     let sales: Vec<String> = ["clients", "inventory", "quotes", "email"]
         .iter()
         .flat_map(|m| [format!("{m}:view"), format!("{m}:edit")])
         .collect();
-    let viewer: Vec<String> = MODULES.iter().filter(|m| **m != "admin").map(|m| format!("{m}:view")).collect();
+    let viewer: Vec<String> = MODULES.iter().filter(|m| **m != "admin" && **m != "financials").map(|m| format!("{m}:view")).collect();
     vec![
         ("role_admin", "Admin", vec!["*".to_string()]),
         ("role_manager", "Manager", manager),
         ("role_sales", "Sales", sales),
         ("role_viewer", "Viewer", viewer),
+        ("role_accountant", "Accountant", vec!["financials:view".to_string(), "financials:export".to_string(), "financials:edit".to_string()]),
+        ("role_accountant_view", "Accountant (view only)", vec!["financials:view".to_string(), "financials:export".to_string()]),
     ]
 }
 

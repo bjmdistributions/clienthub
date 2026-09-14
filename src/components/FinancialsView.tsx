@@ -15,6 +15,7 @@ import PersonPickerModal, { PersonRef, personKey } from "./PersonPicker";
 import DealPicker from "./DealPicker";
 import FreeCashView from "./FreeCashView";
 import LoansView from "./LoansView";
+import AccountantChanges from "./AccountantChanges";
 import { parseAmount } from "../lib/format";
 
 // Backend errors arrive as raw Rust strings and were shown to the user verbatim,
@@ -61,7 +62,7 @@ const matchesQuery = (t: BankTxn, q: string): boolean => {
 //
 // `hidden` entries are written by the backend (loan tagging derives its category
 // from direction) and must render with a real label, but are never hand-picked.
-const CATEGORIES: { value: string; label: string; group: string; hidden?: boolean }[] = [
+export const CATEGORIES: { value: string; label: string; group: string; hidden?: boolean }[] = [
   { value: "",                    label: "Uncategorized",                   group: "" },
 
   { value: "receipt",             label: "Sale / buyer payment",            group: "Income" },
@@ -214,13 +215,13 @@ const ROLES: { value: string; label: string; hint?: string }[] = [
 ];
 
 const roleLabel = (v: string) => ROLES.find((r) => r.value === v)?.label ?? v;
-const catLabel = (v: string) => CATEGORIES.find((c) => c.value === v)?.label ?? (v || "Uncategorized");
+export const catLabel = (v: string) => CATEGORIES.find((c) => c.value === v)?.label ?? (v || "Uncategorized");
 // Identify a deal by its BUYER first — an invoice number alone is meaningless when
 // scanning for the right deal to tie a payment to.
 const dealLabel = (d: DealFlow) =>
   d.client_name?.trim() || d.name?.trim() || (d.invoice_number ? `Invoice #${d.invoice_number}` : "Untitled deal");
 
-const fmtShortDate = (s?: string | null) => {
+export const fmtShortDate = (s?: string | null) => {
   if (!s) return "";
   const d = parseLocalDay(s); // bare bank dates parse at local midnight (R-159 — UTC parse rendered them a day early)
   return isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -395,7 +396,7 @@ export type BankMethod = "wire" | "ach" | "zelle" | "rtp" | "check" | "card" | "
 
 // MUST stay identical to BANK_METHODS in commands.rs — the backend rejects any
 // value outside it, so a method added on one side alone silently fails to save.
-const METHODS: { value: BankMethod; label: string }[] = [
+export const METHODS: { value: BankMethod; label: string }[] = [
   { value: "wire",     label: "Wire" },
   { value: "ach",      label: "ACH" },
   { value: "zelle",    label: "Zelle" },
@@ -405,7 +406,7 @@ const METHODS: { value: BankMethod; label: string }[] = [
   { value: "cash",     label: "Cash" },
   { value: "transfer", label: "Internal transfer" },
 ];
-const methodLabel = (v: string) => METHODS.find((m) => m.value === v)?.label ?? v;
+export const methodLabel = (v: string) => METHODS.find((m) => m.value === v)?.label ?? v;
 
 // Ordered — the FIRST match wins, so a specific rail beats the generic wording it
 // contains: "ONLINE DOMESTIC WIRE TRANSFER" is a wire, not a transfer, and "REAL
@@ -2798,7 +2799,10 @@ export default function FinancialsView() {
       {/* Header */}
       <div className="min-w-0 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-[19px] font-semibold text-ink tracking-tight truncate">Financials</h2>
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-[19px] font-semibold text-ink tracking-tight truncate">Financials</h2>
+            <AccountantChanges />
+          </div>
           <p className="text-[12px] text-muted mt-0.5">
             {tab === "tobook" ? "Book the money that came in and went out"
               : tab === "ledger" ? "Everything ever — search, filter, drill in"
