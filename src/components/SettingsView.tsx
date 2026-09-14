@@ -5429,7 +5429,7 @@ function InvitesPanel() {
   const [roles, setRoles] = useState<RoleDef[]>([]);
   const [roleId, setRoleId] = useState("role_sales");
   const [email, setEmail] = useState("");
-  const [created, setCreated] = useState<{ token: string; signup_path: string } | null>(null);
+  const [created, setCreated] = useState<{ token: string; signup_path: string; live?: boolean } | null>(null);
   const base = "https://ecliptr.app";
   const load = () => {
     api.listInvites().then(setInvites).catch(() => {});
@@ -5458,12 +5458,17 @@ function InvitesPanel() {
           <input className={inpSm} placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
           <button onClick={create} className="bg-accent hover:bg-accent-hover text-on-accent px-4 h-9 rounded-lg text-[13px] font-medium whitespace-nowrap">Create</button>
         </div>
-        {created && (
+        {created && (created.live === false ? (
+          <div className="mt-3 bg-warning-bg border border-warning rounded-lg px-3 py-2">
+            <p className="text-[12px] font-medium text-warning-ink mb-1">Saved, but the server doesn't have it yet. The link works once this computer syncs — keep Ecliptr open and online, then share it:</p>
+            <code className="text-[12px] text-warning-ink break-all select-all">{base}{created.signup_path}</code>
+          </div>
+        ) : (
           <div className="mt-3 bg-success-bg border border-success rounded-lg px-3 py-2">
             <p className="text-[12px] font-medium text-success-ink mb-1">Invite link ready — share it:</p>
             <code className="text-[12px] text-success-ink break-all select-all">{base}{created.signup_path}</code>
           </div>
-        )}
+        ))}
       </div>
 
       <div className="bg-surface border border-line rounded-xl overflow-x-auto">

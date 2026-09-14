@@ -682,8 +682,22 @@ pub fn list_invites() -> Result<Vec<Value>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// The invite link is checked on the SERVER (`/staff?invite=…`), but the row is written
+/// here and only travels on the next sync pass — so a link opened straight away answered
+/// "invalid invite" (R-282: 33 seconds on 2026-09-14). Push now, and say whether it
+/// landed, so the screen can tell the owner the link is live rather than assume it.
+async fn push_invite_now() -> bool {
+    crate::netsync::config().is_some() && crate::netsync::push_pending().await.is_ok()
+}
+
 #[tauri::command]
-pub fn create_invite(role_id: String, email: Option<String>, expires_days: Option<i64>) -> Result<Value, String> {
+pub async fn create_invite(role_id: String, email: Option<String>, expires_days: Option<i64>) -> Result<Value, String> {
+    let mut out = create_invite_local(role_id, email, expires_days)?;
+    out["live"] = json!(push_invite_now().await);
+    Ok(out)
+}
+
+fn create_invite_local(role_id: String, email: Option<String>, expires_days: Option<i64>) -> Result<Value, String> {
     let admin = require_admin()?;
     {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -726,7 +740,13 @@ pub fn revoke_invite(token: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn reopen_invite(token: String) -> Result<Value, String> {
+pub async fn reopen_invite(token: String) -> Result<Value, String> {
+    let mut out = reopen_invite_local(token)?;
+    out["live"] = json!(push_invite_now().await);
+    Ok(out)
+}
+
+fn reopen_invite_local(token: String) -> Result<Value, String> {
     require_admin()?;
     let new_exp = (chrono::Utc::now() + chrono::Duration::days(14)).to_rfc3339();
     {

@@ -2900,9 +2900,9 @@ export const api = {
   setCheckupVisibility: (visibility: string) => invoke<void>("set_checkup_visibility", { visibility }),
   listInvites: () => invoke<InviteRow[]>("list_invites"),
   createInvite: (roleId: string, email: string | null, expiresDays: number | null) =>
-    invoke<{ token: string; signup_path: string; expires_at: string }>("create_invite", { roleId, email, expiresDays }),
+    invoke<{ token: string; signup_path: string; expires_at: string; live: boolean }>("create_invite", { roleId, email, expiresDays }),
   revokeInvite: (token: string) => invoke<void>("revoke_invite", { token }),
-  reopenInvite: (token: string) => invoke<{ token: string; expires_at: string }>("reopen_invite", { token }),
+  reopenInvite: (token: string) => invoke<{ token: string; expires_at: string; live: boolean }>("reopen_invite", { token }),
 
   // Suppliers
   listSuppliers: () => invoke<Supplier[]>("list_suppliers"),
