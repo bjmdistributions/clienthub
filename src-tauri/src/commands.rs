@@ -14111,6 +14111,8 @@ const BANK_TXN_BACKUP_SQL: &str =
         'category',category,'counterparty_name',counterparty_name,\
         'counterparty_type',counterparty_type,'counterparty_id',counterparty_id,\
         'source_format',source_format,'reviewed',reviewed,'raw_json',raw_json,\
+        'note',note,'confirmed_method',confirmed_method,'balance',balance,'rail',rail,\
+        'fitid',fitid,'wire_ref',wire_ref,'check_num',check_num,\
         'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at,\
         'allocations',(SELECT json_group_array(json_object('id',a.id,'deal_flow_id',a.deal_flow_id,\
             'amount',a.amount,'role',a.role,'note',a.note)) FROM bank_allocation a WHERE a.bank_txn_id=bank_txn.id)) \
@@ -14411,7 +14413,7 @@ pub async fn undo_bank_account_merge(from: String) -> Result<Value, String> {
 ///
 /// Returns `(kind, value)` — kind is kept so two different rails can never collide with each
 /// other, e.g. an IMAD that happens to equal a TRACE#.
-fn bank_txn_reference(desc: &str) -> Option<(&'static str, String)> {
+pub(crate) fn bank_txn_reference(desc: &str) -> Option<(&'static str, String)> {
     let take_after = |hay: &str, needle: &str| -> Option<String> {
         let i = hay.to_uppercase().find(needle)?;
         let rest = &hay[i + needle.len()..];
@@ -14503,262 +14505,126 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Strict content fingerprint of a bank txn used for duplicate bucketing. Matches the
-/// import-time guard's comparison (account/date/amount-to-the-cent/direction/lowercased,
-/// whitespace-collapsed memo). Deliberately NOT loosened — two distinct memos must never
-/// collapse into one group (that would delete a real transaction).
-fn bank_txn_fingerprint(account: &str, date: &str, amount: f64, dir: &str, desc: &str) -> String {
-    let memo = desc.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-    format!("{}|{}|{:.2}|{}|{}", account.trim().to_lowercase(), date, amount, dir, memo)
+/// Every link a bank row can carry besides `reviewed`, as one expression correlated on
+/// `bank_txn.id`. Kept in step with `bank_txn_is_referenced`: a new table that points at
+/// `bank_txn.id` belongs in both, or a cleanup will orphan its rows.
+const BANK_TXN_LINKED_EXPR: &str =
+    "(EXISTS(SELECT 1 FROM bank_allocation WHERE bank_txn_id=bank_txn.id) \
+      OR EXISTS(SELECT 1 FROM refunds WHERE bank_txn_id=bank_txn.id) \
+      OR EXISTS(SELECT 1 FROM loan WHERE bank_txn_id=bank_txn.id) \
+      OR COALESCE(bank_txn.counterparty_type,'')='loan' \
+      OR EXISTS(SELECT 1 FROM cash_purchase WHERE withdrawal_txn_id=bank_txn.id) \
+      OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=bank_txn.id))";
+
+/// Linked to a deal, refund, loan, cash purchase or expense. Fails SAFE (true) on any error,
+/// including the row having gone.
+fn bank_txn_is_linked(conn: &rusqlite::Connection, id: &str) -> bool {
+    conn.query_row(&format!("SELECT {BANK_TXN_LINKED_EXPR} FROM bank_txn WHERE id=?1"), [id], |r| r.get::<_, i64>(0))
+        .map(|v| v != 0)
+        .unwrap_or(true)
+}
+
+/// Every bank row with what the duplicate decision reads (R-287). A read error fails the
+/// whole cleanup rather than silently leaving rows out of the comparison.
+pub(crate) fn load_dedup_rows(conn: &rusqlite::Connection) -> Result<Vec<crate::bank_dedup::TxnRow>, String> {
+    let sql = format!(
+        "SELECT id, COALESCE(account_id,''), COALESCE(posted_at,''), COALESCE(amount,0), COALESCE(direction,''), \
+                COALESCE(description,''), COALESCE(memo_raw,''), COALESCE(check_num,''), COALESCE(wire_ref,''), \
+                COALESCE(fitid,''), COALESCE(raw_json,''), COALESCE(imported_at,''), COALESCE(created_at,''), \
+                COALESCE(reviewed,0), {BANK_TXN_LINKED_EXPR}, COALESCE(category,''), COALESCE(counterparty_name,''), \
+                COALESCE(counterparty_type,''), COALESCE(counterparty_id,''), COALESCE(note,''), COALESCE(confirmed_method,'') \
+           FROM bank_txn"
+    );
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let it = st.query_map([], |r| Ok(crate::bank_dedup::TxnRow {
+        id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, dir: r.get(4)?,
+        desc: r.get(5)?, memo_raw: r.get(6)?, check_num: r.get(7)?, wire_ref: r.get(8)?, fitid: r.get(9)?,
+        raw_json: r.get(10)?, imported_at: r.get(11)?, created_at: r.get(12)?,
+        reviewed: r.get::<_, i64>(13)? == 1, linked: r.get::<_, i64>(14)? != 0,
+        category: r.get(15)?, counterparty_name: r.get(16)?, counterparty_type: r.get(17)?,
+        counterparty_id: r.get(18)?, note: r.get(19)?, confirmed_method: r.get(20)?,
+    })).map_err(|e| e.to_string())?;
+    it.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// The booking fields of one row as they are NOW, for the per-row re-check at execution.
+fn dedup_booking(conn: &rusqlite::Connection, id: &str) -> Option<crate::bank_dedup::TxnRow> {
+    conn.query_row(
+        "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,''), COALESCE(counterparty_type,''), \
+                COALESCE(counterparty_id,''), COALESCE(note,''), COALESCE(confirmed_method,'') FROM bank_txn WHERE id=?1",
+        [id],
+        |r| Ok(crate::bank_dedup::TxnRow {
+            id: id.to_string(), reviewed: r.get::<_, i64>(0)? == 1, category: r.get(1)?, counterparty_name: r.get(2)?,
+            counterparty_type: r.get(3)?, counterparty_id: r.get(4)?, note: r.get(5)?, confirmed_method: r.get(6)?,
+            ..Default::default()
+        }),
+    ).ok()
 }
 
 /// Find (and, unless `dry_run`, remove) duplicate bank transactions — the same real
-/// transaction stored under multiple ids (e.g. Plaid linked to one account on two devices,
-/// each minting its own transaction_ids; or a re-link re-pulling history under new ids).
+/// transaction stored under multiple ids (Plaid linked to one account on two devices, a
+/// re-link re-pulling history under new ids, or the bank renaming the account — R-287).
 ///
-/// CONSERVATIVE: only auto-removes an extra copy that is completely untouched (not reviewed,
-/// no allocation/loan/refund/expense link). Anything booked, or ambiguous (round amount,
-/// generic memo like ATM/cash/transfer, or 3+ copies where a real repeat is plausible) is
-/// left in place and returned in `review` for the user to resolve. Deletes go through the
-/// oplog tombstone (durable across sync) and every removed row is copied into a local
-/// recovery table first. Run from ONE device.
+/// The decision is `bank_dedup::plan`: a copy is removed only when it is identical to a copy
+/// that stays, on every stored detail, and is not linked to anything. A booked copy is removed
+/// only when its booking agrees with the survivor's. Everything else goes to `review`.
+/// Execution re-checks each row against the database as it is now, writes a full backup to
+/// `bank_txn_deleted_backup` and refuses the row if that write fails, and deletes through the
+/// oplog tombstone so the removal propagates. Run from ONE device.
 #[tauri::command]
 pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, String> {
-    // Flush our own pending writes so we dedup against a converged view and our deletes
-    // reach peers promptly (shrinks the concurrent-edit resurrection window).
-    crate::netsync::push_now();
-
-    struct Row { id: String, account: String, date: String, amount: f64, dir: String, desc: String, imported_at: String, created_at: String, pa: String }
-    let rows: Vec<Row> = {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT id, account_id, posted_at, amount, direction, COALESCE(description,''), COALESCE(imported_at,''), COALESCE(created_at,''), COALESCE(CASE WHEN json_valid(raw_json) THEN json_extract(raw_json,'$.pa') END,'') FROM bank_txn"
-        ).map_err(|e| e.to_string())?;
-        let it = stmt.query_map([], |r| Ok(Row {
-            id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, dir: r.get(4)?,
-            desc: r.get(5)?, imported_at: r.get(6)?, created_at: r.get(7)?, pa: r.get(8)?,
-        })).map_err(|e| e.to_string())?;
-        it.filter_map(|r| r.ok()).collect()
-    };
-
-    // ---- ACCOUNT-ALIAS PRE-PASS ----
-    // The SAME real account linked twice can come back under a DIFFERENT mask, because Plaid's
-    // mask can differ per link (seen live: "Blue Business Cash(TM) ··1004" and "··2002" — one
-    // card, 100% of the smaller account's transactions present in both). Since the fingerprint
-    // includes the account label, those twins can NEVER match, so they survive every cleanup and
-    // keep re-appearing in the review queue as "needs booking" even though the other copy was
-    // already booked. Detect the alias by transaction OVERLAP and fold the stale label into the
-    // live one, after which the ordinary same-account dedup (and the import-time guard) work.
-    //
-    // Safety: the overlap key includes `direction`, so a real transfer between two accounts
-    // (out of one, into the other) can never look like an alias. Thresholds are deliberately
-    // high — a genuine second card shares few or no identical (date, cent, direction, memo) rows.
-    // FIVE conditions must ALL hold, because merging two real accounts would delete real
-    // transactions. Validated against the live case (Amex "Blue Business Cash(TM)" ··1004 vs
-    // ··2002: 189 shared keys, dozens of distinct memos, ··1004 dead 13 days behind ··2002) and
-    // against the false-positive scenarios that a looser test accepts (two dormant accounts
-    // sharing only a monthly fee; two envelope sub-accounts sharing one identical transfer; two
-    // fleet cards on one billing account both fuelling to the same preset amount):
-    //   1. SAME product name (the mask is all that differs on a re-link; the name never changes)
-    //   2. >= 20 shared distinct (date, cent, direction, memo) keys — volume
-    //   3. >= 95% of the smaller account's keys shared — near-total, not merely similar
-    //   4. >= 10 DISTINCT memos among the shared keys — kills the repetitive-single-charge cases,
-    //      which is where a ratio test is easiest to pass by accident
-    //   5. the loser is DEMONSTRABLY DEAD: its newest posted_at is >= 7 days behind the
-    //      survivor's. Two accounts both still in active use can never merge.
-    let alias_map: std::collections::HashMap<String, String> = {
-        fn product_name(label: &str) -> String {
-            label.split(" \u{00b7}\u{00b7}").next().unwrap_or(label).trim().to_lowercase()
-        }
-        struct Acct { keys: std::collections::HashSet<String>, last_posted: String }
-        let mut per: std::collections::HashMap<&str, Acct> = std::collections::HashMap::new();
-        for r in &rows {
-            let memo = r.desc.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-            let e = per.entry(r.account.as_str()).or_insert_with(|| Acct {
-                keys: std::collections::HashSet::new(), last_posted: String::new(),
-            });
-            e.keys.insert(format!("{}|{:.2}|{}|{}", r.date, r.amount, r.dir, memo));
-            if r.date > e.last_posted { e.last_posted = r.date.clone(); }
-        }
-        let days_between = |newer: &str, older: &str| -> i64 {
-            match (chrono::NaiveDate::parse_from_str(&newer[..newer.len().min(10)], "%Y-%m-%d"),
-                   chrono::NaiveDate::parse_from_str(&older[..older.len().min(10)], "%Y-%m-%d")) {
-                (Ok(n), Ok(o)) => (n - o).num_days(),
-                _ => -1, // unparseable → treat as "not clearly dead" → no merge
+    // Push our pending writes AND pull everyone else's before reading anything. A booking made
+    // on another device or by the accountant that has not reached this device yet would
+    // otherwise look unbooked here, the copy would be removed, and its tombstone — newer than
+    // the booking — would erase that booking on every device. The removal itself refuses to
+    // run on a view it could not bring up to date.
+    if crate::netsync::is_enabled() {
+        let synced = async {
+            crate::netsync::push_pending().await?;
+            crate::netsync::pull_apply().await
+        }.await;
+        if let Err(e) = synced {
+            if !dry_run {
+                return Err(format!("Couldn't sync with the server first, and the cleanup needs an up-to-date ledger ({e}). Try again once sync is working."));
             }
-        };
-        let accts: Vec<&str> = per.keys().cloned().collect();
-        let mut pairs: Vec<(String, String)> = Vec::new();
-        for i in 0..accts.len() {
-            for j in (i + 1)..accts.len() {
-                let (a, b) = (accts[i], accts[j]);
-                if product_name(a) != product_name(b) { continue; }            // 1
-                let (pa_, pb) = (&per[a], &per[b]);
-                let shared: Vec<&String> = pa_.keys.intersection(&pb.keys).collect();
-                let smaller = pa_.keys.len().min(pb.keys.len());
-                if smaller == 0 || shared.len() < 20 { continue; }             // 2
-                if (shared.len() as f64 / smaller as f64) < 0.95 { continue; } // 3
-                let memos: std::collections::HashSet<&str> =
-                    shared.iter().map(|k| k.rsplit('|').next().unwrap_or("")).collect();
-                if memos.len() < 10 { continue; }                              // 4
-                // 5: survivor = the one still posting; loser must be >= 7 days stale.
-                let (from, to) = if pa_.last_posted > pb.last_posted { (b, a) } else { (a, b) };
-                if days_between(&per[to].last_posted, &per[from].last_posted) < 7 { continue; }
-                pairs.push((from.to_string(), to.to_string()));
-            }
-        }
-        // Fold in any alias already confirmed on a previous run, then collapse chains so a
-        // lookup is always ONE hop (three masks for one card would otherwise leave rows parked
-        // on a middle label that receives nothing).
-        let mut map: std::collections::HashMap<String, String> = account_alias_map();
-        for (f, t) in pairs { map.insert(f, t); }
-        let snap = map.clone();
-        for v in map.values_mut() {
-            let mut hops = 0;
-            while let Some(next) = snap.get(v.as_str()) {
-                if next == v || hops > 8 { break; }
-                *v = next.clone(); hops += 1;
-            }
-        }
-        map.retain(|k, v| k != v);
-        map
-    };
-    let acct_of = |a: &str| -> String { alias_map.get(a).cloned().unwrap_or_else(|| a.to_string()) };
-
-    // Bucket by strict fingerprint, with aliased accounts folded together.
-    let mut buckets: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
-    for (i, r) in rows.iter().enumerate() {
-        buckets.entry(bank_txn_fingerprint(&acct_of(&r.account), &r.date, r.amount, &r.dir, &r.desc)).or_default().push(i);
-    }
-
-    // Memos where an identical same-day/same-amount repeat is genuinely plausible — a
-    // content fingerprint can't tell those apart from a duplicate, so they go to review.
-    let generic_terms = ["atm", "cash", "withdrawal", "deposit", "transfer", "zelle", "venmo", "wire", "e-transfer", "check "];
-
-    #[derive(serde::Serialize)]
-    struct AutoGroup { keep: String, remove: Vec<String>, account: String, date: String, amount: f64, direction: String, description: String, cross_account: bool }
-    let mut auto_groups: Vec<AutoGroup> = Vec::new();
-    let mut review: Vec<Value> = Vec::new();
-
-    {
-        let conn = pool().get().map_err(|e| e.to_string())?;
-        for idxs in buckets.values() {
-            if idxs.len() < 2 { continue; }
-            let referenced: Vec<usize> = idxs.iter().cloned().filter(|&i| bank_txn_is_referenced(&conn, &rows[i].id)).collect();
-            // Members sorted so the KEEP set is deterministic: booked first, then earliest
-            // imported/created, then smallest id.
-            let mut ordered = idxs.clone();
-            ordered.sort_by(|&a, &b| {
-                let ra = referenced.contains(&a); let rb = referenced.contains(&b);
-                rb.cmp(&ra) // referenced first
-                    .then(rows[a].imported_at.cmp(&rows[b].imported_at))
-                    .then(rows[a].created_at.cmp(&rows[b].created_at))
-                    .then(rows[a].id.cmp(&rows[b].id))
-            });
-            let s = &rows[ordered[0]];
-            let ids: Vec<String> = idxs.iter().map(|&i| rows[i].id.clone()).collect();
-            let base = json!({
-                "account": s.account, "date": s.date, "amount": s.amount, "direction": s.dir,
-                "description": s.desc, "keep": s.id, "ids": ids, "count": idxs.len(),
-            });
-
-            // How many copies to KEEP. When every row carries its Plaid connection (`pa`), the
-            // true number of real transactions is the MOST any single connection reported —
-            // each connection sees each real txn exactly once, so a re-link/second-device
-            // duplicate shows up under a DIFFERENT connection while a genuine same-day repeat
-            // shows up TWICE under the SAME one. Absent that signal (legacy rows), fall back to
-            // the conservative rules.
-            //
-            // CRITICAL: this reasoning only holds WITHIN one account label. `pa` IS the Plaid
-            // account id, so in a bucket folded together by the account-alias pre-pass the two
-            // sides ALWAYS have different `pa` — for a true alias *and* for two genuinely
-            // different accounts alike. Trusting it there would delete real transactions with
-            // every safety guard bypassed, so a folded bucket never takes the confident path.
-            let folded = idxs.iter().map(|&i| rows[i].account.as_str())
-                .collect::<std::collections::HashSet<_>>().len() > 1;
-            let all_have_pa = !folded && idxs.iter().all(|&i| !rows[i].pa.is_empty());
-            let keep_n = if all_have_pa {
-                let mut per: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-                for &i in idxs { *per.entry(rows[i].pa.as_str()).or_default() += 1; }
-                per.values().cloned().max().unwrap_or(1)
-            } else {
-                1
-            };
-
-            // More booked copies than the bank actually shows → don't guess, human resolves.
-            if referenced.len() > keep_n {
-                let mut g = base.clone(); g["reason"] = json!("more booked copies than the bank shows — resolve by hand"); review.push(g); continue;
-            }
-            // keep_n == group size → not duplicates (e.g. two real identical same-day charges
-            // from one connection). Leave them all.
-            if keep_n >= idxs.len() { continue; }
-
-            let losers: Vec<usize> = ordered[keep_n..].to_vec();
-            // A loser must never be booked (survivors are the first keep_n, booked-first).
-            if losers.iter().any(|&i| referenced.contains(&i)) {
-                let mut g = base.clone(); g["reason"] = json!("a booked copy would be removed — resolve by hand"); review.push(g); continue;
-            }
-
-            // A removal that only exists BECAUSE two account labels were merged is the highest-
-            // stakes kind (if the merge were wrong, this deletes a real transaction from a real
-            // second account). In safe mode the user confirms it explicitly.
-            if folded && !aggressive {
-                let mut g = base.clone();
-                g["reason"] = json!("same transaction on two account labels — confirm these accounts are one");
-                g["cross_account"] = json!(true);
-                review.push(g); continue;
-            }
-
-            if all_have_pa {
-                // Connection signal present → confident duplicate; safe to auto-remove even for
-                // round amounts / generic memos.
-                auto_groups.push(AutoGroup {
-                    keep: s.id.clone(), remove: losers.iter().map(|&i| rows[i].id.clone()).collect(),
-                    account: s.account.clone(), date: s.date.clone(), amount: s.amount, direction: s.dir.clone(), description: s.desc.clone(),
-                    cross_account: folded,
-                });
-                continue;
-            }
-
-            // No connection signal (legacy rows). In SAFE mode, round amounts / generic memos /
-            // 3+ copies could be a real repeat, so send them to review. In AGGRESSIVE mode the
-            // user has decided an exact match (same account/date/amount/direction/memo) IS a
-            // duplicate — delete the extras anyway (still never a booked row; still backed up).
-            let whole_dollar = ((s.amount * 100.0).round() as i64) % 100 == 0;
-            let dl = s.desc.to_lowercase();
-            let generic = s.desc.trim().is_empty() || generic_terms.iter().any(|t| dl.contains(t));
-            if !aggressive && (generic || whole_dollar || idxs.len() > 2) {
-                let mut g = base.clone();
-                g["reason"] = json!(if generic { "generic memo — could be a real repeat (re-pull to confirm by connection)" }
-                                    else if whole_dollar { "round amount — could be a real repeat (re-pull to confirm by connection)" }
-                                    else { "more than two copies — re-pull to confirm by connection" });
-                review.push(g); continue;
-            }
-            auto_groups.push(AutoGroup {
-                keep: s.id.clone(), remove: losers.iter().map(|&i| rows[i].id.clone()).collect(),
-                account: s.account.clone(), date: s.date.clone(), amount: s.amount, direction: s.dir.clone(), description: s.desc.clone(),
-                cross_account: folded,
-            });
+            tracing::warn!("dedupe_bank_txns: preview on a local view, sync failed: {e}");
         }
     }
 
-    let auto_remove: usize = auto_groups.iter().map(|g| g.remove.len()).sum();
+    let rows = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        load_dedup_rows(&conn)?
+    };
+    let stored = account_alias_map();
+    let plan = crate::bank_dedup::plan(&rows, &stored, aggressive);
 
-    // Same-account-linked-twice pairs, surfaced so the user sees the merge before it happens.
-    let merges: Vec<Value> = alias_map.iter().map(|(from, to)| json!({
-        "from": from, "to": to,
-        "rows": rows.iter().filter(|r| &r.account == from).count(),
-    })).collect();
+    let auto_remove: usize = plan.groups.iter().map(|g| g.removals.len()).sum();
+    let booked_duplicates = plan.groups.iter().flat_map(|g| g.removals.iter()).filter(|r| r.booked).count();
+    let reference_matches = plan.groups.iter().filter(|g| g.kind == "same reference").count();
+
+    // Accounts about to be combined, surfaced so the user sees the merge before it happens.
+    let merges: Vec<Value> = plan.aliases.iter().filter_map(|(from, to)| {
+        let n = rows.iter().filter(|r| &r.account == from).count();
+        (n > 0).then(|| json!({
+            "from": from, "to": to, "rows": n,
+            "proof": plan.folds.iter().find(|f| &f.from == from).map(|f| f.proof).unwrap_or("confirmed earlier"),
+        }))
+    }).collect();
 
     if dry_run {
-        let sample: Vec<&AutoGroup> = auto_groups.iter().take(30).collect();
+        // The groups worth eyeballing first: a date-moved pair, then a booked copy.
+        let mut sample: Vec<&crate::bank_dedup::AutoGroup> = plan.groups.iter().collect();
+        sample.sort_by_key(|g| (g.kind != "same reference", !g.removals.iter().any(|r| r.booked)));
+        sample.truncate(30);
         return Ok(json!({
             "dry_run": true,
             "total_transactions": rows.len(),
-            "auto_groups": auto_groups.len(),
+            "auto_groups": plan.groups.len(),
             "auto_remove": auto_remove,
-            "review": review,
-            "review_count": review.len(),
+            "booked_duplicates": booked_duplicates,
+            "reference_matches": reference_matches,
+            "review": plan.review,
+            "review_count": plan.review.len(),
             "sample": sample,
             "account_merges": merges,
         }));
@@ -14767,25 +14633,17 @@ pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, 
     // EXECUTE — per-loser TOCTOU re-check, recovery backup, then durable delete.
     let now = Utc::now().to_rfc3339();
     let mut removed = 0i64;
-    let mut skipped = 0i64;
+    let mut booked_removed = 0i64;
+    let mut skipped_changed = 0i64;   // linked, re-booked or gone since the scan
+    let mut skipped_no_backup = 0i64; // the backup could not be written, so nothing was deleted
+    let mut sync_write_failed = 0i64; // deleted, but the tombstone or event file did not write
 
-    // Remember the alias so a FUTURE import under the old mask is normalized on arrival. The
+    // Remember the alias so a FUTURE import under the old label is normalized on arrival. The
     // stale Plaid item may still be linked on another device; without this, its next sync
     // re-creates the split and the twins come back. Stored as a synced setting so every device
     // applies the same mapping (see `account_alias_map` used by plaid_sync).
-    if !alias_map.is_empty() {
-        let mut merged: std::collections::HashMap<String, String> = account_alias_map();
-        for (f, t) in &alias_map { merged.insert(f.clone(), t.clone()); }
-        // Collapse chains (a->b, b->c ⇒ a->c) so a lookup is always one hop.
-        let snapshot = merged.clone();
-        for (_, v) in merged.iter_mut() {
-            let mut hops = 0;
-            while let Some(next) = snapshot.get(v.as_str()) {
-                if next == v || hops > 8 { break; }
-                *v = next.clone(); hops += 1;
-            }
-        }
-        let js = serde_json::to_string(&merged).unwrap_or_else(|_| "{}".into());
+    if plan.aliases != stored {
+        let js = serde_json::to_string(&plan.aliases).unwrap_or_else(|_| "{}".into());
         {
             let conn = pool().get().map_err(|e| e.to_string())?;
             let _ = conn.execute(
@@ -14797,16 +14655,84 @@ pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, 
         let _ = sync::record_upsert("settings", "bank_account_aliases", c);
     }
 
-    // Fold each aliased (same real account, different mask) label into the surviving one FIRST,
-    // synced, so the label stops splitting this account and future imports match it.
+    // Removals run BEFORE the relabel: they are by id and need no label, and the two names are
+    // part of the evidence. A run interrupted after relabelling would leave a rerun unable to
+    // see the rename, so most of what remained would drop to review instead of finishing.
+    for g in &plan.groups {
+        let reason = if g.kind == "same reference" { "duplicate:reference" } else { "duplicate" };
+        for rm in &g.removals {
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            // Re-check against the database as it is NOW: the plan was read moments ago, and an
+            // earlier removal in this run may have carried booking onto either row.
+            if bank_txn_is_linked(&conn, &rm.id) { skipped_changed += 1; continue; }
+            let (Some(l), Some(s)) = (dedup_booking(&conn, &rm.id), dedup_booking(&conn, &rm.carry_to)) else { skipped_changed += 1; continue };
+            let still_ok = if l.reviewed {
+                s.reviewed && crate::bank_dedup::booking_compatible(&l, &s)
+            } else {
+                crate::bank_dedup::hand_fields_compatible(&l, &s)
+            };
+            if !still_ok { skipped_changed += 1; continue; }
+
+            // The backup must land before anything is deleted — no backup, no delete.
+            let Ok(backup) = conn.query_row(BANK_TXN_BACKUP_SQL, [&rm.id], |r| r.get::<_, String>(0)) else { skipped_no_backup += 1; continue };
+            if conn.execute(
+                "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![rm.id, backup, rm.carry_to, reason, now]).unwrap_or(0) == 0 { skipped_no_backup += 1; continue; }
+
+            // Carry booking onto the survivor before the copy goes: only its GAPS are filled,
+            // never a value it already holds. Without this a note or counterparty tag on the
+            // removed copy would be lost.
+            let mut carry: Vec<(&str, String)> = Vec::new();
+            let gap = |mine: &str, theirs: &str| mine.trim().is_empty() && !theirs.trim().is_empty();
+            if gap(&s.category, &l.category) { carry.push(("category", l.category.clone())); }
+            if gap(&s.counterparty_name, &l.counterparty_name) { carry.push(("counterparty_name", l.counterparty_name.clone())); }
+            if gap(&s.note, &l.note) { carry.push(("note", l.note.clone())); }
+            if gap(&s.confirmed_method, &l.confirmed_method) { carry.push(("confirmed_method", l.confirmed_method.clone())); }
+            if gap(&s.counterparty_type, &l.counterparty_type) {
+                carry.push(("counterparty_type", l.counterparty_type.clone()));
+                carry.push(("counterparty_id", l.counterparty_id.clone()));
+            }
+            if !carry.is_empty() {
+                carry.push(("updated_at", now.clone()));
+                let sets: Vec<String> = carry.iter().enumerate().map(|(i, (c, _))| format!("{c}=?{}", i + 1)).collect();
+                let mut vals: Vec<String> = carry.iter().map(|(_, v)| v.clone()).collect();
+                vals.push(rm.carry_to.clone());
+                let _ = conn.execute(&format!("UPDATE bank_txn SET {} WHERE id=?{}", sets.join(", "), vals.len()),
+                    rusqlite::params_from_iter(vals.iter()));
+            }
+            drop(conn);
+            if !carry.is_empty() {
+                let mut c = Map::new();
+                for (col, v) in &carry { c.insert((*col).into(), Value::String(v.clone())); }
+                let _ = sync::record_upsert("bank_txn", &rm.carry_to, c);
+            }
+
+            // record_delete queues the event for the server BEFORE anything that can fail, so an
+            // error here means the delete is probably already on its way to every other device.
+            // Keeping the row locally would leave this device out of step; delete it and say so.
+            if let Err(e) = sync::record_delete("bank_txn", &rm.id) {
+                tracing::warn!("dedupe_bank_txns: record_delete {} after queueing: {e}", rm.id);
+                sync_write_failed += 1;
+            }
+            let conn = pool().get().map_err(|e| e.to_string())?;
+            if conn.execute("DELETE FROM bank_txn WHERE id=?1", [&rm.id]).unwrap_or(0) > 0 {
+                removed += 1;
+                if l.reviewed { booked_removed += 1; }
+            }
+        }
+    }
+
+    // Fold each aliased label into the surviving one, synced, so the label stops splitting
+    // this account and future imports match it.
     let mut relabelled = 0i64;
-    for (from, to) in &alias_map {
+    for (from, to) in &plan.aliases {
         let ids: Vec<String> = {
             let conn = pool().get().map_err(|e| e.to_string())?;
             let mut st = conn.prepare("SELECT id FROM bank_txn WHERE account_id=?1").map_err(|e| e.to_string())?;
             let it = st.query_map([from], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
             it.filter_map(|r| r.ok()).collect()
         };
+        if ids.is_empty() { continue; }
         // Audit record for the merge itself, so there is a trail even though these rows are
         // relabelled rather than deleted.
         {
@@ -14838,66 +14764,20 @@ pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, 
             let _ = sync::record_upsert("bank_txn", id, cols);
         }
     }
-
-    for g in &auto_groups {
-        for lid in &g.remove {
-            {
-                let conn = pool().get().map_err(|e| e.to_string())?;
-                if bank_txn_is_referenced(&conn, lid) { skipped += 1; continue; } // linked since the scan
-                let row_json: Option<String> = conn.query_row(
-                    "SELECT json_object('id',id,'org_id',org_id,'account_id',account_id,'posted_at',posted_at,'amount',amount,\
-                        'direction',direction,'description',description,'memo_raw',memo_raw,'category',category,\
-                        'counterparty_name',counterparty_name,'source_format',source_format,'reviewed',reviewed,\
-                        'imported_at',imported_at,'created_at',created_at,'updated_at',updated_at) FROM bank_txn WHERE id=?1",
-                    [lid], |r| r.get(0)).ok();
-                if let Some(rj) = row_json {
-                    let _ = conn.execute(
-                        "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,?3,?4,?5)",
-                        rusqlite::params![lid, rj, g.keep, "duplicate", now]);
-                }
-                // Carry booking work onto the survivor before the loser goes. Without this, a
-                // reviewed/labelled copy could be removed in favour of an untouched twin and the
-                // transaction would drop back into the review queue — the very complaint this
-                // fixes. Only FILLS gaps on the survivor; never overwrites its own values.
-                let loser: Option<(i64, String, String)> = conn.query_row(
-                    "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,'') FROM bank_txn WHERE id=?1",
-                    [lid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok();
-                if let Some((l_rev, l_cat, l_cp)) = loser {
-                    if let Ok((s_rev, s_cat, s_cp)) = conn.query_row(
-                        "SELECT COALESCE(reviewed,0), COALESCE(category,''), COALESCE(counterparty_name,'') FROM bank_txn WHERE id=?1",
-                        [&g.keep], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
-                        let rev = if s_rev == 1 || l_rev == 1 { 1i64 } else { 0 };
-                        let cat = if s_cat.trim().is_empty() { l_cat.clone() } else { s_cat.clone() };
-                        let cp  = if s_cp.trim().is_empty() { l_cp.clone() } else { s_cp.clone() };
-                        if rev != s_rev || cat != s_cat || cp != s_cp {
-                            let _ = conn.execute(
-                                "UPDATE bank_txn SET reviewed=?1, category=?2, counterparty_name=?3, updated_at=?4 WHERE id=?5",
-                                rusqlite::params![rev, &cat, &cp, now, &g.keep]);
-                            let mut c = Map::new();
-                            c.insert("reviewed".into(), json!(rev));
-                            c.insert("category".into(), Value::String(cat));
-                            c.insert("counterparty_name".into(), Value::String(cp));
-                            c.insert("updated_at".into(), Value::String(now.clone()));
-                            let _ = sync::record_upsert("bank_txn", &g.keep, c);
-                        }
-                    }
-                }
-            }
-            let _ = sync::record_delete("bank_txn", lid);
-            let conn = pool().get().map_err(|e| e.to_string())?;
-            if conn.execute("DELETE FROM bank_txn WHERE id=?1", [lid]).unwrap_or(0) > 0 { removed += 1; }
-        }
-    }
-    if removed > 0 { crate::netsync::push_now(); }
+    if removed + relabelled > 0 { crate::netsync::push_now(); }
 
     Ok(json!({
         "dry_run": false,
         "removed": removed,
-        "skipped_now_referenced": skipped,
+        "booked_removed": booked_removed,
+        "skipped_now_referenced": skipped_changed + skipped_no_backup,
+        "skipped_changed": skipped_changed,
+        "skipped_no_backup": skipped_no_backup,
+        "sync_write_failed": sync_write_failed,
         "relabelled": relabelled,
         "account_merges": merges,
-        "review": review,
-        "review_count": review.len(),
+        "review": plan.review,
+        "review_count": plan.review.len(),
         "backup_table": "bank_txn_deleted_backup",
     }))
 }
@@ -15170,6 +15050,34 @@ pub async fn plaid_sync() -> Result<Value, String> {
     if items.is_empty() {
         return Err("No banks connected yet — click Connect a bank first.".into());
     }
+    // R-287. The duplicate checks below used to compare the account LABEL exactly, so when
+    // the bank renamed an account on an upgrade (same last-4, a new product name) a re-pull
+    // matched nothing and put the whole history on the books again. An
+    // existing label is now the same account when `bank_dedup::same_account` says so: same
+    // label, a confirmed alias, or the same last-4 under a name that is not a live account of
+    // its own. "Live" is judged per item (see `live_labels` in the loop): the item being synced,
+    // and items at OTHER banks. Another item at the SAME bank proves nothing — a connection
+    // that broke on the upgrade keeps its pre-rename accounts_json forever, and its
+    // replacement is always a different item at the same bank.
+    let item_labels: Vec<(String, String, std::collections::HashSet<String>)> = items.iter()
+        .map(|(pk, _, _, accounts_json, _, institution)| {
+            let labels = serde_json::from_str::<Vec<Value>>(accounts_json).unwrap_or_default().into_iter()
+                .map(|a| {
+                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+                    if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) }
+                })
+                .collect();
+            (pk.clone(), institution.clone(), labels)
+        })
+        .collect();
+    let known_labels: Vec<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut st = conn.prepare("SELECT DISTINCT account_id FROM bank_txn").map_err(|e| e.to_string())?;
+        let it = st.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        it.filter_map(|r| r.ok()).collect()
+    };
+    let mut same_account_cache: std::collections::HashMap<String, Vec<String>> = Default::default();
     let now = Utc::now().to_rfc3339();
     let mut imported = 0i64;
     let mut removed = 0i64;
@@ -15251,6 +15159,11 @@ pub async fn plaid_sync() -> Result<Value, String> {
     }
 
     for (item_pk, access, mut cursor, accounts_json, item_env, institution) in items {
+        let live_labels: std::collections::HashSet<String> = item_labels.iter()
+            .filter(|(pk, inst, _)| *pk == item_pk || *inst != institution)
+            .flat_map(|(_, _, labels)| labels.iter().cloned())
+            .collect();
+        same_account_cache.clear();
         // Sync each item under the environment it was LINKED in (not the current UI
         // setting) so a bank still pulls even if the app is left on the other env.
         // A per-item error is recorded and reported, never failing the whole sync.
@@ -15341,6 +15254,14 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // the account (which is what made booked transactions re-appear unbooked).
                     let raw_label = label_of(t.get("account_id").and_then(|v| v.as_str()).unwrap_or(""));
                     let label = aliases.get(&raw_label).cloned().unwrap_or(raw_label);
+                    // Every label on the books that is this same account (R-287).
+                    let same_account: Vec<String> = same_account_cache.entry(label.clone()).or_insert_with(|| {
+                        let mut v: Vec<String> = known_labels.iter()
+                            .filter(|l| crate::bank_dedup::same_account(l, &label, &live_labels, &aliases))
+                            .cloned().collect();
+                        if !v.contains(&label) { v.push(label.clone()); }
+                        v
+                    }).clone();
                     // `name` is the true bank memo (e.g. "Zelle payment to Walmart
                     // Loads JPM…"); Plaid's `merchant_name` over-collapses transfers to
                     // a retailer. Show the real memo as the description so a Zelle to a
@@ -15419,39 +15340,70 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // erasure this guard exists to prevent, reintroduced by the sampling.
                     // A match qualifies as churn if ANY copy is being retracted now or
                     // came from this same Plaid connection.
-                    let matches: Vec<(String, String)> = conn
+                    // R-287: on any label that is this same account, and never against a row
+                    // whose stored details disagree with what the bank sends now (merchant,
+                    // payment metadata, timestamp, memo). A disagreement imports the row — a
+                    // visible duplicate can be cleaned up; a wrongly skipped payment is gone.
+                    let incoming = crate::bank_dedup::TxnRow { memo_raw: desc.clone(), raw_json: rawj.clone(), ..Default::default() };
+                    let candidates: Vec<crate::bank_dedup::TxnRow> = conn
                         .prepare(
-                            "SELECT id, COALESCE(raw_json,'') FROM bank_txn WHERE account_id=?1 AND posted_at=?2 AND ABS(amount-?3)<0.005 \
-                               AND direction=?4 AND LOWER(COALESCE(description,''))=?5 AND imported_at < ?6",
+                            "SELECT id, COALESCE(raw_json,''), COALESCE(account_id,''), COALESCE(memo_raw,''), COALESCE(check_num,''), \
+                                    COALESCE(wire_ref,''), COALESCE(fitid,'') FROM bank_txn \
+                              WHERE posted_at=?1 AND ABS(amount-?2)<0.005 \
+                               AND direction=?3 AND LOWER(COALESCE(description,''))=?4 AND imported_at < ?5",
                         )
                         .and_then(|mut st| {
                             st.query_map(
-                                rusqlite::params![label, date, amount, direction, desc.to_lowercase(), now],
-                                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                                rusqlite::params![date, amount, direction, desc.to_lowercase(), now],
+                                |r| Ok(crate::bank_dedup::TxnRow {
+                                    id: r.get(0)?, raw_json: r.get(1)?, account: r.get(2)?, memo_raw: r.get(3)?,
+                                    check_num: r.get(4)?, wire_ref: r.get(5)?, fitid: r.get(6)?, ..Default::default()
+                                }),
                             )
                             .map(|rows| rows.filter_map(|x| x.ok()).collect())
                         })
                         .unwrap_or_default();
-                    if !matches.is_empty() {
-                        let is_churn = matches.iter().any(|(mid, rj)| {
-                            removed_ids.contains(mid)
-                                || (!pacct.is_empty()
-                                    && serde_json::from_str::<Value>(rj).ok()
-                                        .and_then(|v| v.get("pa").and_then(|p| p.as_str()).map(|p| p == pacct))
-                                        .unwrap_or(false))
-                        });
+                    let candidates: Vec<crate::bank_dedup::TxnRow> = candidates.into_iter()
+                        .filter(|c| same_account.contains(&c.account))
+                        .collect();
+                    // Churn is judged over EVERY same-account match, before the detail veto: a
+                    // row this connection is retracting protects its posted replacement even
+                    // when the bank's details changed between pending and posted. And a row
+                    // counts as this connection's own only when this connection IMPORTED it —
+                    // its stamped `tid` produces its own id. A provenance stamp backfilled onto
+                    // an older row is not the connection sending that transaction twice.
+                    let is_churn = candidates.iter().any(|c| {
+                        removed_ids.contains(&c.id)
+                            || (!pacct.is_empty()
+                                && serde_json::from_str::<Value>(&c.raw_json).ok()
+                                    .map(|v| v.get("pa").and_then(|p| p.as_str()) == Some(pacct.as_str())
+                                        && v.get("tid").and_then(|t| t.as_str()).map(plaid_txn_id).as_deref() == Some(c.id.as_str()))
+                                    .unwrap_or(false))
+                    });
+                    let candidates: Vec<crate::bank_dedup::TxnRow> = candidates.into_iter()
+                        .filter(|c| crate::bank_dedup::metadata_conflict(&incoming, c, true).is_none())
+                        .collect();
+                    let renamed_from: Vec<String> = candidates.iter()
+                        .filter(|c| c.account != label).map(|c| c.account.clone())
+                        .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                    let matches: Vec<(String, String, String)> = candidates.into_iter().map(|c| (c.id, c.raw_json, c.account)).collect();
+                    let matches: Vec<(String, String)> = {
+                        // Backfill provenance onto ONE legacy row on this same label — never
+                        // several (the second copy of a real same-day pair would then look
+                        // like this connection's own churn), never across a rename (that would
+                        // manufacture a shared-connection proof for the cleanup).
                         if !is_churn {
-                            // Genuine duplicate of a prior run. Backfill provenance onto any
-                            // legacy row that predates the `pa` stamp so a later cleanup —
-                            // and this very check on the next sync — can use the signal.
-                            for (mid, rj) in &matches {
-                                if rj.is_empty() {
-                                    let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, mid]);
-                                    let mut c = Map::new();
-                                    c.insert("raw_json".into(), Value::String(rawj.clone()));
-                                    let _ = sync::record_upsert("bank_txn", mid, c);
-                                }
+                            if let Some((mid, _, _)) = matches.iter().find(|(_, rj, acct)| rj.is_empty() && *acct == label) {
+                                let _ = conn.execute("UPDATE bank_txn SET raw_json=?1 WHERE id=?2", rusqlite::params![rawj, mid]);
+                                let mut c = Map::new();
+                                c.insert("raw_json".into(), Value::String(rawj.clone()));
+                                let _ = sync::record_upsert("bank_txn", mid, c);
                             }
+                        }
+                        matches.into_iter().map(|(m, rj, _)| (m, rj)).collect()
+                    };
+                    if !matches.is_empty() {
+                        if !is_churn {
                             // The posted transaction is already on the books under ANOTHER
                             // id — normally the other device's Plaid connection imported it
                             // first. This device still holds the pending row and is still
@@ -15483,6 +15435,7 @@ pub async fn plaid_sync() -> Result<Value, String> {
                                 "account": label,
                                 "description": desc,
                                 "matched": matches.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>(),
+                                "matched_under": renamed_from,
                             }));
                             continue;
                         }
@@ -15500,7 +15453,9 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // matches the amount-scoped query too (it's a strict superset), so without
                     // this ordering the same row would be reported in both lists at once with
                     // contradictory claims ("imported anyway" vs "held, nothing imported").
-                    let booked_collisions = canonical_id_booked_collisions(&conn, &label, direction, &desc, &id);
+                    let booked_collisions: Vec<String> = same_account.iter()
+                        .flat_map(|acct| canonical_id_booked_collisions(&conn, acct, direction, &desc, &id))
+                        .collect();
                     if !booked_collisions.is_empty() {
                         held_reference_collision.push(json!({
                             "date": date,
@@ -15522,23 +15477,23 @@ pub async fn plaid_sync() -> Result<Value, String> {
                     // the pair is reported for review. Two genuine repeats — the 2x$100k
                     // Tytan wires — carry DIFFERENT references, so they never pair up here.
                     if let Some((kind, refval)) = bank_txn_reference(&desc) {
-                        let same_ref: Vec<String> = conn
+                        let same_ref: Vec<String> = same_account.iter().flat_map(|acct| conn
                             .prepare(
                                 "SELECT id, COALESCE(description,'') FROM bank_txn WHERE account_id=?1 AND direction=?2 \
                                    AND ABS(amount-?3)<0.005 AND id<>?4",
                             )
                             .and_then(|mut st| {
                                 st.query_map(
-                                    rusqlite::params![label, direction, amount, id],
+                                    rusqlite::params![acct, direction, amount, id],
                                     |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
                                 )
                                 .map(|rows| rows.filter_map(|x| x.ok())
                                     .filter(|(_, d)| bank_txn_reference(d)
                                         .map(|(k, v)| k == kind && v == refval).unwrap_or(false))
                                     .map(|(i, _)| i)
-                                    .collect())
+                                    .collect::<Vec<String>>())
                             })
-                            .unwrap_or_default();
+                            .unwrap_or_default()).collect();
                         if !same_ref.is_empty() {
                             possible_duplicates.push(json!({
                                 "date": date,

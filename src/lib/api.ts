@@ -2086,14 +2086,23 @@ export interface DedupeGroup {
   count?: number;
   reason?: string;
   cross_account?: boolean;   // removal exists only because two account labels were merged
+  kind?: "identical" | "same reference"; // same reference = the bank's reference matches, R-287
+  date_moved?: boolean;
+  kept_extras?: boolean;     // review note: booked extras stay, the bank's feed shows fewer
 }
-export interface AccountMerge { from: string; to: string; rows: number }
+export interface AccountMerge { from: string; to: string; rows: number; proof?: string }
 export interface DedupeResult {
   dry_run: boolean;
   total_transactions?: number;
   auto_groups?: number;
   auto_remove?: number;
+  booked_duplicates?: number;  // booked copies whose kept twin is booked the same way
+  reference_matches?: number;  // same bank reference, date moved
   removed?: number;
+  booked_removed?: number;
+  skipped_changed?: number;    // booked or linked while cleaning
+  skipped_no_backup?: number;  // backup write failed, so not removed
+  sync_write_failed?: number;  // removed here, sync log write failed
   skipped_now_referenced?: number;
   relabelled?: number;
   account_merges?: AccountMerge[];

@@ -525,6 +525,15 @@ const inp =
 // survivor — the same row Deal Flow shows — so an allocation (single OR bulk) can
 // never land on a ghost duplicate the deal view hides.
 const DEAL_STAGE_RANK: Record<string, number> = { invoiced: 0, payment_received: 1, supplier_paid: 2, complete: 3 };
+
+// Why "Clean up duplicates" believes two account names are one account (R-287).
+const MERGE_PROOF: Record<string, string> = {
+  "same connection": "same bank connection",
+  "bank references": "matching bank reference numbers",
+  "matching history": "matching history",
+  "masks": "different last-4",
+  "confirmed earlier": "confirmed earlier",
+};
 const survivorDeals = (deals: DealFlow[]): DealFlow[] => {
   const byInv: Record<string, DealFlow> = {};
   for (const d of deals) {
@@ -1253,7 +1262,8 @@ export default function FinancialsView() {
 
   // Duplicate cleanup: preview first (dry run), then the user confirms in the modal.
   // aggressive=true removes every exact match (same date/amount/memo), not just the
-  // clearly-safe ones — still never a booked row, and everything is backed up.
+  // clearly-safe ones — never a linked row, a booked copy only when its twin is booked the
+  // same way, and everything is backed up.
   const previewDedupe = async (aggressive: boolean) => {
     setDedupeAggressive(aggressive);
     setDedupeRunning(true);
@@ -1261,7 +1271,8 @@ export default function FinancialsView() {
     try {
       const r = await api.dedupeBankTxns(true, aggressive);
       setDedupe(r);
-      if ((r.auto_remove || 0) === 0 && r.review_count === 0) {
+      // A renamed account with nothing to remove still needs combining (R-287).
+      if ((r.auto_remove || 0) === 0 && r.review_count === 0 && !(r.account_merges?.length)) {
         toast("No duplicate transactions found", "success");
         setDedupe(null);
       }
@@ -3199,7 +3210,11 @@ export default function FinancialsView() {
                     <Check size={18} className="text-success-ink mt-0.5 shrink-0" />
                     <div className="text-[13px] text-ink-2 leading-relaxed">
                       Removed <span className="font-semibold text-ink">{dedupe.removed || 0}</span> duplicate transaction{(dedupe.removed || 0) === 1 ? "" : "s"}.
-                      {(dedupe.skipped_now_referenced || 0) > 0 && <> {dedupe.skipped_now_referenced} were skipped because they became linked to a deal while cleaning.</>}
+                      {(dedupe.booked_removed || 0) > 0 && <> {dedupe.booked_removed} of them were booked copies; the booking stays on the copy that was kept.</>}
+                      {(dedupe.relabelled || 0) > 0 && <> {dedupe.relabelled} moved under the account's current name.</>}
+                      {(dedupe.skipped_changed || 0) > 0 && <> {dedupe.skipped_changed} were left alone because they were booked or linked while cleaning.</>}
+                      {(dedupe.skipped_no_backup || 0) > 0 && <> {dedupe.skipped_no_backup} were not removed because their backup couldn't be written.</>}
+                      {(dedupe.sync_write_failed || 0) > 0 && <> {dedupe.sync_write_failed} removals couldn't be written to the sync log here; your other devices may still show them.</>}
                       {" "}A copy of everything removed is kept locally, so nothing is truly lost.
                     </div>
                   </div>
@@ -3220,20 +3235,20 @@ export default function FinancialsView() {
                       </div>
                     </div>
 
-                    {/* Same card linked twice under two masks — the reason already-booked
+                    {/* One account under two names (a re-link's new last-4, or a bank rename) — the reason already-booked
                         transactions kept re-appearing as "needs booking". */}
                     {(dedupe.account_merges?.length || 0) > 0 && (
                       <div className="rounded-xl border border-accent/40 bg-accent/5 px-3.5 py-3">
                         <div className="text-[12.5px] font-semibold text-ink flex items-center gap-1.5">
-                          <Landmark size={14} className="text-accent" /> Same account connected twice
+                          <Landmark size={14} className="text-accent" /> Same account under two names
                         </div>
                         <p className="text-[11.5px] text-muted leading-relaxed mt-1">
-                          These look like one account that got connected twice (the bank returned a different last-4 each time), which is why transactions you already booked keep coming back unbooked. They'll be combined into one account, keeping your reviewed ones.
+                          The bank renamed or reconnected these accounts, so the same transactions came in twice. They'll be combined under the current name, keeping everything you've booked.
                         </p>
                         <div className="mt-2 space-y-1">
                           {dedupe.account_merges!.map((m, i) => (
                             <div key={i} className="text-[11.5px] text-ink-2 tabular-nums">
-                              <span className="text-muted">{m.from}</span> <span className="text-faint">→</span> <span className="font-medium">{m.to}</span> <span className="text-muted">({m.rows} moved)</span>
+                              <span className="text-muted">{m.from}</span> <span className="text-faint">→</span> <span className="font-medium">{m.to}</span> <span className="text-muted">({m.rows} moved{m.proof ? ` · ${MERGE_PROOF[m.proof] || m.proof}` : ""})</span>
                             </div>
                           ))}
                         </div>
@@ -3253,9 +3268,15 @@ export default function FinancialsView() {
                     </div>
                     <p className="text-[12px] text-muted leading-relaxed">
                       {dedupeAggressive
-                        ? "Removes every extra copy that matches on date, amount, direction and description — including round amounts and generic memos. Anything reviewed or linked to a deal, loan or refund is still never touched, and every removed row is backed up. Run this from one device."
-                        : "Removes only the clearly-safe extra copies. Round amounts and generic memos (like ATM / cash / transfer) are left for you below — switch to “Every exact match” to remove those too. Anything reviewed or linked to a deal is never touched. Run this from one device."}
+                        ? "Removes every extra copy with the same account, date, amount, direction and description, where no detail the bank sent disagrees — including round amounts and generic memos. Anything linked to a deal, loan or refund is never touched, and every removed row is backed up. Run this from one device."
+                        : "Removes extra copies with the same account, date, amount, direction and description, where no detail the bank sent disagrees. Round amounts and generic memos (like ATM / cash / transfer) are left for you below, unless each copy came from a different bank connection or from an account the bank renamed. Anything linked to a deal, loan or refund is never touched, and every removed row is backed up. Run this from one device."}
                     </p>
+                    {((dedupe.booked_duplicates || 0) > 0 || (dedupe.reference_matches || 0) > 0) && (
+                      <p className="text-[12px] text-ink-2 leading-relaxed">
+                        {(dedupe.booked_duplicates || 0) > 0 && <>{dedupe.booked_duplicates} of these {dedupe.booked_duplicates === 1 ? "is a booked copy" : "are booked copies"} whose twin is booked the same way — the booking stays on the copy that's kept. </>}
+                        {(dedupe.reference_matches || 0) > 0 && <>{dedupe.reference_matches} {dedupe.reference_matches === 1 ? "is a payment" : "are payments"} the bank re-sent with a different date or memo; the bank's reference number matches.</>}
+                      </p>
+                    )}
                     {(dedupe.sample?.length || 0) > 0 && (
                       <div>
                         <div className="text-[12px] font-medium text-muted mb-1.5">Will remove (sample)</div>
@@ -3267,6 +3288,7 @@ export default function FinancialsView() {
                                 <div className="text-muted text-[11px]">{g.date} · {g.account}</div>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
+                                {g.kind === "same reference" && <span className="text-[10px] text-muted bg-surface-2 border border-line rounded px-1.5 py-0.5">{g.date_moved ? "date moved" : "same reference"}</span>}
                                 {g.cross_account && <span className="text-[10px] text-accent bg-accent/10 border border-accent/30 rounded px-1.5 py-0.5">merged acct</span>}
                                 <span className={`tabular-nums font-medium ${g.direction === "in" ? "text-success-ink" : "text-ink-2"}`}>{g.direction === "in" ? "+" : "−"}${g.amount.toFixed(2)}</span>
                                 <span className="text-[10px] text-muted bg-surface-2 border border-line rounded px-1.5 py-0.5">−{(g.remove?.length || 1)}</span>
@@ -3281,7 +3303,7 @@ export default function FinancialsView() {
 
                 {dedupe.review.length > 0 && (
                   <div>
-                    <div className="text-[12px] font-medium text-warning-ink mb-1.5">Needs your review — not removed</div>
+                    <div className="text-[12px] font-medium text-warning-ink mb-1.5">Needs your review</div>
                     <div className="rounded-xl border border-warning/40 bg-warning-bg/30 divide-y divide-warning/20 max-h-48 overflow-y-auto">
                       {dedupe.review.slice(0, 60).map((g, i) => (
                         <div key={i} className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
@@ -3304,9 +3326,9 @@ export default function FinancialsView() {
                 ) : (
                   <>
                     <button onClick={() => setDedupe(null)} disabled={dedupeRunning} className="h-9 px-4 rounded-lg text-[13px] font-medium border border-line text-ink-2 hover:bg-surface-2 disabled:opacity-40 transition-colors">Cancel</button>
-                    <button onClick={executeDedupe} disabled={dedupeRunning || (dedupe.auto_remove || 0) === 0}
+                    <button onClick={executeDedupe} disabled={dedupeRunning || ((dedupe.auto_remove || 0) === 0 && !(dedupe.account_merges?.length))}
                       className="flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-40 transition-colors">
-                      {dedupeRunning ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Remove {dedupe.auto_remove || 0} duplicate{(dedupe.auto_remove || 0) === 1 ? "" : "s"}
+                      {dedupeRunning ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} {(dedupe.auto_remove || 0) === 0 && dedupe.account_merges?.length ? "Combine accounts" : <>Remove {dedupe.auto_remove || 0} duplicate{(dedupe.auto_remove || 0) === 1 ? "" : "s"}</>}
                     </button>
                   </>
                 )}
